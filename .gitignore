@@ -1,0 +1,49 @@
+# === Sensitive ===
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.token.json
+.auth.json
+credentials/
+secrets/
+
+# === macOS / iCloud ===
+.DS_Store
+._*
+*.icloud
+*.swp
+*.swo
+
+# === ECC session data ===
+history/checkpoints/
+history/daily/
+.claude/
+
+# === Logs ===
+*.log
+logs/
+
+# === IDE ===
+.idea/
+.vscode/
+
+# === Python ===
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+*.egg
+.coverage
+htmlcov/
+
+# === Tip: 大数据目录建议加 .nosync 后缀 ===
