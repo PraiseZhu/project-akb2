@@ -1,0 +1,9 @@
+{
+  "global_verdict": "all_eligible",
+  "exit_code": 0,
+  "per_tool": [
+    {"slug": "cc-fake", "eligible": true, "blocker_reason": null}
+  ],
+  "eligible_tools": ["cc-fake"],
+  "would_create_automation": false
+}

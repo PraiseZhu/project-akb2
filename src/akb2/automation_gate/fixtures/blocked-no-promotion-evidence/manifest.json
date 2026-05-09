@@ -1,0 +1,14 @@
+{
+  "schema_version": "fixture-v0",
+  "description": "Tool at L2 with recommend_promote_L2 but no promotion evidence — fails at promotion_evidence condition",
+  "tools": [
+    {
+      "slug": "cc-fake",
+      "eval_level": "L2",
+      "toolbox_status": "active",
+      "automation_allowed": false,
+      "runtime_mutation_allowed": false,
+      "human_approval_marker": true
+    }
+  ]
+}

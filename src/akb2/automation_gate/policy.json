@@ -1,0 +1,79 @@
+{
+  "version": "v0",
+  "description": "Automation Gate v0 — policy conditions for enabling automation_allowed on AKB2.0 toolbox tools",
+  "gate_conditions": [
+    {
+      "id": "eval_level_l2",
+      "description": "Tool eval_level must be L2 (L0 → blocked_l0_or_below; L1 → blocked_l1_floor). Checked before status to surface most fundamental blocker.",
+      "verdict_if_fail_l0": "blocked_l0_or_below",
+      "verdict_if_fail_l1": "blocked_l1_floor"
+    },
+    {
+      "id": "active",
+      "description": "Tool toolbox_status must be active in closure-manifest",
+      "verdict_if_fail": "blocked_status_not_active"
+    },
+    {
+      "id": "l2_regression_promote",
+      "description": "L2 regression recommendation.json must exist and have verdict=recommend_promote_L2",
+      "verdict_if_missing": "blocked_no_l2_regression_evidence",
+      "verdict_if_blocked": "blocked_l2_verdict_blocked",
+      "verdict_if_needs_patch": "blocked_needs_patch"
+    },
+    {
+      "id": "promotion_evidence",
+      "description": "Promotion closure manifest directory must exist in promotion-gate/v0/outputs/<slug>/",
+      "verdict_if_fail": "blocked_no_promotion_evidence"
+    },
+    {
+      "id": "automation_currently_off",
+      "description": "automation_allowed must be false for ALL tools in AKB2.0 toolbox and wiki. Global grep invariant guard (hard fail exits 3 before per-tool evaluation).",
+      "verdict_if_fail": "hard_fail_automation_already_true",
+      "hard_fail": true
+    },
+    {
+      "id": "runtime_mutation_off",
+      "description": "runtime_mutation_allowed must be false in tool card frontmatter",
+      "verdict_if_fail": "blocked_runtime_mutation_on"
+    },
+    {
+      "id": "rollback_target",
+      "description": "Primary closure-manifest sha256 must match baseline (confirms rollback snapshot is intact)",
+      "verdict_if_fail": "blocked_no_rollback_target"
+    },
+    {
+      "id": "human_approval_marker",
+      "description": "Explicit human approval file must exist at automation-gate/v0/approvals/<slug>.json",
+      "verdict_if_fail": "blocked_no_human_approval"
+    }
+  ],
+  "input_sources": {
+    "manifest": "ai-infra/akb2-toolbox-closure/2026-05-07/closure-manifest.json",
+    "l2_recommendation_dir": "ai-infra/akb2-toolbox-evals/l2-regression-v1/<slug>/recommendation.json",
+    "promotion_evidence_dir": "ai-infra/akb2-toolbox-promotion-gate/v0/outputs/<slug>/",
+    "tool_card_toolbox": "AKB2.0/toolbox/tools/<slug>.md",
+    "tool_card_wiki": "AKB2.0/wiki/tools/<slug>.md",
+    "human_approval": "ai-infra/akb2-toolbox-automation-gate/v0/approvals/<slug>.json"
+  },
+  "invariants": {
+    "max_automation_allowed_true_count": 0,
+    "primary_closure_manifest_sha256": "0fbd53703ff58802299ba8cb04f5290e4b973c124729376dc341f862f06f90cc"
+  },
+  "global_verdict_enum": [
+    "all_eligible",
+    "partial_eligible",
+    "blocked_l0_or_below",
+    "blocked_l1_floor",
+    "blocked_status_not_active",
+    "blocked_l2_verdict_blocked",
+    "blocked_needs_patch",
+    "blocked_no_l2_regression_evidence",
+    "blocked_no_promotion_evidence",
+    "blocked_runtime_mutation_on",
+    "blocked_no_rollback_target",
+    "blocked_no_human_approval",
+    "hard_fail_automation_already_true"
+  ],
+  "dry_run_only": true,
+  "would_create_automation": false
+}

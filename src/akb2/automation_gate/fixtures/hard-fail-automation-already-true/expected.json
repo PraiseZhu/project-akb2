@@ -1,0 +1,9 @@
+{
+  "global_verdict": "hard_fail_automation_already_true",
+  "exit_code": 3,
+  "per_tool": [
+    {"slug": "cc-fake", "eligible": false, "blocker_reason": "hard_fail_automation_already_true"}
+  ],
+  "eligible_tools": [],
+  "would_create_automation": false
+}

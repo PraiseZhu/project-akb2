@@ -1,0 +1,9 @@
+{
+  "global_verdict": "blocked_no_promotion_evidence",
+  "exit_code": 1,
+  "per_tool": [
+    {"slug": "cc-fake", "eligible": false, "blocker_reason": "blocked_no_promotion_evidence"}
+  ],
+  "eligible_tools": [],
+  "would_create_automation": false
+}

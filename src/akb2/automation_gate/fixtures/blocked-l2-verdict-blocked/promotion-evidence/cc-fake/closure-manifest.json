@@ -1,0 +1,6 @@
+{
+  "schema_version": "fixture-v0",
+  "description": "Promotion evidence exists but L2 verdict=blocked (fixture)",
+  "tool": "cc-fake",
+  "promoted_at": "2026-05-08T00:00:00Z"
+}

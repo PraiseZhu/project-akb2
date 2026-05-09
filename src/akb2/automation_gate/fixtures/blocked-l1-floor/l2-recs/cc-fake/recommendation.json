@@ -1,0 +1,7 @@
+{
+  "tool": "cc-fake",
+  "phase": "L2-regression-v1",
+  "verdict": "blocked",
+  "generated_at": "2026-05-08T00:00:00Z",
+  "block_reason": "fixture: backend unavailable"
+}

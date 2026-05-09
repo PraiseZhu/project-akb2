@@ -1,0 +1,103 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AutomationGateResult",
+  "description": "Output schema for Automation Gate v0 dry-run runner",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "mode",
+    "policy_checks_passed",
+    "global_verdict",
+    "per_tool",
+    "eligible_tools",
+    "would_modify_files",
+    "would_create_automation",
+    "invariants"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "v0"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["self-test", "dry-run-current", "tool"]
+    },
+    "policy_checks_passed": {
+      "type": "boolean"
+    },
+    "global_verdict": {
+      "type": "string",
+      "enum": [
+        "all_eligible",
+        "partial_eligible",
+        "blocked_l0_or_below",
+        "blocked_l1_floor",
+        "blocked_status_not_active",
+        "blocked_l2_verdict_blocked",
+        "blocked_needs_patch",
+        "blocked_no_l2_regression_evidence",
+        "blocked_no_promotion_evidence",
+        "blocked_runtime_mutation_on",
+        "blocked_no_rollback_target",
+        "blocked_no_human_approval",
+        "hard_fail_automation_already_true"
+      ]
+    },
+    "per_tool": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["slug", "eligible", "blocker_reason"],
+        "properties": {
+          "slug": {"type": "string"},
+          "eligible": {"type": "boolean"},
+          "blocker_reason": {
+            "oneOf": [{"type": "string"}, {"type": "null"}]
+          },
+          "evidence": {
+            "type": "object",
+            "properties": {
+              "l2_recommendation_path": {"type": "string"},
+              "verdict": {"type": "string"},
+              "eval_level": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "eligible_tools": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "would_modify_files": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Always empty — gate never modifies files"
+    },
+    "would_create_automation": {
+      "type": "boolean",
+      "const": false,
+      "description": "Always false — gate is dry-run only"
+    },
+    "invariants": {
+      "type": "object",
+      "required": ["automation_allowed_true_count", "closure_manifest_sha256_match"],
+      "properties": {
+        "automation_allowed_true_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "closure_manifest_sha256_match": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

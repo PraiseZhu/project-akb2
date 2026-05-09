@@ -1,0 +1,14 @@
+{
+  "schema_version": "fixture-v0",
+  "description": "Tool at eval_level=L2 but L2 regression verdict=blocked — fails at l2_regression_promote",
+  "tools": [
+    {
+      "slug": "cc-fake",
+      "eval_level": "L2",
+      "toolbox_status": "active",
+      "automation_allowed": false,
+      "runtime_mutation_allowed": false,
+      "human_approval_marker": true
+    }
+  ]
+}

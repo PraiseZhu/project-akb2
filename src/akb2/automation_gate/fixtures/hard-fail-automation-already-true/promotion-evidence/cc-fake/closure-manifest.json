@@ -1,0 +1,6 @@
+{
+  "schema_version": "fixture-v0",
+  "description": "Promotion evidence exists (all conditions satisfied except automation_allowed=true hard fail)",
+  "tool": "cc-fake",
+  "promoted_at": "2026-05-08T00:00:00Z"
+}

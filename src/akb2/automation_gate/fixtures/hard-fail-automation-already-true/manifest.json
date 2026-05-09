@@ -1,0 +1,14 @@
+{
+  "schema_version": "fixture-v0",
+  "description": "Tool with automation_allowed=true in tool-card — hard_fail gate condition",
+  "tools": [
+    {
+      "slug": "cc-fake",
+      "eval_level": "L2",
+      "toolbox_status": "active",
+      "automation_allowed": true,
+      "runtime_mutation_allowed": false,
+      "human_approval_marker": true
+    }
+  ]
+}
