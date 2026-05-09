@@ -47,3 +47,10 @@ build/
 htmlcov/
 
 # === Tip: 大数据目录建议加 .nosync 后缀 ===
+
+# === AKB2 specific ===
+config/mcp-servers.local.json
+data/
+src/akb2/automation_gate/outputs/
+src/akb2/matrix/v0/outputs/current/
+src/akb2/closure/*/regression/*-test.json

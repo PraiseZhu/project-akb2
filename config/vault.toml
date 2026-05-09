@@ -1,0 +1,32 @@
+# ─────────────────────────────────────────────────────────────────
+# AKB2 工程项目 ↔ Obsidian vault 运行时契约
+# ─────────────────────────────────────────────────────────────────
+# 所有读写 vault 的脚本必须通过本配置定位路径，禁止硬编码。
+# Vault 内只放数据/账本/标准文档；执行源（.py/.sh）只能在本工程。
+
+[vault]
+# Obsidian vault 内 AKB2.0 子库根
+akb2_root = "${HOME}/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0"
+
+[vault.layers]
+# 三层 + 支撑区，路径相对 vault.akb2_root
+schema_docs = "${vault.akb2_root}/docs"
+wiki        = "${vault.akb2_root}/wiki"
+raw         = "${vault.akb2_root}/raw"
+staging     = "${vault.akb2_root}/staging"
+manifests   = "${vault.akb2_root}/manifests"
+# toolbox 元数据卡（4 件套 × 5 工具），不放执行源
+toolbox     = "${vault.akb2_root}/toolbox"
+
+[vault.governance]
+constitution           = "${vault.akb2_root}/AKB-2.0-CONTENT-STANDARD.md"
+# 强制：禁止把 .py/.sh 写进 vault（包括 .akb-runtime/）
+allow_runtime_in_vault = false
+
+[install_targets]
+# Project AKB2/toolbox/cc-{slug}/ → 这些目标位置
+# 由 scripts/sync-skills-to-codex.sh / sync-skills-to-claude.sh 维护
+codex_skills_root  = "${HOME}/.codex/skills"
+claude_skills_root = "${HOME}/.claude/skills"
+# MCP 分发位置（cc-akb-search 专用）
+codex_plugin_mcp_root = "${HOME}/Library/Mobile Documents/com~apple~CloudDocs/Codex/plugins/claude-code-ai-infra/mcp-servers"
