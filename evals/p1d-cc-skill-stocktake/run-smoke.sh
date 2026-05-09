@@ -13,10 +13,11 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AKB2_BASE="$(cd "$SCRIPT_DIR/../.." && pwd)"
 FIXTURES_DIR="$SCRIPT_DIR/fixtures"
 OUTPUTS_DIR="$SCRIPT_DIR/outputs"
 
-BUNDLED="$HOME/.codex/skills/cc-skill-stocktake/references/source-bundled-resources/scripts"
+BUNDLED="$AKB2_BASE/toolbox/cc-skill-stocktake/references/source-bundled-resources/scripts"
 SCAN="$BUNDLED/scan.sh"
 QUICKDIFF="$BUNDLED/quick-diff.sh"
 SAVE_RESULTS="$BUNDLED/save-results.sh"

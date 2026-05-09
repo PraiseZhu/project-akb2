@@ -8,7 +8,7 @@
   "akb-search": {
     "command": "/Users/praise/.pyenv/versions/3.13.12/bin/python3",
     "args": [
-      "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/plugins/claude-code-ai-infra/mcp-servers/akb-search-readonly/server.py"
+      "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/toolbox/cc-akb-search/mcp_server/server.py"
     ],
     "env": {
       "PYTHONPATH": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB"
@@ -18,6 +18,6 @@
     "command_choice": "pyenv python3 3.13.12 — 含 mcp 包（已验证 import mcp OK）；Project AKB/.venv 缺 mcp 包",
     "pythonpath_choice": "Project AKB root 使 scripts.* 子包可 import（scripts/core/search.py, scripts/utils/db.py）",
     "settings_json_excluded": "settings.json mcpServers 维持空 {} — 只改 mcp-configs 避免双源冲突",
-    "wrapper_path": "Codex/plugins/claude-code-ai-infra/mcp-servers/akb-search-readonly/server.py — Codex owned，独立于 Project AKB，不污染 AKB 代码库"
+    "wrapper_path": "Project AKB2/toolbox/cc-akb-search/mcp_server/server.py — AKB2工程根权威源，按5条规则 rule 3 stable wrapper"
   }
 }

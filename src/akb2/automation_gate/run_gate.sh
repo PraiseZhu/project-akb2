@@ -20,11 +20,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CODEX_BASE="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+AKB2_BASE="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 AKB_ROOT="/Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0"
-CLOSURE_MANIFEST="$CODEX_BASE/ai-infra/akb2-toolbox-closure/2026-05-07/closure-manifest.json"
-L2_REG_BASE="$CODEX_BASE/ai-infra/akb2-toolbox-evals/l2-regression-v1"
-PROMO_BASE="$CODEX_BASE/ai-infra/akb2-toolbox-promotion-gate/v0/outputs"
+CLOSURE_MANIFEST="$AKB2_BASE/src/akb2/closure/2026-05-07/closure-manifest.json"
+L2_REG_BASE="$AKB2_BASE/evals/l2-regression-v1"
+PROMO_BASE="$AKB2_BASE/src/akb2/promotion_gate/v0/outputs"
 FIXTURES_DIR="$SCRIPT_DIR/fixtures"
 OUTPUTS_DIR="$SCRIPT_DIR/outputs/current"
 EXPECTED_MANIFEST_SHA="0fbd53703ff58802299ba8cb04f5290e4b973c124729376dc341f862f06f90cc"

@@ -57,7 +57,31 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import os
+
+# NOTE: VAULT_ROOT is overridden at runtime by main() via --vault-root or vault.toml.
+# This computed default (parents[2] = Project AKB2/src/) is intentionally wrong when
+# running from the engineering root — it acts as a sentinel that surfaces misconfiguration.
 VAULT_ROOT = Path(__file__).resolve().parents[2]
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]  # Project AKB2/
+_VAULT_TOML = _PROJECT_ROOT / "config" / "vault.toml"
+
+
+def _resolve_vault_root_from_toml() -> Path | None:
+    """Read vault.toml and return the akb2_root path, or None if unavailable."""
+    if not _VAULT_TOML.exists():
+        return None
+    try:
+        for line in _VAULT_TOML.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("akb2_root"):
+                val = stripped.split("=", 1)[1].strip().strip('"').strip("'")
+                val = val.replace("${HOME}", os.environ.get("HOME", "~"))
+                return Path(val).expanduser().resolve()
+    except Exception:
+        pass
+    return None
 
 # -----------------------------------------------------------------------------
 # Standards-backed enums and whitelists
@@ -1212,7 +1236,22 @@ def main() -> int:
     ap.add_argument("--baseline", default="v0.2 (15 active P0=0/P1=0/P2=0 2026-05-08)")
     ap.add_argument("--version", default="v0.2", choices=["v0.2", "v0.3"],
                     help="v0.2 = 18 rules (default, backward-compat); v0.3 = 22 rules + 3 scopes")
+    ap.add_argument("--vault-root", default=None, metavar="PATH",
+                    help="Path to AKB2.0 vault root (Obsidian sub-library). "
+                         "Overrides vault.toml default. Required when running from Project AKB2/.")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="Print findings to stdout only; do not write manifest or report files.")
     args = ap.parse_args()
+
+    # ── Resolve VAULT_ROOT early (must happen before any function that uses it) ──
+    global VAULT_ROOT  # noqa: PLW0603
+    if args.vault_root:
+        VAULT_ROOT = Path(args.vault_root).expanduser().resolve()
+    else:
+        _toml_root = _resolve_vault_root_from_toml()
+        if _toml_root is not None:
+            VAULT_ROOT = _toml_root
+        # else: leave the computed sentinel — callers will see a clear FileNotFoundError
 
     # v0.3 mode: separate driver
     if args.version == "v0.3":
@@ -1242,9 +1281,6 @@ def main() -> int:
     else:
         report_path = VAULT_ROOT / "docs" / "phase-c-reports" / f"lint-cli-{args.version}-{today}T{ts}.md"
 
-    write_manifest(findings, manifest_path, op_id, scanned, args.version)
-    write_report(findings, report_path, scanned, op_id, args.version, args.baseline)
-
     p0 = sum(1 for x in findings if x["severity"] == "P0")
     p1 = sum(1 for x in findings if x["severity"] == "P1")
     p2 = sum(1 for x in findings if x["severity"] == "P2")
@@ -1253,6 +1289,13 @@ def main() -> int:
     print(f"  P1: {p1}")
     print(f"  P2: {p2}")
     print(f"  total: {len(findings)}")
+
+    if args.dry_run:
+        print("  [dry-run] manifest and report not written")
+        return 1 if (p0 + p1) > 0 else 0
+
+    write_manifest(findings, manifest_path, op_id, scanned, args.version)
+    write_report(findings, report_path, scanned, op_id, args.version, args.baseline)
     print(f"  manifest: {manifest_path.relative_to(VAULT_ROOT)}")
     print(f"  report:   {report_path.relative_to(VAULT_ROOT)}")
     return 1 if (p0 + p1) > 0 else 0
