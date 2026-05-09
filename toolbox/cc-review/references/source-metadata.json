@@ -1,0 +1,38 @@
+{
+  "source_rel": "review",
+  "source_path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/claude-active/review/SKILL.md",
+  "source_copy_path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/plugins/claude-code-ai-infra/references/claude-active-skills/review/SKILL.md",
+  "source_hash": "22d993f4803b53515187daf519f74a1f7a5f55bd741fa229695801b7fadecdb3",
+  "original_name": "review",
+  "metadata_name": "review",
+  "metadata_description": "Dual review with Claude and Codex for quality verification. Use for step or task review.",
+  "target_slug": "cc-review",
+  "install_path": "/Users/praise/.codex/skills/cc-review",
+  "install_status": "convert_then_install",
+  "risk": "low",
+  "allow_implicit_invocation": true,
+  "classification_reason": "Needs Codex template conversion, slug normalization, or progressive-disclosure split before install.",
+  "flags": [
+    "bundled_resources"
+  ],
+  "dependencies": [],
+  "tags": [
+    "harness",
+    "testing"
+  ],
+  "aliases": [
+    "review",
+    "cc-review"
+  ],
+  "line_count": 9,
+  "bytes": 232,
+  "resource_inventory": [
+    {
+      "relative_path": "references/flow.md",
+      "size_bytes": 2671,
+      "policy": "copy_safe_text_reference",
+      "reason": "safe text resource"
+    }
+  ],
+  "ui_visible": true
+}

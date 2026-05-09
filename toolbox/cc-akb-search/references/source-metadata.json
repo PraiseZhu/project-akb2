@@ -1,0 +1,41 @@
+{
+  "source_rel": "akb-search",
+  "source_path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/claude-active/akb-search/SKILL.md",
+  "source_copy_path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/plugins/claude-code-ai-infra/references/claude-active-skills/akb-search/SKILL.md",
+  "source_hash": "4214f196f73e1ec7f9c2d5d2d749951f48401e9a16621e3ebdf1e5f059edc0af",
+  "original_name": "akb-search",
+  "metadata_name": "akb-search",
+  "metadata_description": ">-",
+  "target_slug": "cc-akb-search",
+  "install_path": "/Users/praise/.codex/skills/cc-akb-search",
+  "install_status": "restricted_install",
+  "risk": "high",
+  "allow_implicit_invocation": false,
+  "classification_reason": "External integration, credential, project-specific, MCP, deployment, or destructive-operation semantics require explicit invocation.",
+  "flags": [
+    "claude_runtime_terms",
+    "mcp_dependency",
+    "external_integration",
+    "project_specific"
+  ],
+  "dependencies": [
+    "github",
+    "mcp"
+  ],
+  "tags": [
+    "design-frontend",
+    "github",
+    "harness",
+    "python"
+  ],
+  "aliases": [
+    "akb-search",
+    "cc-akb-search",
+    "akb",
+    "search"
+  ],
+  "line_count": 80,
+  "bytes": 2303,
+  "resource_inventory": [],
+  "ui_visible": true
+}

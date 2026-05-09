@@ -1,0 +1,7 @@
+interface:
+  display_name: "中文审查"
+  short_description: "全中文计划审查和代码验收，带证据、范围矩阵和收敛规则。"
+  default_prompt: "使用 $cc-review 按计划或代码审查模板输出全中文可复制审查结果。"
+
+policy:
+  allow_implicit_invocation: true

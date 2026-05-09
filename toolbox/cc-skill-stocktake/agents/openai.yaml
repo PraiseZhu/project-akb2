@@ -1,0 +1,7 @@
+interface:
+  display_name: "skill-stocktake"
+  short_description: "Use when auditing Claude skills and commands for quality. Supports Quick Scan (changed skills on"
+  default_prompt: "Use $cc-skill-stocktake for skill-stocktake."
+
+policy:
+  allow_implicit_invocation: false

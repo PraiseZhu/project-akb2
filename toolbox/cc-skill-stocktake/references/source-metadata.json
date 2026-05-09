@@ -1,0 +1,59 @@
+{
+  "source_rel": "skill-stocktake",
+  "source_path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/claude-active/skill-stocktake/SKILL.md",
+  "source_copy_path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/plugins/claude-code-ai-infra/references/claude-active-skills/skill-stocktake/SKILL.md",
+  "source_hash": "c03bfae29e91ada17e818a058a6489e19e64dcc52179d65885c40e7afc25d1cc",
+  "original_name": "skill-stocktake",
+  "metadata_name": null,
+  "metadata_description": "Use when auditing Claude skills and commands for quality. Supports Quick Scan (changed skills only) and Full Stocktake modes with sequential subagent batch evaluation.",
+  "target_slug": "cc-skill-stocktake",
+  "install_path": "/Users/praise/.codex/skills/cc-skill-stocktake",
+  "install_status": "restricted_install",
+  "risk": "high",
+  "allow_implicit_invocation": false,
+  "classification_reason": "External integration, credential, project-specific, MCP, deployment, or destructive-operation semantics require explicit invocation.",
+  "flags": [
+    "frontmatter_fix_required",
+    "bundled_resources",
+    "script_resources",
+    "claude_runtime_terms",
+    "credential_or_auth",
+    "project_specific"
+  ],
+  "dependencies": [],
+  "tags": [
+    "design-frontend",
+    "harness",
+    "python",
+    "security"
+  ],
+  "aliases": [
+    "skill-stocktake",
+    "cc-skill-stocktake",
+    "skill",
+    "stocktake"
+  ],
+  "line_count": 194,
+  "bytes": 7785,
+  "resource_inventory": [
+    {
+      "relative_path": "scripts/quick-diff.sh",
+      "size_bytes": 3271,
+      "policy": "copy_safe_text_reference",
+      "reason": "safe text resource"
+    },
+    {
+      "relative_path": "scripts/save-results.sh",
+      "size_bytes": 1952,
+      "policy": "copy_safe_text_reference",
+      "reason": "safe text resource"
+    },
+    {
+      "relative_path": "scripts/scan.sh",
+      "size_bytes": 5677,
+      "policy": "copy_safe_text_reference",
+      "reason": "safe text resource"
+    }
+  ],
+  "ui_visible": true
+}

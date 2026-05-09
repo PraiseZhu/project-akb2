@@ -1,0 +1,6 @@
+interface:
+  display_name: "Executable Plan"
+  short_description: "Decision-complete implementation plans"
+  default_prompt: "Use $cc-executable-plan to create a decision-complete implementation plan."
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,7 @@
+interface:
+  display_name: "本地LLM"
+  short_description: "Ollama 本地 LLM 集成。包含可用性检测与自动启动、/api/chat 调用模板、参数经验值、长文本分批策略、从自由文本提取结构化 JSON、system prompt 注入上下文。当"
+  default_prompt: "Use $cc-local-llm for 本地LLM."
+
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,7 @@
+interface:
+  display_name: "akb-search"
+  short_description: ">-"
+  default_prompt: "Use $cc-akb-search for akb-search."
+
+policy:
+  allow_implicit_invocation: false

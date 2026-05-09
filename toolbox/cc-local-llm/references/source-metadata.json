@@ -1,0 +1,33 @@
+{
+  "source_rel": "本地LLM",
+  "source_path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/claude-active/本地LLM/SKILL.md",
+  "source_copy_path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/plugins/claude-code-ai-infra/references/claude-active-skills/本地LLM/SKILL.md",
+  "source_hash": "bb91bb76ef2c008c9667b58bab87acaf6864f259c18fc46afba2fb93f3be58af",
+  "original_name": "本地LLM",
+  "metadata_name": "本地LLM",
+  "metadata_description": "Ollama 本地 LLM 集成。包含可用性检测与自动启动、/api/chat 调用模板、参数经验值、长文本分批策略、从自由文本提取结构化 JSON、system prompt 注入上下文。当用户要求调用本地 LLM、使用 Ollama 生成内容、解析 LLM 输出为结构化数据时使用。",
+  "target_slug": "cc-local-llm",
+  "install_path": "/Users/praise/.codex/skills/cc-local-llm",
+  "install_status": "convert_then_install",
+  "risk": "low",
+  "allow_implicit_invocation": true,
+  "classification_reason": "Needs Codex template conversion, slug normalization, or progressive-disclosure split before install.",
+  "flags": [
+    "non_ascii_or_non_slug_name",
+    "claude_runtime_terms"
+  ],
+  "dependencies": [],
+  "tags": [
+    "design-frontend",
+    "harness"
+  ],
+  "aliases": [
+    "本地LLM",
+    "cc-local-llm",
+    "local-llm"
+  ],
+  "line_count": 143,
+  "bytes": 3896,
+  "resource_inventory": [],
+  "ui_visible": true
+}
