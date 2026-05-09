@@ -139,6 +139,22 @@ SHA 锁定的历史封闭文件。automation-gate 以封闭 SHA 为基准校验�
 
 ---
 
+## external_readonly_dependency（5 条）
+
+这些文件属于 **Project AKB（旧）**，由 AKB2 工具在运行时读取，永不迁移入 Project AKB2。记录于 `file-map-2026-05-09.tsv` group rows，不在 stale-ref 扫描范围内，此处列入白名单供工程审计。
+
+| enum | 文件 | 消费者 | 原因 |
+|------|------|--------|------|
+| `external_readonly_dependency` | `Claude Code/Project AKB/index/catalog.db` | `mcp_server/server.py` (CatalogDB readonly=True) + `run-search-quality.sh` | SQLite AKB 知识库；运行时只读；永不迁移入 Project AKB2 |
+| `external_readonly_dependency` | `Claude Code/Project AKB/scripts/core/search.py` | `mcp_server/server.py` import `scripts.core.search` via PYTHONPATH | AKB 搜索后端模块；MCP wrapper 的核心依赖 |
+| `external_readonly_dependency` | `Claude Code/Project AKB/scripts/utils/db.py` | `mcp_server/server.py` import `scripts.utils.db` (CatalogDB) | AKB DB 工具类；与 catalog.db 配合使用 |
+| `external_readonly_dependency` | `Claude Code/Project AKB/scripts/main.py` | `run-search-quality.sh --baseline`（双路径对照评估） | AKB CLI 入口；search-quality eval 使用，非 MCP 路径 |
+| `external_readonly_dependency` | `~/.claude/projects/-Users-praise-.../` (Claude transcript dir) | `run-search-quality.sh --collect-queries` SQ-1 | Claude 会话 transcript；SQ-1 扫描 `*.jsonl` 收集 akb_search 调用记录 |
+
+**清理触发条件**：Step 8 清理 Project AKB 原位文件后，上述 1-4 条须同步迁移或重指向新位置。transcript dir 为系统目录，永久有效。
+
+---
+
 ## 汇总
 
 | enum | 数量 | 修复触发条件 |
@@ -149,9 +165,11 @@ SHA 锁定的历史封闭文件。automation-gate 以封闭 SHA 为基准校验�
 | `install_target` | 7 | Step 6 失效或 install-target 路径变更时 |
 | `allowed_doc_reference` | 8 | 对应模块重构时 |
 | `fixture_must_keep` | 1 | r04 规则机制变更时 |
-| **合计** | **50** | |
+| `external_readonly_dependency` | 5 | Step 8 清理 Project AKB 原位文件时须同步处理 |
+| **合计（stale-ref 范围内）** | **50** | |
+| **合计（含 external）** | **55** | |
 
-> **注**：原 Step 5c 文档汇总合计为 49，`allowed_doc_reference`（原 E 类）实际有 8 条，此处修正为 50。
+> **注**：原 Step 5c 文档汇总合计为 49，`allowed_doc_reference`（原 E 类）实际有 8 条，此处修正为 50。`external_readonly_dependency` 5 条不在 stale-ref 扫描范围，额外列入工程白名单。
 
 ---
 
@@ -162,3 +180,5 @@ Step 6 实现 sync 脚本后，`~/.codex/skills/cc-*/` install-target 将持续�
 Step 8 清理 Codex 原位文件后，`baseline_snapshot` / `historical_evidence` / `allowed_doc_reference` 类历史文件中的旧路径仍是"历史记录"，不需追溯修改。
 
 `sha_locked_record`（9 条）在工程生命周期内永不触碰。
+
+Step 8 清理 Project AKB（旧）原位文件后，`external_readonly_dependency` 前 4 条（catalog.db + search.py + db.py + main.py）须同步迁移或重指向 AKB2 内的新实现。
