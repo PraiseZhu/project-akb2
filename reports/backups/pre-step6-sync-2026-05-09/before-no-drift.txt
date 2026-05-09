@@ -1,0 +1,30 @@
+[0;36m=== verify-no-drift ===[0m
+
+--- Codex install target ---
+[0;32m[MATCH][0m   codex:cc-executable-plan  sha=5af73fdadd91097cc60f8e6c3622427aeaac8382bda0d1525debe564f2c46d0a
+[0;32m[MATCH][0m   codex:cc-review  sha=592cf3ed4b2c6e3f96c63a500bdbe3bebbc375a19983debbfa7f1877f406d274
+[0;32m[MATCH][0m   codex:cc-local-llm  sha=3a31ebe4f5938864e752ea51d35d89403e62d31a352ac3eaf01a784721c73050
+[0;32m[MATCH][0m   codex:cc-skill-stocktake  sha=df16be83df67a04605b61294a210f9ad214b22e55ce40a45f34068dbaa2c48f2
+[0;32m[MATCH][0m   codex:cc-akb-search  sha=b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982
+
+--- Claude backup mirror ---
+[0;31m[MISSING][0m claude-backup:cc-executable-plan  sha=5af73fdadd91097cc60f8e6c3622427aeaac8382bda0d1525debe564f2c46d0a  reason=claude_backup_missing
+[0;31m[MISSING][0m claude-backup:cc-review  sha=592cf3ed4b2c6e3f96c63a500bdbe3bebbc375a19983debbfa7f1877f406d274  reason=claude_backup_missing
+[0;31m[MISSING][0m claude-backup:cc-local-llm  sha=3a31ebe4f5938864e752ea51d35d89403e62d31a352ac3eaf01a784721c73050  reason=claude_backup_missing
+[0;31m[MISSING][0m claude-backup:cc-skill-stocktake  sha=df16be83df67a04605b61294a210f9ad214b22e55ce40a45f34068dbaa2c48f2  reason=claude_backup_missing
+[0;31m[MISSING][0m claude-backup:cc-akb-search  sha=b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982  reason=claude_backup_missing
+
+--- Claude active mirror ---
+[0;31m[MISSING][0m claude-active:cc-executable-plan  sha=5af73fdadd91097cc60f8e6c3622427aeaac8382bda0d1525debe564f2c46d0a  reason=claude_backup_missing
+[0;31m[MISSING][0m claude-active:cc-review  sha=592cf3ed4b2c6e3f96c63a500bdbe3bebbc375a19983debbfa7f1877f406d274  reason=claude_backup_missing
+[0;31m[MISSING][0m claude-active:cc-local-llm  sha=3a31ebe4f5938864e752ea51d35d89403e62d31a352ac3eaf01a784721c73050  reason=claude_backup_missing
+[0;31m[MISSING][0m claude-active:cc-skill-stocktake  sha=df16be83df67a04605b61294a210f9ad214b22e55ce40a45f34068dbaa2c48f2  reason=claude_backup_missing
+[0;31m[MISSING][0m claude-active:cc-akb-search  sha=b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982  reason=claude_backup_missing
+
+--- MCP wrapper ---
+[0;32m[MATCH][0m   mcp:akb-search-readonly  sha=7a26f5cac0c796797c5b9b15f6b4aa9b5bee27a7ca1e8cb396357547a067dd31
+
+--- closure-manifest SHA lock ---
+[0;32m[MATCH][0m   closure-manifest  sha=0fbd53703ff58802299ba8cb04f5290e4b973c124729376dc341f862f06f90cc
+
+[0;33m[DRIFT][0m 10/17 checks failed

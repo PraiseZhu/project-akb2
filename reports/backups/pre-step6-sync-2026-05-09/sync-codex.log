@@ -1,0 +1,80 @@
+[0;36m=== sync-skills-to-codex ===[0m
+mode:   write
+source: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/toolbox/cc-{slug}/
+target: /Users/praise/.codex/skills/cc-{slug}/
+slugs:  executable-plan review local-llm skill-stocktake akb-search
+
+cc-executable-plan: [0;32mMATCH[0m
+  source SKILL.md SHA: 5af73fdadd91097cc60f8e6c3622427aeaac8382bda0d1525debe564f2c46d0a
+  target SKILL.md SHA: 5af73fdadd91097cc60f8e6c3622427aeaac8382bda0d1525debe564f2c46d0a
+  source file count: 2
+Transfer starting: 5 files
+./
+SKILL.md
+agents/
+references/
+
+sent 3992 bytes  received 60 bytes  1929523 bytes/sec
+total size is 3901  speedup is 0.96
+  [0;32m[WRITTEN][0m
+
+cc-review: [0;32mMATCH[0m
+  source SKILL.md SHA: 592cf3ed4b2c6e3f96c63a500bdbe3bebbc375a19983debbfa7f1877f406d274
+  target SKILL.md SHA: 592cf3ed4b2c6e3f96c63a500bdbe3bebbc375a19983debbfa7f1877f406d274
+  source file count: 6
+Transfer starting: 11 files
+./
+SKILL.md
+agents/
+references/
+
+sent 5673 bytes  received 60 bytes  2729999 bytes/sec
+total size is 15656  speedup is 2.73
+  [0;32m[WRITTEN][0m
+
+cc-local-llm: [0;32mMATCH[0m
+  source SKILL.md SHA: 3a31ebe4f5938864e752ea51d35d89403e62d31a352ac3eaf01a784721c73050
+  target SKILL.md SHA: 3a31ebe4f5938864e752ea51d35d89403e62d31a352ac3eaf01a784721c73050
+  source file count: 4
+Transfer starting: 7 files
+./
+SKILL.md
+agents/
+references/
+
+sent 4869 bytes  received 60 bytes  4480909 bytes/sec
+total size is 10151  speedup is 2.06
+  [0;32m[WRITTEN][0m
+
+cc-skill-stocktake: [0;32mMATCH[0m
+  source SKILL.md SHA: df16be83df67a04605b61294a210f9ad214b22e55ce40a45f34068dbaa2c48f2
+  target SKILL.md SHA: df16be83df67a04605b61294a210f9ad214b22e55ce40a45f34068dbaa2c48f2
+  source file count: 7
+Transfer starting: 12 files
+./
+SKILL.md
+agents/
+references/
+
+sent 3232 bytes  received 60 bytes  1567619 bytes/sec
+total size is 23411  speedup is 7.11
+  [0;32m[WRITTEN][0m
+
+cc-akb-search: [0;32mMATCH[0m
+  source SKILL.md SHA: b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982
+  target SKILL.md SHA: b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982
+  source file count: 6
+Transfer starting: 10 files
+./
+SKILL.md
+agents/
+mcp_server/
+mcp_server/README.md
+mcp_server/server.py
+references/
+
+sent 6936 bytes  received 110 bytes  3355238 bytes/sec
+total size is 10034  speedup is 1.42
+  [0;32m[WRITTEN][0m
+
+[0;32m[OK][0m sync-skills-to-codex complete (mode=write, drift=0)

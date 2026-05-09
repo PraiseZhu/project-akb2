@@ -1,0 +1,60 @@
+=== cc-executable-plan ===
+  Mobile
+Claude
+Project
+toolbox  5af73fdadd91097cc60f8e6c3622427aeaac8382bda0d1525debe564f2c46d0a
+  skills        5af73fdadd91097cc60f8e6c3622427aeaac8382bda0d1525debe564f2c46d0a
+  Mobile
+Claude
+skills  5af73fdadd91097cc60f8e6c3622427aeaac8382bda0d1525debe564f2c46d0a
+  Mobile
+Claude
+claude-active  5af73fdadd91097cc60f8e6c3622427aeaac8382bda0d1525debe564f2c46d0a
+=== cc-review ===
+  Mobile
+Claude
+Project
+toolbox  592cf3ed4b2c6e3f96c63a500bdbe3bebbc375a19983debbfa7f1877f406d274
+  skills        592cf3ed4b2c6e3f96c63a500bdbe3bebbc375a19983debbfa7f1877f406d274
+  Mobile
+Claude
+skills  592cf3ed4b2c6e3f96c63a500bdbe3bebbc375a19983debbfa7f1877f406d274
+  Mobile
+Claude
+claude-active  592cf3ed4b2c6e3f96c63a500bdbe3bebbc375a19983debbfa7f1877f406d274
+=== cc-local-llm ===
+  Mobile
+Claude
+Project
+toolbox  3a31ebe4f5938864e752ea51d35d89403e62d31a352ac3eaf01a784721c73050
+  skills        3a31ebe4f5938864e752ea51d35d89403e62d31a352ac3eaf01a784721c73050
+  Mobile
+Claude
+skills  3a31ebe4f5938864e752ea51d35d89403e62d31a352ac3eaf01a784721c73050
+  Mobile
+Claude
+claude-active  3a31ebe4f5938864e752ea51d35d89403e62d31a352ac3eaf01a784721c73050
+=== cc-skill-stocktake ===
+  Mobile
+Claude
+Project
+toolbox  df16be83df67a04605b61294a210f9ad214b22e55ce40a45f34068dbaa2c48f2
+  skills        df16be83df67a04605b61294a210f9ad214b22e55ce40a45f34068dbaa2c48f2
+  Mobile
+Claude
+skills  df16be83df67a04605b61294a210f9ad214b22e55ce40a45f34068dbaa2c48f2
+  Mobile
+Claude
+claude-active  df16be83df67a04605b61294a210f9ad214b22e55ce40a45f34068dbaa2c48f2
+=== cc-akb-search ===
+  Mobile
+Claude
+Project
+toolbox  b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982
+  skills        b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982
+  Mobile
+Claude
+skills  b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982
+  Mobile
+Claude
+claude-active  b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982

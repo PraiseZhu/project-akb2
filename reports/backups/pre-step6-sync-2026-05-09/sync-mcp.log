@@ -1,0 +1,11 @@
+[0;36m=== sync-mcp-server ===[0m
+mode:   write
+source: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/toolbox/cc-akb-search/mcp_server/server.py
+target: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/plugins/claude-code-ai-infra/mcp-servers/akb-search-readonly/server.py
+
+source SHA: 7a26f5cac0c796797c5b9b15f6b4aa9b5bee27a7ca1e8cb396357547a067dd31
+target SHA: 7a26f5cac0c796797c5b9b15f6b4aa9b5bee27a7ca1e8cb396357547a067dd31
+[0;32m[MATCH][0m source and target are identical
+[0;32m[WRITTEN][0m /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/toolbox/cc-akb-search/mcp_server/server.py → /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/plugins/claude-code-ai-infra/mcp-servers/akb-search-readonly/server.py
+
+[0;32m[OK][0m sync-mcp-server complete (mode=write)

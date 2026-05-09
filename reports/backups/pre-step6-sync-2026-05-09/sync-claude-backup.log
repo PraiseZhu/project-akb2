@@ -1,0 +1,188 @@
+[0;36m=== sync-skills-to-claude-backup ===[0m
+mode:     write
+source:   /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/toolbox/cc-{slug}/
+target A: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/cc-{slug}/
+target B: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/claude-active/cc-{slug}/
+slugs:    executable-plan review local-llm skill-stocktake akb-search
+
+cc-executable-plan:
+  backup cc-executable-plan: [0;33mDRIFT[0m
+    source SHA: 5af73fdadd91097cc60f8e6c3622427aeaac8382bda0d1525debe564f2c46d0a
+    target SHA: MISSING
+Transfer starting: 5 files
+./
+SKILL.md
+agents/
+agents/openai.yaml
+references/
+
+sent 4282 bytes  received 82 bytes  2078095 bytes/sec
+total size is 3901  speedup is 0.89
+    [0;32m[WRITTEN][0m
+  active cc-executable-plan: [0;33mDRIFT[0m
+    source SHA: 5af73fdadd91097cc60f8e6c3622427aeaac8382bda0d1525debe564f2c46d0a
+    target SHA: MISSING
+Transfer starting: 5 files
+./
+SKILL.md
+agents/
+agents/openai.yaml
+references/
+
+sent 4282 bytes  received 82 bytes  2078095 bytes/sec
+total size is 3901  speedup is 0.89
+    [0;32m[WRITTEN][0m
+
+cc-review:
+  backup cc-review: [0;33mDRIFT[0m
+    source SHA: 592cf3ed4b2c6e3f96c63a500bdbe3bebbc375a19983debbfa7f1877f406d274
+    target SHA: MISSING
+Transfer starting: 11 files
+./
+SKILL.md
+agents/
+agents/openai.yaml
+references/
+references/original-skill.md
+references/source-metadata.json
+references/structured-review-templates.md
+references/source-bundled-resources/
+references/source-bundled-resources/references/
+references/source-bundled-resources/references/flow.md
+
+sent 16618 bytes  received 182 bytes  4097560 bytes/sec
+total size is 15656  speedup is 0.93
+    [0;32m[WRITTEN][0m
+  active cc-review: [0;33mDRIFT[0m
+    source SHA: 592cf3ed4b2c6e3f96c63a500bdbe3bebbc375a19983debbfa7f1877f406d274
+    target SHA: MISSING
+Transfer starting: 11 files
+./
+SKILL.md
+agents/
+agents/openai.yaml
+references/
+references/original-skill.md
+references/source-metadata.json
+references/structured-review-templates.md
+references/source-bundled-resources/
+references/source-bundled-resources/references/
+references/source-bundled-resources/references/flow.md
+
+sent 16618 bytes  received 182 bytes  1663366 bytes/sec
+total size is 15656  speedup is 0.93
+    [0;32m[WRITTEN][0m
+
+cc-local-llm:
+  backup cc-local-llm: [0;33mDRIFT[0m
+    source SHA: 3a31ebe4f5938864e752ea51d35d89403e62d31a352ac3eaf01a784721c73050
+    target SHA: MISSING
+Transfer starting: 7 files
+./
+SKILL.md
+agents/
+agents/openai.yaml
+references/
+references/original-skill.md
+references/source-metadata.json
+
+sent 10733 bytes  received 126 bytes  3502903 bytes/sec
+total size is 10151  speedup is 0.93
+    [0;32m[WRITTEN][0m
+  active cc-local-llm: [0;33mDRIFT[0m
+    source SHA: 3a31ebe4f5938864e752ea51d35d89403e62d31a352ac3eaf01a784721c73050
+    target SHA: MISSING
+Transfer starting: 7 files
+./
+SKILL.md
+agents/
+agents/openai.yaml
+references/
+references/original-skill.md
+references/source-metadata.json
+
+sent 10733 bytes  received 126 bytes  2648536 bytes/sec
+total size is 10151  speedup is 0.93
+    [0;32m[WRITTEN][0m
+
+cc-skill-stocktake:
+  backup cc-skill-stocktake: [0;33mDRIFT[0m
+    source SHA: df16be83df67a04605b61294a210f9ad214b22e55ce40a45f34068dbaa2c48f2
+    target SHA: MISSING
+Transfer starting: 12 files
+./
+SKILL.md
+agents/
+agents/openai.yaml
+references/
+references/original-skill.md
+references/source-metadata.json
+references/source-bundled-resources/
+references/source-bundled-resources/scripts/
+references/source-bundled-resources/scripts/quick-diff.sh
+references/source-bundled-resources/scripts/save-results.sh
+references/source-bundled-resources/scripts/scan.sh
+
+sent 24513 bytes  received 204 bytes  4846470 bytes/sec
+total size is 23411  speedup is 0.95
+    [0;32m[WRITTEN][0m
+  active cc-skill-stocktake: [0;33mDRIFT[0m
+    source SHA: df16be83df67a04605b61294a210f9ad214b22e55ce40a45f34068dbaa2c48f2
+    target SHA: MISSING
+Transfer starting: 12 files
+./
+SKILL.md
+agents/
+agents/openai.yaml
+references/
+references/original-skill.md
+references/source-metadata.json
+references/source-bundled-resources/
+references/source-bundled-resources/scripts/
+references/source-bundled-resources/scripts/quick-diff.sh
+references/source-bundled-resources/scripts/save-results.sh
+references/source-bundled-resources/scripts/scan.sh
+
+sent 24513 bytes  received 204 bytes  4846470 bytes/sec
+total size is 23411  speedup is 0.95
+    [0;32m[WRITTEN][0m
+
+cc-akb-search:
+  backup cc-akb-search: [0;33mDRIFT[0m
+    source SHA: b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982
+    target SHA: MISSING
+Transfer starting: 10 files
+./
+SKILL.md
+agents/
+agents/openai.yaml
+mcp_server/
+mcp_server/README.md
+mcp_server/server.py
+references/
+references/original-skill.md
+references/source-metadata.json
+
+sent 10839 bytes  received 176 bytes  2686585 bytes/sec
+total size is 10034  speedup is 0.91
+    [0;32m[WRITTEN][0m
+  active cc-akb-search: [0;33mDRIFT[0m
+    source SHA: b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982
+    target SHA: MISSING
+Transfer starting: 10 files
+./
+SKILL.md
+agents/
+agents/openai.yaml
+mcp_server/
+mcp_server/README.md
+mcp_server/server.py
+references/
+references/original-skill.md
+references/source-metadata.json
+
+sent 10839 bytes  received 176 bytes  1210439 bytes/sec
+total size is 10034  speedup is 0.91
+    [0;32m[WRITTEN][0m
+
+[0;32m[OK][0m sync-skills-to-claude-backup complete (mode=write, drift=10)

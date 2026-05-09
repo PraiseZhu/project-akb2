@@ -1,0 +1,17 @@
+target_path	exists	file_count	sha256	timestamp_iso8601
+/Users/praise/.codex/skills/cc-akb-search	true	4	454172106a8ae68d9fbc9437c1e73810892c5402473c37680253bddda25725a6	2026-05-09T11:54:18Z
+/Users/praise/.codex/skills/cc-executable-plan	true	2	f129fad8f73a7e54f421a35bbe0f7c2e4410aff7724fbbc42c06ed0be07e578b	2026-05-09T11:54:18Z
+/Users/praise/.codex/skills/cc-local-llm	true	4	03f8d66c1c17e51ea48a8b31d4f37debeb9ca9d898dd4740a34c641a5bcbacf1	2026-05-09T11:54:18Z
+/Users/praise/.codex/skills/cc-review	true	6	83dd9c535c5738215cf5526c87b1d68bbe5021d6fa9a65c48102880447b8a7e1	2026-05-09T11:54:18Z
+/Users/praise/.codex/skills/cc-skill-stocktake	true	7	b05e577eea787192602036777c9238b45a4214e9bf52b76e52bce74de8eb5896	2026-05-09T11:54:18Z
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/cc-akb-search	false	0	MISSING	2026-05-09T11:54:18Z
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/cc-executable-plan	false	0	MISSING	2026-05-09T11:54:18Z
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/cc-local-llm	false	0	MISSING	2026-05-09T11:54:18Z
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/cc-review	false	0	MISSING	2026-05-09T11:54:18Z
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/cc-skill-stocktake	false	0	MISSING	2026-05-09T11:54:18Z
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/claude-active/cc-akb-search	false	0	MISSING	2026-05-09T11:54:18Z
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/claude-active/cc-executable-plan	false	0	MISSING	2026-05-09T11:54:18Z
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/claude-active/cc-local-llm	false	0	MISSING	2026-05-09T11:54:18Z
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/claude-active/cc-review	false	0	MISSING	2026-05-09T11:54:18Z
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/claude-active/cc-skill-stocktake	false	0	MISSING	2026-05-09T11:54:18Z
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/plugins/claude-code-ai-infra/mcp-servers/akb-search-readonly/server.py	true	1	7a26f5cac0c796797c5b9b15f6b4aa9b5bee27a7ca1e8cb396357547a067dd31	2026-05-09T11:54:18Z
