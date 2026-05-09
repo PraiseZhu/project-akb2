@@ -1,6 +1,6 @@
 # mcp_servers
 
-> 占位 — 用于本工程内 MCP wrapper 的统一入口。
+本工程内 MCP wrapper 的统一入口。
 
 当前 wrapper：
 

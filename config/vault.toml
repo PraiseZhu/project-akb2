@@ -23,10 +23,20 @@ constitution           = "${vault.akb2_root}/AKB-2.0-CONTENT-STANDARD.md"
 # 强制：禁止把 .py/.sh 写进 vault（包括 .akb-runtime/）
 allow_runtime_in_vault = false
 
+[toolbox]
+# 唯一权威工具源（规则 1）
+# 所有工具变更必须先在这里修改，再通过 sync 脚本分发
+toolbox_root = "toolbox"  # 相对 Project AKB2 根
+
 [install_targets]
 # Project AKB2/toolbox/cc-{slug}/ → 这些目标位置
-# 由 scripts/sync-skills-to-codex.sh / sync-skills-to-claude.sh 维护
-codex_skills_root  = "${HOME}/.codex/skills"
-claude_skills_root = "${HOME}/.claude/skills"
-# MCP 分发位置（cc-akb-search 专用）
-codex_plugin_mcp_root = "${HOME}/Library/Mobile Documents/com~apple~CloudDocs/Codex/plugins/claude-code-ai-infra/mcp-servers"
+# 由 scripts/sync-skills-to-codex.sh 维护
+codex_skills_root = "${HOME}/.codex/skills"
+# MCP install target（cc-akb-search 专用），由 scripts/sync-mcp-server.sh 维护
+mcp_install_target = "${HOME}/Library/Mobile Documents/com~apple~CloudDocs/Codex/plugins/claude-code-ai-infra/mcp-servers"
+
+[backup_mirror]
+# 仅 workspace 备份用途，不保证被 Claude Code loader 读取
+# 由 scripts/sync-skills-to-claude-backup.sh 维护
+claude_code_skills = "${HOME}/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills"
+# 注意：不写 ${HOME}/.claude/skills（该目录禁写，见 v4 plan 约束）

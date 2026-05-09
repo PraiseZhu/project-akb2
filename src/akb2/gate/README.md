@@ -14,7 +14,7 @@
 ## 安装
 
 ```bash
-cd "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2/gate_check"
+cd "Project AKB2/src/akb2/gate"
 python3 -m pip install -r requirements.txt
 ```
 
@@ -29,7 +29,7 @@ python3 -m pip install -r requirements.txt
 ### dry-run(默认 — 只打印,不写文件)
 
 ```bash
-python3 akb_gate_check.py check \
+python3 akb2_gate_check.py check \
   --akb-root "/Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0" \
   --input "staging/candidate/phase-b-validation" \
   --date 2026-05-04 \
@@ -39,7 +39,7 @@ python3 akb_gate_check.py check \
 ### 显式写 manifest(双 flag 授权)
 
 ```bash
-python3 akb_gate_check.py check \
+python3 akb2_gate_check.py check \
   --akb-root "/Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0" \
   --input "staging/candidate/phase-b-validation" \
   --date 2026-05-04 \

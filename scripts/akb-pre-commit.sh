@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # akb-pre-commit.sh — AKB 项目 pre-commit 防护
 # 拦截：>1MB 新文件、.icloud 占位、secret 模式
-# 装入：Project AKB/.git/hooks/pre-commit (软链或拷贝)
+# 装入：Project AKB2/.git/hooks/pre-commit (软链或拷贝)
 
 set -uo pipefail
 
