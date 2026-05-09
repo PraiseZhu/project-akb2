@@ -144,9 +144,9 @@ Evidence type 分布（delete 项）：
 | `Claude Code/skills/Project_AKB/akb-{collector,curator,synthesizer,translator}/` | keep_defer_no_strong_evidence | legacy AKB 1.0 skill，无迁移证据 |
 | `Claude Code/skills/akb-{collector,curator,monitor,search,status,synthesizer,translator}/` | keep_defer_no_strong_evidence | legacy AKB 1.0 skill，无迁移证据 |
 | `Claude Code/skills/claude-active/akb-{collector,curator,monitor,search,status,synthesizer,translator}/` | keep_defer_no_strong_evidence | legacy AKB 1.0 skill，无迁移证据 |
-| `Obsidian/AKB2.0/.akb-runtime/lint/akb2-lint.cpython-313.pyc` | keep_defer_no_strong_evidence | .pyc 生成产物，随 .akb-runtime 父目录一并删除 |
+| `Obsidian/AKB2.0/.akb-runtime/lint/akb2-lint.cpython-313.pyc` | keep_defer_no_strong_evidence | .pyc 生成产物，未主动删除；随父目录 `.akb-runtime`（delete_strong_evidence）连带删除，manifest `post_state=deleted (with parent)` |
 
-> **注**：21 个 defer 项中，.pyc 文件随父目录 `.akb-runtime` 一并删除；其余 legacy akb-* skills 属于 AKB 1.0 运营技能（非工程源代码），不在本次迁移范围内，留给后续单独决策。
+> **注**：21 个 defer 项中，`.pyc` 文件未被主动列入删除目标，但因父目录 `.akb-runtime` 已被显式删除而连带删除，manifest 中 `post_state` 已更新为 `deleted (with parent)`。其余 20 项 legacy akb-* skills 属于 AKB 1.0 运营技能（非工程源代码），不在本次迁移范围内，保留原地，留给后续单独决策。§11 中"21 个 defer 项未执行"指无强证据项均未被**主动**选中删除，`.pyc` 的连带删除是父目录删除的副作用，不违反"不删无强证据项"的约定。
 
 ---
 
@@ -227,5 +227,5 @@ bash "$ROOT/scripts/verify-no-drift.sh"
 | 修改 `~/.claude/**` | ❌ 未执行 |
 | 启用 MCP / hook / cron / LaunchAgent | ❌ 未执行 |
 | 修改 Obsidian AKB2 vault 正文（wiki/ docs/ toolbox/ raw/ manifests/） | ❌ 未执行 |
-| 删除无强证据的命名相似项（21 个 defer 项） | ❌ 未执行 |
+| 删除无强证据的命名相似项（21 个 defer 项，含 1 个 `.pyc` 随父目录实际删除，余 20 项保留） | ❌ 主动删除未执行（.pyc 随父 `.akb-runtime` 连带删除，manifest `post_state=deleted (with parent)`；余 20 项保留） |
 | akb-* legacy AKB 1.0 skill 清理 | ❌ 未执行（defer，后续单独决策） |
