@@ -1,0 +1,61 @@
+# AKB2.0 工具库 P1c/P1d/P2 收口 sha256 清单
+# 生成时间: 2026-05-08T00:20:00Z
+# 范围: 5 工具 × 5件套 (25 文件) + 5 SKILL.md
+# 状态: byte-identical baseline 验证通过 (0 drift)
+
+## 5 SKILL.md sha256
+
+5af73fdadd91097cc60f8e6c3622427aeaac8382bda0d1525debe564f2c46d0a  ~/.codex/skills/cc-executable-plan/SKILL.md
+592cf3ed4b2c6e3f96c63a500bdbe3bebbc375a19983debbfa7f1877f406d274  ~/.codex/skills/cc-review/SKILL.md
+3a31ebe4f5938864e752ea51d35d89403e62d31a352ac3eaf01a784721c73050  ~/.codex/skills/cc-local-llm/SKILL.md
+df16be83df67a04605b61294a210f9ad214b22e55ce40a45f34068dbaa2c48f2  ~/.codex/skills/cc-skill-stocktake/SKILL.md
+b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982  ~/.codex/skills/cc-akb-search/SKILL.md
+
+## 25 五件套 sha256 (toolbox/interfaces + tools + evals + registry + wiki/tools)
+
+### cc-executable-plan (active / L2)
+4abf64341c4bd261d6574378cd709e1a2634b0c19ce716c4d261a1ab3dc723ca  toolbox/interfaces/cc-executable-plan.md
+c56cdb3d697e8f769cfd90dabbcaa2741f84f4fc5d1c7941196bdb88a0107a8b  toolbox/tools/cc-executable-plan.md
+c3f295e3f52f726afe100f0ddd31f2efdd1cae8c0fab882227366507f8b33fca  toolbox/evals/cc-executable-plan.md
+02fcd0ed79c22e547aac70aa312a746a43ee340e13d36cb2863735a5d5905ccb  toolbox/registry/cc-executable-plan.md
+c56df1ef5e5e18036ffbe46836f60b6f81c440eac92593fb4d32119aaa40ed4b  wiki/tools/cc-executable-plan.md
+
+### cc-review (active / L2)
+a59a715a6e963b67c8dc6618c2702be4e93a7e1c00d92236b4a6d3af88ae62ca  toolbox/interfaces/cc-review.md
+9defbad458b49e8340024a4dce7ca72fc03d619bf6039c3861dab45c0882d129  toolbox/tools/cc-review.md
+941268b377e62d8c04015686738b272ae6e23ecc4b8c55227e8a0837d9ca4624  toolbox/evals/cc-review.md
+7385d7df55a0512d3a2145d124950d78a0e562f5dd4ea11f916da7dbb5cae024  toolbox/registry/cc-review.md
+4a9e4e84b7a81403214922442a6ea9a21e65aecd04f52a003805738302eb4d50  wiki/tools/cc-review.md
+
+### cc-local-llm (active / L1)
+941ffed988d6234e7d1e18d5f804367402024d3376115c1c22fb9232d832211f  toolbox/interfaces/cc-local-llm.md
+6dea0a7abec61140c07d77a1683ab067cc180a458f041da9bccd85368de69bdf  toolbox/tools/cc-local-llm.md
+5271b906a94860cf899bd4bd7c8be09134ffba5018658633aac0875bfa93b587  toolbox/evals/cc-local-llm.md
+69b08b16ec0e85dd89c3f20b37b87025e0100e1de025d506579816d988178374  toolbox/registry/cc-local-llm.md
+33d3fc9fdda0fa9f0a8e9d98c0bac2372ac10b685f45e8cc4e2cc181e7660bf4  wiki/tools/cc-local-llm.md
+
+### cc-skill-stocktake (active / L1)
+5ea0fac2c095ec69d4272ee6a92f3c747d4e2052cdb5b07c7692fc3a90427192  toolbox/interfaces/cc-skill-stocktake.md
+00789a38e59902c3bea036ba5a2ad46de3d43f210f62f00c5d5b098b5691e1c7  toolbox/tools/cc-skill-stocktake.md
+9661931eb0d93978c01260bda2cd4ff70c1a95f4e4be3c228d250dc9e652a70a  toolbox/evals/cc-skill-stocktake.md
+c4b14ea17c3c69e66d858dddd5866c58586735233eb74d937d885ea98add0cd7  toolbox/registry/cc-skill-stocktake.md
+27386cb87e356847e0b5961efcda184150e06e4e5f40f79fd4092978a7de844d  wiki/tools/cc-skill-stocktake.md
+
+### cc-akb-search (blocked candidate / L0)
+4539b8a4e960b415959716277406f3ee9ff9a766b3403fa020d9f6175cc17404  toolbox/interfaces/cc-akb-search.md
+dc05bfc7fee29aabda18d75316792c9d895a3a48e616155c6f3bea4e12dd1c20  toolbox/tools/cc-akb-search.md
+3b405acde76ca84a4302aee1224906d46936dae2cec2e15bdfbf16e65aae493c  toolbox/evals/cc-akb-search.md
+291e301273021b1249f34327e5d6cdf01fba2884c8175b92f553ed8994fb89fd  toolbox/registry/cc-akb-search.md
+811051b4a200e3c742a59102d715eb4b7e9806fddd5491168e311a4e992531ae  wiki/tools/cc-akb-search.md
+
+## 验证命令
+
+# 5 SKILL.md byte-identical 验证
+for slug in cc-executable-plan cc-review cc-local-llm cc-skill-stocktake cc-akb-search; do
+  shasum -a 256 ~/.codex/skills/$slug/SKILL.md
+done
+
+# P0 gate: automation_allowed: true count = 0
+AKB="/Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0"
+grep -rn "^automation_allowed: true" "$AKB/toolbox" "$AKB/wiki/tools" | wc -l
+# 期望: 0

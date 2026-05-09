@@ -1,0 +1,294 @@
+{
+  "schema_version": "v0.1+delta-p1e-cc-akb-search-l1",
+  "closure_type": "phase_c_p1c_p1d_p2",
+  "closure_label": "AKB2.0 工具库 P1c/P1d/P2 收口快照",
+  "commit_mode": "non_git_snapshot",
+  "snapshot_at": "2026-05-08T00:20:00Z",
+  "phases_closed": [
+    "P1c",
+    "P1d",
+    "P2-lint-v0",
+    "P2-matrix-v0"
+  ],
+  "p0_gate": {
+    "automation_allowed_true_count": 0,
+    "status": "clean"
+  },
+  "a1_mcp_discovery": {
+    "tool": "mcp__akb-search",
+    "status": "mounted",
+    "session_check_at": "2026-05-08T10:55:26Z",
+    "verification_method": "in-CCD MCP runtime call (see c5-mcp-call-2026-05-08.json)",
+    "ccd_restart_required": "yes (~/.claude.json modified post session-start, restart applied)",
+    "implication": "cc-akb-search mounted; P1e A4/C-5 accepted active/L1 via delta p1e-cc-akb-search-l1",
+    "previous_state_for_audit": {
+      "tool": "mcp__akb-search",
+      "status": "not_mounted",
+      "session_check_at": "2026-05-08T00:18:00Z",
+      "implication": "cc-akb-search remains blocked candidate; 阶段 3 A2 requires separate plan"
+    }
+  },
+  "sandbox_preflight": {
+    "cc_local_llm_backend": "http://127.0.0.1:8080/health",
+    "result": "not_reachable",
+    "implication": "阶段 5 L2 regression requires sandbox-external execution or manual preflight"
+  },
+  "tools": [
+    {
+      "slug": "cc-executable-plan",
+      "toolbox_status": "active",
+      "wiki_status": "active",
+      "eval_level": "L2",
+      "automation_allowed": false,
+      "backlink_status": "linked",
+      "skill_sha256": "5af73fdadd91097cc60f8e6c3622427aeaac8382bda0d1525debe564f2c46d0a",
+      "last_phase": "P1b-L2-regression-2026-05-06"
+    },
+    {
+      "slug": "cc-review",
+      "toolbox_status": "active",
+      "wiki_status": "active",
+      "eval_level": "L2",
+      "automation_allowed": false,
+      "backlink_status": "linked",
+      "skill_sha256": "592cf3ed4b2c6e3f96c63a500bdbe3bebbc375a19983debbfa7f1877f406d274",
+      "last_phase": "P1b-L2-regression-2026-05-06"
+    },
+    {
+      "slug": "cc-local-llm",
+      "toolbox_status": "active",
+      "wiki_status": "active",
+      "eval_level": "L1",
+      "automation_allowed": false,
+      "backlink_status": "linked",
+      "skill_sha256": "3a31ebe4f5938864e752ea51d35d89403e62d31a352ac3eaf01a784721c73050",
+      "last_phase": "P1c-full-sequence-2026-05-07"
+    },
+    {
+      "slug": "cc-skill-stocktake",
+      "toolbox_status": "active",
+      "wiki_status": "active",
+      "eval_level": "L1",
+      "automation_allowed": false,
+      "backlink_status": "linked",
+      "skill_sha256": "df16be83df67a04605b61294a210f9ad214b22e55ce40a45f34068dbaa2c48f2",
+      "last_phase": "P1d-v3-full-sequence-2026-05-07"
+    },
+    {
+      "slug": "cc-akb-search",
+      "toolbox_status": "active",
+      "wiki_status": "active",
+      "eval_level": "L1",
+      "automation_allowed": false,
+      "backlink_status": "active",
+      "skill_sha256": "b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982",
+      "last_phase": "P1e-2026-05-08",
+      "block_reason": "n/a",
+      "delta_evidence": {
+        "a4_eval_pack": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a4/",
+        "a4_fixture_results": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a4/fixture-results.json",
+        "a4_run_evidence": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a4/run-evidence.md",
+        "review2_summary": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-summary.json",
+        "review2_round1": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-round1-transcript.md",
+        "review2_round2": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-round2-transcript.md",
+        "review2_round3": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-round3-transcript.md",
+        "c5_verdict": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-c5/c5-verdict.json",
+        "c5_mcp_call": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-c5/c5-mcp-call-2026-05-08.json"
+      },
+      "delta_review": {
+        "review_channel": "code_reviewer_subagent",
+        "canonical_codex_watch_review": "not_run",
+        "canonical_review_required_when": "runner/collector/MCP wrapper/正式五件套 logic 改动",
+        "rounds": 3,
+        "verdict": "APPROVED"
+      }
+    }
+  ],
+  "five_file_sha256": {
+    "cc-executable-plan": {
+      "toolbox/interfaces": "4abf64341c4bd261d6574378cd709e1a2634b0c19ce716c4d261a1ab3dc723ca",
+      "toolbox/tools": "c56cdb3d697e8f769cfd90dabbcaa2741f84f4fc5d1c7941196bdb88a0107a8b",
+      "toolbox/evals": "c3f295e3f52f726afe100f0ddd31f2efdd1cae8c0fab882227366507f8b33fca",
+      "toolbox/registry": "02fcd0ed79c22e547aac70aa312a746a43ee340e13d36cb2863735a5d5905ccb",
+      "wiki/tools": "c56df1ef5e5e18036ffbe46836f60b6f81c440eac92593fb4d32119aaa40ed4b"
+    },
+    "cc-review": {
+      "toolbox/interfaces": "a59a715a6e963b67c8dc6618c2702be4e93a7e1c00d92236b4a6d3af88ae62ca",
+      "toolbox/tools": "9defbad458b49e8340024a4dce7ca72fc03d619bf6039c3861dab45c0882d129",
+      "toolbox/evals": "941268b377e62d8c04015686738b272ae6e23ecc4b8c55227e8a0837d9ca4624",
+      "toolbox/registry": "7385d7df55a0512d3a2145d124950d78a0e562f5dd4ea11f916da7dbb5cae024",
+      "wiki/tools": "4a9e4e84b7a81403214922442a6ea9a21e65aecd04f52a003805738302eb4d50"
+    },
+    "cc-local-llm": {
+      "toolbox/interfaces": "941ffed988d6234e7d1e18d5f804367402024d3376115c1c22fb9232d832211f",
+      "toolbox/tools": "6dea0a7abec61140c07d77a1683ab067cc180a458f041da9bccd85368de69bdf",
+      "toolbox/evals": "5271b906a94860cf899bd4bd7c8be09134ffba5018658633aac0875bfa93b587",
+      "toolbox/registry": "69b08b16ec0e85dd89c3f20b37b87025e0100e1de025d506579816d988178374",
+      "wiki/tools": "33d3fc9fdda0fa9f0a8e9d98c0bac2372ac10b685f45e8cc4e2cc181e7660bf4"
+    },
+    "cc-skill-stocktake": {
+      "toolbox/interfaces": "5ea0fac2c095ec69d4272ee6a92f3c747d4e2052cdb5b07c7692fc3a90427192",
+      "toolbox/tools": "00789a38e59902c3bea036ba5a2ad46de3d43f210f62f00c5d5b098b5691e1c7",
+      "toolbox/evals": "9661931eb0d93978c01260bda2cd4ff70c1a95f4e4be3c228d250dc9e652a70a",
+      "toolbox/registry": "c4b14ea17c3c69e66d858dddd5866c58586735233eb74d937d885ea98add0cd7",
+      "wiki/tools": "27386cb87e356847e0b5961efcda184150e06e4e5f40f79fd4092978a7de844d"
+    },
+    "cc-akb-search": {
+      "toolbox/interfaces": "3da31ae38fbaffea5da38f97c11ca688be881a53cfedfcac4dd771bc97227e22",
+      "toolbox/tools": "daad506f59b81c446e686593f1b15f71d2b153d1eb5d188944e19291cb354c8e",
+      "toolbox/evals": "152c2cc215f19b36930a30f554bfff1f9e7f0586d8eb913557a936fbdeceaa29",
+      "toolbox/registry": "7f4b54347b9aecd117dcfe01de6ce5db2eb6df5635a263e1aee852b18a4d6e7b",
+      "wiki/tools": "35f0340ae5fdbd793cf5bb5db25cd4c8b16e4b73bfef198da937e00472b59258"
+    }
+  },
+  "phase_reports": {
+    "P2_lint_v0": "AKB2.0/docs/phase-c-reports/p2-toolbox-structure-lint-v0-2026-05-07.md",
+    "P2_matrix_v0": "AKB2.0/docs/phase-c-reports/toolbox-global-matrix-v0-2026-05-07.md",
+    "closure": "AKB2.0/docs/phase-c-reports/toolbox-p1c-p1d-p2-closure-2026-05-07.md"
+  },
+  "review_artifacts": {
+    "p2_lint_plan_review": "~/.claude/review-baselines/a3f782c15d0e/result-20260507T115851Z.md",
+    "p2_lint_plan_review_v1_1": "~/.claude/review-baselines/a3f782c15d0e/result-20260507T121015Z.md",
+    "p2_lint_review1_docs_content": "~/.claude/review-baselines/a3f782c15d0e/result-20260507T123423Z.md",
+    "p2_lint_review2_ai_infra": "~/.claude/review-baselines/a3f782c15d0e/result-20260507T125000Z.md"
+  },
+  "matrix_artifacts": {
+    "global_matrix_json": "Codex/ai-infra/akb2-toolbox-matrix/v0/outputs/global-matrix.json",
+    "global_matrix_md": "Codex/ai-infra/akb2-toolbox-matrix/v0/outputs/global-matrix.md",
+    "collector_script": "Codex/ai-infra/akb2-toolbox-matrix/v0/collect-global-matrix.sh"
+  },
+  "pending_next_phases": {
+    "phase_3_cc_akb_search_unblock": {
+      "status": "complete",
+      "completed_at": "2026-05-08T10:55:26Z",
+      "completed_via": "P1e delta p1e-cc-akb-search-l1 — A4 5/5 + Review2 APPROVED + C-5 accept_active_L1",
+      "previous_state_for_audit": {
+        "A1": "complete (not_mounted confirmed)",
+        "A2": "requires separate plan + user auth for MCP config",
+        "B_fallback": "local markdown search via SKILL.md",
+        "decision": "pending user"
+      }
+    },
+    "phase_4_p2_lint_v1": {
+      "scope": "fix r04 eval-side false-negative + candidate tool extension",
+      "depends_on": "phase 2 closure"
+    },
+    "phase_5_l2_regression": {
+      "cc_local_llm": "sandbox_preflight=not_reachable; requires manual backend start or sandbox-external execution",
+      "cc_skill_stocktake": "depends on cc_local_llm L2 result",
+      "automation_allowed_guard": "must remain false through L2"
+    },
+    "phase_6_p3_automation_gate": {
+      "scope": "design only; 0 tools get automation_allowed:true",
+      "depends_on": "phase 5"
+    }
+  },
+  "delta_label": "p1e-cc-akb-search-l1",
+  "delta_based_on": {
+    "path": "../2026-05-07/closure-manifest.json",
+    "sha256": "0fbd53703ff58802299ba8cb04f5290e4b973c124729376dc341f862f06f90cc"
+  },
+  "delta_snapshot_at": "2026-05-08T10:55:26Z",
+  "effective_generated_at": "2026-05-08T14:06:01Z",
+  "effective_generated_by": "merge-baselines.sh",
+  "is_source_of_truth": false,
+  "is_derived": true,
+  "derived_note": "This manifest is a runtime view; primary closure remains the canonical baseline.",
+  "delta_tools_changed": [
+    {
+      "slug": "cc-akb-search",
+      "from": {
+        "toolbox_status": "candidate",
+        "wiki_status": "active",
+        "eval_level": "L0",
+        "automation_allowed": false,
+        "backlink_status": "pending",
+        "skill_sha256": "b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982",
+        "last_phase": "P1a-preflight-2026-05-06",
+        "block_reason": "mcp__akb-search not mounted (per P1a); A1 confirmed not_mounted 2026-05-08"
+      },
+      "to": {
+        "toolbox_status": "active",
+        "wiki_status": "active",
+        "eval_level": "L1",
+        "automation_allowed": false,
+        "backlink_status": "active",
+        "skill_sha256": "b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982",
+        "last_phase": "P1e-2026-05-08",
+        "block_reason": "n/a"
+      },
+      "evidence_paths": {
+        "a4_eval_pack": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a4/",
+        "a4_fixture_results": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a4/fixture-results.json",
+        "a4_run_evidence": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a4/run-evidence.md",
+        "review2_summary": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-summary.json",
+        "review2_round1": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-round1-transcript.md",
+        "review2_round2": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-round2-transcript.md",
+        "review2_round3": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-round3-transcript.md",
+        "c5_verdict": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-c5/c5-verdict.json",
+        "c5_mcp_call": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-c5/c5-mcp-call-2026-05-08.json"
+      },
+      "review_paths": {
+        "review_channel": "code_reviewer_subagent",
+        "canonical_codex_watch_review": "not_run",
+        "canonical_review_required_when": "runner/collector/MCP wrapper/正式五件套 logic 改动",
+        "rounds": 3,
+        "verdict": "APPROVED"
+      },
+      "five_file_sha256": {
+        "toolbox/interfaces": {
+          "before": "4539b8a4e960b415959716277406f3ee9ff9a766b3403fa020d9f6175cc17404",
+          "after": "3da31ae38fbaffea5da38f97c11ca688be881a53cfedfcac4dd771bc97227e22"
+        },
+        "toolbox/tools": {
+          "before": "dc05bfc7fee29aabda18d75316792c9d895a3a48e616155c6f3bea4e12dd1c20",
+          "after": "daad506f59b81c446e686593f1b15f71d2b153d1eb5d188944e19291cb354c8e"
+        },
+        "toolbox/evals": {
+          "before": "3b405acde76ca84a4302aee1224906d46936dae2cec2e15bdfbf16e65aae493c",
+          "after": "152c2cc215f19b36930a30f554bfff1f9e7f0586d8eb913557a936fbdeceaa29"
+        },
+        "toolbox/registry": {
+          "before": "291e301273021b1249f34327e5d6cdf01fba2884c8175b92f553ed8994fb89fd",
+          "after": "7f4b54347b9aecd117dcfe01de6ce5db2eb6df5635a263e1aee852b18a4d6e7b"
+        },
+        "wiki/tools": {
+          "before": "811051b4a200e3c742a59102d715eb4b7e9806fddd5491168e311a4e992531ae",
+          "after": "35f0340ae5fdbd793cf5bb5db25cd4c8b16e4b73bfef198da937e00472b59258",
+          "drift_note": "wiki page edited between 2026-05-07 baseline and P1e (Phase D BL-C3-001 closure on 2026-05-07); not modified in this delta"
+        }
+      },
+      "external_files_sha256": {
+        "mcp_server_wrapper": {
+          "path": "Codex/plugins/claude-code-ai-infra/mcp-servers/akb-search-readonly/server.py",
+          "sha256": "efb09982efe49f4adb97b44c71eb30b5b157e9b3294d4e2d39dd17b162b63eb1"
+        },
+        "akb_codebase_changes": {
+          "context": "P1/P2 review-fix cycle: 5 files in Project AKB modified for readonly contract (CatalogDB readonly mode, ToolboxDB skip_init, Curator cache None guard); see Review 2 transcripts for full diff",
+          "files": [
+            "scripts/core/search.py",
+            "scripts/pipeline/curator.py",
+            "scripts/utils/db.py",
+            "scripts/toolbox/db.py"
+          ]
+        }
+      }
+    }
+  ],
+  "merge_rules_applied": {
+    "delta_wins_for_fields": [
+      "toolbox_status",
+      "wiki_status",
+      "eval_level",
+      "backlink_status",
+      "block_reason",
+      "last_phase",
+      "skill_sha256"
+    ],
+    "delta_inherits_for_fields": [
+      "automation_allowed (must be false; delta-true forbidden)"
+    ],
+    "primary_only_for_unlisted_tools": true,
+    "automation_allowed_invariant": "delta MUST keep automation_allowed=false; merge script exits 1 if violated"
+  }
+}

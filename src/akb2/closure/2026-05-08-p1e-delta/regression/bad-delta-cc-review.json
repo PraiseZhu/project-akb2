@@ -1,0 +1,145 @@
+{
+  "schema_version": "v0.1-delta",
+  "delta_label": "p1e-cc-akb-search-l1",
+  "delta_type": "single-tool-promotion",
+  "based_on": {
+    "path": "../2026-05-07/closure-manifest.json",
+    "sha256": "0fbd53703ff58802299ba8cb04f5290e4b973c124729376dc341f862f06f90cc",
+    "verified_at": "2026-05-08T10:55:26Z"
+  },
+  "snapshot_at": "2026-05-08T10:55:26Z",
+  "delta_author": "claude-sonnet-4-6",
+  "delta_owner": "praise (via Claude Code Desktop)",
+  "phases_advanced": [
+    "P1e"
+  ],
+  "p0_gate_inheritance": {
+    "automation_allowed_true_count": 0,
+    "status": "clean",
+    "inherited_from_primary": true
+  },
+  "a1_mcp_discovery_update": {
+    "tool": "mcp__akb-search",
+    "status": "mounted",
+    "verified_at": "2026-05-08T10:55:26Z",
+    "verification_method": "in-CCD MCP runtime call (see c5-mcp-call-2026-05-08.json)",
+    "ccd_restart_required": "yes (~/.claude.json modified post session-start, restart applied)"
+  },
+  "allowed_slugs": [
+    "cc-akb-search"
+  ],
+  "tools_changed": [
+    {
+      "slug": "cc-review",
+      "from": {
+        "toolbox_status": "candidate",
+        "wiki_status": "active",
+        "eval_level": "L0",
+        "automation_allowed": false,
+        "backlink_status": "pending",
+        "skill_sha256": "b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982",
+        "last_phase": "P1a-preflight-2026-05-06",
+        "block_reason": "mcp__akb-search not mounted (per P1a); A1 confirmed not_mounted 2026-05-08"
+      },
+      "to": {
+        "toolbox_status": "active",
+        "wiki_status": "active",
+        "eval_level": "L1",
+        "automation_allowed": false,
+        "backlink_status": "active",
+        "skill_sha256": "b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982",
+        "last_phase": "P1e-2026-05-08",
+        "block_reason": "n/a"
+      },
+      "evidence_paths": {
+        "a4_eval_pack": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a4/",
+        "a4_fixture_results": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a4/fixture-results.json",
+        "a4_run_evidence": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a4/run-evidence.md",
+        "review2_summary": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-summary.json",
+        "review2_round1": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-round1-transcript.md",
+        "review2_round2": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-round2-transcript.md",
+        "review2_round3": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-round3-transcript.md",
+        "c5_verdict": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-c5/c5-verdict.json",
+        "c5_mcp_call": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-c5/c5-mcp-call-2026-05-08.json"
+      },
+      "review_paths": {
+        "review_channel": "code_reviewer_subagent",
+        "canonical_codex_watch_review": "not_run",
+        "canonical_review_required_when": "runner/collector/MCP wrapper/正式五件套 logic 改动",
+        "rounds": 3,
+        "verdict": "APPROVED"
+      },
+      "five_file_sha256": {
+        "toolbox/interfaces": {
+          "before": "4539b8a4e960b415959716277406f3ee9ff9a766b3403fa020d9f6175cc17404",
+          "after": "3da31ae38fbaffea5da38f97c11ca688be881a53cfedfcac4dd771bc97227e22"
+        },
+        "toolbox/tools": {
+          "before": "dc05bfc7fee29aabda18d75316792c9d895a3a48e616155c6f3bea4e12dd1c20",
+          "after": "daad506f59b81c446e686593f1b15f71d2b153d1eb5d188944e19291cb354c8e"
+        },
+        "toolbox/evals": {
+          "before": "3b405acde76ca84a4302aee1224906d46936dae2cec2e15bdfbf16e65aae493c",
+          "after": "152c2cc215f19b36930a30f554bfff1f9e7f0586d8eb913557a936fbdeceaa29"
+        },
+        "toolbox/registry": {
+          "before": "291e301273021b1249f34327e5d6cdf01fba2884c8175b92f553ed8994fb89fd",
+          "after": "7f4b54347b9aecd117dcfe01de6ce5db2eb6df5635a263e1aee852b18a4d6e7b"
+        },
+        "wiki/tools": {
+          "before": "811051b4a200e3c742a59102d715eb4b7e9806fddd5491168e311a4e992531ae",
+          "after": "35f0340ae5fdbd793cf5bb5db25cd4c8b16e4b73bfef198da937e00472b59258",
+          "drift_note": "wiki page edited between 2026-05-07 baseline and P1e (Phase D BL-C3-001 closure on 2026-05-07); not modified in this delta"
+        }
+      },
+      "external_files_sha256": {
+        "mcp_server_wrapper": {
+          "path": "Codex/plugins/claude-code-ai-infra/mcp-servers/akb-search-readonly/server.py",
+          "sha256": "efb09982efe49f4adb97b44c71eb30b5b157e9b3294d4e2d39dd17b162b63eb1"
+        },
+        "akb_codebase_changes": {
+          "context": "P1/P2 review-fix cycle: 5 files in Project AKB modified for readonly contract (CatalogDB readonly mode, ToolboxDB skip_init, Curator cache None guard); see Review 2 transcripts for full diff",
+          "files": [
+            "scripts/core/search.py",
+            "scripts/pipeline/curator.py",
+            "scripts/utils/db.py",
+            "scripts/toolbox/db.py"
+          ]
+        }
+      }
+    }
+  ],
+  "tools_unchanged": [
+    "cc-executable-plan",
+    "cc-review",
+    "cc-local-llm",
+    "cc-skill-stocktake"
+  ],
+  "merge_rules": {
+    "delta_wins_for_fields": [
+      "toolbox_status",
+      "wiki_status",
+      "eval_level",
+      "backlink_status",
+      "block_reason",
+      "last_phase",
+      "skill_sha256"
+    ],
+    "delta_inherits_for_fields": [
+      "automation_allowed (must be false; delta-true forbidden)"
+    ],
+    "primary_only_for_unlisted_tools": true,
+    "automation_allowed_invariant": "delta MUST keep automation_allowed=false; merge script exits 1 if violated"
+  },
+  "limitations": [
+    "Review 2 通道为 code-reviewer subagent (sonnet)，非 canonical /review code + Codex Watch；接受为 evidence 当且仅当后续 freeze 工作仅限证据/manifest/report-only。",
+    "Original A4 run from prior CCD session was completed in-conversation; this delta references the 2026-05-08 re-run with persisted on-disk evidence。",
+    "wiki/tools/cc-akb-search.md 在 2026-05-07 baseline 后被 Phase D BL-C3-001 修改过（status=active 提前），P1e delta 不修改该文件，only records SHA drift in five_file_sha256.before/after。"
+  ],
+  "phase_report": "AKB2.0/docs/phase-c-reports/toolbox-l1-floor-closure-2026-05-08.md",
+  "next_phases_pending": [
+    "L2 regression v1 (L2 first batch: cc-local-llm + cc-skill-stocktake; cc-akb-search 第二批，观察 7 天)",
+    "Automation gate v0 (设计门槛，本阶段无工具升 automation)",
+    "Search quality v0 (含 query set 来源采样方法 + rollback path)"
+  ]
+}
