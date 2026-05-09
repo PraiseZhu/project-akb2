@@ -200,7 +200,8 @@ echo -e "${CYN}[$STEP] pytest smoke${NC}"
 
 if command -v pytest &>/dev/null; then
   # Check if all tests are skip placeholders
-  SKIP_COUNT=$(grep -rl '@pytest.mark.skip' "$ROOT/tests/" 2>/dev/null | wc -l | tr -d ' ')
+  # Use subshell + || true to prevent pipefail from aborting when grep finds no matches
+  SKIP_COUNT=$({ grep -rl '@pytest.mark.skip' "$ROOT/tests/" 2>/dev/null || true; } | wc -l | tr -d ' ')
   TOTAL_TEST_FILES=$(find "$ROOT/tests/" -name 'test_*.py' -o -name '*_test.py' 2>/dev/null | wc -l | tr -d ' ')
 
   if [[ "$TOTAL_TEST_FILES" -gt 0 && "$SKIP_COUNT" -eq "$TOTAL_TEST_FILES" ]]; then
@@ -219,7 +220,7 @@ if command -v pytest &>/dev/null; then
   fi
 else
   echo "pytest_not_installed"
-  echo -e "${YEL}[$STEP SKIP]${NC} pytest not found in PATH"
+  echo -e "${YEL}[WARN]${NC} pytest not found in PATH — smoke test skipped (install pytest to enable)"
 fi
 
 # === Final Summary ===
