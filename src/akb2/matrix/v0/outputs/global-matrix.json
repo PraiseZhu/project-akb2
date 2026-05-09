@@ -1,0 +1,83 @@
+{
+  "schema_version": "v0.1",
+  "collected_at": "2026-05-08T11:10:05Z",
+  "scope": "current_5_tools",
+  "p2_review2_artifact": "present",
+  "fields": [
+    "wiki_status",
+    "toolbox_status",
+    "eval_level",
+    "automation_allowed",
+    "backlink_status",
+    "workspace_version",
+    "blocking_reason",
+    "next_action"
+  ],
+  "matrix": [
+    {
+      "tool_slug": "cc-executable-plan",
+      "wiki_status": "active",
+      "toolbox_status": "active",
+      "eval_level": "L2",
+      "automation_allowed": false,
+      "backlink_status": "linked",
+      "workspace_version": "5af73fdadd91",
+      "blocking_reason": "n/a",
+      "next_action": "stable — L2 regression on schema change",
+      "p2_review2_artifact": "present",
+      "collected_at": "2026-05-08T11:10:05Z"
+    },
+    {
+      "tool_slug": "cc-review",
+      "wiki_status": "active",
+      "toolbox_status": "active",
+      "eval_level": "L2",
+      "automation_allowed": false,
+      "backlink_status": "linked",
+      "workspace_version": "592cf3ed4b2c",
+      "blocking_reason": "n/a",
+      "next_action": "stable — L2 regression on schema change",
+      "p2_review2_artifact": "present",
+      "collected_at": "2026-05-08T11:10:05Z"
+    },
+    {
+      "tool_slug": "cc-local-llm",
+      "wiki_status": "active",
+      "toolbox_status": "active",
+      "eval_level": "L1",
+      "automation_allowed": false,
+      "backlink_status": "linked",
+      "workspace_version": "3a31ebe4f593",
+      "blocking_reason": "n/a",
+      "next_action": "stable — promote to L2 when ready",
+      "p2_review2_artifact": "present",
+      "collected_at": "2026-05-08T11:10:05Z"
+    },
+    {
+      "tool_slug": "cc-skill-stocktake",
+      "wiki_status": "active",
+      "toolbox_status": "active",
+      "eval_level": "L1",
+      "automation_allowed": false,
+      "backlink_status": "linked",
+      "workspace_version": "df16be83df67",
+      "blocking_reason": "n/a",
+      "next_action": "stable — promote to L2 when ready",
+      "p2_review2_artifact": "present",
+      "collected_at": "2026-05-08T11:10:05Z"
+    },
+    {
+      "tool_slug": "cc-akb-search",
+      "wiki_status": "active",
+      "toolbox_status": "active",
+      "eval_level": "L1",
+      "automation_allowed": false,
+      "backlink_status": "active",
+      "workspace_version": "b669380de8a0",
+      "blocking_reason": "n/a",
+      "next_action": "wait for mcp__akb-search mount then run L1 eval + upgrade to active",
+      "p2_review2_artifact": "present",
+      "collected_at": "2026-05-08T11:10:05Z"
+    }
+  ]
+}
