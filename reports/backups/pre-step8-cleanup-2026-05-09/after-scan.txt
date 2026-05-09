@@ -1,0 +1,36 @@
+=== 删除项残留检查 ===
+OK_DELETED: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/ai-infra/evals/skill-routing/akb-search.json
+OK_DELETED: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/plans/akb-autoresearch-v1-sorted-nova.md
+OK_DELETED: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/plans/akb-graph-context-snazzy-horizon.md
+OK_DELETED: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/plans/akb-llama-swap-migration-v2.md
+OK_DELETED: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/plans/akb2-followup-v2-1-condensed.md
+OK_DELETED: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/scripts/akb-pre-commit.sh
+OK_DELETED: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2
+OK_DELETED: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-automation-gate
+OK_DELETED: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-closure
+OK_DELETED: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals
+OK_DELETED: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/c4b/cc-akb-search
+OK_DELETED: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a2
+OK_DELETED: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a3
+OK_DELETED: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a4
+OK_DELETED: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-c5
+OK_DELETED: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2
+OK_DELETED: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-unblock
+OK_DELETED: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-lint
+OK_DELETED: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-matrix
+OK_DELETED: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-promotion-gate
+OK_DELETED: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-search-quality
+OK_DELETED: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2/toolbox_scan/akb2_toolbox_scan
+OK_DELETED: /Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0/.akb-runtime
+OK_DELETED: /Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0/.akb-runtime/lint/akb2-lint.py
+
+=== keep 项保留检查（关键 install/external） ===
+OK_KEPT: /Users/praise/.codex/skills/cc-akb-search
+OK_KEPT: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/cc-akb-search
+OK_KEPT: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/claude-active/cc-akb-search
+OK_KEPT: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/plugins/claude-code-ai-infra/mcp-servers/akb-search-readonly/server.py
+OK_KEPT: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB
+
+=== Summary ===
+RESIDUAL count: 0
+MISSING count: 0

@@ -1,0 +1,173 @@
+[0;36m=== post-change-pipeline ===[0m
+mode: dry-run
+root: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2
+
+[0;36m[PRE-SNAPSHOT] Computing target state before sync...[0m
+
+[0;36m[1] sync-skills-to-codex[0m
+    cmd: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/scripts/sync-skills-to-codex.sh
+
+[0;36m=== sync-skills-to-codex ===[0m
+mode:   dry-run
+source: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/toolbox/cc-{slug}/
+target: /Users/praise/.codex/skills/cc-{slug}/
+slugs:  executable-plan review local-llm skill-stocktake akb-search
+
+cc-executable-plan: [0;32mMATCH[0m
+  source SKILL.md SHA: 5af73fdadd91097cc60f8e6c3622427aeaac8382bda0d1525debe564f2c46d0a
+  target SKILL.md SHA: 5af73fdadd91097cc60f8e6c3622427aeaac8382bda0d1525debe564f2c46d0a
+  source file count: 2
+  [0;36m[DRY-RUN][0m would rsync /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/toolbox/cc-executable-plan/ → /Users/praise/.codex/skills/cc-executable-plan/
+
+cc-review: [0;32mMATCH[0m
+  source SKILL.md SHA: 592cf3ed4b2c6e3f96c63a500bdbe3bebbc375a19983debbfa7f1877f406d274
+  target SKILL.md SHA: 592cf3ed4b2c6e3f96c63a500bdbe3bebbc375a19983debbfa7f1877f406d274
+  source file count: 6
+  [0;36m[DRY-RUN][0m would rsync /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/toolbox/cc-review/ → /Users/praise/.codex/skills/cc-review/
+
+cc-local-llm: [0;32mMATCH[0m
+  source SKILL.md SHA: 3a31ebe4f5938864e752ea51d35d89403e62d31a352ac3eaf01a784721c73050
+  target SKILL.md SHA: 3a31ebe4f5938864e752ea51d35d89403e62d31a352ac3eaf01a784721c73050
+  source file count: 4
+  [0;36m[DRY-RUN][0m would rsync /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/toolbox/cc-local-llm/ → /Users/praise/.codex/skills/cc-local-llm/
+
+cc-skill-stocktake: [0;32mMATCH[0m
+  source SKILL.md SHA: df16be83df67a04605b61294a210f9ad214b22e55ce40a45f34068dbaa2c48f2
+  target SKILL.md SHA: df16be83df67a04605b61294a210f9ad214b22e55ce40a45f34068dbaa2c48f2
+  source file count: 7
+  [0;36m[DRY-RUN][0m would rsync /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/toolbox/cc-skill-stocktake/ → /Users/praise/.codex/skills/cc-skill-stocktake/
+
+cc-akb-search: [0;32mMATCH[0m
+  source SKILL.md SHA: b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982
+  target SKILL.md SHA: b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982
+  source file count: 6
+  [0;36m[DRY-RUN][0m would rsync /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/toolbox/cc-akb-search/ → /Users/praise/.codex/skills/cc-akb-search/
+
+[0;32m[OK][0m sync-skills-to-codex complete (mode=dry-run, drift=0)
+[0;32m[1 PASS][0m sync-skills-to-codex
+
+[0;36m[2] sync-skills-to-claude-backup[0m
+    cmd: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/scripts/sync-skills-to-claude-backup.sh
+
+[0;36m=== sync-skills-to-claude-backup ===[0m
+mode:     dry-run
+source:   /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/toolbox/cc-{slug}/
+target A: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/cc-{slug}/
+target B: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/claude-active/cc-{slug}/
+slugs:    executable-plan review local-llm skill-stocktake akb-search
+
+cc-executable-plan:
+  backup cc-executable-plan: [0;32mMATCH[0m
+    source SHA: 5af73fdadd91097cc60f8e6c3622427aeaac8382bda0d1525debe564f2c46d0a
+    target SHA: 5af73fdadd91097cc60f8e6c3622427aeaac8382bda0d1525debe564f2c46d0a
+    [0;36m[DRY-RUN][0m would rsync /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/toolbox/cc-executable-plan/ → /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/cc-executable-plan/
+  active cc-executable-plan: [0;32mMATCH[0m
+    source SHA: 5af73fdadd91097cc60f8e6c3622427aeaac8382bda0d1525debe564f2c46d0a
+    target SHA: 5af73fdadd91097cc60f8e6c3622427aeaac8382bda0d1525debe564f2c46d0a
+    [0;36m[DRY-RUN][0m would rsync /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/toolbox/cc-executable-plan/ → /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/claude-active/cc-executable-plan/
+
+cc-review:
+  backup cc-review: [0;32mMATCH[0m
+    source SHA: 592cf3ed4b2c6e3f96c63a500bdbe3bebbc375a19983debbfa7f1877f406d274
+    target SHA: 592cf3ed4b2c6e3f96c63a500bdbe3bebbc375a19983debbfa7f1877f406d274
+    [0;36m[DRY-RUN][0m would rsync /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/toolbox/cc-review/ → /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/cc-review/
+  active cc-review: [0;32mMATCH[0m
+    source SHA: 592cf3ed4b2c6e3f96c63a500bdbe3bebbc375a19983debbfa7f1877f406d274
+    target SHA: 592cf3ed4b2c6e3f96c63a500bdbe3bebbc375a19983debbfa7f1877f406d274
+    [0;36m[DRY-RUN][0m would rsync /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/toolbox/cc-review/ → /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/claude-active/cc-review/
+
+cc-local-llm:
+  backup cc-local-llm: [0;32mMATCH[0m
+    source SHA: 3a31ebe4f5938864e752ea51d35d89403e62d31a352ac3eaf01a784721c73050
+    target SHA: 3a31ebe4f5938864e752ea51d35d89403e62d31a352ac3eaf01a784721c73050
+    [0;36m[DRY-RUN][0m would rsync /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/toolbox/cc-local-llm/ → /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/cc-local-llm/
+  active cc-local-llm: [0;32mMATCH[0m
+    source SHA: 3a31ebe4f5938864e752ea51d35d89403e62d31a352ac3eaf01a784721c73050
+    target SHA: 3a31ebe4f5938864e752ea51d35d89403e62d31a352ac3eaf01a784721c73050
+    [0;36m[DRY-RUN][0m would rsync /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/toolbox/cc-local-llm/ → /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/claude-active/cc-local-llm/
+
+cc-skill-stocktake:
+  backup cc-skill-stocktake: [0;32mMATCH[0m
+    source SHA: df16be83df67a04605b61294a210f9ad214b22e55ce40a45f34068dbaa2c48f2
+    target SHA: df16be83df67a04605b61294a210f9ad214b22e55ce40a45f34068dbaa2c48f2
+    [0;36m[DRY-RUN][0m would rsync /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/toolbox/cc-skill-stocktake/ → /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/cc-skill-stocktake/
+  active cc-skill-stocktake: [0;32mMATCH[0m
+    source SHA: df16be83df67a04605b61294a210f9ad214b22e55ce40a45f34068dbaa2c48f2
+    target SHA: df16be83df67a04605b61294a210f9ad214b22e55ce40a45f34068dbaa2c48f2
+    [0;36m[DRY-RUN][0m would rsync /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/toolbox/cc-skill-stocktake/ → /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/claude-active/cc-skill-stocktake/
+
+cc-akb-search:
+  backup cc-akb-search: [0;32mMATCH[0m
+    source SHA: b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982
+    target SHA: b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982
+    [0;36m[DRY-RUN][0m would rsync /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/toolbox/cc-akb-search/ → /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/cc-akb-search/
+  active cc-akb-search: [0;32mMATCH[0m
+    source SHA: b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982
+    target SHA: b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982
+    [0;36m[DRY-RUN][0m would rsync /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/toolbox/cc-akb-search/ → /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/claude-active/cc-akb-search/
+
+[0;32m[OK][0m sync-skills-to-claude-backup complete (mode=dry-run, drift=0)
+[0;32m[2 PASS][0m sync-skills-to-claude-backup
+
+[0;36m[3] sync-mcp-server[0m
+    cmd: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/scripts/sync-mcp-server.sh
+
+[0;36m=== sync-mcp-server ===[0m
+mode:   dry-run
+source: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/toolbox/cc-akb-search/mcp_server/server.py
+target: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/plugins/claude-code-ai-infra/mcp-servers/akb-search-readonly/server.py
+
+source SHA: 7a26f5cac0c796797c5b9b15f6b4aa9b5bee27a7ca1e8cb396357547a067dd31
+target SHA: 7a26f5cac0c796797c5b9b15f6b4aa9b5bee27a7ca1e8cb396357547a067dd31
+[0;32m[MATCH][0m source and target are identical
+[0;36m[DRY-RUN][0m would cp /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/toolbox/cc-akb-search/mcp_server/server.py → /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/plugins/claude-code-ai-infra/mcp-servers/akb-search-readonly/server.py
+
+[0;32m[OK][0m sync-mcp-server complete (mode=dry-run)
+[0;32m[3 PASS][0m sync-mcp-server
+
+[0;36m[4] dry-run no-write invariant[0m
+dry_run_no_write=true
+[0;32m[4 PASS][0m dry-run no-write invariant — all targets unchanged
+
+[0;36m[5] verify-no-drift (informational in dry-run)[0m
+    cmd: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/scripts/verify-no-drift.sh
+
+[0;36m=== verify-no-drift ===[0m
+
+--- Codex install target ---
+[0;32m[MATCH][0m   codex:cc-executable-plan  sha=5af73fdadd91097cc60f8e6c3622427aeaac8382bda0d1525debe564f2c46d0a
+[0;32m[MATCH][0m   codex:cc-review  sha=592cf3ed4b2c6e3f96c63a500bdbe3bebbc375a19983debbfa7f1877f406d274
+[0;32m[MATCH][0m   codex:cc-local-llm  sha=3a31ebe4f5938864e752ea51d35d89403e62d31a352ac3eaf01a784721c73050
+[0;32m[MATCH][0m   codex:cc-skill-stocktake  sha=df16be83df67a04605b61294a210f9ad214b22e55ce40a45f34068dbaa2c48f2
+[0;32m[MATCH][0m   codex:cc-akb-search  sha=b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982
+
+--- Claude backup mirror ---
+[0;32m[MATCH][0m   claude-backup:cc-executable-plan  sha=5af73fdadd91097cc60f8e6c3622427aeaac8382bda0d1525debe564f2c46d0a
+[0;32m[MATCH][0m   claude-backup:cc-review  sha=592cf3ed4b2c6e3f96c63a500bdbe3bebbc375a19983debbfa7f1877f406d274
+[0;32m[MATCH][0m   claude-backup:cc-local-llm  sha=3a31ebe4f5938864e752ea51d35d89403e62d31a352ac3eaf01a784721c73050
+[0;32m[MATCH][0m   claude-backup:cc-skill-stocktake  sha=df16be83df67a04605b61294a210f9ad214b22e55ce40a45f34068dbaa2c48f2
+[0;32m[MATCH][0m   claude-backup:cc-akb-search  sha=b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982
+
+--- Claude active mirror ---
+[0;32m[MATCH][0m   claude-active:cc-executable-plan  sha=5af73fdadd91097cc60f8e6c3622427aeaac8382bda0d1525debe564f2c46d0a
+[0;32m[MATCH][0m   claude-active:cc-review  sha=592cf3ed4b2c6e3f96c63a500bdbe3bebbc375a19983debbfa7f1877f406d274
+[0;32m[MATCH][0m   claude-active:cc-local-llm  sha=3a31ebe4f5938864e752ea51d35d89403e62d31a352ac3eaf01a784721c73050
+[0;32m[MATCH][0m   claude-active:cc-skill-stocktake  sha=df16be83df67a04605b61294a210f9ad214b22e55ce40a45f34068dbaa2c48f2
+[0;32m[MATCH][0m   claude-active:cc-akb-search  sha=b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982
+
+--- MCP wrapper ---
+[0;32m[MATCH][0m   mcp:akb-search-readonly  sha=7a26f5cac0c796797c5b9b15f6b4aa9b5bee27a7ca1e8cb396357547a067dd31
+
+--- closure-manifest SHA lock ---
+[0;32m[MATCH][0m   closure-manifest  sha=0fbd53703ff58802299ba8cb04f5290e4b973c124729376dc341f862f06f90cc
+
+[0;32m[OK][0m all 17 checks MATCH — no drift detected
+[0;36m[5 INFO][0m verify-no-drift (drift in dry-run is expected if targets not yet synced)
+
+[0;36m[6] pytest smoke[0m
+............................................................             [100%]
+60 passed in 2.88s
+[0;32m[6 PASS][0m pytest smoke
+
+========================================
+[0;32m[PIPELINE OK][0m post-change-pipeline complete (mode=dry-run)

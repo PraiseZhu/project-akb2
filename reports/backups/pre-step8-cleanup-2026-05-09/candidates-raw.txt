@@ -1,0 +1,47 @@
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/ai-infra/akb2-gate-checker
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/ai-infra/akb2-gate-checker/akb2_gate_check
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/ai-infra/evals/skill-routing/akb-search.json
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/plans/akb-autoresearch-v1-sorted-nova.md
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/plans/akb-graph-context-snazzy-horizon.md
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/plans/akb-llama-swap-migration-v2.md
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/plans/akb2-followup-v2-1-condensed.md
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/scripts/akb-pre-commit.sh
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/Project_AKB/akb-collector
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/Project_AKB/akb-curator
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/Project_AKB/akb-synthesizer
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/Project_AKB/akb-translator
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/akb-collector
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/akb-curator
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/akb-monitor
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/akb-search
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/akb-status
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/akb-synthesizer
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/akb-translator
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/cc-akb-search
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/claude-active/akb-collector
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/claude-active/akb-curator
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/claude-active/akb-monitor
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/claude-active/akb-search
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/claude-active/akb-status
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/claude-active/akb-synthesizer
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/claude-active/akb-translator
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/claude-active/cc-akb-search
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-automation-gate
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-closure
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/c4b/cc-akb-search
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a2
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a3
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a4
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-c5
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-unblock
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-lint
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-matrix
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-promotion-gate
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-search-quality
+/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2/toolbox_scan/akb2_toolbox_scan
+/Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0/.akb-runtime
+/Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0/.akb-runtime/lint/__pycache__/akb2-lint.cpython-313.pyc
+/Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0/.akb-runtime/lint/akb2-lint.py

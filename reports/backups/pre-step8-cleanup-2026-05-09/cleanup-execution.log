@@ -1,0 +1,30 @@
+=== cleanup execution start: 2026-05-09T12:40:38.806327Z ===
+total delete items: 24
+
+deleted: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/ai-infra/evals/skill-routing/akb-search.json
+deleted: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/plans/akb-autoresearch-v1-sorted-nova.md
+deleted: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/plans/akb-graph-context-snazzy-horizon.md
+deleted: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/plans/akb-llama-swap-migration-v2.md
+deleted: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/plans/akb2-followup-v2-1-condensed.md
+deleted: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/scripts/akb-pre-commit.sh
+deleted: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2
+deleted: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-automation-gate
+deleted: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-closure
+deleted: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals
+already_gone: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/c4b/cc-akb-search
+already_gone: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a2
+already_gone: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a3
+already_gone: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a4
+already_gone: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-c5
+already_gone: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2
+already_gone: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-unblock
+deleted: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-lint
+deleted: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-matrix
+deleted: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-promotion-gate
+deleted: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-search-quality
+already_gone: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2/toolbox_scan/akb2_toolbox_scan
+deleted: /Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0/.akb-runtime
+already_gone: /Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0/.akb-runtime/lint/akb2-lint.py
+
+=== cleanup execution end: 2026-05-09T12:40:38.866474Z ===
+deleted: 24, failed: 0

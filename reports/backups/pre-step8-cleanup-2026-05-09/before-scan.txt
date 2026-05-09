@@ -1,0 +1,133 @@
+=== before-scan: 2026-05-09T12:39:39.685043Z ===
+
+=== /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra ===
+  [F] .DS_Store
+  [F] README.md
+  [D] akb2
+  [D] akb2-toolbox-automation-gate
+  [D] akb2-toolbox-closure
+  [D] akb2-toolbox-evals
+  [D] akb2-toolbox-lint
+  [D] akb2-toolbox-matrix
+  [D] akb2-toolbox-promotion-gate
+  [D] akb2-toolbox-search-quality
+  [D] backlog
+  [D] backups
+  [D] inventory
+  [D] memory
+  [D] reports
+  [D] skill-index
+  [D] sync
+  [D] templates
+
+=== /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/ai-infra ===
+  [D] akb2-gate-checker
+  [D] evals
+  [D] inventory
+  [D] launchagents
+  [D] reports
+  [D] skill-index
+  [D] sync
+
+=== /Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0/.akb-runtime ===
+  [D] lint
+
+=== /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/scripts ===
+  [D] __pycache__
+  [F] akb-pre-commit.sh
+  [D] bin
+  [F] cc-skill-rule-backup.log
+  [F] cc-transcript-backup.log
+  [F] cc-transcript-backup.py
+  [F] cc-transcript-backup.sh
+  [F] check-projects-compliance.sh
+  [D] claudian-patches
+  [D] claudian-tab-patch
+  [F] clean-known-violations.sh
+  [F] commit-all-projects.sh
+  [D] diagnostics
+  [F] digest-auto-refresh.py
+  [F] git-safe-commit.sh
+  [D] hooks
+  [F] install-pre-commit-hooks.sh
+  [D] lib
+  [F] new-project-init.sh
+  [F] patch-claudian-all.sh
+  [F] patch-claudian-tabs.sh
+  [F] patch-claudian-video.sh
+  [F] pre-commit-generic.sh
+  [F] set-tab-title.sh
+  [F] setup-all-launchagents.sh
+  [F] setup-claude-code.sh
+  [F] sod-check-harvest-pending.sh
+  [F] sod-drift-check.sh
+  [F] sod-projects-git-health.sh
+  [F] sod-scan-sessions.sh
+  ... (+4 more)
+
+=== /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills ===
+  [F] .DS_Store
+  [F] .skill-lock.json
+  [D] Agent设计模式
+  [D] Chaku一键部署
+  [D] Chaku健康检查
+  [D] Doki一键部署
+  [D] Doki人员管理
+  [D] Doki优先级
+  [D] Doki健康检查
+  [D] Doki全功能验证
+  [D] Doki关键词管理
+  [D] Doki历史周报
+  [D] Doki周报执行
+  [D] Doki命令触发
+  [D] Doki定时调度
+  [D] Doki数据质量
+  [D] Doki权限管理
+  [D] Doki每日快报
+  [D] Doki私信预览
+  [D] Doki群管理
+  [D] Doki调试排错
+  [D] Eagle素材管理
+  [D] Figma框架规范
+  [D] Hunt一键部署
+  [D] Hunt健康检查
+  [D] NotebookLM研究
+  [D] Notion笔记
+  [D] Pencil转Figma
+  [D] Project_AKB
+  [D] Prompt设计模式
+  ... (+309 more)
+
+=== /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/plans ===
+  [F] 5-imperative-puffin.md
+  [F] abundant-humming-wren.md
+  [F] akb-autoresearch-v1-sorted-nova.md
+  [F] akb-graph-context-snazzy-horizon.md
+  [F] akb-llama-swap-migration-v2.md
+  [F] akb2-followup-v2-1-condensed.md
+  [F] autoresearch-lively-storm.md
+  [F] bright-exploring-shamir.md
+  [F] bug-hidden-torvalds.md
+  [F] calm-doodling-toucan-agent-a361d6233a7d28f3e.md
+  [F] calm-doodling-toucan.md
+  [F] calm-roaming-babbage.md
+  [F] calm-skipping-mist.md
+  [F] claude-starry-dongarra.md
+  [F] claude-twinkly-pixel.md
+  [F] compiled-conjuring-fiddle.md
+  [F] dazzling-gathering-wombat.md
+  [F] declarative-enchanting-flute.md
+  [F] dreamy-finding-dijkstra.md
+  [F] elegant-mapping-sunset.md
+  [F] elegant-squishing-stearns.md
+  [F] encapsulated-pondering-sedgewick.md
+  [F] fizzy-riding-barto.md
+  [F] flickering-hugging-crab.md
+  [F] floofy-zooming-lovelace.md
+  [F] frolicking-shimmying-dusk.md
+  [F] functional-churning-clover.md
+  [F] gemma4-26b-llm-snuggly-crab.md
+  [F] goofy-inventing-riddle.md
+  [F] greedy-kindling-hartmanis.md
+  ... (+93 more)
+
