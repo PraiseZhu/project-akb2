@@ -1,0 +1,37 @@
+# AKB2 CLI Capability Baseline — pre-Step5
+# Date: 2026-05-09T07:22:11Z
+
+## akb2_lint.py --help
+usage: akb2_lint.py [-h] [--scope {wiki,all}] [--manifest MANIFEST]
+                    [--report REPORT] [--stable-output] [--baseline BASELINE]
+                    [--version {v0.2,v0.3}]
+
+options:
+  -h, --help            show this help message and exit
+  --scope {wiki,all}
+  --manifest MANIFEST
+  --report REPORT
+  --stable-output       use stable date-only filenames (overwrites prior
+                        runs); default uses timestamp filename
+  --baseline BASELINE
+  --version {v0.2,v0.3}
+                        v0.2 = 18 rules (default, backward-compat); v0.3 = 22
+                        rules + 3 scopes
+
+## akb2_gate_check.py --help
+usage: akb2_gate_check.py [-h] {check} ...
+
+AKB 2.0 Phase C-3 Gate Check (L3 proposal layer)
+
+positional arguments:
+  {check}
+    check     Run L3 gate check on candidates
+
+options:
+  -h, --help  show this help message and exit
+
+## akb2_toolbox_scan --help
+Traceback (most recent call last):
+  File "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/src/akb2/toolbox_scan/akb2_toolbox_scan/__main__.py", line 10, in <module>
+    from .coverage import annotate_with_akb_coverage
+ImportError: attempted relative import with no known parent package

@@ -1,0 +1,279 @@
+# AKB2 Step 5 Before Scan
+# Date: 2026-05-09T07:22:54Z
+
+## Pattern 1: ai-infra/akb2
+evals/c4b/cc-akb-search/run-evidence.md:8:fixture_path: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/c4b/cc-akb-search/preflight.md
+src/akb2/automation_gate/run_gate.sh:25:CLOSURE_MANIFEST="$CODEX_BASE/ai-infra/akb2-toolbox-closure/2026-05-07/closure-manifest.json"
+src/akb2/automation_gate/run_gate.sh:26:L2_REG_BASE="$CODEX_BASE/ai-infra/akb2-toolbox-evals/l2-regression-v1"
+src/akb2/automation_gate/run_gate.sh:27:PROMO_BASE="$CODEX_BASE/ai-infra/akb2-toolbox-promotion-gate/v0/outputs"
+src/akb2/automation_gate/policy.json:51:    "manifest": "ai-infra/akb2-toolbox-closure/2026-05-07/closure-manifest.json",
+src/akb2/automation_gate/policy.json:52:    "l2_recommendation_dir": "ai-infra/akb2-toolbox-evals/l2-regression-v1/<slug>/recommendation.json",
+src/akb2/automation_gate/policy.json:53:    "promotion_evidence_dir": "ai-infra/akb2-toolbox-promotion-gate/v0/outputs/<slug>/",
+src/akb2/automation_gate/policy.json:56:    "human_approval": "ai-infra/akb2-toolbox-automation-gate/v0/approvals/<slug>.json"
+src/akb2/promotion_gate/v0/README.md:76:ai-infra/akb2-toolbox-evals/l2-regression-v1/cc-local-llm/recommendation.json
+src/akb2/promotion_gate/v0/README.md:77:ai-infra/akb2-toolbox-evals/l2-regression-v1/cc-skill-stocktake/recommendation.json
+src/akb2/promotion_gate/v0/README.md:78:ai-infra/akb2-toolbox-evals/l2-regression-v1/cc-local-llm/baseline-snapshot.md
+src/akb2/promotion_gate/v0/README.md:79:ai-infra/akb2-toolbox-evals/l2-regression-v1/cc-skill-stocktake/baseline-snapshot.md
+evals/l2-regression-v1/cc-local-llm/baseline-snapshot.md:5:**L1 Source**: `ai-infra/akb2-toolbox-evals/p1c-cc-local-llm/`
+evals/l2-regression-v1/cc-local-llm/baseline-snapshot.md:38:- `ai-infra/akb2-toolbox-evals/p1c-cc-local-llm/run-smoke.sh`
+evals/l2-regression-v1/cc-local-llm/baseline-snapshot.md:39:- `ai-infra/akb2-toolbox-evals/p1c-cc-local-llm/fixtures/`
+evals/l2-regression-v1/cc-local-llm/baseline-snapshot.md:40:- `ai-infra/akb2-toolbox-evals/p1c-cc-local-llm/outputs/`
+evals/l2-regression-v1/cc-local-llm/baseline-snapshot.md:41:- `ai-infra/akb2-toolbox-evals/p1c-cc-local-llm/assertions.md`
+evals/l2-regression-v1/cc-local-llm/baseline-snapshot.md:42:- `ai-infra/akb2-toolbox-evals/p1c-cc-local-llm/case-register.md`
+evals/l2-regression-v1/cc-local-llm/baseline-snapshot.md:43:- `ai-infra/akb2-toolbox-evals/p1c-cc-local-llm/run-evidence.md`
+evals/l2-regression-v1/cc-local-llm/baseline-snapshot.md:47:All five-file sha256 values match `ai-infra/akb2-toolbox-closure/2026-05-07/file-sha256.txt`
+src/akb2/matrix/README.md:3:> 占位 — 迁入 `Codex/ai-infra/akb2-toolbox-matrix/` 后填实质内容。
+src/akb2/closure/2026-05-07/handoff.md:64:Codex/ai-infra/akb2-toolbox-closure/2026-05-07/
+src/akb2/closure/2026-05-07/handoff.md:74:Codex/ai-infra/akb2-toolbox-matrix/v0/outputs/
+src/akb2/automation_gate/baseline-snapshot.md:29:| Promotion Gate v0 README exists | ai-infra/akb2-toolbox-promotion-gate/v0/README.md | pass |
+src/akb2/automation_gate/baseline-snapshot.md:30:| Automation Gate v0 README exists | ai-infra/akb2-toolbox-automation-gate/v0/README.md | pass |
+src/akb2/closure/2026-05-07/closure-manifest.json:125:    "global_matrix_json": "Codex/ai-infra/akb2-toolbox-matrix/v0/outputs/global-matrix.json",
+src/akb2/closure/2026-05-07/closure-manifest.json:126:    "global_matrix_md": "Codex/ai-infra/akb2-toolbox-matrix/v0/outputs/global-matrix.md",
+src/akb2/closure/2026-05-07/closure-manifest.json:127:    "collector_script": "Codex/ai-infra/akb2-toolbox-matrix/v0/collect-global-matrix.sh"
+src/akb2/automation_gate/outputs/current/gate-result.json:13:        "l2_recommendation_path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/l2-regression-v1/cc-executable-plan/recommendation.json",
+src/akb2/automation_gate/outputs/current/gate-result.json:23:        "l2_recommendation_path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/l2-regression-v1/cc-review/recommendation.json",
+src/akb2/automation_gate/outputs/current/gate-result.json:33:        "l2_recommendation_path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/l2-regression-v1/cc-local-llm/recommendation.json",
+src/akb2/automation_gate/outputs/current/gate-result.json:43:        "l2_recommendation_path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/l2-regression-v1/cc-skill-stocktake/recommendation.json",
+src/akb2/automation_gate/outputs/current/gate-result.json:53:        "l2_recommendation_path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/l2-regression-v1/cc-akb-search/recommendation.json",
+lint_evals/p2-lint-v0/baseline-snapshot.md:112:Codex/ai-infra/akb2-toolbox-lint/p2-lint-v0/
+src/akb2/gate/README.md:17:cd "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2/gate_check"
+evals/c4a/cc-review/run-evidence.md:9:  positive: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/c4a/cc-review/fixture-positive.md
+evals/c4a/cc-review/run-evidence.md:10:  negative: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/c4a/cc-review/fixture-negative.md
+evals/l2-regression-v1/cc-skill-stocktake/baseline-snapshot.md:5:**L1 Source**: `ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/`
+evals/l2-regression-v1/cc-skill-stocktake/baseline-snapshot.md:38:- `ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/run-smoke.sh`
+evals/l2-regression-v1/cc-skill-stocktake/baseline-snapshot.md:39:- `ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/`
+evals/l2-regression-v1/cc-skill-stocktake/baseline-snapshot.md:40:- `ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/outputs/`
+evals/l2-regression-v1/cc-skill-stocktake/baseline-snapshot.md:41:- `ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/assertions.md`
+evals/l2-regression-v1/cc-skill-stocktake/baseline-snapshot.md:42:- `ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/case-register.md`
+evals/l2-regression-v1/cc-skill-stocktake/baseline-snapshot.md:43:- `ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/run-evidence.md`
+evals/l2-regression-v1/cc-skill-stocktake/baseline-snapshot.md:44:- `ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/baseline-snapshot.md`
+evals/l2-regression-v1/cc-skill-stocktake/baseline-snapshot.md:49:`ai-infra/akb2-toolbox-evals/l2-regression-v1/cc-local-llm/recommendation.json`
+evals/l2-regression-v1/cc-skill-stocktake/baseline-snapshot.md:55:All five-file sha256 values match `ai-infra/akb2-toolbox-closure/2026-05-07/file-sha256.txt`
+evals/c4a/cc-executable-plan/run-evidence.md:8:fixture_path: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/c4a/cc-executable-plan/fixture.md
+evals/p1b-l2-regression/cc-executable-plan/outputs/02-mandatory-ai-infra-plan.md:51:- `Codex/ai-infra/akb2-gate-checker/akb2_gate_check/__main__.py` 已 active(C-3 APPROVED)
+evals/p1b-l2-regression/cc-executable-plan/outputs/02-mandatory-ai-infra-plan.md:76:- `Codex/ai-infra/akb2-gate-checker/akb2_gate_check/__main__.py`:
+evals/p1b-l2-regression/cc-executable-plan/outputs/02-mandatory-ai-infra-plan.md:144:   - 跑全 unit tests:`cd Codex/ai-infra/akb2-gate-checker && python -m pytest tests/ -v` 应 22-24/22-24 全过
+evals/p1b-l2-regression/cc-executable-plan/outputs/02-mandatory-ai-infra-plan.md:187:- `cd Codex/ai-infra/akb2-gate-checker && python -m akb2_gate_check --mode dry-run --strict-mode`
+evals/p1b-l2-regression/cc-executable-plan/outputs/02-mandatory-ai-infra-plan.md:189:- `cd Codex/ai-infra/akb2-gate-checker && python -m pytest tests/ -v`
+src/akb2/closure/2026-05-08-p1e-delta/regression/bad-delta-cc-review.json:55:        "a4_eval_pack": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a4/",
+src/akb2/closure/2026-05-08-p1e-delta/regression/bad-delta-cc-review.json:56:        "a4_fixture_results": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a4/fixture-results.json",
+src/akb2/closure/2026-05-08-p1e-delta/regression/bad-delta-cc-review.json:57:        "a4_run_evidence": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a4/run-evidence.md",
+src/akb2/closure/2026-05-08-p1e-delta/regression/bad-delta-cc-review.json:58:        "review2_summary": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-summary.json",
+src/akb2/closure/2026-05-08-p1e-delta/regression/bad-delta-cc-review.json:59:        "review2_round1": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-round1-transcript.md",
+src/akb2/closure/2026-05-08-p1e-delta/regression/bad-delta-cc-review.json:60:        "review2_round2": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-round2-transcript.md",
+src/akb2/closure/2026-05-08-p1e-delta/regression/bad-delta-cc-review.json:61:        "review2_round3": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-round3-transcript.md",
+src/akb2/closure/2026-05-08-p1e-delta/regression/bad-delta-cc-review.json:62:        "c5_verdict": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-c5/c5-verdict.json",
+src/akb2/closure/2026-05-08-p1e-delta/regression/bad-delta-cc-review.json:63:        "c5_mcp_call": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-c5/c5-mcp-call-2026-05-08.json"
+evals/p1b-l2-regression/cc-review/run-evidence.md:46:ls "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1b-l2-regression/cc-review/fixtures" | wc -l
+evals/p1b-l2-regression/cc-review/run-evidence.md:49:ls "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1b-l2-regression/cc-review/outputs" | wc -l
+evals/p1b-l2-regression/cc-review/run-evidence.md:53:for f in "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1b-l2-regression/cc-review/outputs/"*.md; do
+evals/p1b-l2-regression/cc-review/run-evidence.md:65:for f in "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1b-l2-regression/cc-review/outputs/"*.md; do
+evals/p1b-l2-regression/cc-review/run-evidence.md:77:grep -lE "^automation_allowed: true$" "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1b-l2-regression/cc-review/outputs/"*.md
+evals/p1b-l2-regression/cc-review/run-evidence.md:82:grep -A 1 "^## 问题$" "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1b-l2-regression/cc-review/outputs/04-edge-residual-risk-only-review.md" | tail -1
+evals/p1b-l2-regression/cc-review/run-evidence.md:86:grep -c "PLANTED" "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1b-l2-regression/cc-review/outputs/03-mandatory-code-bug-review.md"
+evals/p1b-l2-regression/cc-executable-plan/fixtures/02-mandatory-ai-infra-plan.md:5:为 `ai-infra/akb2-gate-checker/` 加一个 `--strict-mode` 旗标,启用后:(1) `proposed_gate_decision: needs_human_review` 任一记录 → exit 3 而不是 0;(2) 输出 stderr 警告含 `[STRICT-MODE]` 前缀。
+evals/p1b-l2-regression/cc-executable-plan/fixtures/02-mandatory-ai-infra-plan.md:9:- 现有包:`Codex/ai-infra/akb2-gate-checker/akb2_gate_check/__main__.py`(C-3 完成,已 APPROVED)
+evals/p1d-cc-skill-stocktake/outputs/01-scan/stderr.txt:1:Warning: CWD_SKILLS_DIR does not look like a .claude/skills path: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills
+src/akb2/closure/2026-05-08-p1e-delta/regression/run-evidence.md:17:  --primary <Codex>/ai-infra/akb2-toolbox-closure/2026-05-07/closure-manifest.json \
+evals/p1d-cc-skill-stocktake/outputs/preflight.json:10:  "fixture_path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/",
+src/akb2/closure/2026-05-08-p1e-delta/regression/discovery-update-fixture-good.json:56:        "a4_eval_pack": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a4/",
+src/akb2/closure/2026-05-08-p1e-delta/regression/discovery-update-fixture-good.json:57:        "a4_fixture_results": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a4/fixture-results.json",
+src/akb2/closure/2026-05-08-p1e-delta/regression/discovery-update-fixture-good.json:58:        "a4_run_evidence": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a4/run-evidence.md",
+src/akb2/closure/2026-05-08-p1e-delta/regression/discovery-update-fixture-good.json:59:        "review2_summary": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-summary.json",
+src/akb2/closure/2026-05-08-p1e-delta/regression/discovery-update-fixture-good.json:60:        "review2_round1": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-round1-transcript.md",
+src/akb2/closure/2026-05-08-p1e-delta/regression/discovery-update-fixture-good.json:61:        "review2_round2": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-round2-transcript.md",
+src/akb2/closure/2026-05-08-p1e-delta/regression/discovery-update-fixture-good.json:62:        "review2_round3": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-round3-transcript.md",
+src/akb2/closure/2026-05-08-p1e-delta/regression/discovery-update-fixture-good.json:63:        "c5_verdict": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-c5/c5-verdict.json",
+src/akb2/closure/2026-05-08-p1e-delta/regression/discovery-update-fixture-good.json:64:        "c5_mcp_call": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-c5/c5-mcp-call-2026-05-08.json"
+evals/p1d-cc-skill-stocktake/assertions.md:82:| Runner | `Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/run-smoke.sh` |
+evals/p1b-l2-regression/cc-executable-plan/run-evidence.md:46:ls "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1b-l2-regression/cc-executable-plan/fixtures" | wc -l
+evals/p1b-l2-regression/cc-executable-plan/run-evidence.md:49:ls "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1b-l2-regression/cc-executable-plan/outputs" | wc -l
+evals/p1b-l2-regression/cc-executable-plan/run-evidence.md:53:for f in "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1b-l2-regression/cc-executable-plan/outputs/"*.md; do
+evals/p1b-l2-regression/cc-executable-plan/run-evidence.md:64:grep -lE "^automation_allowed: true$" "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1b-l2-regression/cc-executable-plan/outputs/"*.md
+evals/p1b-l2-regression/cc-executable-plan/run-evidence.md:68:grep -cE "^[0-9]+\. \*\*" "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1b-l2-regression/cc-executable-plan/outputs/04-edge-ambiguous-input-plan.md"
+evals/p1b-l2-regression/cc-executable-plan/run-evidence.md:72:grep -c "Review handoff" "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1b-l2-regression/cc-executable-plan/outputs/05-edge-review-handoff-plan.md"
+evals/p1b-l2-regression/cc-executable-plan/run-evidence.md:75:grep -cE "^[0-9]+\. \*\*" "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1b-l2-regression/cc-executable-plan/outputs/05-edge-review-handoff-plan.md"
+evals/p1d-cc-skill-stocktake/outputs/01-scan/raw-output.json:9:      "path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills",
+evals/p1d-cc-skill-stocktake/outputs/01-scan/raw-output.json:15:      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-a/SKILL.md",
+evals/p1d-cc-skill-stocktake/outputs/01-scan/raw-output.json:23:      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-b/SKILL.md",
+evals/p1d-cc-skill-stocktake/outputs/01-scan/raw-output.json:31:      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-c/SKILL.md",
+evals/p1d-cc-skill-stocktake/outputs/01-scan/raw-output.json:39:      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-a/SKILL.md",
+evals/p1d-cc-skill-stocktake/outputs/01-scan/raw-output.json:47:      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-b/SKILL.md",
+evals/p1d-cc-skill-stocktake/outputs/01-scan/raw-output.json:55:      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-c/SKILL.md",
+evals/p1d-cc-skill-stocktake/baseline-snapshot.md:12:Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/
+evals/l2-regression-v1/cc-skill-stocktake/case-register.md:51:upstream: ai-infra/akb2-toolbox-evals/l2-regression-v1/cc-local-llm/recommendation.json
+evals/p1d-cc-skill-stocktake/run-evidence.md:75:EV="/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake"
+evals/p1d-cc-skill-stocktake/outputs/04-save-results/results.json:4:      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-a/SKILL.md",
+evals/p1d-cc-skill-stocktake/outputs/04-save-results/results.json:9:      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-b/SKILL.md",
+evals/p1d-cc-skill-stocktake/outputs/04-save-results/results.json:14:      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-c/SKILL.md",
+evals/p1d-cc-skill-stocktake/outputs/02-quickdiff-nochange/stderr.txt:1:Warning: CWD_SKILLS_DIR does not look like a .claude/skills path: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills
+evals/p1d-cc-skill-stocktake/fixtures/changed-results.json:5:      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-a/SKILL.md",
+evals/p1d-cc-skill-stocktake/fixtures/changed-results.json:10:      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-b/SKILL.md",
+evals/p1d-cc-skill-stocktake/outputs/03-quickdiff-changed/stderr.txt:1:Warning: CWD_SKILLS_DIR does not look like a .claude/skills path: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills
+evals/c5b/cc-review/run-evidence.md:10:  positive: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/c4a/cc-review/fixture-positive.md
+evals/c5b/cc-review/run-evidence.md:11:  negative: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/c4a/cc-review/fixture-negative.md
+evals/p1d-cc-skill-stocktake/fixtures/save-results-input.json:4:      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-a/SKILL.md",
+evals/p1d-cc-skill-stocktake/fixtures/save-results-input.json:9:      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-b/SKILL.md",
+evals/p1d-cc-skill-stocktake/fixtures/save-results-input.json:14:      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-c/SKILL.md",
+evals/p1d-cc-skill-stocktake/outputs/03-quickdiff-changed/raw-output.json:3:    "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-a/SKILL.md",
+evals/p1d-cc-skill-stocktake/outputs/03-quickdiff-changed/raw-output.json:8:    "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-b/SKILL.md",
+evals/p1d-cc-skill-stocktake/outputs/03-quickdiff-changed/raw-output.json:13:    "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-c/SKILL.md",
+evals/p1d-cc-skill-stocktake/outputs/03-quickdiff-changed/raw-output.json:18:    "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-a/SKILL.md",
+evals/p1d-cc-skill-stocktake/outputs/03-quickdiff-changed/raw-output.json:23:    "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-b/SKILL.md",
+evals/p1d-cc-skill-stocktake/outputs/03-quickdiff-changed/raw-output.json:28:    "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-c/SKILL.md",
+lint_evals/p2-lint-v0/fixtures/r04-sha-drift/toolbox/interfaces/fixture-tool.md:5:workspace_path: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-lint/p2-lint-v0/fixtures/r04-sha-drift/fake-skill.md
+evals/p1d-cc-skill-stocktake/outputs/06-isolation-failure/6b1-err.txt:1:Error: invalid or missing evaluated_at in /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/invalid-results.json: not-a-valid-iso-timestamp
+evals/p1d-cc-skill-stocktake/fixtures/evaluator-input.json:9:      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-a/SKILL.md"
+evals/p1d-cc-skill-stocktake/fixtures/evaluator-input.json:17:      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-b/SKILL.md"
+evals/p1d-cc-skill-stocktake/fixtures/evaluator-input.json:25:      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-c/SKILL.md",
+src/akb2/closure/2026-05-08-p1e-delta/delta-manifest.json:56:        "a4_eval_pack": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a4/",
+src/akb2/closure/2026-05-08-p1e-delta/delta-manifest.json:57:        "a4_fixture_results": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a4/fixture-results.json",
+src/akb2/closure/2026-05-08-p1e-delta/delta-manifest.json:58:        "a4_run_evidence": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a4/run-evidence.md",
+src/akb2/closure/2026-05-08-p1e-delta/delta-manifest.json:59:        "review2_summary": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-summary.json",
+src/akb2/closure/2026-05-08-p1e-delta/delta-manifest.json:60:        "review2_round1": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-round1-transcript.md",
+src/akb2/closure/2026-05-08-p1e-delta/delta-manifest.json:61:        "review2_round2": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-round2-transcript.md",
+src/akb2/closure/2026-05-08-p1e-delta/delta-manifest.json:62:        "review2_round3": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-round3-transcript.md",
+src/akb2/closure/2026-05-08-p1e-delta/delta-manifest.json:63:        "c5_verdict": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-c5/c5-verdict.json",
+src/akb2/closure/2026-05-08-p1e-delta/delta-manifest.json:64:        "c5_mcp_call": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-c5/c5-mcp-call-2026-05-08.json"
+evals/c5b/cc-executable-plan/run-evidence.md:9:fixture_path: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/c4a/cc-executable-plan/fixture.md
+src/akb2/closure/2026-05-08-p1e-delta/effective-manifest.json:88:        "a4_eval_pack": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a4/",
+src/akb2/closure/2026-05-08-p1e-delta/effective-manifest.json:89:        "a4_fixture_results": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a4/fixture-results.json",
+src/akb2/closure/2026-05-08-p1e-delta/effective-manifest.json:90:        "a4_run_evidence": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a4/run-evidence.md",
+src/akb2/closure/2026-05-08-p1e-delta/effective-manifest.json:91:        "review2_summary": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-summary.json",
+src/akb2/closure/2026-05-08-p1e-delta/effective-manifest.json:92:        "review2_round1": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-round1-transcript.md",
+src/akb2/closure/2026-05-08-p1e-delta/effective-manifest.json:93:        "review2_round2": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-round2-transcript.md",
+src/akb2/closure/2026-05-08-p1e-delta/effective-manifest.json:94:        "review2_round3": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-round3-transcript.md",
+src/akb2/closure/2026-05-08-p1e-delta/effective-manifest.json:95:        "c5_verdict": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-c5/c5-verdict.json",
+src/akb2/closure/2026-05-08-p1e-delta/effective-manifest.json:96:        "c5_mcp_call": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-c5/c5-mcp-call-2026-05-08.json"
+src/akb2/closure/2026-05-08-p1e-delta/effective-manifest.json:156:    "global_matrix_json": "Codex/ai-infra/akb2-toolbox-matrix/v0/outputs/global-matrix.json",
+src/akb2/closure/2026-05-08-p1e-delta/effective-manifest.json:157:    "global_matrix_md": "Codex/ai-infra/akb2-toolbox-matrix/v0/outputs/global-matrix.md",
+src/akb2/closure/2026-05-08-p1e-delta/effective-manifest.json:158:    "collector_script": "Codex/ai-infra/akb2-toolbox-matrix/v0/collect-global-matrix.sh"
+src/akb2/closure/2026-05-08-p1e-delta/effective-manifest.json:221:        "a4_eval_pack": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a4/",
+src/akb2/closure/2026-05-08-p1e-delta/effective-manifest.json:222:        "a4_fixture_results": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a4/fixture-results.json",
+src/akb2/closure/2026-05-08-p1e-delta/effective-manifest.json:223:        "a4_run_evidence": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-a4/run-evidence.md",
+src/akb2/closure/2026-05-08-p1e-delta/effective-manifest.json:224:        "review2_summary": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-summary.json",
+src/akb2/closure/2026-05-08-p1e-delta/effective-manifest.json:225:        "review2_round1": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-round1-transcript.md",
+src/akb2/closure/2026-05-08-p1e-delta/effective-manifest.json:226:        "review2_round2": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-round2-transcript.md",
+src/akb2/closure/2026-05-08-p1e-delta/effective-manifest.json:227:        "review2_round3": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-review2/review2-round3-transcript.md",
+src/akb2/closure/2026-05-08-p1e-delta/effective-manifest.json:228:        "c5_verdict": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-c5/c5-verdict.json",
+src/akb2/closure/2026-05-08-p1e-delta/effective-manifest.json:229:        "c5_mcp_call": "ai-infra/akb2-toolbox-evals/p1e-cc-akb-search-c5/c5-mcp-call-2026-05-08.json"
+evals/p1d-cc-skill-stocktake/fixtures/baseline-results.json:5:      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-a/SKILL.md",
+evals/p1d-cc-skill-stocktake/fixtures/baseline-results.json:10:      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-b/SKILL.md",
+evals/p1d-cc-skill-stocktake/fixtures/baseline-results.json:15:      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-c/SKILL.md",
+src/akb2/closure/README.md:3:> 占位 — 迁入 `Codex/ai-infra/akb2-toolbox-closure/` 后填实质内容。
+lint_evals/p2-lint-v1/baseline-snapshot.md:112:Codex/ai-infra/akb2-toolbox-lint/p2-lint-v0/
+evals/p1c-cc-local-llm/run-evidence.md:67:DST="/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1c-cc-local-llm"
+evals/p1c-cc-local-llm/case-register.md:39:1. user 跑 `bash Codex/ai-infra/akb2-toolbox-evals/p1c-cc-local-llm/run-smoke.sh --all`
+evals/p1c-cc-local-llm/assertions.md:83:| Runner | `Codex/ai-infra/akb2-toolbox-evals/p1c-cc-local-llm/run-smoke.sh` |
+lint_evals/p2-lint-v1/fixtures/r04-eval-workspace-version-drift/toolbox/interfaces/fixture-tool.md:5:workspace_path: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-lint/p2-lint-v1/fixtures/r04-eval-workspace-version-drift/fake-skill.md
+lint_evals/p2-lint-v1/fixtures/r04-eval-workspace-version-missing/toolbox/interfaces/fixture-tool.md:5:workspace_path: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-lint/p2-lint-v1/fixtures/r04-eval-workspace-version-missing/fake-skill.md
+lint_evals/p2-lint-v1/fixtures/r04-blocked-candidate-eval-missing/toolbox/interfaces/fixture-tool.md:5:workspace_path: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-lint/p2-lint-v1/fixtures/r04-blocked-candidate-eval-missing/fake-skill.md
+lint_evals/p2-lint-v1/fixtures/r04-sha-drift/toolbox/interfaces/fixture-tool.md:5:workspace_path: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-lint/p2-lint-v0/fixtures/r04-sha-drift/fake-skill.md
+
+## Pattern 2: Codex absolute paths
+src/akb2/search_quality/v0/run-search-quality.sh:26:CODEX_ROOT="/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex"
+evals/c5b/cc-review/run-evidence.md:10:  positive: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/c4a/cc-review/fixture-positive.md
+evals/c5b/cc-review/run-evidence.md:11:  negative: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/c4a/cc-review/fixture-negative.md
+evals/c5b/cc-executable-plan/run-evidence.md:9:fixture_path: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/c4a/cc-executable-plan/fixture.md
+evals/c4b/cc-akb-search/run-evidence.md:8:fixture_path: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/c4b/cc-akb-search/preflight.md
+evals/p1b-l2-regression/cc-review/run-evidence.md:46:ls "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1b-l2-regression/cc-review/fixtures" | wc -l
+evals/p1b-l2-regression/cc-review/run-evidence.md:49:ls "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1b-l2-regression/cc-review/outputs" | wc -l
+evals/p1b-l2-regression/cc-review/run-evidence.md:53:for f in "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1b-l2-regression/cc-review/outputs/"*.md; do
+evals/p1b-l2-regression/cc-review/run-evidence.md:65:for f in "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1b-l2-regression/cc-review/outputs/"*.md; do
+evals/p1b-l2-regression/cc-review/run-evidence.md:77:grep -lE "^automation_allowed: true$" "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1b-l2-regression/cc-review/outputs/"*.md
+evals/p1b-l2-regression/cc-review/run-evidence.md:82:grep -A 1 "^## 问题$" "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1b-l2-regression/cc-review/outputs/04-edge-residual-risk-only-review.md" | tail -1
+evals/p1b-l2-regression/cc-review/run-evidence.md:86:grep -c "PLANTED" "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1b-l2-regression/cc-review/outputs/03-mandatory-code-bug-review.md"
+src/akb2/automation_gate/outputs/current/gate-result.json:13:        "l2_recommendation_path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/l2-regression-v1/cc-executable-plan/recommendation.json",
+src/akb2/automation_gate/outputs/current/gate-result.json:23:        "l2_recommendation_path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/l2-regression-v1/cc-review/recommendation.json",
+src/akb2/automation_gate/outputs/current/gate-result.json:33:        "l2_recommendation_path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/l2-regression-v1/cc-local-llm/recommendation.json",
+src/akb2/automation_gate/outputs/current/gate-result.json:43:        "l2_recommendation_path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/l2-regression-v1/cc-skill-stocktake/recommendation.json",
+src/akb2/automation_gate/outputs/current/gate-result.json:53:        "l2_recommendation_path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/l2-regression-v1/cc-akb-search/recommendation.json",
+evals/p1c-cc-local-llm/run-evidence.md:67:DST="/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1c-cc-local-llm"
+evals/p1d-cc-skill-stocktake/outputs/preflight.json:10:  "fixture_path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/",
+evals/p1b-l2-regression/cc-executable-plan/run-evidence.md:46:ls "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1b-l2-regression/cc-executable-plan/fixtures" | wc -l
+evals/p1b-l2-regression/cc-executable-plan/run-evidence.md:49:ls "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1b-l2-regression/cc-executable-plan/outputs" | wc -l
+evals/p1b-l2-regression/cc-executable-plan/run-evidence.md:53:for f in "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1b-l2-regression/cc-executable-plan/outputs/"*.md; do
+evals/p1b-l2-regression/cc-executable-plan/run-evidence.md:64:grep -lE "^automation_allowed: true$" "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1b-l2-regression/cc-executable-plan/outputs/"*.md
+evals/p1b-l2-regression/cc-executable-plan/run-evidence.md:68:grep -cE "^[0-9]+\. \*\*" "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1b-l2-regression/cc-executable-plan/outputs/04-edge-ambiguous-input-plan.md"
+evals/p1b-l2-regression/cc-executable-plan/run-evidence.md:72:grep -c "Review handoff" "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1b-l2-regression/cc-executable-plan/outputs/05-edge-review-handoff-plan.md"
+evals/p1b-l2-regression/cc-executable-plan/run-evidence.md:75:grep -cE "^[0-9]+\. \*\*" "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1b-l2-regression/cc-executable-plan/outputs/05-edge-review-handoff-plan.md"
+src/akb2/gate/README.md:17:cd "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2/gate_check"
+evals/p1d-cc-skill-stocktake/outputs/01-scan/stderr.txt:1:Warning: CWD_SKILLS_DIR does not look like a .claude/skills path: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills
+evals/p1d-cc-skill-stocktake/outputs/01-scan/raw-output.json:9:      "path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills",
+evals/p1d-cc-skill-stocktake/outputs/02-quickdiff-nochange/stderr.txt:1:Warning: CWD_SKILLS_DIR does not look like a .claude/skills path: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills
+evals/p1d-cc-skill-stocktake/outputs/03-quickdiff-changed/stderr.txt:1:Warning: CWD_SKILLS_DIR does not look like a .claude/skills path: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills
+evals/p1d-cc-skill-stocktake/run-evidence.md:75:EV="/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake"
+lint_evals/p2-lint-v0/fixtures/r04-sha-drift/toolbox/interfaces/fixture-tool.md:5:workspace_path: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-lint/p2-lint-v0/fixtures/r04-sha-drift/fake-skill.md
+evals/p1d-cc-skill-stocktake/outputs/06-isolation-failure/6b1-err.txt:1:Error: invalid or missing evaluated_at in /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/invalid-results.json: not-a-valid-iso-timestamp
+lint_evals/p2-lint-v1/fixtures/r04-blocked-candidate-eval-missing/toolbox/interfaces/fixture-tool.md:5:workspace_path: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-lint/p2-lint-v1/fixtures/r04-blocked-candidate-eval-missing/fake-skill.md
+lint_evals/p2-lint-v1/fixtures/r04-eval-workspace-version-missing/toolbox/interfaces/fixture-tool.md:5:workspace_path: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-lint/p2-lint-v1/fixtures/r04-eval-workspace-version-missing/fake-skill.md
+evals/c4a/cc-review/run-evidence.md:9:  positive: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/c4a/cc-review/fixture-positive.md
+evals/c4a/cc-review/run-evidence.md:10:  negative: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/c4a/cc-review/fixture-negative.md
+evals/p1e-cc-akb-search-a2/mcp-entry-draft.json:11:      "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/plugins/claude-code-ai-infra/mcp-servers/akb-search-readonly/server.py"
+evals/c4a/cc-executable-plan/fixture.md:19:        "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/templates/plan-template.md"
+evals/c4a/cc-executable-plan/run-evidence.md:8:fixture_path: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/c4a/cc-executable-plan/fixture.md
+evals/p1e-cc-akb-search-a3/run-evidence.md:93:    "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/plugins/claude-code-ai-infra/mcp-servers/akb-search-readonly/server.py"
+evals/p1e-cc-akb-search-a3/run-evidence.md:187:        "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/plugins/claude-code-ai-infra/mcp-servers/akb-search-readonly/server.py"
+evals/p1e-cc-akb-search-a4/execution-capsule.md:10:- **Backend**: stdio MCP server at `/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/plugins/claude-code-ai-infra/mcp-servers/akb-search-readonly/server.py`
+lint_evals/p2-lint-v1/fixtures/r04-eval-workspace-version-drift/toolbox/interfaces/fixture-tool.md:5:workspace_path: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-lint/p2-lint-v1/fixtures/r04-eval-workspace-version-drift/fake-skill.md
+lint_evals/p2-lint-v1/fixtures/r04-sha-drift/toolbox/interfaces/fixture-tool.md:5:workspace_path: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-lint/p2-lint-v0/fixtures/r04-sha-drift/fake-skill.md
+
+## Pattern 3: .codex/skills/cc-
+lint_evals/p2-lint-v0/outputs/lint-current-5-tools.json:34:      "evidence": "workspace_path exists: /Users/praise/.codex/skills/cc-executable-plan/SKILL.md",
+lint_evals/p2-lint-v0/outputs/lint-current-5-tools.json:98:      "evidence": "workspace_path exists: /Users/praise/.codex/skills/cc-review/SKILL.md",
+lint_evals/p2-lint-v0/outputs/lint-current-5-tools.json:162:      "evidence": "workspace_path exists: /Users/praise/.codex/skills/cc-local-llm/SKILL.md",
+lint_evals/p2-lint-v0/outputs/lint-current-5-tools.json:226:      "evidence": "workspace_path exists: /Users/praise/.codex/skills/cc-skill-stocktake/SKILL.md",
+lint_evals/p2-lint-v0/outputs/lint-current-5-tools.json:290:      "evidence": "workspace_path exists: /Users/praise/.codex/skills/cc-akb-search/SKILL.md",
+evals/c4b/cc-akb-search/run-evidence.md:38:- `~/.codex/skills/cc-akb-search/SKILL.md` 未被改动;sha256 前后一致
+evals/p1b-l2-regression/cc-executable-plan/outputs/05-edge-review-handoff-plan.md:155:1. **r04 sha256 drift**:挑 cc-executable-plan,手动跑 `shasum -a 256 ~/.codex/skills/cc-executable-plan/SKILL.md | cut -c1-12` 对比 `grep workspace_version AKB2.0/toolbox/interfaces/cc-executable-plan.md`;两者前 12 hex 一致 → r04 应 0 finding;若 lint 报 finding 而手算无漂移 → bug;若 lint 报无漂移而手算漂移 → bug
+evals/c4b/cc-akb-search/preflight.md:10:`~/.codex/skills/cc-akb-search/SKILL.md` declares:
+evals/c4b/cc-akb-search/preflight.md:23:shasum -a 256 ~/.codex/skills/cc-akb-search/SKILL.md
+evals/c4b/cc-akb-search/preflight.md:68:head -c 4096 ~/.codex/skills/cc-akb-search/SKILL.md | \
+evals/p1b-l2-regression/cc-review/run-evidence.md:9:| Workspace path | `~/.codex/skills/cc-review/SKILL.md` |
+evals/p1b-l2-regression/cc-review/run-evidence.md:13:| Runner override reason | Codex CLI 在本 Claude Code session 内不可直接调用;Claude 严格按 cc-review SKILL.md `Output Contract` + `references/structured-review-templates.md` 自驱产出;模板 source-of-truth 为 `~/.codex/skills/cc-review/references/structured-review-templates.md` |
+evals/p1b-l2-regression/cc-review/run-evidence.md:22:shasum -a 256 ~/.codex/skills/cc-review/SKILL.md
+evals/p1b-l2-regression/cc-review/run-evidence.md:26:shasum -a 256 ~/.codex/skills/cc-review/SKILL.md
+evals/p1b-l2-regression/cc-review/run-evidence.md:73:shasum -a 256 ~/.codex/skills/cc-review/SKILL.md | cut -c1-64
+evals/p1b-l2-regression/cc-review/case-register.md:6:Workspace path:`~/.codex/skills/cc-review/SKILL.md`
+evals/l2-regression-v1/cc-local-llm/baseline-snapshot.md:30:`3a31ebe4f5938864e752ea51d35d89403e62d31a352ac3eaf01a784721c73050`  `~/.codex/skills/cc-local-llm/SKILL.md`
+src/akb2/closure/2026-05-07/file-sha256.txt:8:5af73fdadd91097cc60f8e6c3622427aeaac8382bda0d1525debe564f2c46d0a  ~/.codex/skills/cc-executable-plan/SKILL.md
+src/akb2/closure/2026-05-07/file-sha256.txt:9:592cf3ed4b2c6e3f96c63a500bdbe3bebbc375a19983debbfa7f1877f406d274  ~/.codex/skills/cc-review/SKILL.md
+src/akb2/closure/2026-05-07/file-sha256.txt:10:3a31ebe4f5938864e752ea51d35d89403e62d31a352ac3eaf01a784721c73050  ~/.codex/skills/cc-local-llm/SKILL.md
+src/akb2/closure/2026-05-07/file-sha256.txt:11:df16be83df67a04605b61294a210f9ad214b22e55ce40a45f34068dbaa2c48f2  ~/.codex/skills/cc-skill-stocktake/SKILL.md
+src/akb2/closure/2026-05-07/file-sha256.txt:12:b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982  ~/.codex/skills/cc-akb-search/SKILL.md
+lint_evals/p2-lint-v0/baseline-snapshot.md:91:路径：`~/.codex/skills/cc-skill-stocktake/references/source-bundled-resources/scripts/`
+evals/p1e-cc-akb-search-unblock/run-evidence.md:27:| SKILL.md sha256 | b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982 | `shasum -a 256 ~/.codex/skills/cc-akb-search/SKILL.md` |
+evals/p1b-l2-regression/cc-executable-plan/run-evidence.md:9:| Workspace path | `~/.codex/skills/cc-executable-plan/SKILL.md` |
+evals/p1b-l2-regression/cc-executable-plan/run-evidence.md:22:shasum -a 256 ~/.codex/skills/cc-executable-plan/SKILL.md
+evals/p1b-l2-regression/cc-executable-plan/run-evidence.md:26:shasum -a 256 ~/.codex/skills/cc-executable-plan/SKILL.md
+evals/p1b-l2-regression/cc-executable-plan/run-evidence.md:60:shasum -a 256 ~/.codex/skills/cc-executable-plan/SKILL.md | cut -c1-64
+evals/p1b-l2-regression/cc-executable-plan/case-register.md:6:Workspace path:`~/.codex/skills/cc-executable-plan/SKILL.md`
+evals/p1e-cc-akb-search-unblock/a1-preflight.md:16:shasum -a 256 ~/.codex/skills/cc-akb-search/SKILL.md
+evals/l2-regression-v1/cc-local-llm/run-l2.sh:50:ACTUAL_SKILL_SHA=$(shasum -a 256 "$HOME/.codex/skills/cc-local-llm/SKILL.md" 2>/dev/null | awk '{print $1}') || ACTUAL_SKILL_SHA="MISSING"
+evals/p1e-cc-akb-search-unblock/a1-skill-hash.txt:8:b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982  /Users/praise/.codex/skills/cc-akb-search/SKILL.md
+evals/l2-regression-v1/cc-skill-stocktake/baseline-snapshot.md:30:`df16be83df67a04605b61294a210f9ad214b22e55ce40a45f34068dbaa2c48f2`  `~/.codex/skills/cc-skill-stocktake/SKILL.md`
+evals/c4a/cc-executable-plan/fixture.md:8:- skill path: `~/.codex/skills/cc-executable-plan/SKILL.md`
+evals/c4a/cc-executable-plan/fixture.md:14:1. `shasum -a 256 ~/.codex/skills/cc-executable-plan/SKILL.md` matches expected sha256
+evals/c4a/cc-review/fixture-positive.md:8:- skill path: `~/.codex/skills/cc-review/SKILL.md`
+evals/c4a/cc-review/fixture-positive.md:14:- [ ] `shasum -a 256 ~/.codex/skills/cc-review/SKILL.md` matches expected
+evals/c4a/cc-review/fixture-negative.md:9:- [ ] `shasum -a 256 ~/.codex/skills/cc-review/SKILL.md` matches `d6e7ce54dce6e76e87998c0d5fb419b43e83b303fec7c2f7bd01df05a214cbb3`
+evals/l2-regression-v1/cc-skill-stocktake/run-l2.sh:42:ACTUAL_SHA=$(shasum -a 256 "$HOME/.codex/skills/cc-skill-stocktake/SKILL.md" 2>/dev/null | awk '{print $1}') || ACTUAL_SHA="MISSING"
+evals/p1e-cc-akb-search-a2/run-evidence.md:22:/Users/praise/.codex/skills/cc-akb-search/SKILL.md
+evals/p1e-cc-akb-search-a2/a2-preflight.md:26:shasum -a 256 ~/.codex/skills/cc-akb-search/SKILL.md
+evals/p1d-cc-skill-stocktake/baseline-snapshot.md:113:2. Edit `~/.codex/skills/cc-skill-stocktake/SKILL.md` prepend 2 anchor 注释
+evals/p1c-cc-local-llm/run-evidence.md:9:| Workspace | `~/.codex/skills/cc-local-llm/SKILL.md` sha256 = `3a31ebe4f5938864e752ea51d35d89403e62d31a352ac3eaf01a784721c73050`(P1c-0 后基线;`b8050d3c236a` → `3a31ebe4f593`)|
+evals/p1c-cc-local-llm/run-evidence.md:25:shasum -a 256 ~/.codex/skills/cc-local-llm/SKILL.md
+evals/p1c-cc-local-llm/run-evidence.md:29:shasum -a 256 ~/.codex/skills/cc-{executable-plan,review,akb-search,skill-stocktake}/SKILL.md
+evals/p1c-cc-local-llm/run-evidence.md:96:shasum -a 256 ~/.codex/skills/cc-local-llm/SKILL.md
+evals/p1c-cc-local-llm/run-evidence.md:113:- `~/.codex/skills/cc-local-llm/SKILL.md` 仍是 P1c-0 后基线 `3a31ebe4f593`(C-4 不修改 SKILL.md)
+lint_evals/p2-lint-v1/baseline-snapshot.md:91:路径：`~/.codex/skills/cc-skill-stocktake/references/source-bundled-resources/scripts/`
+lint_evals/p2-lint-v1/outputs/lint-current-5-tools.json:34:      "evidence": "workspace_path exists: /Users/praise/.codex/skills/cc-executable-plan/SKILL.md",
+lint_evals/p2-lint-v1/outputs/lint-current-5-tools.json:98:      "evidence": "workspace_path exists: /Users/praise/.codex/skills/cc-review/SKILL.md",
+lint_evals/p2-lint-v1/outputs/lint-current-5-tools.json:162:      "evidence": "workspace_path exists: /Users/praise/.codex/skills/cc-local-llm/SKILL.md",
+lint_evals/p2-lint-v1/outputs/lint-current-5-tools.json:226:      "evidence": "workspace_path exists: /Users/praise/.codex/skills/cc-skill-stocktake/SKILL.md",
+lint_evals/p2-lint-v1/outputs/lint-current-5-tools.json:290:      "evidence": "workspace_path exists: /Users/praise/.codex/skills/cc-akb-search/SKILL.md",
+evals/p1d-cc-skill-stocktake/run-evidence.md:22:shasum -a 256 ~/.codex/skills/cc-skill-stocktake/SKILL.md
+evals/p1d-cc-skill-stocktake/run-evidence.md:37:  shasum -a 256 ~/.codex/skills/cc-skill-stocktake/references/source-bundled-resources/scripts/$s.sh
+evals/p1d-cc-skill-stocktake/run-evidence.md:99:shasum -a 256 ~/.codex/skills/cc-skill-stocktake/SKILL.md
+evals/p1d-cc-skill-stocktake/run-evidence.md:100:shasum -a 256 ~/.codex/skills/cc-skill-stocktake/references/source-bundled-resources/scripts/{scan,quick-diff,save-results}.sh
+evals/p1d-cc-skill-stocktake/run-smoke.sh:19:BUNDLED="$HOME/.codex/skills/cc-skill-stocktake/references/source-bundled-resources/scripts"
