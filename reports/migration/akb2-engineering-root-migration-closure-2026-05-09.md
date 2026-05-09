@@ -18,7 +18,7 @@
 | Step 4 | 实现 5 个 sync/drift 脚本 | `4999f45` | APPROVED |
 | Step 5 | 60 tests 全替换占位 skip，激活真实 assertions | `1ab2fe2` | APPROVED |
 | Step 6+7 | 三路 sync（codex / claude-backup / claude-active）17/17 MATCH | `3d20a67` | APPROVED |
-| Step 8 | 旧原位副本清理（本次），24 项 delete，0 RESIDUAL | *本次 commit* | *等用户 `/review code`* |
+| Step 8 | 旧原位副本清理（本次），24 项 delete，0 RESIDUAL | `6443989` + `6803507` | APPROVED |
 
 ---
 
