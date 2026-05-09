@@ -151,7 +151,7 @@ SHA 锁定的历史封闭文件。automation-gate 以封闭 SHA 为基准校验�
 | `external_readonly_dependency` | `Claude Code/Project AKB/scripts/main.py` | `run-search-quality.sh --baseline`（双路径对照评估） | AKB CLI 入口；search-quality eval 使用，非 MCP 路径 |
 | `external_readonly_dependency` | `~/.claude/projects/-Users-praise-.../` (Claude transcript dir) | `run-search-quality.sh --collect-queries` SQ-1 | Claude 会话 transcript；SQ-1 扫描 `*.jsonl` 收集 akb_search 调用记录 |
 
-**清理触发条件**：Step 8 清理 Project AKB 原位文件后，上述 1-4 条须同步迁移或重指向新位置。transcript dir 为系统目录，永久有效。
+**清理触发条件**：本轮 Step 8 不清理旧 Project AKB。上述 1-4 条作为 external_readonly_dependency 保留，仅在未来单独启动旧 AKB backend 替换/退役计划时才迁移或重指向新位置。transcript dir 为系统目录，永久有效。
 
 ---
 
@@ -165,7 +165,7 @@ SHA 锁定的历史封闭文件。automation-gate 以封闭 SHA 为基准校验�
 | `install_target` | 7 | Step 6 失效或 install-target 路径变更时 |
 | `allowed_doc_reference` | 8 | 对应模块重构时 |
 | `fixture_must_keep` | 1 | r04 规则机制变更时 |
-| `external_readonly_dependency` | 5 | Step 8 清理 Project AKB 原位文件时须同步处理 |
+| `external_readonly_dependency` | 5 | 本轮不触发；未来旧 AKB backend 替换/退役计划时处理 |
 | **合计（stale-ref 范围内）** | **50** | |
 | **合计（含 external）** | **55** | |
 
@@ -181,4 +181,4 @@ Step 8 清理 Codex 原位文件后，`baseline_snapshot` / `historical_evidence
 
 `sha_locked_record`（9 条）在工程生命周期内永不触碰。
 
-Step 8 清理 Project AKB（旧）原位文件后，`external_readonly_dependency` 前 4 条（catalog.db + search.py + db.py + main.py）须同步迁移或重指向 AKB2 内的新实现。
+本轮 Step 8 不清理旧 Project AKB。`external_readonly_dependency` 前 4 条（catalog.db + search.py + db.py + main.py）作为外部只读依赖保留，仅在未来单独启动旧 AKB backend 替换/退役计划时才迁移或重指向新实现。
