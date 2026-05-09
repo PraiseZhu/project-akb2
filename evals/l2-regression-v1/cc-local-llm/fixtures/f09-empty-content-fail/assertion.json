@@ -1,0 +1,13 @@
+{
+  "fixture_id": "f09-empty-content-fail",
+  "category": "hard_fail_detection",
+  "rounds": 3,
+  "stability_threshold": "3/3",
+  "assertions": [
+    {"type": "schema", "field": "choices[0].message.content", "required": true},
+    {"type": "not_empty", "field": "choices[0].message.content"},
+    {"type": "length_range", "field": "choices[0].message.content", "min_chars": 1, "max_chars": 50}
+  ],
+  "stability_check": "non_empty_stable",
+  "description": "空 user content 时，模型仍须返回非空响应（按 system prompt 返回 OK）"
+}

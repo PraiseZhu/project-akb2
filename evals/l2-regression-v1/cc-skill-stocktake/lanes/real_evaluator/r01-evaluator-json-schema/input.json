@@ -1,0 +1,10 @@
+{
+  "fixture_id": "r01-evaluator-json-schema",
+  "lane": "real_evaluator",
+  "operation": "evaluate_skill",
+  "evaluator": "cc-local-llm",
+  "skill_path": "p1d/fixtures/skills/skill-a/SKILL.md",
+  "llm_call_config": {"temperature": 0, "seed": 4819203, "max_tokens": 300},
+  "rounds": 3,
+  "description": "真实 cc-local-llm 评估 skill-a：三轮输出 JSON schema 必须稳定"
+}

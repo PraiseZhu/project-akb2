@@ -1,0 +1,15 @@
+{
+  "fixture_id": "f01-summary-stability",
+  "category": "summary_stability",
+  "rounds": 3,
+  "stability_threshold": "3/3",
+  "assertions": [
+    {"type": "schema", "field": "choices[0].message.content", "required": true},
+    {"type": "length_range", "field": "choices[0].message.content", "min_chars": 10, "max_chars": 120},
+    {"type": "contains_any", "field": "choices[0].message.content", "values": ["llama-swap", "8080", "迁移", "推理", "readonly"]},
+    {"type": "not_contains", "field": "choices[0].message.content", "values": ["<think>", "</think>", "thinking"]},
+    {"type": "language", "field": "choices[0].message.content", "expected": "zh"}
+  ],
+  "stability_check": "semantic_label_match",
+  "description": "三轮摘要语义标签必须一致（迁移/路由/协议类）"
+}

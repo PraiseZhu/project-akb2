@@ -1,0 +1,23 @@
+{
+  "_comment": "A2 draft — 不写入 mcp-servers.json，待 A3 用户授权后才执行 M2/M3",
+  "_a3_target_files": [
+    "/Users/praise/.claude/mcp-configs/mcp-servers.json",
+    "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/mcp-configs/mcp-servers.json"
+  ],
+  "_a3_operation": "在 mcpServers 对象内追加 akb-search key（不替换其他 26 个已有条目）",
+  "akb-search": {
+    "command": "/Users/praise/.pyenv/versions/3.13.12/bin/python3",
+    "args": [
+      "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/plugins/claude-code-ai-infra/mcp-servers/akb-search-readonly/server.py"
+    ],
+    "env": {
+      "PYTHONPATH": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB"
+    }
+  },
+  "_rationale": {
+    "command_choice": "pyenv python3 3.13.12 — 含 mcp 包（已验证 import mcp OK）；Project AKB/.venv 缺 mcp 包",
+    "pythonpath_choice": "Project AKB root 使 scripts.* 子包可 import（scripts/core/search.py, scripts/utils/db.py）",
+    "settings_json_excluded": "settings.json mcpServers 维持空 {} — 只改 mcp-configs 避免双源冲突",
+    "wrapper_path": "Codex/plugins/claude-code-ai-infra/mcp-servers/akb-search-readonly/server.py — Codex owned，独立于 Project AKB，不污染 AKB 代码库"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "fixture_id": "f07-system-anchor",
+  "category": "system_anchor",
+  "rounds": 3,
+  "stability_threshold": "3/3",
+  "assertions": [
+    {"type": "starts_with", "field": "choices[0].message.content", "prefix": "[READONLY]"},
+    {"type": "length_range", "field": "choices[0].message.content", "min_chars": 10, "max_chars": 80},
+    {"type": "not_contains", "field": "choices[0].message.content", "values": ["<think>", "写操作", "无法"]}
+  ],
+  "stability_check": "exact_prefix_match",
+  "description": "system anchor 必须传递到输出：三轮均以 [READONLY] 开头"
+}

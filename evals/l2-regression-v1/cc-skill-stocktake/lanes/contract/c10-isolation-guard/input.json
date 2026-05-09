@@ -1,0 +1,17 @@
+{
+  "fixture_id": "c10-isolation-guard",
+  "lane": "contract",
+  "operation": "full_stocktake",
+  "mode": "dry_run",
+  "skills_dir": "p1d/fixtures/skills/",
+  "evaluator": "mock",
+  "mock_verdicts": {"skill-a": "pass", "skill-b": "pass", "skill-c": "pass"},
+  "isolation_check": {
+    "forbidden_write_paths": [
+      "AKB2.0/toolbox/",
+      "AKB2.0/wiki/",
+      "~/.codex/skills/"
+    ]
+  },
+  "description": "隔离性检查：全量 stocktake 必须不写 AKB2.0 正式目录和 ~/.codex/skills/"
+}

@@ -1,0 +1,14 @@
+{
+  "fixture_id": "c09-stocktake-dry-run",
+  "lane": "contract",
+  "assertions": [
+    {"type": "output_schema", "required_fields": ["skills_total", "pass_count", "fail_count", "dry_run"]},
+    {"type": "field_value", "field": "dry_run", "expected": true},
+    {"type": "field_value", "field": "skills_total", "expected": 3},
+    {"type": "field_value", "field": "pass_count", "expected": 2},
+    {"type": "field_value", "field": "fail_count", "expected": 1},
+    {"type": "no_write_to_akb"},
+    {"type": "no_skill_modification"}
+  ],
+  "description": "dry-run stocktake 计数正确（3 total, 2 pass, 1 fail），不写任何持久存储"
+}

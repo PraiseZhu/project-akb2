@@ -1,0 +1,12 @@
+{
+  "fixture": "r04-sha-drift",
+  "trigger_rule": "r04",
+  "description": "workspace_version sha prefix 000000000000 ≠ actual sha 1d4b76d06cd1 → r04 sha256_match fail",
+  "expected_status": "fail",
+  "expected_severity": "hard_fail",
+  "actual_status": "fail",
+  "actual_severity": "hard_fail",
+  "actual_evidence": "sha12 mismatch: interface:field=000000000000,actual=1d4b76d06cd1 eval:field=000000000000,actual=1d4b76d06cd1",
+  "test_result": "pass",
+  "assertion": "PASS: actual=fail matches expected=fail"
+}

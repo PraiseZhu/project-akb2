@@ -1,0 +1,8 @@
+{
+  "fixture_id": "c06-missing-skill-path",
+  "lane": "contract",
+  "operation": "baseline_scan",
+  "skills_dir": "/nonexistent/path/skills/",
+  "expected_behavior": "error_or_empty",
+  "description": "不存在的 skills_dir 时应返回空列表或 error，不崩溃"
+}

@@ -1,0 +1,50 @@
+{
+  "frozen_at": "2026-05-08T00:00:00Z",
+  "baseline_purpose": "A3 rollback: verify no drift before A3 execute; revert target sha256 if A3 fails",
+  "live_config": {
+    "path": "/Users/praise/.claude/mcp-configs/mcp-servers.json",
+    "sha256": "04cb0509472fc0b7e3a36bd52f2a5b6a0d92a9d9160cd5c76a86dd7a95ca0406",
+    "servers_count": 27,
+    "contains_akb_search": false
+  },
+  "mirror_config": {
+    "path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/mcp-configs/mcp-servers.json",
+    "sha256": "04cb0509472fc0b7e3a36bd52f2a5b6a0d92a9d9160cd5c76a86dd7a95ca0406",
+    "servers_count": 27,
+    "sha256_matches_live": true,
+    "contains_akb_search": false
+  },
+  "skill_sha256": "b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982",
+  "skill_sha256_note": "cc-akb-search SKILL.md — byte-identical with C-4b and A1 baselines",
+  "a3_mutation_count": 4,
+  "a3_mutations": [
+    {
+      "id": "M1",
+      "description": "确认 readonly wrapper server.py（A2 drafting 时已创建，A3 M1 = 验证文件 sha256 与 A2 draft baseline 一致，不再新建）",
+      "target": "Codex/plugins/claude-code-ai-infra/mcp-servers/akb-search-readonly/server.py",
+      "a2_draft_sha256": "0ef83866831fe338c987e06db7b7d45ddecca78ec73c3b53619e1ab83ae4aaf8",
+      "a2_draft_copy": "p1e-cc-akb-search-a2/wrapper-draft.py",
+      "reversible": "删文件"
+    },
+    {
+      "id": "M2",
+      "description": "修改 live config 追加 akb-search 条目",
+      "target": "/Users/praise/.claude/mcp-configs/mcp-servers.json",
+      "reversible": "删 akb-search key，sha256 恢复至本 baseline"
+    },
+    {
+      "id": "M3",
+      "description": "修改 mirror config 追加 akb-search 条目（与 M2 同步）",
+      "target": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/mcp-configs/mcp-servers.json",
+      "reversible": "同 M2"
+    },
+    {
+      "id": "M4",
+      "description": "验证 mcp 包可用性（只读检查，非安装）",
+      "target": "~/.pyenv/versions/3.13.12/bin/python3 -c 'import mcp'",
+      "reversible": "N/A（只读）"
+    }
+  ],
+  "akb_data_before_snapshot_note": "V3 before snapshot taken at A2 time — see run-evidence.md §V3",
+  "a3_preflight_instructions": "A3 执行前 re-verify: shasum -a 256 <live_config> <mirror_config> — 期望与本文件 sha256 字段一致；若不一致须暂停 A3 先排查 drift 原因"
+}

@@ -1,0 +1,12 @@
+{
+  "fixture": "r05-backlink-pending",
+  "trigger_rule": "r05",
+  "description": "backlink_status=pending for slug=fixture-tool (not cc-akb-search) → r05 backlink_linked fail",
+  "expected_status": "fail",
+  "expected_severity": "hard_fail",
+  "actual_status": "fail",
+  "actual_severity": "hard_fail",
+  "actual_evidence": "backlink_status: pending (expected: linked)",
+  "test_result": "pass",
+  "assertion": "PASS: actual=fail matches expected=fail"
+}

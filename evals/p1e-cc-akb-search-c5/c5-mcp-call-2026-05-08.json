@@ -1,0 +1,61 @@
+{
+  "schema_version": "c5-mcp-call-v1",
+  "purpose": "Canonical C-5 gate MCP runtime probe — frozen evidence that mcp__akb-search returns valid JSON with structured results in <5s",
+  "executed_at": "2026-05-08T10:54:00Z",
+  "mcp_tool": "mcp__akb-search",
+  "request": {
+    "tool": "mcp__akb-search__akb_search",
+    "input": {
+      "query": "agent evaluation framework",
+      "semantic": false,
+      "limit": 3
+    }
+  },
+  "response": {
+    "query": "agent evaluation framework",
+    "total_results": 3,
+    "results": [
+      {
+        "item_id": "arxiv-2604-15037",
+        "title": "From Reactive to Proactive: Assessing the Proactivity of Voice Agents via ProVoi",
+        "url": "https://arxiv.org/abs/2604.15037v1",
+        "source": "arxiv",
+        "date": "2026-04-16",
+        "tags": "[\"Agent_Framework\", \"Agent_Pattern\", \"Evaluation\", \"LLM\", \"Multi_Agent\", \"Benchmark\"]",
+        "snippet_truncated": "primary evaluation framework for proactive voice agents. Multimodal LLMs ..."
+      },
+      {
+        "item_id": "arxiv-2604-11655",
+        "title": "RPA-Check: A Multi-Stage Automated Framework for Evaluating Dynamic LLM-based Ro",
+        "url": "https://arxiv.org/abs/2604.11655v1",
+        "source": "arxiv",
+        "date": "2026-04-13",
+        "tags": "[\"Agent_Framework\", \"Multi_Agent\", \"Evaluation\", \"LLM\", \"Agent_Pattern\"]",
+        "snippet_truncated": "framework designed to objectively measure RPA performance ..."
+      },
+      {
+        "item_id": "arxiv-2604-21480",
+        "title": "Efficient Agent Evaluation via Diversity-Guided User Simulation",
+        "url": "https://arxiv.org/abs/2604.21480v1",
+        "source": "arxiv",
+        "date": "2026-04-23",
+        "tags": "[\"Agent_Framework\", \"Agent_Pattern\", \"Multi_Agent\", \"Evaluation\", \"LLM\", \"RAG\"]",
+        "snippet_truncated": "Efficient Agent Evaluation via Diversity-Guided User Simulation ..."
+      }
+    ]
+  },
+  "verification": {
+    "valid_json": true,
+    "results_count_matches_total_results": true,
+    "all_results_have_required_fields": ["item_id", "title", "url", "source", "date", "tags", "snippet"],
+    "response_time_observed": "<5s (subjective, MCP API doesn't expose latency)",
+    "no_errors": true,
+    "exit_code": 0
+  },
+  "context": {
+    "session_id": "continuation of P1/P2 review-fix cycle",
+    "ccd_version": "Claude Code Desktop, current at execution time",
+    "mcp_server_sha256": "efb09982efe49f4adb97b44c71eb30b5b157e9b3294d4e2d39dd17b162b63eb1",
+    "primary_closure_sha256": "0fbd53703ff58802299ba8cb04f5290e4b973c124729376dc341f862f06f90cc"
+  }
+}

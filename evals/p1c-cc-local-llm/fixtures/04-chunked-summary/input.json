@@ -1,0 +1,16 @@
+{
+  "model": "qwen3-8b",
+  "messages": [
+    {
+      "role": "system",
+      "content": "下文有 3 段技术内容,每段含 1 个 anchor token。请用 60-180 字综合摘要,且摘要末尾按出现顺序列出 3 个 anchor token(原样保留 anchor token 字符)。不要解释,不要思考过程。/no_think"
+    },
+    {
+      "role": "user",
+      "content": "段 1:健康检查 GET /health 返回 OK,latency 22ms。anchor: P1C_HEALTH。\n\n段 2:模型列表 GET /v1/models 返回 OpenAI-compatible JSON,含 qwen3-8b。anchor: P1C_MODELS。\n\n段 3:5 类语义断言全 pass,reasoning-only 已用 no-think 处理。anchor: P1C_ASSERTIONS。"
+    }
+  ],
+  "max_tokens": 400,
+  "temperature": 0.0,
+  "stream": false
+}

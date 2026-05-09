@@ -1,0 +1,7 @@
+{
+  "case_id": "06-isolation-failure",
+  "status": "pass",
+  "reason": "all_isolation_and_failure_assertions_pass",
+  "extra": {"isolation":"ok","failure":"4/4_hard_fail"},
+  "timestamp": "2026-05-07T11:35:52Z"
+}

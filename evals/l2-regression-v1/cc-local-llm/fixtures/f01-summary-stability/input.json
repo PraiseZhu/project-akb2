@@ -1,0 +1,18 @@
+{
+  "fixture_id": "f01-summary-stability",
+  "model": "qwen3-8b",
+  "messages": [
+    {
+      "role": "system",
+      "content": "你是技术摘要助手。只输出中文摘要，不要解释，不要思考过程。"
+    },
+    {
+      "role": "user",
+      "content": "星澜研究院 2026 年 5 月将本地 LLM 推理入口从 Ollama 11434 迁移到 llama-swap 8080，采用 OpenAI-compatible /v1/* 协议，readonly 调用，不接自动化。请用 30 字以内中文摘要本段。/no_think"
+    }
+  ],
+  "max_tokens": 200,
+  "temperature": 0,
+  "seed": 2847361,
+  "stream": false
+}

@@ -1,0 +1,9 @@
+{
+  "fixture_id": "c07-mock-evaluator-pass",
+  "lane": "contract",
+  "operation": "evaluate_skill",
+  "evaluator": "mock",
+  "mock_verdict": "pass",
+  "skill_path": "p1d/fixtures/skills/skill-a/SKILL.md",
+  "description": "mock evaluator 返回 pass 时 stocktake 正确处理"
+}

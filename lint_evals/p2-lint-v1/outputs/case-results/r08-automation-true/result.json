@@ -1,0 +1,12 @@
+{
+  "fixture": "r08-automation-true",
+  "trigger_rule": "r08",
+  "description": "automation_allowed: true in interfaces/fixture-tool.md → r08 automation_allowed_false fail (P0 gate)",
+  "expected_status": "fail",
+  "expected_severity": "hard_fail",
+  "actual_status": "fail",
+  "actual_severity": "hard_fail",
+  "actual_evidence": "automation_allowed: true in: interfaces/fixture-tool.md",
+  "test_result": "pass",
+  "assertion": "PASS: actual=fail matches expected=fail"
+}

@@ -1,0 +1,16 @@
+{
+  "fixture_id": "f08-reasoning-only-fail",
+  "model": "qwen3-8b",
+  "messages": [
+    {
+      "role": "user",
+      "content": "2 + 2 = ?"
+    }
+  ],
+  "max_tokens": 10,
+  "temperature": 0,
+  "seed": 8374619,
+  "stream": false,
+  "_test_expectation": "hard_fail",
+  "_fail_condition": "response contains only thinking tags with no actual answer"
+}

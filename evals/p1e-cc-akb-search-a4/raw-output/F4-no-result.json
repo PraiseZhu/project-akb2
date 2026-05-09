@@ -1,0 +1,11 @@
+{
+  "fixture_id": "F4",
+  "category": "no_result",
+  "input": {"query": "xyz_nonexistent_term_2026_qwerty", "semantic": false, "limit": 5},
+  "executed_at": "2026-05-08T10:55:26Z",
+  "response": {
+    "query": "xyz_nonexistent_term_2026_qwerty",
+    "total_results": 0,
+    "results": []
+  }
+}

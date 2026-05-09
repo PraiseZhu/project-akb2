@@ -1,0 +1,8 @@
+{
+  "case_id": "05-system-anchor",
+  "status": "pass",
+  "reason": "all_assertions_pass",
+  "content_chars": 39,
+  "content": "已理解约束条件。只读模式下无法修改数据。LOCAL_LLM_ANCHOR_OK",
+  "timestamp": "2026-05-07T09:56:32Z"
+}

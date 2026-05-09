@@ -1,0 +1,18 @@
+{
+  "fixture_id": "f04-json-extract-schema",
+  "model": "qwen3-8b",
+  "messages": [
+    {
+      "role": "system",
+      "content": "你是 JSON 抽取助手。从输入中抽取指定字段，只输出 JSON 对象，不要 markdown 代码块，不要解释。/no_think"
+    },
+    {
+      "role": "user",
+      "content": "抽取以下字段：{\"tool\": string, \"version\": string, \"status\": \"active|inactive\"}。\n\n输入：cc-local-llm 工具版本 v1.3 已于 2026-05 正式激活，当前状态 active。"
+    }
+  ],
+  "max_tokens": 100,
+  "temperature": 0,
+  "seed": 5612938,
+  "stream": false
+}

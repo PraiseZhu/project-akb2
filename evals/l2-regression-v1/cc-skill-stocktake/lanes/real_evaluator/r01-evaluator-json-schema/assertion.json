@@ -1,0 +1,16 @@
+{
+  "fixture_id": "r01-evaluator-json-schema",
+  "lane": "real_evaluator",
+  "rounds": 3,
+  "stability_threshold": "3/3",
+  "assertions": [
+    {"type": "json_parseable", "field": "evaluator_output"},
+    {"type": "output_schema", "required_fields": ["verdict", "reason", "skill"]},
+    {"type": "field_one_of", "field": "verdict", "allowed_values": ["pass", "fail", "needs_review"]},
+    {"type": "not_empty", "field": "reason"},
+    {"type": "no_write_to_akb"},
+    {"type": "no_skill_modification"}
+  ],
+  "stability_check": "verdict_label_match",
+  "description": "三轮真实 LLM 评估：JSON schema 稳定，verdict label 一致，不写 AKB"
+}

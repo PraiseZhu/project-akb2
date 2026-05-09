@@ -1,0 +1,12 @@
+{
+  "fixture_id": "F3",
+  "category": "chinese_query",
+  "input": {"query": "智能体评测", "semantic": false, "limit": 5},
+  "executed_at": "2026-05-08T10:55:26Z",
+  "response": {
+    "query": "智能体评测",
+    "total_results": 0,
+    "results": []
+  },
+  "note": "FTS5 unicode61 tokenizer; Chinese query returns 0 because DB content is mostly English/translated; behavior is graceful (no error, valid JSON). L1 acceptance: tool handles Chinese input without crash."
+}

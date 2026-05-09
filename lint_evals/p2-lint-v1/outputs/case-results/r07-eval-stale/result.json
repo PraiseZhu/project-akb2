@@ -1,0 +1,12 @@
+{
+  "fixture": "r07-eval-stale",
+  "trigger_rule": "r07",
+  "description": "last_run_at=2025-01-01 is far > 30 days ago → r07 eval_freshness handoff (not fail)",
+  "expected_status": "handoff",
+  "expected_severity": "handoff",
+  "actual_status": "handoff",
+  "actual_severity": "handoff",
+  "actual_evidence": "last_run_at=2025-01-01 (492d ago; threshold: 30d)",
+  "test_result": "pass",
+  "assertion": "PASS: actual=handoff matches expected=handoff"
+}

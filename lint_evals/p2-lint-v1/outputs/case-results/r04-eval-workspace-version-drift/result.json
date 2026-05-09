@@ -1,0 +1,12 @@
+{
+  "fixture": "r04-eval-workspace-version-drift",
+  "trigger_rule": "r04",
+  "description": "active tool; eval workspace_version field PRESENT but sha wrong (deadbeef0000 ≠ 1d4b76d06cd1) → r04 hard_fail",
+  "expected_status": "fail",
+  "expected_severity": "hard_fail",
+  "actual_status": "fail",
+  "actual_severity": "hard_fail",
+  "actual_evidence": "sha12 mismatch: eval:field=deadbeef0000,actual=1d4b76d06cd1",
+  "test_result": "pass",
+  "assertion": "PASS: actual=fail matches expected=fail"
+}

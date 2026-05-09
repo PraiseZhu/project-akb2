@@ -1,0 +1,8 @@
+{
+  "case_id": "04-chunked-summary",
+  "status": "pass",
+  "reason": "all_assertions_pass",
+  "content_chars": 77,
+  "content": "健康检查返回OK且延迟22ms，模型列表包含qwen3-8b，5类语义断言全通过。P1C_HEALTH P1C_MODELS P1C_ASSERTIONS",
+  "timestamp": "2026-05-07T09:56:31Z"
+}

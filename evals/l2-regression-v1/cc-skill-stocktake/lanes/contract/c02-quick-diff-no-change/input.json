@@ -1,0 +1,9 @@
+{
+  "fixture_id": "c02-quick-diff-no-change",
+  "lane": "contract",
+  "operation": "quick_diff",
+  "baseline_results": "p1d/fixtures/baseline-results.json",
+  "current_results": "p1d/fixtures/baseline-results.json",
+  "expected_diff": "no_change",
+  "description": "同一 baseline 两次比较，预期 no_change"
+}

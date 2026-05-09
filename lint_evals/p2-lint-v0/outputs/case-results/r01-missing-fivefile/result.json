@@ -1,0 +1,12 @@
+{
+  "fixture": "r01-missing-fivefile",
+  "trigger_rule": "r01",
+  "description": "5件套缺 wiki/tools/fixture-tool.md → r01 five_file_present fail",
+  "expected_status": "fail",
+  "expected_severity": "hard_fail",
+  "actual_status": "fail",
+  "actual_severity": "hard_fail",
+  "actual_evidence": "missing: wiki/tools/fixture-tool.md",
+  "test_result": "pass",
+  "assertion": "PASS: actual=fail matches expected=fail"
+}

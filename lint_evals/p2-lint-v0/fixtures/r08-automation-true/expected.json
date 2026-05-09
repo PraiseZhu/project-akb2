@@ -1,0 +1,8 @@
+{
+  "fixture": "r08-automation-true",
+  "trigger_rule": "r08",
+  "expected_status": "fail",
+  "expected_severity": "hard_fail",
+  "description": "automation_allowed: true in interfaces/fixture-tool.md → r08 automation_allowed_false fail (P0 gate)",
+  "note": "0 tolerance: any automation_allowed: true in any fiveplet file is immediate hard fail"
+}

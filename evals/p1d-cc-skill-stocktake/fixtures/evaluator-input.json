@@ -1,0 +1,29 @@
+{
+  "skills": [
+    {
+      "name": "skill-a",
+      "description": "Fixture skill A — high quality reference. Demonstrates a well-described, frequently used skill with complete frontmatter for stocktake fixture testing.",
+      "use_7d": 12,
+      "use_30d": 45,
+      "mtime": "2026-04-15T10:00:00Z",
+      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-a/SKILL.md"
+    },
+    {
+      "name": "skill-b",
+      "description": "tbd",
+      "use_7d": 0,
+      "use_30d": 0,
+      "mtime": "2026-03-01T00:00:00Z",
+      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-b/SKILL.md"
+    },
+    {
+      "name": "skill-c",
+      "description": "Fixture skill C — deprecated reference. Marked deprecated and overlaps in scope with skill-a; used by P1d L1 smoke as a Retire candidate fixture.",
+      "use_7d": 0,
+      "use_30d": 0,
+      "mtime": "2025-11-20T08:00:00Z",
+      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-c/SKILL.md",
+      "frontmatter_status": "deprecated"
+    }
+  ]
+}

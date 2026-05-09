@@ -1,0 +1,11 @@
+{
+  "fixture_id": "c05-invalid-results",
+  "lane": "contract",
+  "assertions": [
+    {"type": "output_schema", "required_fields": ["error", "error_type"]},
+    {"type": "field_value", "field": "saved", "expected": false},
+    {"type": "no_crash", "description": "runner must not throw uncaught exception"},
+    {"type": "no_write_to_akb"}
+  ],
+  "description": "invalid results 时输出 error 字段，saved=false，不崩溃不写库"
+}

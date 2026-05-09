@@ -1,0 +1,31 @@
+{
+  "fixture_id": "F5",
+  "category": "limit_behavior",
+  "input": {"query": "MCP protocol", "semantic": false, "limit": 2},
+  "executed_at": "2026-05-08T10:55:26Z",
+  "response": {
+    "query": "MCP protocol",
+    "total_results": 2,
+    "results": [
+      {
+        "item_id": "site-site-a2a-protocol-a2a-and-mcp-2026-04-22",
+        "title": "[site-a2a-protocol] index",
+        "url": "https://a2a-protocol.org/latest/topics/a2a-and-mcp/",
+        "source": "site",
+        "date": "2026-04-22",
+        "tags": "[\"Agent_Framework\", \"RAG\"]",
+        "snippet_truncated": "A2A 与 MCP：详细比较 ..."
+      },
+      {
+        "item_id": "site-site-a2a-protocol-a2a-and-mcp-2026-04-22",
+        "title": "[site-a2a-protocol] index",
+        "url": "https://a2a-protocol.org/latest/topics/a2a-and-mcp/",
+        "source": "site",
+        "date": "2026-04-22",
+        "tags": "[\"Agent_Framework\", \"RAG\"]",
+        "snippet_truncated": "A2A and MCP: Detailed Comparison ..."
+      }
+    ]
+  },
+  "assertion": "total_results <= limit (2 <= 2): pass"
+}

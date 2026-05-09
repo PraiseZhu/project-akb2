@@ -1,0 +1,8 @@
+{
+  "case_id": "01-summary",
+  "status": "pass",
+  "reason": "all_assertions_pass",
+  "content_chars": 39,
+  "content": "星澜研究院迁移LLM推理入口至llama-swap，采用OpenAI兼容协议。",
+  "timestamp": "2026-05-07T09:56:26Z"
+}

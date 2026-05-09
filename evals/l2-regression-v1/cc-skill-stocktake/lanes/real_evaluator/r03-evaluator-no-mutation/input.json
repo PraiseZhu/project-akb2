@@ -1,0 +1,10 @@
+{
+  "fixture_id": "r03-evaluator-no-mutation",
+  "lane": "real_evaluator",
+  "operation": "evaluate_all",
+  "evaluator": "cc-local-llm",
+  "skills_dir": "p1d/fixtures/skills/",
+  "llm_call_config": {"temperature": 0, "seed": 6172839, "max_tokens": 300},
+  "rounds": 3,
+  "description": "全量真实评估：所有 skill 运行完毕后验证无 SKILL.md 被修改，无 AKB 写入"
+}

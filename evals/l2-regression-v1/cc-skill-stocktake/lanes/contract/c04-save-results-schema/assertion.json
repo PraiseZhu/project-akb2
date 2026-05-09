@@ -1,0 +1,11 @@
+{
+  "fixture_id": "c04-save-results-schema",
+  "lane": "contract",
+  "assertions": [
+    {"type": "output_schema", "required_fields": ["saved", "path", "skills_count", "saved_at"]},
+    {"type": "field_value", "field": "saved", "expected": true},
+    {"type": "field_type", "field": "skills_count", "expected_type": "integer"},
+    {"type": "no_write_to_akb"}
+  ],
+  "description": "save-results schema 验证，不写 AKB 数据库"
+}

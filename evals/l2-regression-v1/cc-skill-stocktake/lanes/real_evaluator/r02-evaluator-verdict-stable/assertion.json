@@ -1,0 +1,13 @@
+{
+  "fixture_id": "r02-evaluator-verdict-stable",
+  "lane": "real_evaluator",
+  "rounds": 3,
+  "stability_threshold": "3/3",
+  "assertions": [
+    {"type": "json_parseable", "field": "evaluator_output"},
+    {"type": "field_one_of", "field": "verdict", "allowed_values": ["pass", "fail", "needs_review"]},
+    {"type": "not_empty", "field": "reason"}
+  ],
+  "stability_check": "exact_verdict_match",
+  "description": "三轮 verdict 完全一致（exact_verdict_match），不允许 pass→fail 漂移"
+}

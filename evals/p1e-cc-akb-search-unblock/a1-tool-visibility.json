@@ -1,0 +1,68 @@
+{
+  "phase": "p1e-a1-readonly-discovery",
+  "timestamp": "2026-05-08T00:00:00Z",
+
+  "claude_side": {
+    "source": "session_tool_list",
+    "source_description": "Direct inspection of tools visible in current Claude Code session (system prompt tool definitions)",
+    "enumerable": true,
+    "contains_akb_search": false,
+    "tools_inspected": [
+      "mcp__ccd_directory__request_directory",
+      "mcp__ccd_session__mark_chapter",
+      "mcp__ccd_session__spawn_task",
+      "mcp__ccd_session_mgmt__archive_session",
+      "mcp__ccd_session_mgmt__list_sessions",
+      "mcp__ccd_session_mgmt__search_session_transcripts",
+      "mcp__Claude_in_Chrome__* (12 tools)",
+      "mcp__Claude_Preview__* (11 tools)",
+      "mcp__figma__* (17 tools)",
+      "mcp__nova-gateway__* (3 tools)",
+      "mcp__pencil__* (13 tools)",
+      "mcp__scheduled-tasks__* (3 tools)"
+    ],
+    "akb_search_variants_checked": [
+      "mcp__akb-search",
+      "mcp__akb_search",
+      "mcp__AKB_search",
+      "any tool with 'akb' in name"
+    ],
+    "result": "NO mcp__akb-search or equivalent AKB search MCP tool present",
+    "confidence": "high",
+    "confidence_reason": "Live session tool list is directly accessible and authoritative; tool list is exhaustively enumerated from system prompt"
+  },
+
+  "codex_side": {
+    "source": "config_files_not_live_namespace",
+    "source_description": "MCP configuration files (mcp-servers.json, settings.json) inspected as proxy for what could be mounted. Codex live tool namespace not directly accessible from this session.",
+    "enumerable": false,
+    "contains_akb_search": false,
+    "config_files_checked": [
+      {
+        "path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/mcp-configs/mcp-servers.json",
+        "servers_count": 26,
+        "servers_listed": ["jira","github","firecrawl","supabase","memory","omega-memory","sequential-thinking","vercel","railway","cloudflare-docs","cloudflare-workers-builds","cloudflare-workers-bindings","cloudflare-observability","clickhouse","exa-web-search","context7","magic","filesystem","playwright","fal-ai","browserbase","browser-use","devfleet","token-optimizer","laraplugins","confluence","evalview"],
+        "akb_search_present": false
+      },
+      {
+        "path": "/Users/praise/.claude/settings.json",
+        "mcpServers": {},
+        "akb_search_present": false
+      }
+    ],
+    "result": "NO akb-search entry in any MCP configuration file; cannot be mounted without configuration",
+    "confidence": "medium",
+    "confidence_reason": "Config files are authoritative for what CAN be mounted (absent config → impossible to mount), but Codex live namespace was not directly enumerated"
+  },
+
+  "combined_verdict": {
+    "codex_visible_tools_source": "config_files_not_live_namespace",
+    "codex_visible_tools_contains_akb_search": false,
+    "claude_visible_tools_source": "session_tool_list",
+    "claude_visible_tools_contains_akb_search": false,
+    "source_confidence": "medium",
+    "confidence_note": "Claude side HIGH (live namespace); Codex side MEDIUM (config files, not live namespace). Combined: MEDIUM. Config layer is authoritative negative (no config → no mount), but Codex live namespace not directly verified.",
+    "raw_evidence_path": "p1e-cc-akb-search-unblock/a1-tool-visibility.json",
+    "notes": "C-4b (2026-05-05) also confirmed absence from Claude session tool list with identical conclusion. Config files have been checked fresh for this A1 run and confirm no akb-search server defined."
+  }
+}

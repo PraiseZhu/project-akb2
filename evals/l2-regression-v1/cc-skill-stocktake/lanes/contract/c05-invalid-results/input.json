@@ -1,0 +1,8 @@
+{
+  "fixture_id": "c05-invalid-results",
+  "lane": "contract",
+  "operation": "save_results",
+  "input_data": "p1d/fixtures/invalid-results.json",
+  "expected_behavior": "error",
+  "description": "无效 results.json（空/格式错）时应返回错误，不崩溃"
+}

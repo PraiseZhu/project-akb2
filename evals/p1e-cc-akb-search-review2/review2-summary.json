@@ -1,0 +1,67 @@
+{
+  "schema_version": "p1e-review2-v1",
+  "tool": "cc-akb-search",
+  "phase": "P1e Review 2 (post-A4 ai_infra readonly contract review)",
+  "review_channel": "code_reviewer_subagent",
+  "canonical_codex_watch_review": "not_run",
+  "review_rounds": 3,
+  "verdict": "APPROVED",
+  "p1_p2_findings_open": 0,
+  "p3_findings_open": 1,
+  "limitations": [
+    "Not the canonical Codex Watch /review code channel — this is the code-reviewer subagent path (sonnet model).",
+    "Per session policy: subagent review accepted as evidence when subsequent freeze work is evidence/manifest/report-only. Canonical /review code is required if runner/collector/MCP wrapper/正式五件套 logic is changed."
+  ],
+  "rounds": [
+    {
+      "round": 1,
+      "verdict": "REQUIRES_CHANGES",
+      "transcript_path": "review2-round1-transcript.md",
+      "key_findings": [
+        "P1: Curator.__init__ uses `self.cache = cache or KnowledgeCache()` — even cache=None creates a new KnowledgeCache (writes cache.db on every miss + DDL on init).",
+        "P2a: ToolboxDB.connect() always opens read-write SQLite with PRAGMA journal_mode=WAL (write op) even on read-only path.",
+        "P2b: cache=None guard in search.py is coupled to `router is not None` — fragile invariant.",
+        "P3: `quote()` URI safe-char note (cosmetic)."
+      ]
+    },
+    {
+      "round": 2,
+      "verdict": "REQUIRES_CHANGES",
+      "transcript_path": "review2-round2-transcript.md",
+      "key_findings": [
+        "HIGH: run_full_curation() at curator.py:1114 calls `self.cache.purge_expired()` without None guard — silently swallowed AttributeError when cache=None.",
+        "P1 (unverifiable): whether server.py still calls db.init_tables() — needed to confirm in evidence."
+      ]
+    },
+    {
+      "round": 3,
+      "verdict": "APPROVED",
+      "transcript_path": "review2-round3-transcript.md",
+      "key_findings": [],
+      "verified_clean": [
+        "All 3 self.cache access paths in Curator now guarded with `is not None`: line 341 (read), line 366 (write), line 1114 (purge).",
+        "ToolboxDB.connect() readonly branch uses `file:path?mode=ro` URI — no WAL pragma, no commit.",
+        "CatalogDB readonly mode confirmed via SQLite engine-level mode=ro.",
+        "server.py confirmed NOT calling db.init_tables() (line 40 comment evidence).",
+        "Backwards compat: existing callers with default `False` flags remain unchanged.",
+        "Defense-in-depth: 3 independent layers — SQLite mode=ro + router=None + cache=None."
+      ]
+    }
+  ],
+  "files_reviewed": [
+    "scripts/core/search.py (P1 fix, P2a fix)",
+    "scripts/pipeline/curator.py (P1 fix, HIGH fix — 3 None guards)",
+    "scripts/utils/db.py (P2b CatalogDB readonly mode)",
+    "scripts/toolbox/db.py (P2a ToolboxDB skip_init + readonly connect)",
+    "Codex/plugins/claude-code-ai-infra/mcp-servers/akb-search-readonly/server.py (P2b: CatalogDB(readonly=True))"
+  ],
+  "review_domain": "ai_infra",
+  "review_focus": [
+    "readonly contract enforcement (0 DB writes, 0 file writes, 0 network calls)",
+    "Curator cache bypass correctness",
+    "ToolboxDB init_tables avoidance",
+    "DB connection mode validation",
+    "Backwards compatibility for existing callers"
+  ],
+  "completed_at": "2026-05-08T00:00:00Z (in-session, prior to A4 re-run)"
+}

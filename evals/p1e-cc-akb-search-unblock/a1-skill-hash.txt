@@ -1,0 +1,15 @@
+# A1 Baseline — cc-akb-search SKILL.md sha256
+
+timestamp: 2026-05-08T00:00:00Z
+phase: p1e-a1-readonly-discovery
+
+## SKILL.md sha256
+
+b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982  /Users/praise/.codex/skills/cc-akb-search/SKILL.md
+
+## Comparison with C-4b baseline
+
+C-4b baseline (2026-05-05): b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982
+A1 measured  (2026-05-08): b669380de8a0cd4319f0c978f4cfa69d2757b004a8569fc3adac8f633637f982
+
+verdict: byte-identical (no drift)

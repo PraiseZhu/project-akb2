@@ -1,0 +1,18 @@
+{
+  "fixture_id": "f03-classification-label",
+  "model": "qwen3-8b",
+  "messages": [
+    {
+      "role": "system",
+      "content": "你是文档分类助手。将输入文本分类为以下标签之一：[infrastructure, research, product, other]。只输出标签，不要其他内容。/no_think"
+    },
+    {
+      "role": "user",
+      "content": "我们将 Redis 集群从 6.0 升级到 7.2，并迁移到 Kubernetes 托管环境，同时启用 TLS 加密和 ACL 权限控制。"
+    }
+  ],
+  "max_tokens": 20,
+  "temperature": 0,
+  "seed": 1847293,
+  "stream": false
+}

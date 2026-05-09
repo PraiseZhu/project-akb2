@@ -1,0 +1,13 @@
+{
+  "fixture_id": "f08-reasoning-only-fail",
+  "category": "hard_fail_detection",
+  "rounds": 3,
+  "stability_threshold": "3/3",
+  "assertions": [
+    {"type": "schema", "field": "choices[0].message.content", "required": true},
+    {"type": "not_only_thinking", "field": "choices[0].message.content", "description": "content must not be purely <think>...</think> with no answer"},
+    {"type": "contains_any", "field": "choices[0].message.content", "values": ["4", "四"]}
+  ],
+  "stability_check": "semantic_label_match",
+  "description": "基本算术不能只返回 thinking block——必须有实际答案 '4'"
+}

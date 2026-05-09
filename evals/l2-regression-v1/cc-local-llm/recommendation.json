@@ -1,0 +1,26 @@
+{
+  "tool": "cc-local-llm",
+  "phase": "L2-regression-v1",
+  "verdict": "blocked",
+  "generated_at": "2026-05-08T12:13:24Z",
+  "rounds_per_fixture": 3,
+  "stability_threshold": "3/3",
+  "llm_call_config": {
+    "temperature": 0,
+    "seed": "pre-assigned per fixture_id",
+    "top_p": 1.0,
+    "stream": false
+  },
+  "cases_total": 10,
+  "cases_passed": 0,
+  "cases_run": 0,
+  "failures": [],
+  "block_reason": "backend_unavailable: 127.0.0.1:8080 unreachable (curl_exit=7)",
+  "runtime_mutation_observed": false,
+  "automation_allowed_changed": false,
+  "evidence_paths": [
+    "l2-regression-v1/cc-local-llm/case-register.md",
+    "l2-regression-v1/cc-local-llm/baseline-snapshot.md",
+    "l2-regression-v1/cc-local-llm/recommendation.json"
+  ]
+}

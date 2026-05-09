@@ -1,0 +1,56 @@
+{
+  "schema_version": "p1e-c5-v1",
+  "tool": "cc-akb-search",
+  "phase": "P1e C-5 Tool Intake Gate",
+  "verdict": "accept_active_L1",
+  "reviewed_at": "2026-05-08T10:55:26Z",
+  "reviewer": "claude-sonnet-4-6 (in-session, CCD)",
+  "evidence_paths": [
+    "../p1e-cc-akb-search-a4/fixture-results.json",
+    "../p1e-cc-akb-search-a4/assertion-results.md",
+    "../p1e-cc-akb-search-a4/run-evidence.md",
+    "../p1e-cc-akb-search-review2/review2-summary.json",
+    "../p1e-cc-akb-search-review2/review2-round3-transcript.md",
+    "./c5-mcp-call-2026-05-08.json"
+  ],
+  "review_paths": [
+    "../p1e-cc-akb-search-review2/review2-round1-transcript.md",
+    "../p1e-cc-akb-search-review2/review2-round2-transcript.md",
+    "../p1e-cc-akb-search-review2/review2-round3-transcript.md"
+  ],
+  "gate_criteria": {
+    "a4_l1_fixtures_pass": "5/5",
+    "review2_verdict": "APPROVED (round 3, after 2 REQUIRES_CHANGES rounds, all P1/P2 fixed)",
+    "mcp_tool_available": true,
+    "readonly_contract_verified": true,
+    "no_db_writes_observed": true,
+    "no_network_calls_observed": true,
+    "automation_allowed": false,
+    "response_time_lt_5s": true
+  },
+  "transition": {
+    "from": {
+      "toolbox_status": "candidate",
+      "eval_level": "L0",
+      "block_reason": "mcp__akb-search not mounted (per P1a)"
+    },
+    "to": {
+      "toolbox_status": "active",
+      "eval_level": "L1",
+      "automation_allowed": false
+    }
+  },
+  "limitations": [
+    "Review 2 channel is code-reviewer subagent (sonnet), not canonical Codex Watch /review code path. See review2-summary.json for limitation policy.",
+    "Original A4 run from prior CCD session was completed in-conversation; A4 was re-executed in this session (2026-05-08T10:55:26Z) to capture canonical evidence on disk.",
+    "C-5 MCP runtime call uses query 'agent evaluation framework' as canonical probe; see c5-mcp-call-2026-05-08.json."
+  ],
+  "scope": {
+    "in": ["cc-akb-search L1 floor admission"],
+    "out": [
+      "L2 regression (deferred to l2-regression-v1 plan)",
+      "automation enablement (deferred to automation-gate v0 plan)",
+      "search ranking quality (deferred to search-quality v0 plan)"
+    ]
+  }
+}

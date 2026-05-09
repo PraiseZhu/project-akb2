@@ -1,0 +1,15 @@
+{
+  "fixture_id": "r03-evaluator-no-mutation",
+  "lane": "real_evaluator",
+  "rounds": 3,
+  "stability_threshold": "3/3",
+  "assertions": [
+    {"type": "no_skill_modification", "check_path": "p1d/fixtures/skills/"},
+    {"type": "no_write_to_akb"},
+    {"type": "no_write_to_formal_evals"},
+    {"type": "output_schema", "required_fields": ["skills_evaluated", "mutations_detected"]},
+    {"type": "field_value", "field": "mutations_detected", "expected": false}
+  ],
+  "stability_check": "no_mutation_all_rounds",
+  "description": "三轮评估完毕后：无任何 SKILL.md 被修改，mutations_detected=false"
+}

@@ -1,0 +1,9 @@
+{
+  "fixture_id": "c08-mock-evaluator-fail",
+  "lane": "contract",
+  "operation": "evaluate_skill",
+  "evaluator": "mock",
+  "mock_verdict": "fail",
+  "skill_path": "p1d/fixtures/skills/skill-b/SKILL.md",
+  "description": "mock evaluator 返回 fail 时 stocktake 正确处理，不崩溃"
+}

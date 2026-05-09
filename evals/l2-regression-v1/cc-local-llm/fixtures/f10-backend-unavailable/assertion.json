@@ -1,0 +1,11 @@
+{
+  "fixture_id": "f10-backend-unavailable",
+  "category": "backend_probe",
+  "rounds": 1,
+  "stability_threshold": "n_a",
+  "assertions": [
+    {"type": "runner_exit_code", "expected": 2, "description": "runner must exit 2 when backend is unreachable"}
+  ],
+  "stability_check": "n_a",
+  "description": "Backend 探测 fixture：127.0.0.1:8080 不可达时 runner 必须 exit 2，不重试"
+}

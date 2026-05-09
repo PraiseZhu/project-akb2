@@ -1,0 +1,14 @@
+{
+  "fixture_id": "f03-classification-label",
+  "category": "classification",
+  "rounds": 3,
+  "stability_threshold": "3/3",
+  "assertions": [
+    {"type": "schema", "field": "choices[0].message.content", "required": true},
+    {"type": "exact_one_of", "field": "choices[0].message.content", "allowed_values": ["infrastructure", "research", "product", "other"], "strip_whitespace": true},
+    {"type": "not_contains", "field": "choices[0].message.content", "values": ["<think>", "分类", "标签", "是"]}
+  ],
+  "stability_check": "exact_match",
+  "expected_label": "infrastructure",
+  "description": "三轮必须均输出 'infrastructure'，不含解释文字"
+}

@@ -1,0 +1,14 @@
+{
+  "fixture_id": "f06-long-text-chunked",
+  "category": "long_text",
+  "rounds": 3,
+  "stability_threshold": "3/3",
+  "assertions": [
+    {"type": "schema", "field": "choices[0].message.content", "required": true},
+    {"type": "length_range", "field": "choices[0].message.content", "min_chars": 20, "max_chars": 200},
+    {"type": "not_contains", "field": "choices[0].message.content", "values": ["<think>", "</think>"]},
+    {"type": "language", "field": "choices[0].message.content", "expected": "zh"}
+  ],
+  "stability_check": "semantic_label_match",
+  "description": "长文档摘要：50 字以内中文，三轮语义标签一致（工具库/评估/LLM 主题）"
+}

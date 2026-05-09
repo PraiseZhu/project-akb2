@@ -1,0 +1,11 @@
+{
+  "fixture_id": "c07-mock-evaluator-pass",
+  "lane": "contract",
+  "assertions": [
+    {"type": "output_schema", "required_fields": ["verdict", "skill", "reason"]},
+    {"type": "field_value", "field": "verdict", "expected": "pass"},
+    {"type": "no_write_to_akb"},
+    {"type": "no_skill_modification"}
+  ],
+  "description": "mock pass 时 verdict=pass，reason 非空，不写库不改 SKILL.md"
+}

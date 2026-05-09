@@ -1,0 +1,8 @@
+{
+  "fixture": "r07-eval-stale",
+  "trigger_rule": "r07",
+  "expected_status": "handoff",
+  "expected_severity": "handoff",
+  "description": "last_run_at=2025-01-01 is far > 30 days ago → r07 eval_freshness handoff (not fail)",
+  "note": "Handoff because stale threshold is debatable; new tools naturally stale. Human review required."
+}

@@ -1,0 +1,39 @@
+{
+  "tool": "cc-skill-stocktake",
+  "phase": "L2-regression-v1",
+  "verdict": "blocked",
+  "generated_at": "2026-05-08T12:18:00Z",
+  "rounds_per_fixture": 3,
+  "stability_threshold": "3/3",
+  "llm_call_config": {
+    "temperature": 0,
+    "seed": "pre-assigned per fixture_id in real_evaluator inputs",
+    "note": "contract lane uses mock evaluator, no LLM calls"
+  },
+  "lanes": {
+    "contract": {
+      "verdict": "pass",
+      "cases_passed": 10,
+      "cases_failed": 0,
+      "cases_total": 10,
+      "failures": []
+    },
+    "real_evaluator": {
+      "verdict": "blocked",
+      "upstream_dependency": "l2-regression-v1/cc-local-llm/recommendation.json",
+      "upstream_verdict": "blocked",
+      "cases_passed": 0,
+      "cases_failed": 0,
+      "cases_total": 0,
+      "block_reason": "cc-local-llm backend blocked per upstream recommendation.json"
+    }
+  },
+  "runtime_mutation_observed": false,
+  "automation_allowed_changed": false,
+  "evidence_paths": [
+    "l2-regression-v1/cc-skill-stocktake/case-register.md",
+    "l2-regression-v1/cc-skill-stocktake/baseline-snapshot.md",
+    "l2-regression-v1/cc-skill-stocktake/lanes/",
+    "l2-regression-v1/cc-skill-stocktake/recommendation.json"
+  ]
+}

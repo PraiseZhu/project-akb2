@@ -1,0 +1,11 @@
+{
+  "fixture_id": "c08-mock-evaluator-fail",
+  "lane": "contract",
+  "assertions": [
+    {"type": "output_schema", "required_fields": ["verdict", "skill", "reason", "failure_detail"]},
+    {"type": "field_value", "field": "verdict", "expected": "fail"},
+    {"type": "no_crash"},
+    {"type": "no_write_to_akb"}
+  ],
+  "description": "mock fail 时 verdict=fail，含 failure_detail，不崩溃"
+}

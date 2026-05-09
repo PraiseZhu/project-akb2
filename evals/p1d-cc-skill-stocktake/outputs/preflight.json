@@ -1,0 +1,13 @@
+{
+  "timestamp": "2026-05-07T11:35:51Z",
+  "bundled_scripts": {
+    "scan.sh": "b1f16b586e7e2f4c6eeb54ea3895cd5501e64a1e12e242c820193c1193d0b263",
+    "quick-diff.sh": "e8b48f77d9e34d0c8043f8fede01387947ecfe0e960f7bd04cce9a44e606c0e8",
+    "save-results.sh": "250968532dc3bf1074f024a710d5d8aeec930e6798269703072f062fad1905bd"
+  },
+  "bundled_byte_identical": "all 3 ✓",
+  "mktemp_wrapper": "/tmp/claude/p1d-smoke",
+  "fixture_path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/",
+  "fixture_skills": ["skill-a", "skill-b", "skill-c"],
+  "deps": "jq + bash + bundled scripts (only-read) + mock evaluator"
+}

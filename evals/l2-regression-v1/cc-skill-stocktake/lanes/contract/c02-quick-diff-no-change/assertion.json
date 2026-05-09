@@ -1,0 +1,10 @@
+{
+  "fixture_id": "c02-quick-diff-no-change",
+  "lane": "contract",
+  "assertions": [
+    {"type": "diff_result", "expected": "no_change"},
+    {"type": "output_schema", "required_fields": ["diff_status", "changed_skills"]},
+    {"type": "field_value", "field": "changed_skills", "expected_length": 0}
+  ],
+  "description": "same-baseline diff 输出 no_change，changed_skills 为空数组"
+}

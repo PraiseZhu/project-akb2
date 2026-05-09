@@ -1,0 +1,7 @@
+{
+  "case_id": "02-quickdiff-nochange",
+  "status": "pass",
+  "reason": "empty_array_as_expected",
+  "extra": {"length":0},
+  "timestamp": "2026-05-07T11:35:51Z"
+}

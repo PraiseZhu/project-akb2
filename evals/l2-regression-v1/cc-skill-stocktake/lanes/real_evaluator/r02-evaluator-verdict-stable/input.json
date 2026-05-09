@@ -1,0 +1,10 @@
+{
+  "fixture_id": "r02-evaluator-verdict-stable",
+  "lane": "real_evaluator",
+  "operation": "evaluate_skill",
+  "evaluator": "cc-local-llm",
+  "skill_path": "p1d/fixtures/skills/skill-c/SKILL.md",
+  "llm_call_config": {"temperature": 0, "seed": 7382910, "max_tokens": 300},
+  "rounds": 3,
+  "description": "真实评估 skill-c（完整格式）：三轮 verdict 必须一致（3/3 stability）"
+}

@@ -1,0 +1,13 @@
+{
+  "fixture_id": "c04-save-results-schema",
+  "lane": "contract",
+  "operation": "save_results",
+  "input_data": "p1d/fixtures/save-results-input.json",
+  "expected_output_schema": {
+    "saved": true,
+    "path": "string",
+    "skills_count": "integer",
+    "saved_at": "string"
+  },
+  "description": "save-results 输出 schema 验证：saved=true，包含 path/skills_count/saved_at"
+}

@@ -1,0 +1,14 @@
+{
+  "fixture_id": "f02-summary-style",
+  "category": "summary_style",
+  "rounds": 3,
+  "stability_threshold": "3/3",
+  "assertions": [
+    {"type": "schema", "field": "choices[0].message.content", "required": true},
+    {"type": "length_range", "field": "choices[0].message.content", "min_chars": 5, "max_chars": 60},
+    {"type": "not_contains", "field": "choices[0].message.content", "values": ["<think>", "</think>"]},
+    {"type": "language", "field": "choices[0].message.content", "expected": "zh"}
+  ],
+  "stability_check": "semantic_label_match",
+  "description": "短摘要格式稳定：20 字以内，纯中文"
+}

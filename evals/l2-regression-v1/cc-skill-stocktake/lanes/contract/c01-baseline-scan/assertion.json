@@ -1,0 +1,11 @@
+{
+  "fixture_id": "c01-baseline-scan",
+  "lane": "contract",
+  "assertions": [
+    {"type": "skill_count", "expected": 3},
+    {"type": "output_schema", "required_fields": ["skills_found", "scan_timestamp", "baseline"]},
+    {"type": "no_write_to_akb", "description": "scan must not write to AKB2.0 database"},
+    {"type": "no_skill_modification", "description": "scan must not modify any SKILL.md"}
+  ],
+  "description": "baseline scan 返回 3 个 skill，含 schema 验证，无写操作"
+}

@@ -1,0 +1,334 @@
+{
+  "lint_run_at": "2026-05-07T12:55:12Z",
+  "scope": "current_5_tools",
+  "summary": {
+    "tools_scanned": 5,
+    "rules_evaluated": 8,
+    "total_findings": 40,
+    "hard_fail_findings": 0,
+    "handoff_findings": 2,
+    "pass_count": 38
+  },
+  "findings": [
+    {
+      "tool_slug": "cc-executable-plan",
+      "rule_id": "r01",
+      "status": "pass",
+      "severity": "hard_fail",
+      "evidence": "5/5 files present",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-executable-plan",
+      "rule_id": "r02",
+      "status": "pass",
+      "severity": "handoff",
+      "evidence": "status consistent: active (all 5件套)",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-executable-plan",
+      "rule_id": "r03",
+      "status": "pass",
+      "severity": "hard_fail",
+      "evidence": "workspace_path exists: /Users/praise/.codex/skills/cc-executable-plan/SKILL.md",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-executable-plan",
+      "rule_id": "r04",
+      "status": "pass",
+      "severity": "hard_fail",
+      "evidence": "sha12 match: 5af73fdadd91",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-executable-plan",
+      "rule_id": "r05",
+      "status": "pass",
+      "severity": "hard_fail",
+      "evidence": "backlink_status: linked",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-executable-plan",
+      "rule_id": "r06",
+      "status": "pass",
+      "severity": "hard_fail",
+      "evidence": "status=active eval_level=L2 (ok)",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-executable-plan",
+      "rule_id": "r07",
+      "status": "pass",
+      "severity": "handoff",
+      "evidence": "last_run_at=2026-05-06 (1d ago; within 30d)",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-executable-plan",
+      "rule_id": "r08",
+      "status": "pass",
+      "severity": "hard_fail",
+      "evidence": "automation_allowed: true = 0 (all 5件套 clean)",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-review",
+      "rule_id": "r01",
+      "status": "pass",
+      "severity": "hard_fail",
+      "evidence": "5/5 files present",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-review",
+      "rule_id": "r02",
+      "status": "pass",
+      "severity": "handoff",
+      "evidence": "status consistent: active (all 5件套)",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-review",
+      "rule_id": "r03",
+      "status": "pass",
+      "severity": "hard_fail",
+      "evidence": "workspace_path exists: /Users/praise/.codex/skills/cc-review/SKILL.md",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-review",
+      "rule_id": "r04",
+      "status": "pass",
+      "severity": "hard_fail",
+      "evidence": "sha12 match: 592cf3ed4b2c",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-review",
+      "rule_id": "r05",
+      "status": "pass",
+      "severity": "hard_fail",
+      "evidence": "backlink_status: linked",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-review",
+      "rule_id": "r06",
+      "status": "pass",
+      "severity": "hard_fail",
+      "evidence": "status=active eval_level=L2 (ok)",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-review",
+      "rule_id": "r07",
+      "status": "pass",
+      "severity": "handoff",
+      "evidence": "last_run_at=2026-05-06 (1d ago; within 30d)",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-review",
+      "rule_id": "r08",
+      "status": "pass",
+      "severity": "hard_fail",
+      "evidence": "automation_allowed: true = 0 (all 5件套 clean)",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-local-llm",
+      "rule_id": "r01",
+      "status": "pass",
+      "severity": "hard_fail",
+      "evidence": "5/5 files present",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-local-llm",
+      "rule_id": "r02",
+      "status": "pass",
+      "severity": "handoff",
+      "evidence": "status consistent: active (all 5件套)",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-local-llm",
+      "rule_id": "r03",
+      "status": "pass",
+      "severity": "hard_fail",
+      "evidence": "workspace_path exists: /Users/praise/.codex/skills/cc-local-llm/SKILL.md",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-local-llm",
+      "rule_id": "r04",
+      "status": "pass",
+      "severity": "hard_fail",
+      "evidence": "sha12 match: 3a31ebe4f593",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-local-llm",
+      "rule_id": "r05",
+      "status": "pass",
+      "severity": "hard_fail",
+      "evidence": "backlink_status: linked",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-local-llm",
+      "rule_id": "r06",
+      "status": "pass",
+      "severity": "hard_fail",
+      "evidence": "status=active eval_level=L1 (ok)",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-local-llm",
+      "rule_id": "r07",
+      "status": "pass",
+      "severity": "handoff",
+      "evidence": "last_run_at=2026-05-07 (0d ago; within 30d)",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-local-llm",
+      "rule_id": "r08",
+      "status": "pass",
+      "severity": "hard_fail",
+      "evidence": "automation_allowed: true = 0 (all 5件套 clean)",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-skill-stocktake",
+      "rule_id": "r01",
+      "status": "pass",
+      "severity": "hard_fail",
+      "evidence": "5/5 files present",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-skill-stocktake",
+      "rule_id": "r02",
+      "status": "pass",
+      "severity": "handoff",
+      "evidence": "status consistent: active (all 5件套)",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-skill-stocktake",
+      "rule_id": "r03",
+      "status": "pass",
+      "severity": "hard_fail",
+      "evidence": "workspace_path exists: /Users/praise/.codex/skills/cc-skill-stocktake/SKILL.md",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-skill-stocktake",
+      "rule_id": "r04",
+      "status": "pass",
+      "severity": "hard_fail",
+      "evidence": "sha12 match: df16be83df67",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-skill-stocktake",
+      "rule_id": "r05",
+      "status": "pass",
+      "severity": "hard_fail",
+      "evidence": "backlink_status: linked",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-skill-stocktake",
+      "rule_id": "r06",
+      "status": "pass",
+      "severity": "hard_fail",
+      "evidence": "status=active eval_level=L1 (ok)",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-skill-stocktake",
+      "rule_id": "r07",
+      "status": "pass",
+      "severity": "handoff",
+      "evidence": "last_run_at=2026-05-07 (0d ago; within 30d)",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-skill-stocktake",
+      "rule_id": "r08",
+      "status": "pass",
+      "severity": "hard_fail",
+      "evidence": "automation_allowed: true = 0 (all 5件套 clean)",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-akb-search",
+      "rule_id": "r01",
+      "status": "pass",
+      "severity": "hard_fail",
+      "evidence": "5/5 files present",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-akb-search",
+      "rule_id": "r02",
+      "status": "handoff",
+      "severity": "handoff",
+      "evidence": "status split: {active,candidate}",
+      "reviewer_note": "status inconsistency across 5件套; review if intentional transition state (eg wiki active + 4件套 candidate)"
+    },
+    {
+      "tool_slug": "cc-akb-search",
+      "rule_id": "r03",
+      "status": "pass",
+      "severity": "hard_fail",
+      "evidence": "workspace_path exists: /Users/praise/.codex/skills/cc-akb-search/SKILL.md",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-akb-search",
+      "rule_id": "r04",
+      "status": "pass",
+      "severity": "hard_fail",
+      "evidence": "sha12 match: b669380de8a0",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-akb-search",
+      "rule_id": "r05",
+      "status": "handoff",
+      "severity": "handoff",
+      "evidence": "backlink_status: pending [cc-akb-search blocked candidate]",
+      "reviewer_note": "cc-akb-search: mcp__akb-search not mounted (per P1a); pending is expected state; not a hard fail"
+    },
+    {
+      "tool_slug": "cc-akb-search",
+      "rule_id": "r06",
+      "status": "pass",
+      "severity": "hard_fail",
+      "evidence": "status=candidate eval_level=L0 (ok)",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-akb-search",
+      "rule_id": "r07",
+      "status": "pass",
+      "severity": "handoff",
+      "evidence": "last_run_at=2026-05-05 (2d ago; within 30d)",
+      "reviewer_note": ""
+    },
+    {
+      "tool_slug": "cc-akb-search",
+      "rule_id": "r08",
+      "status": "pass",
+      "severity": "hard_fail",
+      "evidence": "automation_allowed: true = 0 (all 5件套 clean)",
+      "reviewer_note": ""
+    }
+  ]
+}

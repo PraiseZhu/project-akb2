@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# mktemp wrapper — force /tmp/claude/p1d-smoke/ as base dir(sandbox-allowed)
+# bundled scripts call mktemp -d (no args) and mktemp <template>
+WRAP_BASE="/tmp/claude/p1d-smoke"
+mkdir -p "$WRAP_BASE"
+if [ $# -eq 0 ]; then
+  /usr/bin/mktemp "$WRAP_BASE/wrap-file.XXXXXX"
+elif [ "$1" = "-d" ] && [ $# -eq 1 ]; then
+  /usr/bin/mktemp -d "$WRAP_BASE/wrap-dir.XXXXXX"
+else
+  # explicit template or other opts — passthrough (covers save-results.sh: mktemp "$RESULTS.XXXXXX")
+  /usr/bin/mktemp "$@"
+fi

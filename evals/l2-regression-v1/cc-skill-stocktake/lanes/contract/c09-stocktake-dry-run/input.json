@@ -1,0 +1,10 @@
+{
+  "fixture_id": "c09-stocktake-dry-run",
+  "lane": "contract",
+  "operation": "full_stocktake",
+  "mode": "dry_run",
+  "skills_dir": "p1d/fixtures/skills/",
+  "evaluator": "mock",
+  "mock_verdicts": {"skill-a": "pass", "skill-b": "fail", "skill-c": "pass"},
+  "description": "全量 stocktake dry-run：扫描3个skill，2 pass 1 fail，不写磁盘"
+}

@@ -1,0 +1,63 @@
+{
+  "scan_summary": {
+    "global": {
+      "found": true,
+      "count": 3
+    },
+    "project": {
+      "found": true,
+      "path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills",
+      "count": 3
+    }
+  },
+  "skills": [
+    {
+      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-a/SKILL.md",
+      "name": "skill-a",
+      "description": "Fixture skill A — high quality reference. Demonstrates a well-described, frequently used skill with complete frontmatter for stocktake fixture testing.",
+      "use_7d": 0,
+      "use_30d": 0,
+      "mtime": "2026-05-07T11:20:14Z"
+    },
+    {
+      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-b/SKILL.md",
+      "name": "skill-b",
+      "description": "tbd",
+      "use_7d": 0,
+      "use_30d": 0,
+      "mtime": "2026-05-07T11:20:20Z"
+    },
+    {
+      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-c/SKILL.md",
+      "name": "skill-c",
+      "description": "Fixture skill C — deprecated reference. Marked deprecated and overlaps in scope with skill-a; used by P1d L1 smoke as a Retire candidate fixture.",
+      "use_7d": 0,
+      "use_30d": 0,
+      "mtime": "2026-05-07T11:20:26Z"
+    },
+    {
+      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-a/SKILL.md",
+      "name": "skill-a",
+      "description": "Fixture skill A — high quality reference. Demonstrates a well-described, frequently used skill with complete frontmatter for stocktake fixture testing.",
+      "use_7d": 0,
+      "use_30d": 0,
+      "mtime": "2026-05-07T11:20:14Z"
+    },
+    {
+      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-b/SKILL.md",
+      "name": "skill-b",
+      "description": "tbd",
+      "use_7d": 0,
+      "use_30d": 0,
+      "mtime": "2026-05-07T11:20:20Z"
+    },
+    {
+      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-c/SKILL.md",
+      "name": "skill-c",
+      "description": "Fixture skill C — deprecated reference. Marked deprecated and overlaps in scope with skill-a; used by P1d L1 smoke as a Retire candidate fixture.",
+      "use_7d": 0,
+      "use_30d": 0,
+      "mtime": "2026-05-07T11:20:26Z"
+    }
+  ]
+}

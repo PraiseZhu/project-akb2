@@ -1,0 +1,8 @@
+{
+  "fixture": "r04-eval-workspace-version-drift",
+  "trigger_rule": "r04",
+  "expected_status": "fail",
+  "expected_severity": "hard_fail",
+  "description": "active tool; eval workspace_version field PRESENT but sha wrong (deadbeef0000 ≠ 1d4b76d06cd1) → r04 hard_fail",
+  "note": "fake-skill.md sha12: 1d4b76d06cd1; interface sha OK; eval sha wrong: deadbeef0000; hard_fail in both v0 and v1"
+}

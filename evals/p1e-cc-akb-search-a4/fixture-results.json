@@ -1,0 +1,75 @@
+{
+  "schema_version": "p1e-a4-v1",
+  "tool": "cc-akb-search",
+  "phase": "P1e A4 L1 eval",
+  "executed_at": "2026-05-08T10:55:26Z",
+  "executor": "claude-sonnet-4-6 (in-session, CCD)",
+  "mcp_tool": "mcp__akb-search",
+  "fixtures_total": 5,
+  "fixtures_passed": 5,
+  "fixtures_failed": 0,
+  "fixtures": [
+    {
+      "id": "F1",
+      "category": "exact_keyword",
+      "query": "LangGraph",
+      "limit": 5,
+      "expected": "≥1 result, results contain LangGraph/LangChain in title or snippet, valid JSON shape",
+      "actual_total": 3,
+      "actual_top_titles": ["LangChain Announces Enterprise Agentic AI Platform Built with NVIDIA", "LangChain Expression Language", "Introducing deploy cli"],
+      "verdict": "pass",
+      "raw_output_path": "raw-output/F1-langgraph.json"
+    },
+    {
+      "id": "F2",
+      "category": "fuzzy_keyword",
+      "query": "agent harness evaluation",
+      "limit": 5,
+      "expected": "≥1 result with semantic-related items (harness/agent/evaluation), valid JSON",
+      "actual_total": 4,
+      "actual_top_titles": ["[研究] Anthropic Harness Design 长任务应用开发", "[研究] Claude Code Architecture Instruction 项目评估", "ClawGUI: A Unified Framework for Training, Evaluating, and Deploying GUI Agents", "[kyrolabs/awesome-agents] README entries (batch 3)"],
+      "verdict": "pass",
+      "raw_output_path": "raw-output/F2-fuzzy-keyword.json"
+    },
+    {
+      "id": "F3",
+      "category": "chinese_query",
+      "query": "智能体评测",
+      "limit": 5,
+      "expected": "tool handles Chinese input gracefully (no crash), returns valid JSON with results array (may be empty due to FTS5 unicode61 tokenizer + English-dominant DB)",
+      "actual_total": 0,
+      "verdict": "pass",
+      "rationale": "L1 acceptance is graceful handling of Chinese input. 0 results is consistent with FTS5 unicode61 behavior on translated English content. Code-reviewer Round 2 Review explicitly noted: 'FTS5 keyword search; Chinese terms don't match translated English content (expected, not a bug)'.",
+      "raw_output_path": "raw-output/F3-chinese-query.json",
+      "future_work": "Chinese tokenization improvement is in scope of search-quality v0 plan, not L1 floor"
+    },
+    {
+      "id": "F4",
+      "category": "no_result",
+      "query": "xyz_nonexistent_term_2026_qwerty",
+      "limit": 5,
+      "expected": "0 results, valid JSON shape (results: [])",
+      "actual_total": 0,
+      "verdict": "pass",
+      "raw_output_path": "raw-output/F4-no-result.json"
+    },
+    {
+      "id": "F5",
+      "category": "limit_behavior",
+      "query": "MCP protocol",
+      "limit": 2,
+      "expected": "total_results <= limit (2), valid JSON shape",
+      "actual_total": 2,
+      "verdict": "pass",
+      "raw_output_path": "raw-output/F5-limit-behavior.json"
+    }
+  ],
+  "summary": {
+    "all_returns_valid_json": true,
+    "all_within_limit": true,
+    "no_crashes": true,
+    "no_db_writes_observed": true,
+    "no_network_calls_observed": true,
+    "verdict": "5/5 PASS — L1 floor met"
+  }
+}

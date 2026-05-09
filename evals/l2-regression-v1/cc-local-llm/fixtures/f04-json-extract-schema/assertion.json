@@ -1,0 +1,15 @@
+{
+  "fixture_id": "f04-json-extract-schema",
+  "category": "json_extract",
+  "rounds": 3,
+  "stability_threshold": "3/3",
+  "assertions": [
+    {"type": "schema", "field": "choices[0].message.content", "required": true},
+    {"type": "json_parseable", "field": "choices[0].message.content"},
+    {"type": "json_has_keys", "field": "choices[0].message.content", "keys": ["tool", "version", "status"]},
+    {"type": "json_field_value", "field": "choices[0].message.content", "key": "status", "allowed_values": ["active", "inactive"]},
+    {"type": "not_contains", "field": "choices[0].message.content", "values": ["```", "<think>", "抽取结果"]}
+  ],
+  "stability_check": "json_schema_match",
+  "description": "三轮均输出可解析 JSON，包含 tool/version/status 字段，无 markdown 代码块"
+}

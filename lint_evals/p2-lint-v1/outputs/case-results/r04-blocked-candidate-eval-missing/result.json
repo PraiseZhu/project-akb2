@@ -1,0 +1,12 @@
+{
+  "fixture": "r04-blocked-candidate-eval-missing",
+  "trigger_rule": "r04",
+  "description": "blocked candidate (status=candidate); eval workspace_version field ABSENT → r04 handoff (not hard_fail); per P1a blocked exception",
+  "expected_status": "handoff",
+  "expected_severity": "hard_fail",
+  "actual_status": "handoff",
+  "actual_severity": "hard_fail",
+  "actual_evidence": "sha12 match (interface): 1d4b76d06cd1; eval workspace_version field absent",
+  "test_result": "pass",
+  "assertion": "PASS: actual=handoff matches expected=handoff"
+}

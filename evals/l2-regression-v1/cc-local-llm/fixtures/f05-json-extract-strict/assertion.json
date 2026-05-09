@@ -1,0 +1,15 @@
+{
+  "fixture_id": "f05-json-extract-strict",
+  "category": "json_extract_strict",
+  "rounds": 3,
+  "stability_threshold": "3/3",
+  "assertions": [
+    {"type": "json_parseable", "field": "choices[0].message.content"},
+    {"type": "json_has_keys", "field": "choices[0].message.content", "keys": ["eval_level", "automation_allowed"]},
+    {"type": "json_field_value", "field": "choices[0].message.content", "key": "eval_level", "allowed_values": ["L1"]},
+    {"type": "json_field_value", "field": "choices[0].message.content", "key": "automation_allowed", "allowed_values": [false]},
+    {"type": "not_contains", "field": "choices[0].message.content", "values": ["```", "<think>"]}
+  ],
+  "stability_check": "json_exact_match",
+  "description": "严格 JSON：eval_level=L1，automation_allowed=false（布尔），三轮一致"
+}

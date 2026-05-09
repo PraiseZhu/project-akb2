@@ -1,0 +1,8 @@
+{
+  "fixture": "r04-sha-drift",
+  "trigger_rule": "r04",
+  "expected_status": "fail",
+  "expected_severity": "hard_fail",
+  "description": "workspace_version sha prefix 000000000000 ≠ actual sha 1d4b76d06cd1 → r04 sha256_match fail",
+  "note": "fake-skill.md actual sha256 prefix: 1d4b76d06cd1; interface workspace_version: 000000000000"
+}

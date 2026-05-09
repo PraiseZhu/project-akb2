@@ -1,0 +1,8 @@
+{
+  "fixture": "r05-backlink-pending",
+  "trigger_rule": "r05",
+  "expected_status": "fail",
+  "expected_severity": "hard_fail",
+  "description": "backlink_status=pending for slug=fixture-tool (not cc-akb-search) → r05 backlink_linked fail",
+  "note": "If slug were cc-akb-search, verdict would be handoff. fixture-tool has no blocked-candidate exception."
+}

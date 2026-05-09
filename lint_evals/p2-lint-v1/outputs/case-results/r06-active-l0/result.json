@@ -1,0 +1,12 @@
+{
+  "fixture": "r06-active-l0",
+  "trigger_rule": "r06",
+  "description": "status=active + eval_level=L0 → r06 active_needs_l1 fail (active tool must have eval_level >= L1)",
+  "expected_status": "fail",
+  "expected_severity": "hard_fail",
+  "actual_status": "fail",
+  "actual_severity": "hard_fail",
+  "actual_evidence": "status=active but eval_level=L0 (requires >=L1)",
+  "test_result": "pass",
+  "assertion": "PASS: actual=fail matches expected=fail"
+}

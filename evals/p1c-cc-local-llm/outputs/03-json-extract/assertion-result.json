@@ -1,0 +1,8 @@
+{
+  "case_id": "03-json-extract",
+  "status": "pass",
+  "reason": "all_assertions_pass",
+  "content_chars": 83,
+  "content": "{\"meeting\": \"P1c Smoke\", \"date\": \"2026-05-06\", \"owner\": \"Praise\", \"result\": \"pass\"}",
+  "timestamp": "2026-05-07T09:56:29Z"
+}

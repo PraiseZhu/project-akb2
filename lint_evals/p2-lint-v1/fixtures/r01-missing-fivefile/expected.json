@@ -1,0 +1,8 @@
+{
+  "fixture": "r01-missing-fivefile",
+  "trigger_rule": "r01",
+  "expected_status": "fail",
+  "expected_severity": "hard_fail",
+  "description": "5件套缺 wiki/tools/fixture-tool.md → r01 five_file_present fail",
+  "note": "wiki/tools/fixture-tool.md intentionally absent"
+}

@@ -1,0 +1,1 @@
+Warning: CWD_SKILLS_DIR does not look like a .claude/skills path: /Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills

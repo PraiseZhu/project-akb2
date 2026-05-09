@@ -1,0 +1,7 @@
+{
+  "case_id": "05-evaluator",
+  "status": "pass",
+  "reason": "all_assertions_pass",
+  "extra": {"length":3,"unique_verdicts":3},
+  "timestamp": "2026-05-07T11:35:51Z"
+}

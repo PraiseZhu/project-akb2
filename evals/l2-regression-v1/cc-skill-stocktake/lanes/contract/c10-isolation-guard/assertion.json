@@ -1,0 +1,11 @@
+{
+  "fixture_id": "c10-isolation-guard",
+  "lane": "contract",
+  "assertions": [
+    {"type": "no_write_to_akb", "check_paths": ["AKB2.0/toolbox/", "AKB2.0/wiki/"]},
+    {"type": "no_skill_modification", "check_path": "~/.codex/skills/"},
+    {"type": "no_write_to_formal_evals", "check_path": "AKB2.0/toolbox/evals/"},
+    {"type": "output_schema", "required_fields": ["isolation_verified"]}
+  ],
+  "description": "隔离守卫：stocktake 在任何模式下都不得写 AKB 正式目录或 ~/.codex/skills/"
+}

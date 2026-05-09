@@ -1,0 +1,8 @@
+{
+  "fixture_id": "c01-baseline-scan",
+  "lane": "contract",
+  "operation": "baseline_scan",
+  "skills_dir": "fixtures/skills/",
+  "expected_count": 3,
+  "description": "扫描 fixtures/skills/ 发现 3 个 SKILL.md（skill-a, skill-b, skill-c）"
+}

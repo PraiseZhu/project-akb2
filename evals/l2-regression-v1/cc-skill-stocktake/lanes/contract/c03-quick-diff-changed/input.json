@@ -1,0 +1,9 @@
+{
+  "fixture_id": "c03-quick-diff-changed",
+  "lane": "contract",
+  "operation": "quick_diff",
+  "baseline_results": "p1d/fixtures/baseline-results.json",
+  "current_results": "p1d/fixtures/changed-results.json",
+  "expected_diff": "changed",
+  "description": "baseline vs changed 比较，预期 changed 且列出变更 skill"
+}

@@ -1,0 +1,16 @@
+{
+  "model": "qwen3-8b",
+  "messages": [
+    {
+      "role": "system",
+      "content": "你必须在回复末尾输出 'LOCAL_LLM_ANCHOR_OK' 字面 token,不要包在引号内。回复中必须包含中文词 '只读' 或英文 'readonly'。回复中不得提及 '自动化' / 'automation' / 'mutation' / 'restart' / 'pull model'。回复 50 字以内。不要思考过程。/no_think"
+    },
+    {
+      "role": "user",
+      "content": "确认你理解上述约束。"
+    }
+  ],
+  "max_tokens": 200,
+  "temperature": 0.0,
+  "stream": false
+}

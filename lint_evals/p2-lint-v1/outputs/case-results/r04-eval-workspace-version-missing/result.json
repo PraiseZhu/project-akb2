@@ -1,0 +1,12 @@
+{
+  "fixture": "r04-eval-workspace-version-missing",
+  "trigger_rule": "r04",
+  "description": "active tool; eval workspace_version field ABSENT → r04 hard_fail (v1 fix; v0 false-negative silently passed)",
+  "expected_status": "fail",
+  "expected_severity": "hard_fail",
+  "actual_status": "fail",
+  "actual_severity": "hard_fail",
+  "actual_evidence": "sha12 mismatch: eval:workspace_version_field_absent",
+  "test_result": "pass",
+  "assertion": "PASS: actual=fail matches expected=fail"
+}

@@ -1,0 +1,7 @@
+{
+  "fixture": "r06-active-l0",
+  "trigger_rule": "r06",
+  "expected_status": "fail",
+  "expected_severity": "hard_fail",
+  "description": "status=active + eval_level=L0 → r06 active_needs_l1 fail (active tool must have eval_level >= L1)"
+}

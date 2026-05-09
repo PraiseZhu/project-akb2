@@ -1,0 +1,8 @@
+{
+  "fixture": "r04-blocked-candidate-eval-missing",
+  "trigger_rule": "r04",
+  "expected_status": "handoff",
+  "expected_severity": "hard_fail",
+  "description": "blocked candidate (status=candidate); eval workspace_version field ABSENT → r04 handoff (not hard_fail); per P1a blocked exception",
+  "note": "fake-skill.md sha12: 1d4b76d06cd1; interface sha OK; eval missing field; status=candidate → handoff not fail"
+}

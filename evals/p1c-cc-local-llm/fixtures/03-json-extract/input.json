@@ -1,0 +1,16 @@
+{
+  "model": "qwen3-8b",
+  "messages": [
+    {
+      "role": "system",
+      "content": "提取下列字段为 JSON,key 名:meeting / date / owner / result。只输出一个 JSON 对象,不要 markdown 代码块,不要解释,不要思考过程。/no_think"
+    },
+    {
+      "role": "user",
+      "content": "会议纪要:P1c Smoke,日期 2026-05-06,负责人 Praise,结果 pass。"
+    }
+  ],
+  "max_tokens": 128,
+  "temperature": 0.0,
+  "stream": false
+}

@@ -1,0 +1,66 @@
+[
+  {
+    "id": "akb-001",
+    "utterance": "akb 里有没有关于 RAG 的内容",
+    "expected_skill": "akb-search",
+    "should_trigger": true,
+    "confusion_set": [],
+    "notes": "含'akb'"
+  },
+  {
+    "id": "akb-002",
+    "utterance": "搜一下知识库里的 MCP 相关内容",
+    "expected_skill": "akb-search",
+    "should_trigger": true,
+    "confusion_set": [],
+    "notes": "含'知识库'"
+  },
+  {
+    "id": "akb-003",
+    "utterance": "什么是 MCP 协议，跟传统 API 有什么区别",
+    "expected_skill": "akb-search",
+    "should_trigger": true,
+    "confusion_set": [],
+    "notes": "含'什么是 MCP'"
+  },
+  {
+    "id": "akb-004",
+    "utterance": "做个 agent 框架对比，LangChain vs AutoGen",
+    "expected_skill": "akb-search",
+    "should_trigger": true,
+    "confusion_set": [],
+    "notes": "含'agent 框架对比'"
+  },
+  {
+    "id": "akb-005",
+    "utterance": "什么是 A2A 框架，和 MCP 有什么关系",
+    "expected_skill": "akb-search",
+    "should_trigger": true,
+    "confusion_set": [],
+    "notes": "含'什么是 A2A'"
+  },
+  {
+    "id": "akb-neg-001",
+    "utterance": "搜索一下最新的 AI 论文",
+    "expected_skill": "akb-search",
+    "should_trigger": false,
+    "confusion_set": [],
+    "notes": "无触发词，'搜索'不在列表"
+  },
+  {
+    "id": "akb-neg-002",
+    "utterance": "agent 设计的最佳实践是什么",
+    "expected_skill": "akb-search",
+    "should_trigger": false,
+    "confusion_set": [],
+    "notes": "含'agent'但不含'agent 框架对比'"
+  },
+  {
+    "id": "akb-neg-003",
+    "utterance": "什么是好的代码架构",
+    "expected_skill": "akb-search",
+    "should_trigger": false,
+    "confusion_set": [],
+    "notes": "含'什么是'但不含特定触发词组合"
+  }
+]

@@ -1,0 +1,12 @@
+{
+  "fixture": "r03-workspace-missing",
+  "trigger_rule": "r03",
+  "description": "workspace_path: /nonexistent/skills/fixture-tool/SKILL.md does not exist → r03 workspace_path_exists fail",
+  "expected_status": "fail",
+  "expected_severity": "hard_fail",
+  "actual_status": "fail",
+  "actual_severity": "hard_fail",
+  "actual_evidence": "workspace_path not found: /nonexistent/skills/fixture-tool/SKILL.md",
+  "test_result": "pass",
+  "assertion": "PASS: actual=fail matches expected=fail"
+}

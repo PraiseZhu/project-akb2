@@ -1,0 +1,18 @@
+{
+  "fixture_id": "f05-json-extract-strict",
+  "model": "qwen3-8b",
+  "messages": [
+    {
+      "role": "system",
+      "content": "只输出 JSON。不要思考，不要解释，不要 markdown。/no_think"
+    },
+    {
+      "role": "user",
+      "content": "抽取：{\"eval_level\": string, \"automation_allowed\": boolean}。\n\n输入：cc-skill-stocktake 当前 eval_level 为 L1，automation_allowed 为 false。"
+    }
+  ],
+  "max_tokens": 80,
+  "temperature": 0,
+  "seed": 7293847,
+  "stream": false
+}

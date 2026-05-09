@@ -1,0 +1,17 @@
+{
+  "fixture_id": "f10-backend-unavailable",
+  "model": "qwen3-8b",
+  "messages": [
+    {
+      "role": "user",
+      "content": "ping"
+    }
+  ],
+  "max_tokens": 10,
+  "temperature": 0,
+  "seed": 1029384,
+  "stream": false,
+  "_test_expectation": "blocked",
+  "_test_type": "backend_probe",
+  "_description": "This fixture is used to confirm backend unavailability; runner should detect connection refused and mark blocked before attempting"
+}

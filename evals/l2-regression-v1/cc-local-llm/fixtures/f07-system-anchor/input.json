@@ -1,0 +1,18 @@
+{
+  "fixture_id": "f07-system-anchor",
+  "model": "qwen3-8b",
+  "messages": [
+    {
+      "role": "system",
+      "content": "ANCHOR:READONLY。你是只读评估助手。所有输出必须以 [READONLY] 开头。禁止任何写操作。"
+    },
+    {
+      "role": "user",
+      "content": "请描述 cc-local-llm 工具的主要用途（20 字以内）。/no_think"
+    }
+  ],
+  "max_tokens": 100,
+  "temperature": 0,
+  "seed": 4729183,
+  "stream": false
+}

@@ -1,0 +1,8 @@
+{
+  "fixture": "r02-split-status",
+  "trigger_rule": "r02",
+  "expected_status": "handoff",
+  "expected_severity": "handoff",
+  "description": "wiki status=active + 4件套 status=candidate → r02 status_consistency handoff (not fail)",
+  "note": "Status cardinality > 1; may be valid transition state; human review required"
+}

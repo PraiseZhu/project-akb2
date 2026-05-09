@@ -1,0 +1,13 @@
+{
+  "fixture_id": "c06-missing-skill-path",
+  "lane": "contract",
+  "assertions": [
+    {"type": "no_crash"},
+    {"type": "one_of_output_schema", "options": [
+      {"required_fields": ["skills_found"], "field_value": {"skills_found": 0}},
+      {"required_fields": ["error", "error_type"]}
+    ]},
+    {"type": "no_write_to_akb"}
+  ],
+  "description": "不存在路径时：空列表（skills_found=0）或 error，不崩溃"
+}

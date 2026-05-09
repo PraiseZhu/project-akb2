@@ -1,0 +1,12 @@
+{
+  "fixture": "r02-split-status",
+  "trigger_rule": "r02",
+  "description": "wiki status=active + 4件套 status=candidate → r02 status_consistency handoff (not fail)",
+  "expected_status": "handoff",
+  "expected_severity": "handoff",
+  "actual_status": "handoff",
+  "actual_severity": "handoff",
+  "actual_evidence": "status split: {active,candidate}",
+  "test_result": "pass",
+  "assertion": "PASS: actual=handoff matches expected=handoff"
+}

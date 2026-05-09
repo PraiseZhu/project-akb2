@@ -1,0 +1,18 @@
+{
+  "fixture_id": "f06-long-text-chunked",
+  "model": "qwen3-8b",
+  "messages": [
+    {
+      "role": "system",
+      "content": "你是文档摘要助手。对以下技术文档生成 50 字以内的中文摘要。只输出摘要，不要解释。/no_think"
+    },
+    {
+      "role": "user",
+      "content": "第一部分：AKB 工具库架构\nAKB 工具库由五件套管理：toolbox/interfaces 定义接口契约，toolbox/tools 描述工具行为，toolbox/evals 记录评估标准，toolbox/registry 管理状态，wiki/tools 提供用户文档。每个工具对应一套完整五件套，eval_level 从 L0 到 L3 逐步提升。\n\n第二部分：Local LLM 集成\ncc-local-llm 工具通过 127.0.0.1:8080 调用 llama-swap 后端，使用 /v1/chat/completions 接口，只读模式，不写入任何数据库。支持 qwen3-8b 等模型，temperature=0 确保结果确定性。\n\n第三部分：评估流程\nL1 评估为单次 smoke test，L2 为三轮稳定性验证（3/3 threshold），L3 为生产级验证。每个阶段都需要生成 recommendation.json，包含 verdict 字段。"
+    }
+  ],
+  "max_tokens": 200,
+  "temperature": 0,
+  "seed": 9182736,
+  "stream": false
+}

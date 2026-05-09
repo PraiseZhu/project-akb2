@@ -1,0 +1,39 @@
+{
+  "fixture_id": "F1",
+  "category": "exact_keyword",
+  "input": {"query": "LangGraph", "semantic": false, "limit": 5},
+  "executed_at": "2026-05-08T10:55:26Z",
+  "response": {
+    "query": "LangGraph",
+    "total_results": 3,
+    "results": [
+      {
+        "item_id": "blog-blog-langchain-LangChain-Announces-Enterprise-Agentic-AI-Platform-Built-wit-2026-03-16",
+        "title": "LangChain Announces Enterprise Agentic AI Platform Built with NVIDIA",
+        "url": "https://blog.langchain.com/nvidia-enterprise/",
+        "source": "blog",
+        "date": "2026-03-16",
+        "tags": "[\"News\", \"LLM\", \"Tool\", \"Agent_Framework\", \"Multi_Agent\", \"Evaluation\", \"Deployment\"]",
+        "snippet_truncated": "全面的代理工程平台结合 NVIDIA AI ..."
+      },
+      {
+        "item_id": "blog-blog-langchain-LangChain-Expression-Language-2026-04-29",
+        "title": "LangChain Expression Language",
+        "url": "https://python.langchain.com/docs/expression_language/?ref=blog.langchain.com",
+        "source": "blog",
+        "date": "2026-04-29",
+        "tags": "[\"Agent_Framework\", \"Agent_Pattern\", \"LLM\"]",
+        "snippet_truncated": "Integration with LangGraph enables complex workflows ..."
+      },
+      {
+        "item_id": "blog-blog-langchain-Introducing-deploy-cli-2026-03-16",
+        "title": "Introducing deploy cli",
+        "url": "https://blog.langchain.com/introducing-deploy-cli/",
+        "source": "blog",
+        "date": "2026-03-16",
+        "tags": "",
+        "snippet_truncated": "uvx --from langgraph-cli langgraph deploy ..."
+      }
+    ]
+  }
+}

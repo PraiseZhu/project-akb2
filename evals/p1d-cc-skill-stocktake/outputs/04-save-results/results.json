@@ -1,0 +1,21 @@
+{
+  "skills": {
+    "skill-a": {
+      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-a/SKILL.md",
+      "verdict": "Keep",
+      "reason": "fixture skill-a 描述完整、近 7 天 12 次调用、frontmatter 齐 — 当前指标支持保持现状,不需要重构或合并。"
+    },
+    "skill-b": {
+      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-b/SKILL.md",
+      "verdict": "Improve",
+      "reason": "fixture skill-b 30 天 0 次调用且 description 仅 3 字符,建议补 description + 加 alias 提升 discoverability。"
+    },
+    "skill-c": {
+      "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-c/SKILL.md",
+      "verdict": "Retire",
+      "reason": "fixture skill-c 90 天无调用、frontmatter 已标 deprecated、与 skill-a 功能高度重叠 — 建议归档释放 trigger 表。"
+    }
+  },
+  "mode": "quick",
+  "evaluated_at": "2026-05-07T11:35:51Z"
+}

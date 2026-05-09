@@ -1,0 +1,44 @@
+{
+  "fixture_id": "F2",
+  "category": "fuzzy_keyword",
+  "input": {"query": "agent harness evaluation", "semantic": false, "limit": 5},
+  "executed_at": "2026-05-08T10:55:26Z",
+  "response": {
+    "query": "agent harness evaluation",
+    "total_results": 4,
+    "results": [
+      {
+        "item_id": "research-anthropic-harness-design-长任务应用开发-report-2026-04-13",
+        "title": "[研究] Anthropic Harness Design 长任务应用开发",
+        "source": "research",
+        "date": "2026-04-13",
+        "tags": "[\"research\", \"deep_research\"]",
+        "snippet_truncated": "anthropic.com/engineering/harness-design-long-running-apps ..."
+      },
+      {
+        "item_id": "research-claude-code-architecture-instruction-项目评估-report-2026-04-14",
+        "title": "[研究] Claude Code Architecture Instruction 项目评估",
+        "source": "research",
+        "date": "2026-04-14",
+        "tags": "[\"research\", \"deep_research\"]",
+        "snippet_truncated": "agent-architecture, claude-code, architecture-analysis, open-source-evaluation ..."
+      },
+      {
+        "item_id": "arxiv-2604-11784",
+        "title": "ClawGUI: A Unified Framework for Training, Evaluating, and Deploying GUI Agents",
+        "url": "https://arxiv.org/abs/2604.11784v1",
+        "source": "arxiv",
+        "date": "2026-04-13",
+        "snippet_truncated": "ClawGUI, an open-source framework ... within a single harness ..."
+      },
+      {
+        "item_id": "github-github-awesome-agents-readme-batch3",
+        "title": "[kyrolabs/awesome-agents] README entries (batch 3)",
+        "url": "https://github.com/kyrolabs/awesome-agents",
+        "source": "github",
+        "date": "2026-03-21",
+        "snippet_truncated": "Arize-Phoenix ... agent testing, evaluation and observability ... voicetest ... test harness for voice agents ..."
+      }
+    ]
+  }
+}

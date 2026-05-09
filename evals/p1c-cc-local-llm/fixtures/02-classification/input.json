@@ -1,0 +1,16 @@
+{
+  "model": "qwen3-8b",
+  "messages": [
+    {
+      "role": "system",
+      "content": "三个候选标签:后端契约 / 性能优化 / 安全审计。只输出一个标签的中文名,不要解释,不要思考过程。/no_think"
+    },
+    {
+      "role": "user",
+      "content": "本周把 cc-local-llm 工具描述从 Ollama 切换到 llama-swap,保留 readonly 边界。"
+    }
+  ],
+  "max_tokens": 32,
+  "temperature": 0.0,
+  "stream": false
+}

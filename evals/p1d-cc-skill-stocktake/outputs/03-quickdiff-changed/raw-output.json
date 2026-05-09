@@ -1,0 +1,32 @@
+[
+  {
+    "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-a/SKILL.md",
+    "mtime": "2026-05-07T11:20:14Z",
+    "is_new": false
+  },
+  {
+    "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-b/SKILL.md",
+    "mtime": "2026-05-07T11:20:20Z",
+    "is_new": false
+  },
+  {
+    "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-c/SKILL.md",
+    "mtime": "2026-05-07T11:20:26Z",
+    "is_new": true
+  },
+  {
+    "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-a/SKILL.md",
+    "mtime": "2026-05-07T11:20:14Z",
+    "is_new": false
+  },
+  {
+    "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-b/SKILL.md",
+    "mtime": "2026-05-07T11:20:20Z",
+    "is_new": false
+  },
+  {
+    "path": "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/ai-infra/akb2-toolbox-evals/p1d-cc-skill-stocktake/fixtures/skills/skill-c/SKILL.md",
+    "mtime": "2026-05-07T11:20:26Z",
+    "is_new": true
+  }
+]

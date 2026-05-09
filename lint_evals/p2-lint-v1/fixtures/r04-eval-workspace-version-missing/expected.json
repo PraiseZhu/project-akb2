@@ -1,0 +1,8 @@
+{
+  "fixture": "r04-eval-workspace-version-missing",
+  "trigger_rule": "r04",
+  "expected_status": "fail",
+  "expected_severity": "hard_fail",
+  "description": "active tool; eval workspace_version field ABSENT → r04 hard_fail (v1 fix; v0 false-negative silently passed)",
+  "note": "fake-skill.md sha12: 1d4b76d06cd1; interface sha OK; eval file has no workspace_version field; active tool must have dual-side check"
+}
