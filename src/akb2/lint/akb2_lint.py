@@ -143,6 +143,16 @@ TEMPLATE_DIRECTORY_MAP = {
     "agent-procedure":    "toolbox/agent-procedures/",
 }
 
+# 2026-05-11 v0.3.1: machine interface 子目录 — 不参与 22 条 active-page 规则扫描.
+# 已审 22 规则: 无任何规则将 wikilink target 解析到这些前缀 (R18 仅触 toolbox/tools/,
+# R22 仅触 raw/), 故可在 file-discovery 阶段安全排除.
+# 同步声明: docs/AKB-2.0-LINT-RULES.md §1.
+LINT_EXCLUDE_PREFIXES = (
+    "toolbox/registry/",
+    "toolbox/interfaces/",
+    "toolbox/evals/",
+)
+
 # evidence_provenance enum (INTAKE-GATE §4 第 8 条)
 EVIDENCE_PROVENANCE_VALUES = {
     "source_grounded", "bridging_source_grounded", "partial_source_grounded", "inference_only",
@@ -840,6 +850,13 @@ def collect_active_pages(scope: str) -> list[Path]:
         if not root.exists():
             continue
         for p in root.rglob("*.md"):
+            # v0.3.1: machine interface 子目录排除 (registry / interfaces / evals)
+            try:
+                rel = str(p.relative_to(VAULT_ROOT))
+            except ValueError:
+                rel = str(p)
+            if any(rel.startswith(prefix) for prefix in LINT_EXCLUDE_PREFIXES):
+                continue
             if p.name == "00-Index.md":
                 continue
             try:
