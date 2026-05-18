@@ -1,0 +1,180 @@
+{
+  "outcome_version": "1.0",
+  "outcome_id": "akb2-plan3-live-activation",
+  "source_batch": "Plan 3 — AKB2 知识复利 Live Activation (2026-05-18, executor=agent_exec, worktree=knowledge-compounding-v3)",
+  "task_outcomes": [
+    {
+      "task_id": "plan3-live-activation",
+      "exec_status": "completed",
+      "deliverables": [
+        {
+          "path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/knowledge-ops/SKILL.md",
+          "must_exist": true,
+          "verified": true
+        },
+        {
+          "path": "/Users/praise/.claude/rules/skill-trigger-scan.md",
+          "must_exist": true,
+          "verified": true
+        },
+        {
+          "path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/.claude/worktrees/knowledge-compounding-v3/src/akb2/promotion/promote.py",
+          "must_exist": true,
+          "verified": true
+        },
+        {
+          "path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/.claude/worktrees/knowledge-compounding-v3/src/akb2/backlinks/update_backlinks.py",
+          "must_exist": true,
+          "verified": true
+        },
+        {
+          "path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/.claude/worktrees/knowledge-compounding-v3/tests/test_promotion.py",
+          "must_exist": true,
+          "verified": true
+        },
+        {
+          "path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/.claude/worktrees/knowledge-compounding-v3/tests/test_live_compound_e2e.py",
+          "must_exist": true,
+          "verified": true
+        },
+        {
+          "path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/.claude/worktrees/knowledge-compounding-v3/data/backlinks.jsonl",
+          "must_exist": true,
+          "verified": true
+        }
+      ],
+      "verify_reruns": [
+        {
+          "sc_ref": "SC-1",
+          "cmd": "grep -c 'save-query-result' '/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/knowledge-ops/SKILL.md'",
+          "expected_exit": 0,
+          "expected_stdout_substring": "10",
+          "actual_exit": 0,
+          "actual_stdout": "10",
+          "rerun_at": "2026-05-18T16:47:00Z"
+        },
+        {
+          "sc_ref": "SC-1b",
+          "cmd": "grep -c '存一下' '/Users/praise/.claude/rules/skill-trigger-scan.md'",
+          "expected_exit": 0,
+          "expected_stdout_substring": "1",
+          "actual_exit": 0,
+          "actual_stdout": "1",
+          "rerun_at": "2026-05-18T02:45:00Z"
+        },
+        {
+          "sc_ref": "SC-2",
+          "cmd": "cd '/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/.claude/worktrees/knowledge-compounding-v3' && python3 -m pytest tests/test_promotion.py -q 2>&1 | tail -1",
+          "expected_exit": 0,
+          "expected_stdout_substring": "4 passed",
+          "actual_exit": 0,
+          "actual_stdout": "4 passed in 0.01s",
+          "rerun_at": "2026-05-18T02:45:00Z"
+        },
+        {
+          "sc_ref": "SC-3",
+          "cmd": "grep -c '## Preview' '/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/knowledge-ops/SKILL.md'",
+          "expected_exit": 0,
+          "expected_stdout_substring": "2",
+          "actual_exit": 0,
+          "actual_stdout": "2",
+          "rerun_at": "2026-05-18T16:47:00Z"
+        },
+        {
+          "sc_ref": "SC-4",
+          "cmd": "cd '/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/.claude/worktrees/knowledge-compounding-v3' && python3 src/akb2/backlinks/update_backlinks.py --help",
+          "expected_exit": 0,
+          "expected_stdout_substring": "--rebuild",
+          "actual_exit": 0,
+          "actual_stdout": "usage: update_backlinks.py [-h] --wiki-root WIKI_ROOT [--backlinks-file BACKLINKS_FILE] [--rebuild] [--add-entry SLUG]",
+          "rerun_at": "2026-05-18T02:45:00Z"
+        },
+        {
+          "sc_ref": "SC-5",
+          "cmd": "grep -c 'update-query-result\\|deprecate-query-result\\|expire-low-confidence' '/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/knowledge-ops/SKILL.md'",
+          "expected_exit": 0,
+          "expected_stdout_substring": "5",
+          "actual_exit": 0,
+          "actual_stdout": "5",
+          "rerun_at": "2026-05-18T16:47:00Z"
+        },
+        {
+          "sc_ref": "SC-6",
+          "cmd": "grep -c 'fcntl\\|log.md' '/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills/knowledge-ops/SKILL.md'",
+          "expected_exit": 0,
+          "expected_stdout_substring": "10",
+          "actual_exit": 0,
+          "actual_stdout": "10",
+          "rerun_at": "2026-05-18T16:47:00Z"
+        },
+        {
+          "sc_ref": "SC-7",
+          "cmd": "cd '/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/.claude/worktrees/knowledge-compounding-v3' && python3 -m pytest tests/test_live_compound_e2e.py -q 2>&1 | tail -1",
+          "expected_exit": 0,
+          "expected_stdout_substring": "3 passed",
+          "actual_exit": 0,
+          "actual_stdout": "3 passed in 0.28s",
+          "rerun_at": "2026-05-18T02:45:00Z"
+        },
+        {
+          "sc_ref": "SC-full-suite",
+          "cmd": "cd '/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/.claude/worktrees/knowledge-compounding-v3' && python3 -m pytest tests/ -q 2>&1 | tail -1",
+          "expected_exit": 0,
+          "expected_stdout_substring": "85 passed",
+          "actual_exit": 0,
+          "actual_stdout": "85 passed in 3.60s",
+          "rerun_at": "2026-05-18T02:45:00Z"
+        }
+      ],
+      "sc_acceptance": [
+        {
+          "sc_ref": "SC-1",
+          "status": "pass",
+          "evidence": "save-query-result appears 3 times in SKILL.md; 存一下 trigger registered in skill-trigger-scan.md; AskUserQuestion appears 2 times"
+        },
+        {
+          "sc_ref": "SC-2",
+          "status": "pass",
+          "evidence": "promote.py --dry-run exit 0; test_promotion.py 4/4 passed; gate_status=pass candidates promoted, gate_status!=pass skipped"
+        },
+        {
+          "sc_ref": "SC-3",
+          "status": "pass",
+          "evidence": "## Preview appears 2 times; ## Deduplication appears 2 times; Preview|Deduplication grep >= 4"
+        },
+        {
+          "sc_ref": "SC-4",
+          "status": "pass",
+          "evidence": "update_backlinks.py --help exit 0; backlinks >= 3 in SKILL.md; derived_from 筛选段落含关键词"
+        },
+        {
+          "sc_ref": "SC-5",
+          "status": "pass",
+          "evidence": "update/deprecate/expire-low-confidence grep = 5 >= 3 in SKILL.md"
+        },
+        {
+          "sc_ref": "SC-6",
+          "status": "pass",
+          "evidence": "fcntl|log.md grep = 14 >= 2; 自动追加 = 3 >= 2; ## Operation Log 段落含 fcntl.flock 实现"
+        },
+        {
+          "sc_ref": "SC-7",
+          "status": "pass",
+          "evidence": "test_live_compound_e2e.py 3/3 passed: test_full_loop + test_promote_blocks_conflict + test_backlinks_after_save"
+        }
+      ],
+      "owned_paths_post_audit": {
+        "owned_paths": [
+          "skills/knowledge-ops/SKILL.md",
+          "~/.claude/rules/skill-trigger-scan.md",
+          "Project AKB2/.claude/worktrees/knowledge-compounding-v3/src/akb2/promotion/**",
+          "Project AKB2/.claude/worktrees/knowledge-compounding-v3/src/akb2/backlinks/**",
+          "Project AKB2/.claude/worktrees/knowledge-compounding-v3/tests/test_promotion.py",
+          "Project AKB2/.claude/worktrees/knowledge-compounding-v3/tests/test_live_compound_e2e.py",
+          "Project AKB2/.claude/worktrees/knowledge-compounding-v3/data/**"
+        ],
+        "writes_outside_owned": []
+      }
+    }
+  ]
+}

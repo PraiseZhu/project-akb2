@@ -1,0 +1,428 @@
+{
+  "dispatch_id": "gd-master-knowledge-compounding-plan3",
+  "source_master_plan": "plans/gd/2026-05-17-knowledge-compounding-live-activation/gd-master-knowledge-compounding-plan3.md",
+  "goal_chain": {
+    "PROJECT_GOAL": "在 Claude Code 中建设 /gd Goal-Driven 多 Agent 主链路，提升复杂任务的计划、审查、执行、验收效率，并通过 Codex 作为 cross-review sidecar 降低填表式计划与执行遗漏风险。",
+    "CHAIN_GOAL": "用 shared core 固定目标链、SC、任务包、review contract 和 anti-fill 标准，保证后续 /gd command、multi-agent dispatch、execution review、Codex cross-review 都引用同一套契约。",
+    "PHASE_GOAL": "在 Plan 2 基础设施（query-result 模板/lint/gate/index/search 路由）之上，打通对话→存储→晋升→检索的 live 闭环：用户说\"存一下\"自动写候选页 → 跑 lint+gate → 通过后晋升到 wiki/ → 下次查询能被发现；同时补全 P1 体验缺口（预览、去重、智能 derived_from、反向索引）和 P2 生命周期管理（触发词扩展、低质归档、操作日志）。"
+  },
+  "max_parallel_planning": 2,
+  "max_parallel_execution": 2,
+  "max_parallel_review": 2,
+  "max_parallel_validation": 2,
+  "tracks": [
+    {
+      "track_id": "t1",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "plans/gd/dispatched/t1"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**"
+      ],
+      "required_context": [
+        "plans/gd/2026-05-17-knowledge-compounding-live-activation/gd-master-knowledge-compounding-plan3.md"
+      ],
+      "deliverables": [
+        {
+          "path": "plans/gd/dispatched/t1/output.md",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [],
+      "can_parallel_with": [
+        "t2"
+      ],
+      "sc_refs": [
+        "SC-1"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-1",
+          "method": "path",
+          "cmd": "test -d plans/gd/dispatched/t1",
+          "expect": "exit 0"
+        }
+      ],
+      "_max_parallel": 2,
+      "_step_ids": [
+        "step-1"
+      ],
+      "_task_packets": [],
+      "_field_sources": {
+        "owned_paths": "placeholder",
+        "forbidden_paths": "placeholder",
+        "required_context": "placeholder",
+        "deliverables": "placeholder",
+        "sc_refs": "placeholder",
+        "verify": "placeholder"
+      },
+      "_placeholder_fields": [
+        "owned_paths",
+        "forbidden_paths",
+        "required_context",
+        "deliverables",
+        "sc_refs",
+        "verify"
+      ],
+      "_payload_source": "placeholder"
+    },
+    {
+      "track_id": "t2",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "plans/gd/dispatched/t2"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**"
+      ],
+      "required_context": [
+        "plans/gd/2026-05-17-knowledge-compounding-live-activation/gd-master-knowledge-compounding-plan3.md"
+      ],
+      "deliverables": [
+        {
+          "path": "plans/gd/dispatched/t2/output.md",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [],
+      "can_parallel_with": [
+        "t1"
+      ],
+      "sc_refs": [
+        "SC-1"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-1",
+          "method": "path",
+          "cmd": "test -d plans/gd/dispatched/t2",
+          "expect": "exit 0"
+        }
+      ],
+      "_max_parallel": 2,
+      "_step_ids": [
+        "step-2"
+      ],
+      "_task_packets": [],
+      "_field_sources": {
+        "owned_paths": "placeholder",
+        "forbidden_paths": "placeholder",
+        "required_context": "placeholder",
+        "deliverables": "placeholder",
+        "sc_refs": "placeholder",
+        "verify": "placeholder"
+      },
+      "_placeholder_fields": [
+        "owned_paths",
+        "forbidden_paths",
+        "required_context",
+        "deliverables",
+        "sc_refs",
+        "verify"
+      ],
+      "_payload_source": "placeholder"
+    },
+    {
+      "track_id": "t3",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "plans/gd/dispatched/t3"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**"
+      ],
+      "required_context": [
+        "plans/gd/2026-05-17-knowledge-compounding-live-activation/gd-master-knowledge-compounding-plan3.md"
+      ],
+      "deliverables": [
+        {
+          "path": "plans/gd/dispatched/t3/output.md",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [
+        "t1",
+        "t2"
+      ],
+      "can_parallel_with": [
+        "t4"
+      ],
+      "sc_refs": [
+        "SC-1"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-1",
+          "method": "path",
+          "cmd": "test -d plans/gd/dispatched/t3",
+          "expect": "exit 0"
+        }
+      ],
+      "_max_parallel": 2,
+      "_step_ids": [
+        "step-3"
+      ],
+      "_task_packets": [],
+      "_field_sources": {
+        "owned_paths": "placeholder",
+        "forbidden_paths": "placeholder",
+        "required_context": "placeholder",
+        "deliverables": "placeholder",
+        "sc_refs": "placeholder",
+        "verify": "placeholder"
+      },
+      "_placeholder_fields": [
+        "owned_paths",
+        "forbidden_paths",
+        "required_context",
+        "deliverables",
+        "sc_refs",
+        "verify"
+      ],
+      "_payload_source": "placeholder"
+    },
+    {
+      "track_id": "t4",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "plans/gd/dispatched/t4"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**"
+      ],
+      "required_context": [
+        "plans/gd/2026-05-17-knowledge-compounding-live-activation/gd-master-knowledge-compounding-plan3.md"
+      ],
+      "deliverables": [
+        {
+          "path": "plans/gd/dispatched/t4/output.md",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [
+        "t1",
+        "t2"
+      ],
+      "can_parallel_with": [
+        "t3"
+      ],
+      "sc_refs": [
+        "SC-1"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-1",
+          "method": "path",
+          "cmd": "test -d plans/gd/dispatched/t4",
+          "expect": "exit 0"
+        }
+      ],
+      "_max_parallel": 2,
+      "_step_ids": [
+        "step-4"
+      ],
+      "_task_packets": [],
+      "_field_sources": {
+        "owned_paths": "placeholder",
+        "forbidden_paths": "placeholder",
+        "required_context": "placeholder",
+        "deliverables": "placeholder",
+        "sc_refs": "placeholder",
+        "verify": "placeholder"
+      },
+      "_placeholder_fields": [
+        "owned_paths",
+        "forbidden_paths",
+        "required_context",
+        "deliverables",
+        "sc_refs",
+        "verify"
+      ],
+      "_payload_source": "placeholder"
+    },
+    {
+      "track_id": "t5",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "plans/gd/dispatched/t5"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**"
+      ],
+      "required_context": [
+        "plans/gd/2026-05-17-knowledge-compounding-live-activation/gd-master-knowledge-compounding-plan3.md"
+      ],
+      "deliverables": [
+        {
+          "path": "plans/gd/dispatched/t5/output.md",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [
+        "t1",
+        "t2"
+      ],
+      "can_parallel_with": [],
+      "sc_refs": [
+        "SC-1"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-1",
+          "method": "path",
+          "cmd": "test -d plans/gd/dispatched/t5",
+          "expect": "exit 0"
+        }
+      ],
+      "_max_parallel": 1,
+      "_step_ids": [
+        "step-5"
+      ],
+      "_task_packets": [],
+      "_field_sources": {
+        "owned_paths": "placeholder",
+        "forbidden_paths": "placeholder",
+        "required_context": "placeholder",
+        "deliverables": "placeholder",
+        "sc_refs": "placeholder",
+        "verify": "placeholder"
+      },
+      "_placeholder_fields": [
+        "owned_paths",
+        "forbidden_paths",
+        "required_context",
+        "deliverables",
+        "sc_refs",
+        "verify"
+      ],
+      "_payload_source": "placeholder"
+    },
+    {
+      "track_id": "t6",
+      "mode": "validate",
+      "agent_role": "child_validator",
+      "owned_paths": [
+        "plans/gd/dispatched/t6"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**"
+      ],
+      "required_context": [
+        "plans/gd/2026-05-17-knowledge-compounding-live-activation/gd-master-knowledge-compounding-plan3.md"
+      ],
+      "deliverables": [
+        {
+          "path": "plans/gd/dispatched/t6/output.md",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [
+        "t3",
+        "t4",
+        "t5"
+      ],
+      "can_parallel_with": [],
+      "sc_refs": [
+        "SC-1"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-1",
+          "method": "path",
+          "cmd": "test -d plans/gd/dispatched/t6",
+          "expect": "exit 0"
+        }
+      ],
+      "_max_parallel": 1,
+      "_step_ids": [
+        "step-6"
+      ],
+      "_task_packets": [],
+      "_field_sources": {
+        "owned_paths": "placeholder",
+        "forbidden_paths": "placeholder",
+        "required_context": "placeholder",
+        "deliverables": "placeholder",
+        "sc_refs": "placeholder",
+        "verify": "placeholder"
+      },
+      "_placeholder_fields": [
+        "owned_paths",
+        "forbidden_paths",
+        "required_context",
+        "deliverables",
+        "sc_refs",
+        "verify"
+      ],
+      "_payload_source": "placeholder"
+    }
+  ],
+  "waves": [
+    {
+      "wave_id": "w1",
+      "track_ids": [
+        "t1",
+        "t2"
+      ],
+      "description": "Planning wave w1"
+    },
+    {
+      "wave_id": "w2",
+      "track_ids": [
+        "t3",
+        "t4"
+      ],
+      "description": "Planning wave w2"
+    },
+    {
+      "wave_id": "w3",
+      "track_ids": [
+        "t5"
+      ],
+      "description": "Planning wave w3"
+    },
+    {
+      "wave_id": "w4",
+      "track_ids": [
+        "t6"
+      ],
+      "description": "Planning wave w4"
+    }
+  ],
+  "merge_gates": [
+    {
+      "gate_id": "G1",
+      "description": "child output format compliant with template"
+    },
+    {
+      "gate_id": "G2",
+      "description": "files_added/modified within owned_paths"
+    },
+    {
+      "gate_id": "G3",
+      "description": "no REV_VERDICT/GD_REVIEW_DECISION in execution artifacts"
+    },
+    {
+      "gate_id": "G4",
+      "description": "every SC has evidence or not_run_reason"
+    },
+    {
+      "gate_id": "G5",
+      "description": "all parallel wave children complete before next serial wave"
+    }
+  ],
+  "_built_at": "2026-05-17T00:37:39Z",
+  "_builder": "gd-build-dispatch-map.py"
+}

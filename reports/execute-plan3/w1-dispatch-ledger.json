@@ -1,0 +1,27 @@
+{
+  "schema_version": "1.0",
+  "stage": "execute",
+  "wave_id": "w1",
+  "parent_run_id": "gd-execute-plan3-20260518022600",
+  "recorded_at": "2026-05-18T02:28:00Z",
+  "child_agent_count": 2,
+  "max_parallel": 2,
+  "child_jobs": [
+    {
+      "job_id": "t1-step1",
+      "step_id": "step-1",
+      "result_path": "reports/w1-t1-step1-output.md",
+      "status": "completed",
+      "sc_acceptance": {"SC-1": "pass"}
+    },
+    {
+      "job_id": "t2-step2",
+      "step_id": "step-2",
+      "result_path": "reports/w1-t2-step2-output.md",
+      "status": "completed",
+      "sc_acceptance": {"SC-2": "pass"}
+    }
+  ],
+  "wave_status": "completed",
+  "post_wave_path_audit": "clean"
+}
