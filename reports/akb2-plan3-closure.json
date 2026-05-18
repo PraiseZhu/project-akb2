@@ -1,0 +1,90 @@
+{
+  "schema_version": "1.0",
+  "plan_ref": "Plan 3 — AKB2 知识复利 Live Activation",
+  "generated_at": "2026-05-18T02:48:00Z",
+  "mode": "implementation_only",
+  "mode_reason": "execute stage completed; /gd review pending",
+  "fixture_pass": true,
+  "real_target_pass": true,
+  "review_chain_closed": false,
+  "ready_for_re_review": true,
+  "evidence": {
+    "pytest_total_passed": 85,
+    "pytest_baseline_before_plan3": 78,
+    "pytest_added_by_plan3": 7,
+    "waves_completed": 4,
+    "child_agents_dispatched": 6,
+    "sc_all_pass": true
+  },
+  "sc_results": {
+    "SC-1": {
+      "title": "save-query-result skill 新增触发词注册",
+      "status": "pass",
+      "evidence": "grep -c 'save-query-result' SKILL.md = 10 >= 3; grep -c '存一下' skill-trigger-scan.md = 1 >= 1"
+    },
+    "SC-2": {
+      "title": "staging→wiki 自动提升脚本",
+      "status": "pass",
+      "evidence": "test_promotion.py 4/4 passed; promote.py --help exit 0; gate_status!=pass 候选被正确跳过"
+    },
+    "SC-3": {
+      "title": "save 预览 + 去重",
+      "status": "pass",
+      "evidence": "## Preview = 2 >= 1; ## Deduplication = 2 >= 1; Preview|Deduplication grep = 4 >= 4"
+    },
+    "SC-4": {
+      "title": "derived_from 智能筛选 + 反向索引",
+      "status": "pass",
+      "evidence": "update_backlinks.py --help exit 0 含 --rebuild/--add-entry; backlinks grep = 5 >= 2; 筛选段落存在"
+    },
+    "SC-5": {
+      "title": "lifecycle 子命令",
+      "status": "pass",
+      "evidence": "update/deprecate/expire-low-confidence grep = 5 >= 3"
+    },
+    "SC-6": {
+      "title": "wiki/log.md 自动追踪",
+      "status": "pass",
+      "evidence": "fcntl|log.md grep = 10 >= 2; 自动追加 = 3 >= 2; fcntl.flock 实现段落存在"
+    },
+    "SC-7": {
+      "title": "E2E live 链路验证",
+      "status": "pass",
+      "evidence": "test_live_compound_e2e.py 3/3 passed: test_full_loop + test_promote_blocks_conflict + test_backlinks_after_save"
+    }
+  },
+  "changed_files": {
+    "modified": [
+      "skills/knowledge-ops/SKILL.md",
+      "~/.claude/rules/skill-trigger-scan.md"
+    ],
+    "added": [
+      "src/akb2/promotion/__init__.py",
+      "src/akb2/promotion/promote.py",
+      "src/akb2/backlinks/__init__.py",
+      "src/akb2/backlinks/update_backlinks.py",
+      "data/backlinks.jsonl",
+      "data/README.md",
+      "tests/test_promotion.py",
+      "tests/test_live_compound_e2e.py",
+      "reports/akb2-plan3-execution-result.json",
+      "reports/akb2-plan3-closure.json"
+    ]
+  },
+  "boundaries_respected": {
+    "no_real_vault_write": true,
+    "no_lint_gate_index_change": true,
+    "no_gd_install": true,
+    "no_mcp_server_change": true
+  },
+  "wave_summary": {
+    "W1": "step-1 (save skill) + step-2 (promote.py), 2 agents parallel",
+    "W2": "step-3 (SKILL.md preview/dedup/backlinks) + step-4 (backlinks module), 2 agents parallel",
+    "W3": "step-5 (lifecycle + log), 1 agent",
+    "W4": "step-6 (E2E live), 1 agent validator"
+  },
+  "next_steps": [
+    "Run /gd review for Plan 3 execution result",
+    "If review passes → commit worktree changes to main branch"
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "pdl_version": "1.1",
+  "plan_file": "plans/gd/2026-05-17-knowledge-compounding-live-activation/gd-master-knowledge-compounding-plan3.md",
+  "recorded_at": "2026-05-17T00:00:00Z",
+  "is_multi_step": true,
+  "capability_probe": {
+    "CHILD_AGENT_CAPABILITY": "unavailable",
+    "probe_method": "tool_list_inspection",
+    "evidence": "Background session — child_planner subprocess dispatch not exercised; main agent wrote 6 step plans sequentially",
+    "fallback_mode": "manual_packet"
+  },
+  "dispatch_mode": "manual_packet",
+  "runtime_proof": {
+    "proof_mode": "manual_packet_fallback",
+    "source_dispatch_map_hash": "6cc9480ccc9fc6e56239dafcd6bdddad98e22fbf7979ba819dbceddb74e7e012",
+    "probe_artifact_ref": "plans/gd/2026-05-17-knowledge-compounding-live-activation/probe.json",
+    "parent_run_id": "plan3-knowledge-compounding-live-activation-20260517",
+    "recorded_at": "2026-05-17T00:00:00Z"
+  },
+  "waves": [
+    {
+      "wave_id": "w1",
+      "agents": [
+        { "track_id": "t1", "agent_type": "manual_packet", "task_packet": "plans/gd/2026-05-17-knowledge-compounding-live-activation/gd-step-1-save-query-result-skill.md", "status": "planned" },
+        { "track_id": "t2", "agent_type": "manual_packet", "task_packet": "plans/gd/2026-05-17-knowledge-compounding-live-activation/gd-step-2-staging-to-wiki-promotion.md", "status": "planned" }
+      ]
+    },
+    {
+      "wave_id": "w2",
+      "agents": [
+        { "track_id": "t3", "agent_type": "manual_packet", "task_packet": "plans/gd/2026-05-17-knowledge-compounding-live-activation/gd-step-3-save-preview-dedup.md", "status": "planned" },
+        { "track_id": "t4", "agent_type": "manual_packet", "task_packet": "plans/gd/2026-05-17-knowledge-compounding-live-activation/gd-step-4-derived-from-backlinks.md", "status": "planned" }
+      ]
+    },
+    {
+      "wave_id": "w3",
+      "agents": [
+        { "track_id": "t5", "agent_type": "manual_packet", "task_packet": "plans/gd/2026-05-17-knowledge-compounding-live-activation/gd-step-5-lifecycle-and-log.md", "status": "planned" }
+      ]
+    },
+    {
+      "wave_id": "w4",
+      "agents": [
+        { "track_id": "t6", "agent_type": "manual_packet", "task_packet": "plans/gd/2026-05-17-knowledge-compounding-live-activation/gd-step-6-e2e-live-validation.md", "status": "planned" }
+      ]
+    }
+  ],
+  "task_packets_written": ["t1", "t2", "t3", "t4", "t5", "t6"],
+  "validation": {
+    "dispatch_map_validator_exit": 0,
+    "dispatch_map_path": "plans/gd/2026-05-17-knowledge-compounding-live-activation/dispatch_map.json"
+  }
+}

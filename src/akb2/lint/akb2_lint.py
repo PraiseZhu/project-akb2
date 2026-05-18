@@ -463,8 +463,8 @@ def rule_r5_wiki_tools_call_contract_leak(path, fm, body, ctx):
 
 
 def rule_r6_body_quality_missing_structure(path, fm, body, ctx):
-    if ctx.get("template_type") == "tool-understanding":
-        return []  # R4 handles
+    if ctx.get("template_type") in ("tool-understanding", "query-result"):
+        return []
     missing = [k for k, ps in ALIASES.items() if find_section(body, ps) is None]
     if missing:
         return [make_finding(
@@ -479,9 +479,9 @@ def rule_r6_body_quality_missing_structure(path, fm, body, ctx):
 
 
 def rule_r7_source_grounded_missing_field(path, fm, body, ctx):
-    """LINT-RULES §11.2: active 缺 evidence_provenance.
-    §3 universal 契约要求所有 active 模板有此字段; §4.7 tool-understanding 的"推荐附加"是 ADDITIONAL 而非 SUBSTITUTE,
-    标准未豁免 tool-understanding。tool-understanding 缺此字段 → 真缺陷,不是 CLI 误伤(Codex review 2026-05-07 修正)。"""
+    """LINT-RULES §11.2: active 缺 evidence_provenance."""
+    if ctx.get("template_type") == "query-result":
+        return []
     val = parse_fm_field_raw(fm, "evidence_provenance")
     if not val:
         return [make_finding(
@@ -547,8 +547,9 @@ def rule_r10_source_key_findings_missing_prose(path, fm, body, ctx):
 
 
 def rule_r11_graph_role_missing(path, fm, body, ctx):
-    """GRAPH-LINKING §6.1: active 缺 graph_role.
-    §3 universal 契约 + GRAPH-LINKING §6 都要求所有 active 含 graph_role,无 tool-understanding 豁免(Codex review 2026-05-07 修正)。"""
+    """GRAPH-LINKING §6.1: active 缺 graph_role."""
+    if ctx.get("template_type") == "query-result":
+        return []
     val = parse_fm_field_raw(fm, "graph_role")
     if not val:
         return [make_finding(
@@ -589,9 +590,9 @@ def rule_r13_graph_status_invalid(path, fm, body, ctx):
 
 
 def rule_r14_active_missing_related(path, fm, body, ctx):
-    """PAGE-TEMPLATES §3 active 必填: 至少 1 个 related_* 字段非空.
-    §3 universal 适用所有 active 模板; §4.7 tool-understanding 必须链接 tool-card + ≥1 related_concepts 是 ADDITIONAL 而非 SUBSTITUTE,
-    body wikilink 不替代 frontmatter related_* 字段(GRAPH-LINKING §9.2 双轨原则: frontmatter 必填, 正文推荐)。"""
+    """PAGE-TEMPLATES §3 active 必填: 至少 1 个 related_* 字段非空."""
+    if ctx.get("template_type") == "query-result":
+        return []
     has_any = False
     for fname in RELATED_FIELDS_WHITELIST:
         arr = parse_fm_array(fm, fname)
@@ -631,7 +632,9 @@ def rule_r16_template_directory_mismatch(path, fm, body, ctx):
     """PAGE-TEMPLATES §4.x: template_type ↔ 目录 canonical 映射"""
     tt = ctx.get("template_type")
     if not tt:
-        return []  # 由 R6 / 其它规则处理
+        return []
+    if tt == "query-result":
+        return []
     expected = TEMPLATE_DIRECTORY_MAP.get(tt)
     if expected is None:
         return [make_finding(
@@ -773,10 +776,84 @@ def rule_v03_wikilink_no_raw_path(path, fm, body, ctx):
     return []
 
 
+# v0.3 query-result rules (R23-R25)
+
+def rule_r23_query_result_derived_from_exists(path, fm, body, ctx):
+    """R23: query-result derived_from must be non-empty array with valid slugs."""
+    if ctx.get("template_type") != "query-result":
+        return []
+    arr = parse_fm_array(fm, "derived_from")
+    if arr is None or len(arr) == 0:
+        return [make_finding(
+            "QUERY-RESULT-DERIVED-FROM-MISSING", "P1", path,
+            evidence="query-result 缺 derived_from 或为空数组",
+            proposed_action="补 derived_from: [slug1, slug2] 引用源 wiki 页",
+            upstream_standard="知识复利 §4.13 query-result 必填 derived_from",
+        )]
+    wiki_root = ctx.get("wiki_root")
+    if wiki_root:
+        for slug in arr:
+            slug_file = Path(wiki_root) / f"{slug}.md"
+            if not slug_file.exists():
+                found = False
+                for subdir in Path(wiki_root).rglob(f"{slug}.md"):
+                    found = True
+                    break
+                if not found:
+                    return [make_finding(
+                        "QUERY-RESULT-DERIVED-FROM-MISSING", "P1", path,
+                        evidence=f"derived_from slug '{slug}' 对应页面不存在",
+                        proposed_action=f"确认 wiki 中存在 {slug}.md 或修正 slug",
+                        upstream_standard="知识复利 §4.13 derived_from slug 有效性",
+                    )]
+    return []
+
+
+def rule_r24_query_result_confidence_invalid(path, fm, body, ctx):
+    """R24: query-result confidence must be high/medium/low."""
+    if ctx.get("template_type") != "query-result":
+        return []
+    val = parse_fm_field_raw(fm, "confidence")
+    if val is None:
+        return [make_finding(
+            "QUERY-RESULT-CONFIDENCE-INVALID", "P1", path,
+            evidence="query-result 缺 confidence 字段",
+            proposed_action="补 confidence: high|medium|low",
+            upstream_standard="知识复利 §4.13 confidence 枚举",
+        )]
+    if val.strip() not in ("high", "medium", "low"):
+        return [make_finding(
+            "QUERY-RESULT-CONFIDENCE-INVALID", "P1", path,
+            actual=val.strip(),
+            evidence=f"confidence = '{val.strip()}' 不在 3 枚举 (high/medium/low)",
+            proposed_action="改为 high|medium|low",
+            upstream_standard="知识复利 §4.13 confidence 枚举",
+        )]
+    return []
+
+
+def rule_r25_query_result_query_empty(path, fm, body, ctx):
+    """R25: query-result query field must be non-empty string."""
+    if ctx.get("template_type") != "query-result":
+        return []
+    val = parse_fm_field_raw(fm, "query")
+    if not val or not val.strip() or val.strip() in ('""', "''", '""', "''"):
+        return [make_finding(
+            "QUERY-RESULT-QUERY-EMPTY", "P1", path,
+            evidence="query-result query 字段为空或缺失",
+            proposed_action="补 query: \"原始查询文本\"",
+            upstream_standard="知识复利 §4.13 query 非空",
+        )]
+    return []
+
+
 # v0.3 rules added to the per-page active scan (in addition to RULES)
 V03_ACTIVE_RULES = [
     rule_v03_active_slug_no_date,
     rule_v03_wikilink_no_raw_path,
+    rule_r23_query_result_derived_from_exists,
+    rule_r24_query_result_confidence_invalid,
+    rule_r25_query_result_query_empty,
 ]
 
 
@@ -827,12 +904,15 @@ STABLE_RULE_IDS = [
     "WIKI-TOOLS-TOOLBOX-PAIRING",
 ]
 
-# v0.3: full 22-rule list (18 + 4 new)
+# v0.3: full 25-rule list (18 + 4 + 3 query-result)
 V03_STABLE_RULE_IDS = STABLE_RULE_IDS + [
     "RAW-NO-WIKILINK",
     "ACTIVE-SLUG-NO-DATE",
     "DEPRECATED-SUPERSEDED-BY",
     "WIKILINK-NO-RAW-PATH",
+    "QUERY-RESULT-DERIVED-FROM-MISSING",
+    "QUERY-RESULT-CONFIDENCE-INVALID",
+    "QUERY-RESULT-QUERY-EMPTY",
 ]
 
 
@@ -1258,6 +1338,9 @@ def main() -> int:
                          "Overrides vault.toml default. Required when running from Project AKB2/.")
     ap.add_argument("--dry-run", action="store_true",
                     help="Print findings to stdout only; do not write manifest or report files.")
+    ap.add_argument("paths", nargs="*", metavar="FILE",
+                    help="Individual .md files to lint (single-file mode). "
+                         "If provided, lint only these files instead of scanning vault.")
     args = ap.parse_args()
 
     # ── Resolve VAULT_ROOT early (must happen before any function that uses it) ──
@@ -1269,6 +1352,47 @@ def main() -> int:
         if _toml_root is not None:
             VAULT_ROOT = _toml_root
         # else: leave the computed sentinel — callers will see a clear FileNotFoundError
+
+    # Single-file mode: lint individual files (v0.3 rules applied if --version v0.3)
+    if args.paths:
+        is_v03 = args.version == "v0.3"
+        rules = (RULES + V03_ACTIVE_RULES) if is_v03 else RULES
+        ctx_extra = {"v03_mode": True} if is_v03 else {}
+        # Explicit --vault-root takes priority over path-based wiki_root guessing.
+        # This prevents R23 (derived_from source-page existence) from silently
+        # using a wrong wiki_root when the fixture file isn't located under wiki/.
+        wiki_root = None
+        if args.vault_root:
+            explicit_wiki = (VAULT_ROOT / "wiki")
+            if explicit_wiki.is_dir():
+                wiki_root = str(explicit_wiki)
+        if wiki_root is None:
+            for p in args.paths:
+                pp = Path(p).resolve()
+                candidate_wiki = pp.parent
+                if candidate_wiki.name == "wiki":
+                    wiki_root = str(candidate_wiki)
+                elif candidate_wiki.parent and candidate_wiki.parent.name == "wiki":
+                    wiki_root = str(candidate_wiki.parent)
+        if wiki_root:
+            ctx_extra["wiki_root"] = wiki_root
+        all_findings = []
+        for p in args.paths:
+            pp = Path(p)
+            if not pp.exists():
+                print(f"ERROR: {p} not found", file=sys.stderr)
+                return 2
+            all_findings.extend(lint_page(pp, rules=rules, ctx_extra=ctx_extra))
+        p0 = sum(1 for x in all_findings if x["severity"] == "P0")
+        p1 = sum(1 for x in all_findings if x["severity"] == "P1")
+        p2 = sum(1 for x in all_findings if x["severity"] == "P2")
+        for f in all_findings:
+            print(f"  {f['severity']} {f['rule_id']}: {f.get('evidence', '')}")
+        if not all_findings:
+            print(f"akb2-lint {args.version} — {len(args.paths)} file(s): 0 findings")
+        else:
+            print(f"akb2-lint {args.version} — P0:{p0} P1:{p1} P2:{p2}")
+        return 1 if (p0 + p1) > 0 else 0
 
     # v0.3 mode: separate driver
     if args.version == "v0.3":

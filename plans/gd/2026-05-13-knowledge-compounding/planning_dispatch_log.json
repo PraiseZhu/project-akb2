@@ -1,0 +1,28 @@
+{
+  "pdl_version": "1.0",
+  "plan_file": "plans/gd/2026-05-13-knowledge-compounding/gd-master-knowledge-compounding-v3.md",
+  "recorded_at": "2026-05-14T00:00:00Z",
+  "is_multi_step": true,
+  "capability_probe": {
+    "CHILD_AGENT_CAPABILITY": "unavailable",
+    "probe_method": "tool_list_inspection",
+    "evidence": "Background session — manual_packet fallback",
+    "fallback_mode": "manual_packet"
+  },
+  "dispatch_mode": "manual_packet",
+  "task_packets_written": [
+    "t1",
+    "t2",
+    "t3",
+    "t4",
+    "t5",
+    "t6",
+    "t7"
+  ],
+  "validation": {
+    "dispatch_map_validator_exit": 0,
+    "dispatch_map_path": "plans/gd/2026-05-13-knowledge-compounding/dispatch_map.json"
+  },
+  "wave_topology_source": "plans/gd/2026-05-13-knowledge-compounding/dispatch_map.json",
+  "wave_topology_note": "Wave topology source-of-truth is dispatch_map.json. planning_dispatch_log.json only records dispatch proof/log; it does not duplicate wave topology."
+}

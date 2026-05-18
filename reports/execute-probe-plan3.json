@@ -1,0 +1,11 @@
+{
+  "stage": "execute",
+  "capability_status": "available",
+  "fallback_mode": "n_a",
+  "effective_execution_mode": "child_dispatch",
+  "probe_method": "tool_list_inspection",
+  "proof_mode": "live_child_dispatch",
+  "probe_artifact_ref": "reports/execute-probe-plan3.json",
+  "source_dispatch_map_hash": "6cc9480ccc9fc6e56239dafcd6bdddad98e22fbf7979ba819dbceddb74e7e012",
+  "recorded_at": "2026-05-18T02:26:00Z"
+}

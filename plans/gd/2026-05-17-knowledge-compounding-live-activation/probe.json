@@ -1,0 +1,11 @@
+{
+  "stage": "plan",
+  "capability_status": "unavailable",
+  "fallback_mode": "manual_packet",
+  "effective_execution_mode": "manual_packet",
+  "probe_method": "tool_list_inspection",
+  "proof_mode": "manual_packet_fallback",
+  "probe_artifact_ref": "plans/gd/2026-05-17-knowledge-compounding-live-activation/probe.json",
+  "source_dispatch_map_hash": "6cc9480ccc9fc6e56239dafcd6bdddad98e22fbf7979ba819dbceddb74e7e012",
+  "recorded_at": "2026-05-17T00:00:00Z"
+}
