@@ -1,0 +1,408 @@
+{
+  "dispatch_id": "gd-master-knowledge-compounding-v3",
+  "source_master_plan": "plans/gd/2026-05-13-knowledge-compounding/gd-master-knowledge-compounding-v3.md",
+  "goal_chain": {
+    "PROJECT_GOAL": "在 Claude Code 中建设 /gd Goal-Driven 多 Agent 主链路，提升复杂任务的计划、审查、执行、验收效率，并通过 Codex 作为 cross-review sidecar 降低填表式计划与执行遗漏风险。",
+    "CHAIN_GOAL": "用 shared core 固定目标链、SC、任务包、review contract 和 anti-fill 标准，保证后续 /gd command、multi-agent dispatch、execution review、Codex cross-review 都引用同一套契约。",
+    "PHASE_GOAL": "在 AKB2.0 中建立知识复利机制——新增 query-result 模板、简化 gate 路径、扩展 lint 规则、自动生成 00-Index.md、对话触发存储入口、搜索路由分流，实现 query→save→discover 端到端闭环。"
+  },
+  "max_parallel_planning": 2,
+  "max_parallel_execution": 2,
+  "max_parallel_review": 2,
+  "max_parallel_validation": 2,
+  "tracks": [
+    {
+      "track_id": "t1",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "${AKB2_ROOT}/AKB-2.0-CONTENT-STANDARD.md"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**"
+      ],
+      "required_context": [
+        "plans/gd/2026-05-13-knowledge-compounding/gd-master-knowledge-compounding-v3.md",
+        "plans/gd/2026-05-13-knowledge-compounding/gd-step-1-query-result-template.md"
+      ],
+      "deliverables": [
+        {
+          "path": "${AKB2_ROOT}/AKB-2.0-CONTENT-STANDARD.md",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [],
+      "can_parallel_with": [
+        "t2"
+      ],
+      "sc_refs": [
+        "SC-1"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-1",
+          "method": "command",
+          "cmd": "grep -c 'query-result' '${AKB2_ROOT}/AKB-2.0-CONTENT-STANDARD.md'",
+          "expect": ">= 3"
+        }
+      ],
+      "_step_ids": [
+        "step-1"
+      ]
+    },
+    {
+      "track_id": "t2",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "src/akb2/index/",
+        "tests/test_index.py"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**"
+      ],
+      "required_context": [
+        "plans/gd/2026-05-13-knowledge-compounding/gd-step-2-index-generator.md"
+      ],
+      "deliverables": [
+        {
+          "path": "src/akb2/index/generate_index.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/test_index.py",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [],
+      "can_parallel_with": [
+        "t1"
+      ],
+      "sc_refs": [
+        "SC-2"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-2",
+          "method": "command",
+          "cmd": "python3 src/akb2/index/generate_index.py --dry-run --vault-root '${AKB2_ROOT}' | head -20",
+          "expect": "exit 0, output contains ##"
+        },
+        {
+          "sc_ref": "SC-2",
+          "method": "command",
+          "cmd": "python3 -m pytest tests/test_index.py -v",
+          "expect": "all passed"
+        }
+      ],
+      "_step_ids": [
+        "step-2"
+      ]
+    },
+    {
+      "track_id": "t3",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "src/akb2/gate/akb2_gate_check.py",
+        "tests/test_gate.py",
+        "tests/fixtures/gate/staging/candidate/candidate-query-result.md"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**"
+      ],
+      "required_context": [
+        "plans/gd/2026-05-13-knowledge-compounding/gd-step-3-gate-simplification.md"
+      ],
+      "deliverables": [
+        {
+          "path": "src/akb2/gate/akb2_gate_check.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/fixtures/gate/staging/candidate/candidate-query-result.md",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [
+        "t1",
+        "t2"
+      ],
+      "can_parallel_with": [
+        "t4"
+      ],
+      "sc_refs": [
+        "SC-4"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-4",
+          "method": "command",
+          "cmd": "/Users/praise/.pyenv/versions/3.13.12/bin/python3 src/akb2/gate/akb2_gate_check.py check --akb-root tests/fixtures/gate --input staging/candidate/candidate-query-result.md --dry-run",
+          "expect": "exit 0"
+        }
+      ],
+      "_step_ids": [
+        "step-3"
+      ]
+    },
+    {
+      "track_id": "t4",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "src/akb2/lint/akb2_lint.py",
+        "tests/test_lint.py",
+        "tests/fixtures/compound/"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**"
+      ],
+      "required_context": [
+        "plans/gd/2026-05-13-knowledge-compounding/gd-step-4-lint-extension.md"
+      ],
+      "deliverables": [
+        {
+          "path": "src/akb2/lint/akb2_lint.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/fixtures/compound/valid-query-result.md",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [
+        "t1",
+        "t2"
+      ],
+      "can_parallel_with": [
+        "t3"
+      ],
+      "sc_refs": [
+        "SC-3"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-3",
+          "method": "command",
+          "cmd": "python3 src/akb2/lint/akb2_lint.py --version v0.3 tests/fixtures/compound/valid-query-result.md",
+          "expect": "exit 0"
+        }
+      ],
+      "_step_ids": [
+        "step-4"
+      ]
+    },
+    {
+      "track_id": "t6",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "toolbox/cc-knowledge-ops/SKILL.md"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "${AKB2_ROOT}/**",
+        "src/akb2/**"
+      ],
+      "required_context": [
+        "plans/gd/2026-05-13-knowledge-compounding/gd-step-6-save-trigger.md"
+      ],
+      "deliverables": [
+        {
+          "path": "toolbox/cc-knowledge-ops/SKILL.md",
+          "kind": "future_target",
+          "must_exist": false,
+          "note": "Plan 3 future target; Plan 2 does not create this file"
+        }
+      ],
+      "blocked_by": [
+        "t3",
+        "t4"
+      ],
+      "can_parallel_with": [
+        "t7"
+      ],
+      "sc_refs": [
+        "SC-6"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-6",
+          "method": "command",
+          "cmd": "grep -c 'save-query-result' plans/gd/2026-05-13-knowledge-compounding/gd-step-6-save-trigger.md",
+          "expect": ">= 3 (workflow defined in plan doc; toolbox/cc-knowledge-ops/SKILL.md is Plan 3 future target)"
+        },
+        {
+          "sc_ref": "SC-6",
+          "method": "command",
+          "cmd": "grep -iE 'deferred|runtime trigger activation deferred|授权等待' plans/gd/2026-05-13-knowledge-compounding/gd-step-6-save-trigger.md",
+          "expect": ">= 1 (deferred declaration in plan doc)"
+        }
+      ],
+      "_step_ids": [
+        "step-6"
+      ]
+    },
+    {
+      "track_id": "t7",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "toolbox/cc-akb-search/SKILL.md"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "${AKB2_ROOT}/**",
+        "src/akb2/**"
+      ],
+      "required_context": [
+        "plans/gd/2026-05-13-knowledge-compounding/gd-step-7-search-routing.md"
+      ],
+      "deliverables": [
+        {
+          "path": "toolbox/cc-akb-search/SKILL.md",
+          "kind": "file_modified",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [
+        "t3",
+        "t4"
+      ],
+      "can_parallel_with": [
+        "t6"
+      ],
+      "sc_refs": [
+        "SC-7"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-7",
+          "method": "command",
+          "cmd": "grep -c 'scope=toolbox' plans/gd/2026-05-13-knowledge-compounding/gd-step-7-search-routing.md",
+          "expect": ">= 1 (plan doc; real skill modified in future execution phase)"
+        },
+        {
+          "sc_ref": "SC-7",
+          "method": "command",
+          "cmd": "grep -c 'scope=knowledge' plans/gd/2026-05-13-knowledge-compounding/gd-step-7-search-routing.md",
+          "expect": ">= 1 (plan doc; real skill modified in future execution phase)"
+        },
+        {
+          "sc_ref": "SC-7",
+          "method": "command",
+          "cmd": "grep -c 'scope=all' plans/gd/2026-05-13-knowledge-compounding/gd-step-7-search-routing.md",
+          "expect": ">= 1 (plan doc; real skill modified in future execution phase)"
+        }
+      ],
+      "_step_ids": [
+        "step-7"
+      ]
+    },
+    {
+      "track_id": "t5",
+      "mode": "validate",
+      "agent_role": "child_validator",
+      "owned_paths": [
+        "tests/test_compound_e2e.py"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**"
+      ],
+      "required_context": [
+        "plans/gd/2026-05-13-knowledge-compounding/gd-step-5-e2e-validation.md"
+      ],
+      "deliverables": [
+        {
+          "path": "tests/test_compound_e2e.py",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [
+        "t6",
+        "t7"
+      ],
+      "can_parallel_with": [],
+      "sc_refs": [
+        "SC-5"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-5",
+          "method": "command",
+          "cmd": "python3 -m pytest tests/test_compound_e2e.py -v",
+          "expect": "all passed"
+        }
+      ],
+      "_step_ids": [
+        "step-5"
+      ]
+    }
+  ],
+  "waves": [
+    {
+      "wave_id": "w1",
+      "track_ids": [
+        "t1",
+        "t2"
+      ],
+      "description": "Planning wave w1"
+    },
+    {
+      "wave_id": "w2",
+      "track_ids": [
+        "t3",
+        "t4"
+      ],
+      "description": "Planning wave w2"
+    },
+    {
+      "wave_id": "w3",
+      "track_ids": [
+        "t6",
+        "t7"
+      ],
+      "description": "Planning wave w3"
+    },
+    {
+      "wave_id": "w4",
+      "track_ids": [
+        "t5"
+      ],
+      "description": "Planning wave w4"
+    }
+  ],
+  "merge_gates": [
+    {
+      "gate_id": "G1",
+      "description": "child output format compliant with template"
+    },
+    {
+      "gate_id": "G2",
+      "description": "files_added/modified within owned_paths"
+    },
+    {
+      "gate_id": "G3",
+      "description": "no REV_VERDICT/GD_REVIEW_DECISION in execution artifacts"
+    },
+    {
+      "gate_id": "G4",
+      "description": "every SC has evidence or not_run_reason"
+    },
+    {
+      "gate_id": "G5",
+      "description": "all parallel wave children complete before next serial wave"
+    }
+  ],
+  "_built_at": "2026-05-14T11:23:53Z",
+  "_builder": "gd-build-dispatch-map.py"
+}

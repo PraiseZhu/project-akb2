@@ -1,0 +1,152 @@
+{
+  "outcome_version": "1.0",
+  "outcome_id": "akb2-plan-b-sample-real-target-fix",
+  "source_batch": "Plan B — AKB2 sample real-target fix (2026-05-17, executor=claude_main, worktree=knowledge-compounding-v3)",
+  "task_outcomes": [
+    {
+      "task_id": "plan-b-sample-real-target-fix",
+      "exec_status": "completed_with_constraint",
+      "deliverables": [
+        {
+          "path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/.claude/worktrees/knowledge-compounding-v3/src/akb2/index/generate_index.py",
+          "must_exist": true,
+          "verified": true
+        },
+        {
+          "path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/.claude/worktrees/knowledge-compounding-v3/src/akb2/lint/akb2_lint.py",
+          "must_exist": true,
+          "verified": true
+        },
+        {
+          "path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/.claude/worktrees/knowledge-compounding-v3/tests/fixtures/compound/wiki/status-active-source.md",
+          "must_exist": true,
+          "verified": true
+        },
+        {
+          "path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/.claude/worktrees/knowledge-compounding-v3/tests/test_index.py",
+          "must_exist": true,
+          "verified": true
+        },
+        {
+          "path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/.claude/worktrees/knowledge-compounding-v3/tests/test_lint.py",
+          "must_exist": true,
+          "verified": true
+        },
+        {
+          "path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/.claude/worktrees/knowledge-compounding-v3/tests/test_gate.py",
+          "must_exist": true,
+          "verified": true
+        },
+        {
+          "path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/.claude/worktrees/knowledge-compounding-v3/tests/test_compound_e2e.py",
+          "must_exist": true,
+          "verified": true
+        },
+        {
+          "path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/.claude/worktrees/knowledge-compounding-v3/reports/akb2-plan-b-closure.json",
+          "must_exist": true,
+          "verified": true
+        }
+      ],
+      "verify_reruns": [
+        {
+          "sc_ref": "SC-1",
+          "cmd": "cd '/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/.claude/worktrees/knowledge-compounding-v3' && python3 src/akb2/index/generate_index.py --dry-run --vault-root '/Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0' | grep -c '^- \\*\\*'",
+          "expected_exit": 0,
+          "expected_stdout_substring": "20",
+          "actual_exit": 0,
+          "actual_stdout": "20",
+          "rerun_at": "2026-05-18T00:22:00Z"
+        },
+        {
+          "sc_ref": "SC-2",
+          "cmd": "cd '/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/.claude/worktrees/knowledge-compounding-v3' && python3 -m pytest tests/test_index.py::test_real_vault_form_status_and_body_tldr -q",
+          "expected_exit": 0,
+          "expected_stdout_substring": "1 passed",
+          "actual_exit": 0,
+          "actual_stdout": "1 passed in 0.04s",
+          "rerun_at": "2026-05-18T00:22:00Z"
+        },
+        {
+          "sc_ref": "SC-3",
+          "cmd": "cd '/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/.claude/worktrees/knowledge-compounding-v3' && python3 -m pytest tests -q",
+          "expected_exit": 0,
+          "expected_stdout_substring": "78 passed",
+          "actual_exit": 0,
+          "actual_stdout": "78 passed in 3.64s",
+          "rerun_at": "2026-05-18T00:22:00Z"
+        },
+        {
+          "sc_ref": "SC-4",
+          "cmd": "cd '/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/.claude/worktrees/knowledge-compounding-v3' && grep -rE '/Users/praise/\\.pyenv|3\\.13\\.12/bin/python3' tests/ | wc -l | tr -d ' '",
+          "expected_exit": 0,
+          "expected_stdout_substring": "0",
+          "actual_exit": 0,
+          "actual_stdout": "0",
+          "rerun_at": "2026-05-18T00:22:00Z"
+        },
+        {
+          "sc_ref": "SC-5",
+          "cmd": "cd '/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/.claude/worktrees/knowledge-compounding-v3' && python3 -m pytest tests/test_lint.py::test_query_result_bad_derived_slug_r23_with_explicit_vault_root -q",
+          "expected_exit": 0,
+          "expected_stdout_substring": "1 passed",
+          "actual_exit": 0,
+          "actual_stdout": "1 passed in 0.04s",
+          "rerun_at": "2026-05-18T00:22:00Z"
+        },
+        {
+          "sc_ref": "SC-6",
+          "cmd": "test -f '/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB2/.claude/worktrees/knowledge-compounding-v3/reports/akb2-plan-b-execution-result.json' && echo present",
+          "expected_exit": 0,
+          "expected_stdout_substring": "present",
+          "actual_exit": 0,
+          "actual_stdout": "present",
+          "rerun_at": "2026-05-18T00:22:00Z"
+        }
+      ],
+      "sc_acceptance": [
+        {
+          "sc_ref": "SC-1",
+          "status": "pass",
+          "evidence": "real vault dry-run produces 20 entries, matching 20 status:active pages"
+        },
+        {
+          "sc_ref": "SC-2",
+          "status": "pass",
+          "evidence": "test_real_vault_form_status_and_body_tldr passes; extract_body_tldr() added; status-active-source.md fixture created"
+        },
+        {
+          "sc_ref": "SC-3",
+          "status": "pass",
+          "evidence": "pytest tests -q -> 78 passed (baseline 76 + 2 new)"
+        },
+        {
+          "sc_ref": "SC-4",
+          "status": "pass",
+          "evidence": "0 hits of hardcoded pyenv path in tests/; test_gate.py and test_compound_e2e.py changed to sys.executable"
+        },
+        {
+          "sc_ref": "SC-5",
+          "status": "pass",
+          "evidence": "lint.py --vault-root explicit priority added; R23 negative case test passes with DERIVED-FROM-MISSING"
+        },
+        {
+          "sc_ref": "SC-6",
+          "status": "pass",
+          "evidence": "this file (akb2-plan-b-execution-result.json) is the GD execution-status compatible outcome"
+        }
+      ],
+      "owned_paths_post_audit": {
+        "owned_paths": [
+          "Project AKB2/.claude/worktrees/knowledge-compounding-v3/src/akb2/index/**",
+          "Project AKB2/.claude/worktrees/knowledge-compounding-v3/src/akb2/lint/**",
+          "Project AKB2/.claude/worktrees/knowledge-compounding-v3/src/akb2/gate/**",
+          "Project AKB2/.claude/worktrees/knowledge-compounding-v3/tests/**",
+          "Project AKB2/.claude/worktrees/knowledge-compounding-v3/toolbox/cc-akb-search/SKILL.md",
+          "Project AKB2/.claude/worktrees/knowledge-compounding-v3/reports/**"
+        ],
+        "writes_outside_owned": []
+      }
+    }
+  ]
+}

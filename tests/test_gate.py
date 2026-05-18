@@ -8,6 +8,7 @@ the module is syntactically correct and exports expected entry points.
 from __future__ import annotations
 
 import ast
+import sys
 from pathlib import Path
 
 import pytest
@@ -71,4 +72,30 @@ def test_gate_module_size_nonzero(gate_path: Path):
     size = gate_path.stat().st_size
     assert size >= 10_000, (
         f"akb2_gate_check.py is suspiciously small: {size} bytes (expected >= 10 KB)"
+    )
+
+
+def test_query_result_gate_pass(repo_root: Path):
+    """query-result candidate with valid fields should pass gate (exit 0)."""
+    import subprocess
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(repo_root / "src" / "akb2" / "gate" / "akb2_gate_check.py"),
+            "check",
+            "--akb-root", str(repo_root / "tests" / "fixtures" / "gate"),
+            "--input", "staging/candidate/candidate-query-result.md",
+            "--dry-run",
+        ],
+        capture_output=True, text=True, cwd=str(repo_root),
+    )
+    assert result.returncode == 0, f"gate failed: {result.stdout}\n{result.stderr}"
+    assert "HC-03" not in result.stdout or "skipped" in result.stdout
+    assert "HC-05" not in result.stdout or "skipped" in result.stdout
+
+
+def test_query_result_template_type_in_enum(gate_source: str):
+    """TEMPLATE_TYPE_ENUM must include 'query-result'."""
+    assert '"query-result"' in gate_source or "'query-result'" in gate_source, (
+        "TEMPLATE_TYPE_ENUM must include query-result"
     )

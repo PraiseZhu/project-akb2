@@ -1,0 +1,91 @@
+{
+  "schema_version": "1.0",
+  "plan_ref": "Plan B — AKB2 sample real-target fix",
+  "generated_at": "2026-05-16T21:14:15Z",
+  "mode": "implementation_only",
+  "mode_reason": "Plan A suite controller exists but fresh aggregate-final.json for this round not yet generated; closure stays implementation_only per hard_stop rule",
+  "fixture_pass": true,
+  "real_target_pass": true,
+  "review_chain_closed": false,
+  "ready_for_re_review": true,
+  "evidence": {
+    "real_target_dry_run_entry_count": 20,
+    "real_target_dry_run_expected": 20,
+    "real_target_vault": "/Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0",
+    "real_target_command": "python3 src/akb2/index/generate_index.py --dry-run --vault-root <AKB2.0>",
+    "pytest_total_passed": 78,
+    "pytest_baseline_before_plan_b": 76,
+    "pytest_added_by_plan_b": 2,
+    "hardcoded_python_hits": 0,
+    "hardcoded_python_check_command": "rg '/Users/praise/.pyenv|3.13.12/bin/python3' tests/",
+    "aggregate_final_path": "/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project GD/reports/plan3-full-re-review-closure/aggregate-final.json",
+    "aggregate_final_mtime": "May 16 20:48:21 2026",
+    "aggregate_final_fresh_for_this_round": false
+  },
+  "sc_results": {
+    "SC-1": {
+      "title": "AKB2 index 兼容 status/page_status，真实 vault dry-run = 20",
+      "status": "pass",
+      "evidence": "dry-run output 20 entries matches 20 status: active pages in real vault"
+    },
+    "SC-2": {
+      "title": "AKB2 index 支持正文 ## TLDR fallback，fixture 覆盖真实形态",
+      "status": "pass",
+      "evidence": "extract_body_tldr() added; tests/test_index.py::test_real_vault_form_status_and_body_tldr passed; tests/fixtures/compound/wiki/status-active-source.md created"
+    },
+    "SC-3": {
+      "title": "AKB2 目标测试和全量 pytest 通过",
+      "status": "pass",
+      "evidence": "pytest tests -q -> 78 passed in 3.79s"
+    },
+    "SC-4": {
+      "title": "tests 无硬编码 /Users/praise/.pyenv or 3.13.12/bin/python3",
+      "status": "pass",
+      "evidence": "rg pattern 0 hits; tests/test_gate.py:82 and tests/test_compound_e2e.py:115 changed to sys.executable"
+    },
+    "SC-5": {
+      "title": "R23 derived_from negative case 有可执行 verify，避免路径猜测",
+      "status": "pass",
+      "evidence": "lint.py --vault-root explicit priority over path-based guess; tests/test_lint.py::test_query_result_bad_derived_slug_r23_with_explicit_vault_root passed"
+    },
+    "SC-6": {
+      "title": "reports/akb2-plan-b-closure.json 记录证据",
+      "status": "pass",
+      "evidence": "this file"
+    }
+  },
+  "changed_files": {
+    "modified": [
+      "src/akb2/index/generate_index.py",
+      "src/akb2/lint/akb2_lint.py",
+      "tests/test_gate.py",
+      "tests/test_compound_e2e.py",
+      "tests/test_index.py",
+      "tests/test_lint.py"
+    ],
+    "added": [
+      "tests/fixtures/compound/wiki/status-active-source.md",
+      "reports/akb2-plan-b-closure.json"
+    ]
+  },
+  "boundaries_respected": {
+    "no_real_vault_write": true,
+    "no_claude_dir_write": true,
+    "no_commit": true,
+    "no_gd_install": true,
+    "no_apply_to_real_vault": true,
+    "no_gd_generic_contract_upgrade": true,
+    "no_mcp_server_change": true
+  },
+  "residual_risks": [
+    "Plan A suite controller verified existence only (file exists); not yet run end-to-end against this round's targets — fresh aggregate-final.json not produced",
+    "Real vault still uses status (not page_status); page_status migration is a future P3 work, not in this round",
+    "tests/fixtures/compound/wiki/status-active-source.md only covers single real-form variant; multi-paragraph TLDR edge cases not explicitly tested (covered implicitly by real-vault dry-run = 20)",
+    "AKB2 dirty worktree has 5 plan suite files in AM state (gd-step-1/3/4/5/7); not addressed by this round (out of Plan B scope)"
+  ],
+  "next_steps": [
+    "Run /gd review plan via Plan A rev=19 suite controller to produce fresh aggregate-final.json",
+    "If blocking arrays all empty -> upgrade mode to review_closed and update this closure",
+    "Decide whether to stage 5 AM plan suite files separately (independent of Plan B)"
+  ]
+}

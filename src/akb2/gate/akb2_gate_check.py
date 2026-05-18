@@ -87,11 +87,12 @@ SOURCE_TYPE_ENUM = {
     "tool", "forum", "reddit", "news",
 }
 
-# PAGE-TEMPLATES §4 12 active 模板
+# PAGE-TEMPLATES §4 13 active 模板 (query-result added for knowledge compounding)
 TEMPLATE_TYPE_ENUM = {
     "concept", "source", "entity", "synthesis",
     "project", "design", "tool-understanding", "tool-card",
     "workflow", "prompt", "checklist", "agent-procedure",
+    "query-result",
 }
 
 # GRAPH-LINKING §6.1 7 graph_role(H8 闭环真实枚举)
@@ -493,8 +494,13 @@ def check_future_questions(fm: dict) -> tuple[bool, str]:
 def check_graph_link(fm: dict) -> tuple[bool, str]:
     """HC-07 graph link:至少 1 个 related_* 非空 OR proposed_graph_nodes 非空(Phase B candidate readiness)。
 
+    query-result 模板: derived_from 非空列表可替代 related_* (知识复利溯源链)。
     L4 时必须 ≥1 真实 related_* 非空(承接 sample-register proposed_graph_nodes 边界)。
     """
+    if fm.get("template_type") == "query-result":
+        df = fm.get("derived_from")
+        if isinstance(df, list) and len(df) > 0:
+            return True, f"query-result: derived_from has {len(df)} source(s)"
     for f in RELATED_FIELDS:
         v = fm.get(f)
         if isinstance(v, list) and len(v) > 0:
@@ -561,9 +567,16 @@ HARD_CHECKS = [
 
 
 def run_hard_checks(rel_path: str, fm: dict, body: str) -> list[dict]:
-    """跑全部 10 条硬检查,返回 [{rule, pass, detail}, ...]"""
+    """跑全部 10 条硬检查,返回 [{rule, pass, detail}, ...]
+
+    query-result 模板跳过 HC-03 (source_type) 和 HC-05 (evidence)。
+    """
+    is_query_result = fm.get("template_type") == "query-result"
     results: list[dict] = []
     for rule_id, check_fn in HARD_CHECKS:
+        if is_query_result and rule_id in ("HC-03-SOURCE-TYPE", "HC-05-EVIDENCE"):
+            results.append({"rule": rule_id, "pass": True, "detail": "skipped for query-result"})
+            continue
         # 不同检查需要的参数不同 — dispatch by signature
         if rule_id == "HC-01-CANDIDATE-ONLY":
             ok, detail = check_fn(rel_path)

@@ -72,3 +72,82 @@ def test_lint_module_size_nonzero(lint_path: Path):
     assert size >= 10_000, (
         f"akb2_lint.py is suspiciously small: {size} bytes (expected >= 10 KB)"
     )
+
+
+def test_query_result_valid_no_p0_p1(repo_root: Path):
+    """valid-query-result.md should lint with 0 P0/P1 findings."""
+    import subprocess
+    fixture = repo_root / "tests" / "fixtures" / "compound" / "valid-query-result.md"
+    result = subprocess.run(
+        ["python3", str(repo_root / "src" / "akb2" / "lint" / "akb2_lint.py"),
+         "--version", "v0.3", str(fixture)],
+        capture_output=True, text=True, cwd=str(repo_root),
+    )
+    assert result.returncode == 0, f"lint failed on valid fixture: {result.stdout}"
+
+
+def test_query_result_missing_derived_r23(repo_root: Path):
+    """invalid-missing-derived.md should trigger R23."""
+    import subprocess
+    fixture = repo_root / "tests" / "fixtures" / "compound" / "invalid-missing-derived.md"
+    result = subprocess.run(
+        ["python3", str(repo_root / "src" / "akb2" / "lint" / "akb2_lint.py"),
+         "--version", "v0.3", str(fixture)],
+        capture_output=True, text=True, cwd=str(repo_root),
+    )
+    assert result.returncode != 0
+    assert "DERIVED-FROM" in result.stdout
+
+
+def test_query_result_bad_derived_slug_r23_with_explicit_vault_root(repo_root: Path):
+    """R23 must catch bad derived_from slug even when fixture is NOT under wiki/.
+
+    Regression for path-guessing bug: invalid-bad-derived-slug.md lives under
+    tests/fixtures/compound/ (not under wiki/), so path-based wiki_root inference
+    yields None and R23 silently skips. With --vault-root explicit, wiki_root
+    is taken from <vault-root>/wiki and R23 fires correctly.
+    """
+    import sys
+    import subprocess
+    fixture = repo_root / "tests" / "fixtures" / "compound" / "invalid-bad-derived-slug.md"
+    vault_root = repo_root / "tests" / "fixtures" / "compound"
+    result = subprocess.run(
+        [sys.executable, str(repo_root / "src" / "akb2" / "lint" / "akb2_lint.py"),
+         "--version", "v0.3",
+         "--vault-root", str(vault_root),
+         str(fixture)],
+        capture_output=True, text=True, cwd=str(repo_root),
+    )
+    assert result.returncode != 0, (
+        f"R23 must fail on bad-derived-slug; got rc={result.returncode}\n"
+        f"stdout={result.stdout}\nstderr={result.stderr}"
+    )
+    assert "DERIVED-FROM-MISSING" in result.stdout, (
+        f"expected DERIVED-FROM-MISSING in stdout; got: {result.stdout}"
+    )
+
+
+def test_query_result_bad_confidence_r24(repo_root: Path):
+    """invalid-bad-confidence.md should trigger R24."""
+    import subprocess
+    fixture = repo_root / "tests" / "fixtures" / "compound" / "invalid-bad-confidence.md"
+    result = subprocess.run(
+        ["python3", str(repo_root / "src" / "akb2" / "lint" / "akb2_lint.py"),
+         "--version", "v0.3", str(fixture)],
+        capture_output=True, text=True, cwd=str(repo_root),
+    )
+    assert result.returncode != 0
+    assert "CONFIDENCE" in result.stdout
+
+
+def test_query_result_empty_query_r25(repo_root: Path):
+    """invalid-empty-query.md should trigger R25."""
+    import subprocess
+    fixture = repo_root / "tests" / "fixtures" / "compound" / "invalid-empty-query.md"
+    result = subprocess.run(
+        ["python3", str(repo_root / "src" / "akb2" / "lint" / "akb2_lint.py"),
+         "--version", "v0.3", str(fixture)],
+        capture_output=True, text=True, cwd=str(repo_root),
+    )
+    assert result.returncode != 0
+    assert "QUERY-EMPTY" in result.stdout
