@@ -88,6 +88,74 @@ def test_real_vault_form_status_and_body_tldr(tmp_path: Path) -> None:
     assert 'tags:' in result.stdout
 
 
+def test_index_preserves_external_content(tmp_path: Path) -> None:
+    """SC-5: --apply preserves frontmatter + manual sections outside sentinels.
+
+    Pre-existing 00-Index.md has YAML frontmatter, sub-directory links,
+    and a manual maintenance section. After --apply, those must remain
+    intact; only the AKB2-AUTO-GENERATED block is updated.
+    """
+    wiki = tmp_path / 'wiki'
+    wiki.mkdir()
+    # One active page so the generator has content to emit
+    _make_page(wiki, 'my-page.md', (
+        'title: Test Page\n'
+        'tldr: A short summary\n'
+        'tags: [ai]\n'
+        'template_type: concept\n'
+        'page_status: active'
+    ))
+
+    # Pre-existing index with rich external structure + an OLD generated block
+    pre_existing_index = (
+        '---\n'
+        'maintained_by: praise\n'
+        'last_review: 2026-04-01\n'
+        '---\n\n'
+        '# Knowledge Base Index\n\n'
+        '## Sub-directories\n\n'
+        '- [synthesis/](./synthesis/) — query results and synthesized notes\n'
+        '- [concept/](./concept/) — concept pages\n\n'
+        '## Maintenance log\n\n'
+        '- 2026-04-01: praise reorganized synthesis/\n'
+        '- 2026-04-15: bot rebuilt index\n\n'
+        '<!-- AKB2-AUTO-GENERATED:start -->\n'
+        '# 00-Index (stale auto-generated content to be replaced)\n'
+        '<!-- AKB2-AUTO-GENERATED:end -->\n\n'
+        '## Manual notes below\n\n'
+        '- Never auto-delete this section.\n'
+    )
+    (wiki / '00-Index.md').write_text(pre_existing_index, encoding='utf-8')
+
+    result = subprocess.run(
+        [sys.executable, SCRIPT, '--vault-root', str(tmp_path), '--apply'],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    after = (wiki / '00-Index.md').read_text(encoding='utf-8')
+
+    # External structure preserved
+    assert 'maintained_by: praise' in after, 'frontmatter lost'
+    assert '# Knowledge Base Index' in after, 'top-level heading lost'
+    assert '## Sub-directories' in after, 'sub-dir section lost'
+    assert '[synthesis/](./synthesis/)' in after, 'sub-dir link lost'
+    assert '## Maintenance log' in after, 'maintenance log lost'
+    assert '2026-04-15: bot rebuilt index' in after, 'maintenance entry lost'
+    assert '## Manual notes below' in after, 'trailing manual section lost'
+    assert 'Never auto-delete this section.' in after, 'manual note lost'
+
+    # Auto-generated region updated (new content, stale heading replaced)
+    assert 'stale auto-generated content' not in after, (
+        'stale auto-generated block must be replaced'
+    )
+    assert 'Test Page' in after, 'new generated content missing'
+
+    # Sentinels still present (re-anchorable for next run)
+    assert '<!-- AKB2-AUTO-GENERATED:start -->' in after
+    assert '<!-- AKB2-AUTO-GENERATED:end -->' in after
+
+
 def test_multiple_template_types_grouping(tmp_path: Path) -> None:
     """Pages with different template_types produce separate ## sections."""
     wiki = tmp_path / 'wiki'
