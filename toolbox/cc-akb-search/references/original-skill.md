@@ -39,7 +39,7 @@ project: AKB
 python3 scripts/main.py search "<关键词>" --limit 5 --output json
 ```
 
-AKB 项目路径: `~/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/Project AKB`
+AKB 项目路径: `~/AI-Agent/Claude/archive/projects/Project AKB`
 
 如需语义搜索（Ollama 在线时）：
 

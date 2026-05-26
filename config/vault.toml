@@ -33,10 +33,10 @@ toolbox_root = "toolbox"  # 相对 Project AKB2 根
 # 由 scripts/sync-skills-to-codex.sh 维护
 codex_skills_root = "${HOME}/.codex/skills"
 # MCP install target（cc-akb-search 专用），由 scripts/sync-mcp-server.sh 维护
-mcp_install_target = "${HOME}/Library/Mobile Documents/com~apple~CloudDocs/Codex/plugins/claude-code-ai-infra/mcp-servers"
+mcp_install_target = "${HOME}/AI-Agent/Codex/plugins/claude-code-ai-infra/mcp-servers"
 
 [backup_mirror]
 # 仅 workspace 备份用途，不保证被 Claude Code loader 读取
 # 由 scripts/sync-skills-to-claude-backup.sh 维护
-claude_code_skills = "${HOME}/Library/Mobile Documents/com~apple~CloudDocs/Claude Code/skills"
+claude_code_skills = "${HOME}/AI-Agent/Claude/capabilities/source/skills"
 # 注意：不写 ${HOME}/.claude/skills（该目录禁写，见 v4 plan 约束）

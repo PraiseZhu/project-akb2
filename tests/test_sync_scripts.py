@@ -1,7 +1,8 @@
 """Tests for scripts/sync-*.sh and scripts/verify-no-drift.sh.
 
 Strategy: override HOME to a tmp_path subdirectory so all $HOME-based install
-targets (~/.codex/skills, ~/Library/.../skills/) redirect into a temp tree.
+targets (~/.codex/skills, ~/AI-Agent/Claude/capabilities/source/skills/)
+redirect into a temp tree.
 No production paths are touched. Sync scripts use their real source (repo
 toolbox/), with isolated install targets in the temp HOME.
 """
@@ -89,10 +90,7 @@ def test_sync_skills_to_claude_backup_dry_run_no_write(tmp_path, run_script):
     r = run_script("scripts/sync-skills-to-claude-backup.sh", home=home)
 
     assert r.returncode == 0, f"dry-run failed:\n{r.stdout}\n{r.stderr}"
-    skills_dir = (
-        home / "Library" / "Mobile Documents"
-        / "com~apple~CloudDocs" / "Claude Code" / "skills"
-    )
+    skills_dir = home / "AI-Agent" / "Claude" / "capabilities" / "source" / "skills"
     assert not skills_dir.exists(), "dry-run must not create target directories"
 
 
@@ -104,10 +102,7 @@ def test_sync_skills_to_claude_backup_write_creates_both_targets(tmp_path, run_s
     r = run_script("scripts/sync-skills-to-claude-backup.sh", ["--write"], home=home)
 
     assert r.returncode == 0, f"--write failed:\n{r.stdout}\n{r.stderr}"
-    skills_base = (
-        home / "Library" / "Mobile Documents"
-        / "com~apple~CloudDocs" / "Claude Code" / "skills"
-    )
+    skills_base = home / "AI-Agent" / "Claude" / "capabilities" / "source" / "skills"
     for slug in SLUGS:
         backup = skills_base / f"cc-{slug}" / "SKILL.md"
         active = skills_base / "claude-active" / f"cc-{slug}" / "SKILL.md"

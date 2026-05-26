@@ -4,8 +4,8 @@
 #
 # 检查项：
 #   1. 5 tools: toolbox source vs ~/.codex/skills (Codex install target)
-#   2. 5 tools: toolbox source vs Claude Code/skills (backup mirror)
-#   3. 5 tools: toolbox source vs Claude Code/skills/claude-active (active mirror)
+#   2. 5 tools: toolbox source vs AI-Agent Claude capabilities skills mirror
+#   3. 5 tools: toolbox source vs AI-Agent Claude capabilities claude-active mirror
 #   4. MCP wrapper: toolbox source vs Codex plugin install target
 #   5. closure-manifest.json SHA lock
 #
@@ -23,10 +23,10 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TOOLBOX="$ROOT/toolbox"
 
 CODEX_SKILLS="$HOME/.codex/skills"
-WORKSPACE="$HOME/Library/Mobile Documents/com~apple~CloudDocs/Claude Code"
+WORKSPACE="$HOME/AI-Agent/Claude/capabilities/source"
 CLAUDE_BACKUP="$WORKSPACE/skills"
 CLAUDE_ACTIVE="$WORKSPACE/skills/claude-active"
-MCP_TARGET="$HOME/Library/Mobile Documents/com~apple~CloudDocs/Codex/plugins/claude-code-ai-infra/mcp-servers/akb-search-readonly/server.py"
+MCP_TARGET="$HOME/AI-Agent/Codex/plugins/claude-code-ai-infra/mcp-servers/akb-search-readonly/server.py"
 
 CLOSURE_MANIFEST="$ROOT/src/akb2/closure/2026-05-07/closure-manifest.json"
 CLOSURE_EXPECTED_SHA="0fbd53703ff58802299ba8cb04f5290e4b973c124729376dc341f862f06f90cc"

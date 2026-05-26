@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# sync-skills-to-claude-backup.sh — toolbox/ → Claude Code/skills/ + claude-active/ (backup mirror)
+# sync-skills-to-claude-backup.sh — toolbox/ → AI-Agent Claude capabilities skills mirror
 # 默认 dry-run；--write 才真正复制
 # 用法：sync-skills-to-claude-backup.sh [--all | --slug cc-xxx] [--write]
 #
 # 双目标：
-#   1. Claude Code/skills/cc-{slug}/          ← 备份镜像
-#   2. Claude Code/skills/claude-active/cc-{slug}/ ← 活跃镜像
+#   1. AI-Agent/Claude/capabilities/source/skills/cc-{slug}/
+#   2. AI-Agent/Claude/capabilities/source/skills/claude-active/cc-{slug}/
 #
 # 安全守卫：目标路径解析后若落在 /Users/praise/.claude → 硬停 exit 2
 
@@ -17,8 +17,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TOOLBOX="$ROOT/toolbox"
 
-# Claude Code workspace root
-WORKSPACE="$HOME/Library/Mobile Documents/com~apple~CloudDocs/Claude Code"
+# AI-Agent Claude capability source root
+WORKSPACE="$HOME/AI-Agent/Claude/capabilities/source"
 TARGET_A="$WORKSPACE/skills"
 TARGET_B="$WORKSPACE/skills/claude-active"
 

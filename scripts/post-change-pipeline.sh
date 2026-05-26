@@ -61,10 +61,10 @@ run_step() {
 # === Snapshot helpers for dry-run no-write invariant ===
 
 CODEX_SKILLS="$HOME/.codex/skills"
-WORKSPACE="$HOME/Library/Mobile Documents/com~apple~CloudDocs/Claude Code"
+WORKSPACE="$HOME/AI-Agent/Claude/capabilities/source"
 CLAUDE_BACKUP="$WORKSPACE/skills"
 CLAUDE_ACTIVE="$WORKSPACE/skills/claude-active"
-MCP_TARGET="$HOME/Library/Mobile Documents/com~apple~CloudDocs/Codex/plugins/claude-code-ai-infra/mcp-servers/akb-search-readonly/server.py"
+MCP_TARGET="$HOME/AI-Agent/Codex/plugins/claude-code-ai-infra/mcp-servers/akb-search-readonly/server.py"
 
 ALL_SLUGS=(executable-plan review local-llm skill-stocktake akb-search)
 

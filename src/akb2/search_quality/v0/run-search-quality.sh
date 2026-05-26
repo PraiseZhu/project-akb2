@@ -21,7 +21,7 @@ set -euo pipefail
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 OUTPUT_DIR="$SCRIPT_DIR"
 
-CLAUDE_CODE_ROOT="/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Claude Code"
+CLAUDE_CODE_ROOT="/Users/praise/AI-Agent/Claude"
 PROJ_AKB="$CLAUDE_CODE_ROOT/Project AKB"
 AKB2_BASE="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 AKB2_ROOT="/Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0"

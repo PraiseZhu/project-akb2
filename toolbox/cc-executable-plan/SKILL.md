@@ -18,7 +18,7 @@ Claude live template source of truth:
 
 Primary template:
 
-`/Users/praise/Library/Mobile Documents/com~apple~CloudDocs/Codex/templates/plan-template.md`
+`/Users/praise/AI-Agent/Codex/templates/plan-template.md`
 
 The Codex primary template is a local copy of the Claude live template and must stay byte-for-byte aligned with it. Before producing a final user-facing plan, run a read-only drift check:
 

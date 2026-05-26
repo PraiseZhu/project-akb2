@@ -20,7 +20,7 @@
 
 ```bash
 # 从 install target 启动（生产路径）
-python "~/Library/Mobile Documents/com~apple~CloudDocs/Codex/plugins/claude-code-ai-infra/mcp-servers/akb-search-readonly/server.py"
+python "~/AI-Agent/Codex/plugins/claude-code-ai-infra/mcp-servers/akb-search-readonly/server.py"
 
 # 从权威源启动（开发调试）
 python toolbox/cc-akb-search/mcp_server/server.py
