@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.akb2.briefing</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__AKB2_REPO_ROOT__/scripts/daily_briefing.sh</string>
+        <string>--vault-root</string>
+        <string>/Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/AKB2.0</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>__AKB2_REPO_ROOT__/</string>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>7</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>__AKB2_REPO_ROOT__/logs/briefing-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>__AKB2_REPO_ROOT__/logs/briefing-stderr.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONPATH</key>
+        <string>__AKB2_REPO_ROOT__/src</string>
+    </dict>
+</dict>
+</plist>

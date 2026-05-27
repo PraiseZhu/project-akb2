@@ -1,0 +1,268 @@
+{
+  "tweets": [
+    {
+      "id": "1925001000000000001",
+      "text": "GPT-5 is now available in ChatGPT. The reasoning improvements are genuinely impressive — solved ARC-AGI at 88% with chain-of-thought. The era of general-purpose agents is here.",
+      "author": "@sama",
+      "created_at": "2026-05-27T01:12:00+00:00",
+      "url": "https://x.com/sama/status/1925001000000000001",
+      "metrics": {
+        "likes": 48203,
+        "retweets": 12891,
+        "replies": 3741
+      },
+      "score": 0.95162,
+      "dimensions": {
+        "recency": 0.7352,
+        "engagement": 1.0,
+        "author_authority": 1.0,
+        "topic_relevance": 1.0,
+        "signal_density": 0.687143,
+        "novelty": 1.0,
+        "safety": 1.0
+      }
+    },
+    {
+      "id": "1925001000000000002",
+      "text": "Claude 4 Opus now achieves 72% on SWE-bench verified. We're seeing real-world software engineering tasks completed autonomously in minutes. Multi-agent loops are where the magic happens.",
+      "author": "@AnthropicAI",
+      "created_at": "2026-05-27T02:05:00+00:00",
+      "url": "https://x.com/AnthropicAI/status/1925001000000000002",
+      "metrics": {
+        "likes": 31450,
+        "retweets": 9200,
+        "replies": 2890
+      },
+      "score": 0.95496,
+      "dimensions": {
+        "recency": 0.753602,
+        "engagement": 1.0,
+        "author_authority": 1.0,
+        "topic_relevance": 1.0,
+        "signal_density": 0.708571,
+        "novelty": 1.0,
+        "safety": 1.0
+      }
+    },
+    {
+      "id": "1925001000000000003",
+      "text": "The multimodal gap is closing fast. Gemini 2.5 Ultra processes 2M context and can reason over 10-hour video streams. We tested it on medical imaging and it out-performed radiologists on early detection.",
+      "author": "@GoogleDeepMind",
+      "created_at": "2026-05-27T03:22:00+00:00",
+      "url": "https://x.com/GoogleDeepMind/status/1925001000000000003",
+      "metrics": {
+        "likes": 22100,
+        "retweets": 7450,
+        "replies": 1980
+      },
+      "score": 0.860734,
+      "dimensions": {
+        "recency": 0.780339,
+        "engagement": 1.0,
+        "author_authority": 1.0,
+        "topic_relevance": 0.666667,
+        "signal_density": 0.752857,
+        "novelty": 1.0,
+        "safety": 1.0
+      }
+    },
+    {
+      "id": "1925001000000000004",
+      "text": "LLMs as operating systems: the new paradigm. Your model doesn't call tools — it orchestrates agents, each with memory, planning, and tool access. We shipped this in prod last week. Thread on what we learned:",
+      "author": "@karpathy",
+      "created_at": "2026-05-27T04:10:00+00:00",
+      "url": "https://x.com/karpathy/status/1925001000000000004",
+      "metrics": {
+        "likes": 39800,
+        "retweets": 14300,
+        "replies": 4100
+      },
+      "score": 0.961751,
+      "dimensions": {
+        "recency": 0.797005,
+        "engagement": 1.0,
+        "author_authority": 1.0,
+        "topic_relevance": 1.0,
+        "signal_density": 0.743571,
+        "novelty": 1.0,
+        "safety": 1.0
+      }
+    },
+    {
+      "id": "1925001000000000005",
+      "text": "AGI timelines just compressed again. o3 scores 96.7 on MMLU-Pro, 84% on ARC-AGI-2, and writes production Rust better than most seniors I've hired. Still not AGI but the delta from 2024→2026 is staggering.",
+      "author": "@ylecun",
+      "created_at": "2026-05-27T05:00:00+00:00",
+      "url": "https://x.com/ylecun/status/1925001000000000005",
+      "metrics": {
+        "likes": 18700,
+        "retweets": 5600,
+        "replies": 2200
+      },
+      "score": 0.865137,
+      "dimensions": {
+        "recency": 0.814366,
+        "engagement": 1.0,
+        "author_authority": 1.0,
+        "topic_relevance": 0.666667,
+        "signal_density": 0.767143,
+        "novelty": 1.0,
+        "safety": 1.0
+      }
+    },
+    {
+      "id": "1925001000000000006",
+      "text": "We open-sourced Llama 4 Maverick weights today — 400B MoE, Apache 2.0, runs on 8×H100 or 16×A100. The open-source community has never had access to this level of capability. Download link in thread.",
+      "author": "@AIatMeta",
+      "created_at": "2026-05-27T05:45:00+00:00",
+      "url": "https://x.com/AIatMeta/status/1925001000000000006",
+      "metrics": {
+        "likes": 55600,
+        "retweets": 21400,
+        "replies": 6100
+      },
+      "score": 0.765799,
+      "dimensions": {
+        "recency": 0.829991,
+        "engagement": 1.0,
+        "author_authority": 1.0,
+        "topic_relevance": 0.333333,
+        "signal_density": 0.754286,
+        "novelty": 1.0,
+        "safety": 1.0
+      }
+    },
+    {
+      "id": "1925001000000000007",
+      "text": "Hot take: the 'alignment tax' is gone. The top RLHF-tuned models now OUTPERFORM base models on reasoning benchmarks while being significantly safer. Safety and capability stopped being a tradeoff around GPT-4o.",
+      "author": "@paulfchristiano",
+      "created_at": "2026-05-27T06:20:00+00:00",
+      "url": "https://x.com/paulfchristiano/status/1925001000000000007",
+      "metrics": {
+        "likes": 14200,
+        "retweets": 4800,
+        "replies": 3300
+      },
+      "score": 0.967064,
+      "dimensions": {
+        "recency": 0.842144,
+        "engagement": 1.0,
+        "author_authority": 1.0,
+        "topic_relevance": 1.0,
+        "signal_density": 0.755,
+        "novelty": 1.0,
+        "safety": 1.0
+      }
+    },
+    {
+      "id": "1925001000000000008",
+      "text": "MCP (Model Context Protocol) now has 50k+ registered servers. The tool ecosystem has exploded. Every SaaS has an MCP endpoint. This is what 'AI-native software' looks like — you don't build integrations, you expose context.",
+      "author": "@mckaywrigley",
+      "created_at": "2026-05-27T07:00:00+00:00",
+      "url": "https://x.com/mckaywrigley/status/1925001000000000008",
+      "metrics": {
+        "likes": 9800,
+        "retweets": 3200,
+        "replies": 870
+      },
+      "score": 0.870403,
+      "dimensions": {
+        "recency": 0.856033,
+        "engagement": 1.0,
+        "author_authority": 1.0,
+        "topic_relevance": 0.666667,
+        "signal_density": 0.782857,
+        "novelty": 1.0,
+        "safety": 1.0
+      }
+    },
+    {
+      "id": "1925001000000000009",
+      "text": "Coding agents crossed a threshold: our internal benchmarks show autonomous fix rate > 60% on real GitHub issues (not curated). Engineers are now reviewing AI PRs more than writing code. This is the shift.",
+      "author": "@github",
+      "created_at": "2026-05-27T07:35:00+00:00",
+      "url": "https://x.com/github/status/1925001000000000009",
+      "metrics": {
+        "likes": 27300,
+        "retweets": 8700,
+        "replies": 2100
+      },
+      "score": 0.868769,
+      "dimensions": {
+        "recency": 0.868186,
+        "engagement": 1.0,
+        "author_authority": 1.0,
+        "topic_relevance": 0.666667,
+        "signal_density": 0.742143,
+        "novelty": 1.0,
+        "safety": 1.0
+      }
+    },
+    {
+      "id": "1925001000000000010",
+      "text": "Just published our paper on 'Constitutional AI at Scale' — we show you can steer 405B models toward helpful, harmless behavior without RLHF. Pure synthetic self-critique loops. Reproducible on 8B models too. arxiv link:",
+      "author": "@AnthropicAI",
+      "created_at": "2026-05-27T08:10:00+00:00",
+      "url": "https://x.com/AnthropicAI/status/1925001000000000010",
+      "metrics": {
+        "likes": 16900,
+        "retweets": 5400,
+        "replies": 1450
+      },
+      "score": 0.872584,
+      "dimensions": {
+        "recency": 0.880339,
+        "engagement": 1.0,
+        "author_authority": 1.0,
+        "topic_relevance": 0.666667,
+        "signal_density": 0.779286,
+        "novelty": 1.0,
+        "safety": 1.0
+      }
+    },
+    {
+      "id": "1925001000000000011",
+      "text": "DeepSeek V4 Pro benchmark results: 96.4% HumanEval, 91.2% MATH-500, $0.14/1M input tokens. The China-US model quality gap is essentially zero now. The price war is great for devs, brutal for incumbents.",
+      "author": "@deepseek_ai",
+      "created_at": "2026-05-27T08:50:00+00:00",
+      "url": "https://x.com/deepseek_ai/status/1925001000000000011",
+      "metrics": {
+        "likes": 33100,
+        "retweets": 11800,
+        "replies": 4200
+      },
+      "score": 0.872823,
+      "dimensions": {
+        "recency": 0.894227,
+        "engagement": 1.0,
+        "author_authority": 1.0,
+        "topic_relevance": 0.666667,
+        "signal_density": 0.762857,
+        "novelty": 1.0,
+        "safety": 1.0
+      }
+    },
+    {
+      "id": "1925001000000000012",
+      "text": "The 'vibe coding' era is producing real production software now. Junior devs with Claude/GPT-5 are shipping features senior engineers would take weeks to complete. This is not a drill. Retraining matters more than ever.",
+      "author": "@swyx",
+      "created_at": "2026-05-27T09:30:00+00:00",
+      "url": "https://x.com/swyx/status/1925001000000000012",
+      "metrics": {
+        "likes": 21500,
+        "retweets": 7100,
+        "replies": 3900
+      },
+      "score": 0.975012,
+      "dimensions": {
+        "recency": 0.908116,
+        "engagement": 1.0,
+        "author_authority": 1.0,
+        "topic_relevance": 1.0,
+        "signal_density": 0.774286,
+        "novelty": 1.0,
+        "safety": 1.0
+      }
+    }
+  ]
+}

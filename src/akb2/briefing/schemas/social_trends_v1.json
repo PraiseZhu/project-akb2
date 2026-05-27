@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "social_trends_v1_1",
+  "type": "object",
+  "required": ["date", "generated_at", "source", "scoring_summary", "tweets", "focus_discussions"],
+  "properties": {
+    "date": {"type": "string"},
+    "generated_at": {"type": "string"},
+    "source": {
+      "type": "object",
+      "required": ["name", "collector_version"],
+      "properties": {
+        "name": {"type": "string"},
+        "collector_version": {"type": "string"}
+      }
+    },
+    "scoring_summary": {
+      "type": "object",
+      "required": ["total_tweets", "scored_tweets"],
+      "properties": {
+        "total_tweets": {"type": "integer"},
+        "scored_tweets": {"type": "integer"}
+      }
+    },
+    "tweets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "author", "text", "created_at"],
+        "properties": {
+          "id": {"type": "string"},
+          "author": {"type": "string"},
+          "text": {"type": "string"},
+          "created_at": {"type": "string"},
+          "score": {"type": "number"},
+          "dimensions": {"type": "object"},
+          "metrics": {"type": "object"}
+        }
+      }
+    },
+    "focus_discussions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["topic", "supporting_tweet_ids", "summary"],
+        "properties": {
+          "topic": {"type": "string"},
+          "supporting_tweet_ids": {"type": "array", "items": {"type": "string"}},
+          "summary": {"type": "string"}
+        }
+      }
+    }
+  }
+}
