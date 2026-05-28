@@ -1,0 +1,38 @@
+sources:
+  l0:
+    enabled: true
+    description: "Public timeline — AI/LLM keywords"
+    query: "AI OR LLM OR AGI lang:en -is:retweet"
+    max_results: 20
+    rate_limit:
+      requests_per_15min: 10
+    output_path: "/tmp/l0-out.json"
+
+  l0_prime:
+    enabled: true
+    description: "Paper-bot List — academic AI papers"
+    list_id: "placeholder"
+    max_results: 10
+    rate_limit:
+      requests_per_15min: 5
+    output_path: "/tmp/l0p-out.json"
+
+  l3:
+    enabled: true
+    description: "Follow graph — curated AI accounts"
+    accounts:
+      - username: "OpenAI"
+        follow_graph: true
+      - username: "AnthropicAI"
+        follow_graph: true
+      - username: "GoogleDeepMind"
+        follow_graph: false
+    max_results: 15
+    rate_limit:
+      requests_per_15min: 10
+    output_path: "/tmp/l3-out.json"
+
+  l4:
+    enabled: false
+    description: "arxiv preprint stub — disabled in MVP"
+    output_path: "/tmp/l4-out.json"
