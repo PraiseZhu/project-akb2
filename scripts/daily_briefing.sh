@@ -7,6 +7,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:$PYTHONPATH}"
 
+# Source API secrets if present (never log secret values; secrets file must be chmod 600)
+_SECRETS_FILE="${HOME:-}/.akb2-secrets.sh"
+if [[ -n "${HOME:-}" ]] && [[ -f "$_SECRETS_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$_SECRETS_FILE"
+fi
+
+# Resolve Python 3.11+ (launchd-safe: searches pyenv + versioned binaries)
+PYTHON_BIN="$(bash "${SCRIPT_DIR}/find-python311.sh")"
+
 DATE_ARG=""
 VAULT_ROOT=""
 DRY_RUN_INTAKE=""
@@ -42,7 +52,7 @@ if [[ -z "$VAULT_ROOT" ]]; then
   exit 1
 fi
 
-exec python3 -m akb2.briefing.pipeline \
+exec "$PYTHON_BIN" -m akb2.briefing.pipeline \
   --date "$DATE_ARG" \
   --vault-root "$VAULT_ROOT" \
   $DRY_RUN_INTAKE

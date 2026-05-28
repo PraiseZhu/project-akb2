@@ -18,9 +18,8 @@ Design:
   - Write temp briefing to <vault-root>/staging/candidate/<date>-briefing.md
   - Run gate on temp file (guard_input_path accepts staging/candidate/)
   - Write final file to <vault-root>/AKB2.0/AI TRENDS/Social/<date+1> Daily Briefing.md
-  - Create symlink at Social/<date+1> pointing to the staging/candidate file
-    so that resolve() on the Social symlink returns the staging/candidate real path,
-    making gate also accept the Social path for the SC-6 triple assertion.
+  - Copy physical file to Social/<date+1> Daily Briefing.md via shutil.copy2
+    (no symlink — ensures Obsidian/iCloud compatibility; gate decision reject skips this step)
 """
 
 from __future__ import annotations
@@ -31,6 +30,7 @@ import json
 import os
 import subprocess
 import sys
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -40,7 +40,7 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 REPO_ROOT = Path(__file__).parent.parent.parent.parent  # worktree root (src/akb2/briefing/ -> src/akb2/ -> src/ -> worktree/)
-GATE_CLI = REPO_ROOT / "src" / "akb2" / "gate" / "akb2_gate_check.py"
+GATE_CLI = Path(os.environ.get("AKB2_GATE_CLI") or str(REPO_ROOT / "src" / "akb2" / "gate" / "akb2_gate_check.py"))
 
 GATE_DECISION_ENUM = {
     "active", "needs_repair", "needs_human_review",
@@ -305,6 +305,14 @@ def main(argv: list[str] | None = None) -> int:
     vault_root = Path(args.vault_root).resolve()
     dry_run_intake = args.dry_run_intake
 
+    # Fail-closed: check vault_root before running any expensive stages.
+    if not vault_root.is_dir():
+        sys.stderr.write(
+            f"ERROR: --vault-root does not exist or is not a directory: {vault_root}\n"
+            "Hint: ensure the vault is mounted and the path is correct before running.\n"
+        )
+        sys.exit(1)
+
     # Compute delivery date (date + 1 day)
     delivery_date = (datetime.date.fromisoformat(date) + datetime.timedelta(days=1)).isoformat()
     briefing_filename = f"{delivery_date} Daily Briefing.md"
@@ -334,36 +342,12 @@ def main(argv: list[str] | None = None) -> int:
     social_dir = vault_root / "AKB2.0" / "AI TRENDS" / "Social"
     social_dir.mkdir(parents=True, exist_ok=True)
 
-    # The SC-6 triple assertion calls gate with:
-    #   --akb-root <vault-root> --input <vault-root>/AKB2.0/AI TRENDS/Social/<file>
-    # Gate CLI (when input is NOT absolute) computes: akb_root / input
-    # = vault-root / "path/to/vault-root/AKB2.0/AI TRENDS/Social/<file>"
-    # This doubled path must be a symlink to staging/candidate/ for gate to accept it.
-    # We create the doubled-path Social symlink: vault-root/<rel-vault-root>/AKB2.0/AI TRENDS/Social
-    # -> vault-root/staging/candidate/
-    #
-    # Compute relative path of vault-root from CWD (as the SC command would pass it).
-    # To be safe, we create this structure using vault_root's path relative to the worktree.
-    try:
-        vault_rel = vault_root.relative_to(REPO_ROOT)
-        doubled_social_dir = vault_root / vault_rel / "AKB2.0" / "AI TRENDS"
-        doubled_social_dir.mkdir(parents=True, exist_ok=True)
-        doubled_social_symlink = doubled_social_dir / "Social"
-        if not doubled_social_symlink.exists() and not doubled_social_symlink.is_symlink():
-            doubled_social_symlink.symlink_to(staging_candidate_dir)
-        # Also: verify or recreate if it points to the wrong target
-        elif doubled_social_symlink.is_symlink():
-            if doubled_social_symlink.resolve() != staging_candidate_dir.resolve():
-                doubled_social_symlink.unlink()
-                doubled_social_symlink.symlink_to(staging_candidate_dir)
-    except ValueError:
-        # vault_root is not under REPO_ROOT; skip the doubled-path symlink
-        pass
+
 
     # Physical file location (under staging/candidate/ for gate compliance)
     real_briefing_path = staging_candidate_dir / briefing_filename
-    # Symlink location (Social directory, where SC-7 checks)
-    symlink_briefing_path = social_dir / briefing_filename
+    # Final output location in Social directory (physical file, no symlink)
+    final_briefing_path = social_dir / briefing_filename
 
     # Stage 4: Write temp briefing (with AKB gate-compatible frontmatter, no gate_decision yet)
     temp_content = build_temp_briefing_markdown(synth, date)
@@ -376,20 +360,16 @@ def main(argv: list[str] | None = None) -> int:
     final_content = build_briefing_markdown(synth, gate_decision, date)
     real_briefing_path.write_text(final_content, encoding="utf-8")
 
-    # Create symlink in Social dir pointing to the real file
-    # Remove existing symlink/file if present
-    if symlink_briefing_path.exists() or symlink_briefing_path.is_symlink():
-        symlink_briefing_path.unlink()
-    symlink_briefing_path.symlink_to(real_briefing_path)
-
-    # Verify symlink resolves to the real path under staging/candidate/
-    resolved = symlink_briefing_path.resolve()
-    real_resolved = real_briefing_path.resolve()
-    if resolved != real_resolved:
-        sys.stderr.write(
-            f"ERROR: symlink resolution mismatch: {resolved} != {real_resolved}\n"
-        )
+    # Reject gate decision: do not write to Social/active path
+    if gate_decision == "reject":
+        sys.stderr.write("gate decision: reject — skipping Social/active write\n")
         sys.exit(1)
+
+    # Copy physical file to Social directory (no symlink — ensures Obsidian/iCloud compatibility)
+    # Unlink first in case a symlink from a previous run exists at this path
+    if final_briefing_path.exists() or final_briefing_path.is_symlink():
+        final_briefing_path.unlink()
+    shutil.copy2(real_briefing_path, final_briefing_path)
 
     # Print to stdout (SC-6 greps for this)
     print(f"proposed_gate_decision: {gate_decision}")

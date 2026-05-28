@@ -9,7 +9,7 @@
         <string>/bin/bash</string>
         <string>__AKB2_REPO_ROOT__/scripts/daily_briefing.sh</string>
         <string>--vault-root</string>
-        <string>/Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/AKB2.0</string>
+        <string>__AKB2_VAULT_ROOT__</string>
     </array>
     <key>WorkingDirectory</key>
     <string>__AKB2_REPO_ROOT__/</string>
@@ -28,6 +28,8 @@
     <dict>
         <key>PYTHONPATH</key>
         <string>__AKB2_REPO_ROOT__/src</string>
+        <key>PATH</key>
+        <string>/Users/praise/.pyenv/shims:/Users/praise/.pyenv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     </dict>
 </dict>
 </plist>

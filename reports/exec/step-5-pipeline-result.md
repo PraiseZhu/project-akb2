@@ -9,6 +9,8 @@ timestamp: 2026-05-27T14:20:00+00:00
 pipeline.py + daily_briefing.sh + plist + vault-stub + mac-mini notes implemented.
 All SC-6/7/8a/8b/8c/8d/8f/8g/mac-mini-handoff passed.
 
+> **2026-05-28 更新**：「Triple-Assertion Symlink Architecture」已移除（见 Codex finding P2-4）。Social 产物现在是 `shutil.copy2` 写入的物理文件；`step-6-acceptance-result.md` 和 `reports/acceptance/2026-05-27.md` 是当前权威。
+
 ## SC Results
 
 - SC-6 triple-assertion: PASS (pipeline=active file=active gate=active)
@@ -23,28 +25,16 @@ All SC-6/7/8a/8b/8c/8d/8f/8g/mac-mini-handoff passed.
 
 ## Key Implementation Decisions
 
-### Triple-Assertion Symlink Architecture
+### Physical File Copy Architecture (supersedes Symlink Architecture)
 
-The gate CLI (akb2_gate_check.py) enforces that `--input` must be under `staging/candidate/`
-relative to `--akb-root`. The SC-6 verification calls gate with:
+> **Symlink approach removed 2026-05-28** (Codex P2-4). See `reports/acceptance/2026-05-27.md` for current evidence.
 
-```
---akb-root tests/fixtures/vault-stub
---input "tests/fixtures/vault-stub/AKB2.0/AI TRENDS/Social/2026-05-28 Daily Briefing.md"
-```
+Pipeline writes the final briefing to `staging/candidate/<date+1> Daily Briefing.md`, then
+uses `shutil.copy2` to place a physical copy in `AKB2.0/AI TRENDS/Social/`. An `unlink()` guard
+removes any stale path before copying (idempotent, no `.md.1` duplicates).
 
-Since `--input` is not absolute, gate computes `akb_root / input_arg`, producing a
-"doubled path" like `vault-stub/tests/fixtures/vault-stub/AKB2.0/AI TRENDS/Social/<file>`.
-
-The pipeline creates a symlink at this doubled path:
-`vault-stub/tests/fixtures/vault-stub/AKB2.0/AI TRENDS/Social/` → `vault-stub/staging/candidate/`
-
-Python's `resolve()` follows this symlink chain, so `relative_to(akb_root)` yields
-`staging/candidate/<file>`, passing the guard.
-
-The physical briefing file lives at `staging/candidate/`, with symlinks in two places:
-1. `AKB2.0/AI TRENDS/Social/<file>` → staging/candidate (for SC-7 and Obsidian vault)
-2. `tests/fixtures/vault-stub/AKB2.0/AI TRENDS/Social/` directory → staging/candidate (for gate CLI doubled-path resolution)
+SC-6 gate check uses `--input "staging/candidate/<file>"` (relative to `--akb-root`), which
+is resolved directly by `guard_input_path()` without any symlink chain.
 
 ### Frontmatter Gate Compatibility
 

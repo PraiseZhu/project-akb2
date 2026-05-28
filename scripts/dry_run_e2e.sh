@@ -130,9 +130,10 @@ PYEOF
       echo "ERROR: fixtures missing" >&2
       exit 1
     fi
-    # Validate deepseek-output.json against schema if PYTHONPATH is resolvable
-    if command -v python3 &>/dev/null && [[ -d "$REPO_ROOT/src" ]]; then
-      PYTHONPATH="$REPO_ROOT/src" python3 -m akb2.briefing.validator \
+    # Validate deepseek-output.json against schema (requires Python 3.11+)
+    if [[ -d "$REPO_ROOT/src" ]]; then
+      PYTHON_BIN="$(bash "${SCRIPT_DIR}/find-python311.sh")"
+      PYTHONPATH="$REPO_ROOT/src" "$PYTHON_BIN" -m akb2.briefing.validator \
         "$REPO_ROOT/$FIXTURE_DIR/deepseek-output.json"
     fi
     echo "dry-run fixtures present"

@@ -111,6 +111,10 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
     若有 API key，调 DeepSeek；API 失败后 fallback。
     """
     if not _has_api_key():
+        sys.stderr.write(
+            "WARNING: OPENROUTER_API_KEY not set — synthesis using local fallback. "
+            "Set SC-5-real = PENDING until real API key is configured.\n"
+        )
         return _fallback_synthesis(scored_input, date)
 
     # 构建 prompt
@@ -152,6 +156,10 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
             continue
 
     # API 两次都失败后走 fallback
+    sys.stderr.write(
+        "WARNING: DeepSeek API failed after 2 attempts — synthesis using local fallback. "
+        "SC-5-real remains PENDING.\n"
+    )
     return _fallback_synthesis(scored_input, date)
 
 
