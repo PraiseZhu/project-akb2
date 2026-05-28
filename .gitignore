@@ -55,3 +55,7 @@ data/
 src/akb2/automation_gate/outputs/
 src/akb2/matrix/v0/outputs/current/
 src/akb2/closure/*/regression/*-test.json
+
+# === Review tooling outputs (ephemeral; per-run capsules + final-status mappings) ===
+results/review-route-split/
+_review_outputs/
