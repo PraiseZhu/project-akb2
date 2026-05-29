@@ -23,8 +23,12 @@ def _has_api_key() -> bool:
     return bool(os.environ.get("OPENROUTER_API_KEY") or os.environ.get("DEEPSEEK_API_KEY"))
 
 
-def _call_deepseek(prompt: str, max_retries: int = 2) -> str:
-    """调 DeepSeek API（经由 OpenRouter），失败自动重试，返回 raw response string。"""
+def _call_deepseek(messages: list[dict], max_retries: int = 2) -> str:
+    """调 DeepSeek API（经由 OpenRouter），失败自动重试，返回 raw response string。
+
+    messages 格式：[{"role": "system", "content": "..."}, {"role": "user", "content": "..."}]
+    system+user 拆分让模型更稳定遵守角色约束，减少语言漂移。
+    """
     import httpx
 
     api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("DEEPSEEK_API_KEY")
@@ -38,7 +42,7 @@ def _call_deepseek(prompt: str, max_retries: int = 2) -> str:
                 url,
                 json={
                     "model": "deepseek/deepseek-v4-pro",
-                    "messages": [{"role": "user", "content": prompt}],
+                    "messages": messages,
                     "temperature": 0.2,
                     "response_format": {"type": "json_object"},
                 },
@@ -142,10 +146,9 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
         )
         return _fallback_synthesis(scored_input, date)
 
-    # 构建 prompt — 全部推文都给 model,让它自己决定取舍(top-N 早期是 5,信号窄;
-    # 现在 20 条都给,model 在 prompt 里被约束选 3-5 个主题,supporting_tweet_ids 必须真实)
+    # top-10：信号足够且 prompt 不超长；20 条时 prompt ~8K+ 字符反而让 model 更容易漂移
     tweets = scored_input.get("tweets", [])
-    top = sorted(tweets, key=lambda t: t.get("score", 0), reverse=True)
+    top = sorted(tweets, key=lambda t: t.get("score", 0), reverse=True)[:10]
     tweets_text = "\n".join(
         [f"[{t['id']}] @{t.get('author', '?')} (score={t.get('score', 0):.2f}): {t.get('text', '')}" for t in top]
     )
@@ -153,33 +156,52 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
     resolved_date = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     prompt_path = Path(__file__).parent.parent.parent.parent.parent / "docs" / "deepseek-synthesis-prompt-v1.md"
 
-    if prompt_path.exists():
-        prompt_template = prompt_path.read_text()
-        prompt = prompt_template.format(
-            tweets=tweets_text,
-            date=resolved_date,
-            tweet_count=len(tweets),
-        )
-    else:
-        # inline fallback prompt if doc not found
-        prompt = (
-            f"Analyze the following AI/ML tweets from {resolved_date} "
-            f"and output a JSON object conforming to social_trends_v1_1 schema.\n\n"
-            f"Tweets:\n{tweets_text}\n\n"
-            "Return JSON with fields: date, generated_at, source, scoring_summary, tweets, focus_discussions."
-        )
+    # 构建 system+user messages — 从 prompt 文档以 "\n## USER\n" 分割
+    FALLBACK_SYSTEM = (
+        "你是 AI/ML 社交趋势分析师。基于输入推文输出结构化中文趋势简报 JSON。"
+        "所有 string 字段必须简体中文。不编造，所有 ID 必须来自输入。"
+    )
+    FALLBACK_USER = (
+        f"分析以下 AI/ML 推文（{resolved_date}，共 {len(top)} 条），"
+        f"输出 JSON，含 executive_summary、focus_discussions（3-5条）、key_quotes（2-4条）。\n\n{tweets_text}"
+    )
 
-    # 调一次 API,不重试质量问题(model 不稳定,重试也不一定改善,白白浪费 5+ 分钟);
-    # 仅在 API 抛异常(网络/超时/schema 失败)时重试一次。
-    # model 偷懒输出(topic="AI Trends"、英文 summary、漏字段)由 _merge_with_input + _patch_*
-    # 系列函数代码兜底补救,不依赖重试。
+    if prompt_path.exists():
+        template = prompt_path.read_text()
+        if "\n## USER\n" in template:
+            sys_raw, usr_raw = template.split("\n## USER\n", 1)
+            system_content = sys_raw.replace("## SYSTEM\n", "").strip()
+            user_content = usr_raw.strip().format(
+                tweets=tweets_text,
+                date=resolved_date,
+                tweet_count=len(top),
+            )
+        else:
+            # 旧格式 prompt 整体作为 user message
+            system_content = FALLBACK_SYSTEM
+            user_content = template.format(
+                tweets=tweets_text, date=resolved_date, tweet_count=len(top)
+            )
+    else:
+        system_content = FALLBACK_SYSTEM
+        user_content = FALLBACK_USER
+
+    messages = [
+        {"role": "system", "content": system_content},
+        {"role": "user", "content": user_content},
+    ]
+
+    # 仅 API 异常时重试一次；质量问题由 _merge_with_input + _patch_* + _validate_anti_fill 代码兜底
+    input_tweet_ids = {str(t["id"]) for t in tweets}
+    input_authors = {t.get("author", "") for t in tweets}
     last_err: Exception | None = None
     for attempt in range(2):
         try:
-            raw = _call_deepseek(prompt)
+            raw = _call_deepseek(messages)
             data = json.loads(raw)
             merged = _merge_with_input(data, scored_input, resolved_date, top)
             _validate_response(merged)
+            _validate_anti_fill(merged, input_tweet_ids, input_authors)
             return merged
         except Exception as e:
             last_err = e
@@ -335,6 +357,54 @@ def _patch_focus_discussions(discussions: list, top: list[dict]) -> list:
             "summary": d.get("summary") or "",
         })
     return patched
+
+
+def _validate_anti_fill(merged: dict, input_tweet_ids: set[str], input_authors: set[str]) -> dict:
+    """后验 anti-fill 校验：检测 model 编造的 ID 和 @mention。
+
+    不抛出，只写 stderr 警告 + 返回报告 {passed, violations}。
+    _patch_key_quotes 已经过滤掉编造 ID，这里是第二道净化记录层。
+    """
+    import re
+
+    violations: list[str] = []
+    normalised_authors = {a.lstrip("@").lower() for a in input_authors if a}
+
+    # 1. focus_discussions supporting_tweet_ids 必须在 input 中
+    for fd in merged.get("focus_discussions", []):
+        for tid in fd.get("supporting_tweet_ids", []):
+            if str(tid) not in input_tweet_ids:
+                violations.append(f"fabricated tweet_id in focus_discussions: {tid}")
+
+    # 2. key_quotes tweet_id 必须在 input 中（_patch_key_quotes 已过滤，这里做双重记录）
+    for q in merged.get("key_quotes", []):
+        tid = str(q.get("tweet_id", ""))
+        if tid and tid not in input_tweet_ids:
+            violations.append(f"fabricated tweet_id in key_quotes: {tid}")
+
+    # 3. key_quotes.author 必须在 input author 集合内
+    for q in merged.get("key_quotes", []):
+        author = q.get("author", "").lstrip("@").lower()
+        if author and author not in normalised_authors:
+            violations.append(f"key_quotes author not in input authors: {q.get('author', '')}")
+
+    # 4. @mention 在 summary / quote / context 正文里也必须是真实 author
+    all_text = " ".join(
+        fd.get("summary", "") for fd in merged.get("focus_discussions", [])
+    ) + " " + " ".join(
+        (q.get("quote", "") + " " + q.get("context", ""))
+        for q in merged.get("key_quotes", [])
+    )
+    for m in re.findall(r"@(\w+)", all_text):
+        if m.lower() not in normalised_authors:
+            violations.append(f"@mention not in input authors: @{m}")
+
+    if violations:
+        sys.stderr.write(f"[anti-fill] {len(violations)} violation(s) detected:\n")
+        for v in violations:
+            sys.stderr.write(f"  - {v}\n")
+
+    return {"passed": len(violations) == 0, "violations": violations}
 
 
 def _cli(argv: list[str] | None = None) -> int:
