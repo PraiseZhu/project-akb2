@@ -149,8 +149,12 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
     # top-10：信号足够且 prompt 不超长；20 条时 prompt ~8K+ 字符反而让 model 更容易漂移
     tweets = scored_input.get("tweets", [])
     top = sorted(tweets, key=lambda t: t.get("score", 0), reverse=True)[:10]
+    # 用短编号 [1]..[N] 给模型，不暴露 19 位长 tweet_id。
+    # LLM 复述长数字串会出错(实测把 ...954401855 抄成 ...401854555)，导致翻译对不上 + anti-fill 误报。
+    # 模型只回引小整数编号，真实 tweet_id 由代码经 index→id 映射回填(rule-5：非语言工作交给代码)。
     tweets_text = "\n".join(
-        [f"[{t['id']}] @{t.get('author', '?')} (score={t.get('score', 0):.2f}): {t.get('text', '')}" for t in top]
+        [f"[{i}] @{t.get('author', '?')} (score={t.get('score', 0):.2f}): {t.get('text', '')}"
+         for i, t in enumerate(top, 1)]
     )
 
     resolved_date = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -220,6 +224,27 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
     return _fallback_synthesis(scored_input, date)
 
 
+def _resolve_tweet_ref(ref, idx_to_id: dict[str, str], input_ids: set[str]) -> str | None:
+    """把 model 返回的推文引用解析为真实 tweet_id。
+
+    - 短编号 '1'..'N'(prompt 现用方案)→ idx_to_id 映射回真实 id
+    - 已是真实 tweet_id(兼容旧行为)→ 原样返回
+    - 都不是(如 LLM 抄错的长 id)→ None，丢弃而非伪造
+
+    rule-5：让模型回引小整数、代码做 id 还原，根治"长数字抄错"。
+    """
+    if ref is None:
+        return None
+    s = str(ref).strip()
+    if not s:
+        return None
+    if s in input_ids:
+        return s
+    if s in idx_to_id:
+        return idx_to_id[s]
+    return None
+
+
 def _merge_with_input(model_out: dict, scored_input: dict, resolved_date: str, top: list[dict]) -> dict:
     """Merge model output with input data — model 只贡献 focus_discussions/executive_summary/key_quotes,
     其余字段从 input 回填。
@@ -230,6 +255,18 @@ def _merge_with_input(model_out: dict, scored_input: dict, resolved_date: str, t
     all_tweets = scored_input.get("tweets", [])
     # tweets 字段只渲染前 10 条最高分(markdown 模板也只展示 top 10),减少简报噪声
     top_for_display = top[:10]
+    # 短编号 → 真实 tweet_id 映射(与 prompt 里 tweets_text 的 [i] 编号一致)
+    idx_to_id = {str(i): str(t["id"]) for i, t in enumerate(top, 1)}
+    input_ids = {str(t["id"]) for t in top}
+    # model 给的每条推文中文翻译 → 真实 tweet_id 映射;缺失时 markdown 回退英文原文。
+    # 优先读 index(新),兼容 tweet_id(旧);经 _resolve_tweet_ref 还原,抄错的 id 丢弃不伪造。
+    translations = {}
+    for x in (model_out.get("tweet_translations") or []):
+        if not isinstance(x, dict):
+            continue
+        rid = _resolve_tweet_ref(x.get("index", x.get("tweet_id")), idx_to_id, input_ids)
+        if rid:
+            translations[rid] = (x.get("text_zh") or "").strip()
     return {
         "date": model_out.get("date") or resolved_date,
         "generated_at": model_out.get("generated_at") or datetime.now(timezone.utc).isoformat(),
@@ -243,6 +280,7 @@ def _merge_with_input(model_out: dict, scored_input: dict, resolved_date: str, t
                 "id": str(t["id"]),
                 "author": t.get("author", ""),
                 "text": t.get("text", ""),
+                "text_zh": translations.get(str(t["id"]), ""),
                 "created_at": t.get("created_at", ""),
                 "score": t.get("score"),
                 "dimensions": t.get("dimensions", {}),
@@ -251,7 +289,7 @@ def _merge_with_input(model_out: dict, scored_input: dict, resolved_date: str, t
             for t in top_for_display
         ],
         "focus_discussions": (patched_fds := _patch_focus_discussions(
-            model_out.get("focus_discussions") or [], top
+            model_out.get("focus_discussions") or [], top, idx_to_id, input_ids
         )),
         # 扩展字段 — model 经常漏,由代码兜底合成确保 markdown 章节完整;
         # executive_summary fallback 用已 patched 的(中文化后的)focus_discussions
@@ -260,7 +298,7 @@ def _merge_with_input(model_out: dict, scored_input: dict, resolved_date: str, t
             or _synthesize_executive_summary(patched_fds)
         ),
         "key_quotes": (
-            _patch_key_quotes(model_out.get("key_quotes") or [], top)
+            _patch_key_quotes(model_out.get("key_quotes") or [], top, idx_to_id, input_ids)
             or _synthesize_key_quotes(top_for_display)
         ),
     }
@@ -295,9 +333,11 @@ def _synthesize_key_quotes(top_tweets: list[dict]) -> list:
     return quotes
 
 
-def _patch_key_quotes(quotes: list, top: list[dict]) -> list:
-    """补齐 key_quotes — 防御 model 漏字段,过滤掉非 dict / 缺 tweet_id 的条目,
+def _patch_key_quotes(quotes: list, top: list[dict], idx_to_id: dict[str, str], input_ids: set[str]) -> list:
+    """补齐 key_quotes — 防御 model 漏字段,过滤掉非 dict / 引用解析不到的条目,
     给每条 quote 找对应 tweet 的 url 字段(model 一般不会给 url)。
+
+    引用优先读 index(短编号),兼容 tweet_id;经 _resolve_tweet_ref 还原为真实 id。
     """
     id_to_url = {str(t["id"]): t.get("url", "") for t in top}
     id_to_author = {str(t["id"]): t.get("author", "") for t in top}
@@ -305,8 +345,8 @@ def _patch_key_quotes(quotes: list, top: list[dict]) -> list:
     for q in quotes:
         if not isinstance(q, dict):
             continue
-        tid = str(q.get("tweet_id", ""))
-        # 必须能 trace 到真实 tweet,否则丢弃(防 model 编造 id)
+        tid = _resolve_tweet_ref(q.get("index", q.get("tweet_id")), idx_to_id, input_ids)
+        # 必须能 trace 到真实 tweet,否则丢弃(防 model 编造/抄错 id)
         if tid and tid in id_to_url:
             patched.append({
                 "author": q.get("author") or id_to_author.get(tid, ""),
@@ -318,7 +358,7 @@ def _patch_key_quotes(quotes: list, top: list[dict]) -> list:
     return patched
 
 
-def _patch_focus_discussions(discussions: list, top: list[dict]) -> list:
+def _patch_focus_discussions(discussions: list, top: list[dict], idx_to_id: dict[str, str], input_ids: set[str]) -> list:
     """补齐 focus_discussions 缺失的 supporting_tweet_ids + 空洞 topic 自动改写。
 
     - schema 要求 topic/supporting_tweet_ids/summary 三字段都必填
@@ -331,8 +371,18 @@ def _patch_focus_discussions(discussions: list, top: list[dict]) -> list:
     for i, d in enumerate(discussions, 1):
         if not isinstance(d, dict):
             continue
-        ids = d.get("supporting_tweet_ids")
-        if not isinstance(ids, list) or not ids:
+        # 引用优先读 supporting_indices(短编号,新),兼容 supporting_tweet_ids(旧)。
+        # 逐个经 _resolve_tweet_ref 还原为真实 id,解析不到的丢弃;全空则兜底前 2 条。
+        raw_refs = d.get("supporting_indices")
+        if not isinstance(raw_refs, list) or not raw_refs:
+            raw_refs = d.get("supporting_tweet_ids")
+        ids = []
+        if isinstance(raw_refs, list):
+            for ref in raw_refs:
+                rid = _resolve_tweet_ref(ref, idx_to_id, input_ids)
+                if rid and rid not in ids:
+                    ids.append(rid)
+        if not ids:
             ids = fallback_ids
         topic = (d.get("topic") or "").strip()
         # 含中文字符数(≥2 视为合格中文 topic)

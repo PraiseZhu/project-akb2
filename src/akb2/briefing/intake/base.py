@@ -26,6 +26,9 @@ class BaseCollector(ABC):
 
     def __init__(self, config: dict | None = None):
         self.config = config or load_config()
+        # 数据来源真实性标记。真实抓取成功=live；显式 dry-run=fixture_dryrun；
+        # 抓取失败意外降级=fixture_fallback。下游据此在简报中暴露真假。
+        self.provenance = "live"
 
     @abstractmethod
     def collect(self, dry_run: bool = False) -> list[dict]:
@@ -38,6 +41,7 @@ class BaseCollector(ABC):
         result = {
             "date": tweets[0]["created_at"][:10] if tweets else "2026-05-27",
             "source": self.source_name,
+            "provenance": self.provenance,
             "tweets": tweets,
         }
         with open(output, "w") as f:

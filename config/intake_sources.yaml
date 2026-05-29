@@ -1,3 +1,5 @@
+# 当前实际只有 L0(公共时间线)一个数据源。
+# L0'/L3/L4 曾是空壳 collector(读 fixture 或返回空),已删除以消除"多源抓取"假象。
 sources:
   l0:
     enabled: true
@@ -7,32 +9,3 @@ sources:
     rate_limit:
       requests_per_15min: 10
     output_path: "/tmp/l0-out.json"
-
-  l0_prime:
-    enabled: true
-    description: "Paper-bot List — academic AI papers"
-    list_id: "placeholder"
-    max_results: 10
-    rate_limit:
-      requests_per_15min: 5
-    output_path: "/tmp/l0p-out.json"
-
-  l3:
-    enabled: true
-    description: "Follow graph — curated AI accounts"
-    accounts:
-      - username: "OpenAI"
-        follow_graph: true
-      - username: "AnthropicAI"
-        follow_graph: true
-      - username: "GoogleDeepMind"
-        follow_graph: false
-    max_results: 15
-    rate_limit:
-      requests_per_15min: 10
-    output_path: "/tmp/l3-out.json"
-
-  l4:
-    enabled: false
-    description: "arxiv preprint stub — disabled in MVP"
-    output_path: "/tmp/l4-out.json"

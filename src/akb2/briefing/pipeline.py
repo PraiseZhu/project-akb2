@@ -71,6 +71,11 @@ def run_intake(dry_run: bool, output_path: Path) -> dict:
         sys.stderr.write(result.stderr)
         sys.exit(1)
 
+    # 即使退出码为 0，fallback 降级也会在 stderr 打 WARNING(此前被吞)。
+    # 透传给上层，确保假数据降级不静默。
+    if result.stderr and "WARNING" in result.stderr:
+        sys.stderr.write(result.stderr)
+
     with open(output_path) as f:
         return json.load(f)
 
@@ -151,7 +156,28 @@ def run_gate(akb_root: Path, input_file: Path, date: str) -> str:
 # Stage 5: Build markdown briefing
 # ---------------------------------------------------------------------------
 
-def build_briefing_markdown(synth: dict, gate_decision: str, date: str) -> str:
+def _provenance_evidence_path(provenance: str) -> str:
+    """provenance → evidence_paths 条目，真假可追溯。"""
+    if provenance == "live":
+        return "social/l0_collector/live"
+    if provenance == "fixture_dryrun":
+        return "social/l0_collector/dry_run"
+    return "social/l0_collector/fixture_fallback"
+
+
+def _provenance_warning_banner(provenance: str) -> list[str]:
+    """非真实数据时返回简报顶部醒目警告 block；真实数据返回空。"""
+    if provenance == "live":
+        return []
+    label = "测试数据(显式 dry-run)" if provenance == "fixture_dryrun" else "降级数据(抓取失败回退 fixture)"
+    return [
+        f"> ⚠️ **本期为{label}，provenance=`{provenance}`，非真实抓取。**",
+        "> 推文内容与链接均来自测试固件，请勿据此判断真实趋势。",
+        "",
+    ]
+
+
+def build_briefing_markdown(synth: dict, gate_decision: str, date: str, provenance: str = "live") -> str:
     """Build the final markdown briefing content with YAML frontmatter.
 
     The frontmatter includes all AKB gate-compatible fields so that a re-run of
@@ -168,12 +194,13 @@ def build_briefing_markdown(synth: dict, gate_decision: str, date: str) -> str:
         f"date: {date}",
         f"proposed_gate_decision: {gate_decision}",
         f"source: social_trends_v1_1",
+        f"data_provenance: {provenance}",
         f"generated_at: {now_iso}",
         f"page_status: candidate",
         f"source_type: news",
         f"template_type: synthesis",
         "evidence_paths:",
-        "  - social/l0_collector/dry_run",
+        f"  - {_provenance_evidence_path(provenance)}",
         "future_questions:",
         "  - What are the top AI trends this week?",
         "  - Which models are gaining the most developer attention?",
@@ -191,6 +218,7 @@ def build_briefing_markdown(synth: dict, gate_decision: str, date: str) -> str:
     body_parts = [
         f"# {delivery_date} AI 社交趋势日报",
         "",
+        *_provenance_warning_banner(provenance),
         "## 导读",
         "",
         f"基于 {date} 公开时间线抓取，对 AI/ML 领域社交信号的综合分析。",
@@ -229,7 +257,8 @@ def build_briefing_markdown(synth: dict, gate_decision: str, date: str) -> str:
     body_parts += ["## 关键推文", ""]
     for t in tweets[:10]:
         author = t.get("author", "")
-        text = t.get("text", "")
+        # 优先展示中文译文,model 漏翻时回退英文原文(原文链接始终保留)
+        text = t.get("text_zh") or t.get("text", "")
         score = t.get("score", 0)
         url = t.get("url", "")
         body_parts += [
@@ -256,7 +285,7 @@ def build_briefing_markdown(synth: dict, gate_decision: str, date: str) -> str:
     return frontmatter + "\n" + body
 
 
-def build_temp_briefing_markdown(synth: dict, date: str) -> str:
+def build_temp_briefing_markdown(synth: dict, date: str, provenance: str = "live") -> str:
     """Build briefing markdown WITHOUT gate decision in frontmatter (for initial gate check)."""
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
     tweets = synth.get("tweets", [])
@@ -268,9 +297,10 @@ def build_temp_briefing_markdown(synth: dict, date: str) -> str:
         f"source_type: news",
         f"template_type: synthesis",
         f"source: social_trends_v1_1",
+        f"data_provenance: {provenance}",
         f"generated_at: {now_iso}",
         "evidence_paths:",
-        "  - social/l0_collector/dry_run",
+        f"  - {_provenance_evidence_path(provenance)}",
         "future_questions:",
         "  - What are the top AI trends this week?",
         "  - Which models are gaining the most developer attention?",
@@ -300,7 +330,7 @@ def build_temp_briefing_markdown(synth: dict, date: str) -> str:
     ]
     for t in tweets[:5]:
         author = t.get("author", "")
-        text = t.get("text", "")
+        text = t.get("text_zh") or t.get("text", "")
         score = t.get("score", 0)
         body_parts += [
             f"**{author}**（评分：{score:.3f}）",
@@ -346,6 +376,12 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         intake_tmp.unlink(missing_ok=True)
 
+    provenance = intake_data.get("provenance", "unknown")
+    if provenance != "live":
+        sys.stderr.write(
+            f"WARNING: intake provenance={provenance} — 本期简报非真实抓取数据\n"
+        )
+
     # Stage 2: Scoring
     scored_data = run_scoring(intake_data)
 
@@ -370,7 +406,7 @@ def main(argv: list[str] | None = None) -> int:
     final_briefing_path = social_dir / briefing_filename
 
     # Stage 4: Write temp briefing (with AKB gate-compatible frontmatter, no gate_decision yet)
-    temp_content = build_temp_briefing_markdown(synth, date)
+    temp_content = build_temp_briefing_markdown(synth, date, provenance=provenance)
     real_briefing_path.write_text(temp_content, encoding="utf-8")
 
     # Stage 4: Run gate on the staging/candidate file — akb-root 必须是 AKB2.0/(不是 vault-root)
@@ -378,7 +414,7 @@ def main(argv: list[str] | None = None) -> int:
     gate_decision = run_gate(akb_root=akb2_root, input_file=real_briefing_path, date=date)
 
     # Stage 5: Write final content with gate_decision in frontmatter
-    final_content = build_briefing_markdown(synth, gate_decision, date)
+    final_content = build_briefing_markdown(synth, gate_decision, date, provenance=provenance)
     real_briefing_path.write_text(final_content, encoding="utf-8")
 
     # Reject gate decision: do not write to Social/active path

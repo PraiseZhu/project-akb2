@@ -50,6 +50,7 @@ class L0Collector(BaseCollector):
 
     def collect(self, dry_run: bool = False) -> list[dict]:
         if dry_run:
+            self.provenance = "fixture_dryrun"
             return self._read_fixture()
         return self._fetch_real()
 
@@ -57,6 +58,12 @@ class L0Collector(BaseCollector):
         with open(FIXTURE_PATH) as f:
             data = json.load(f)
         return data.get("tweets", [])
+
+    def _fallback_to_fixture(self, reason: str) -> list[dict]:
+        """抓取失败时降级到 fixture，标记 provenance 并大声警告。"""
+        self.provenance = "fixture_fallback"
+        sys.stderr.write(f"WARNING: {reason} — fallback to fixture\n")
+        return self._read_fixture()
 
     def _fetch_real(self) -> list[dict]:
         """通过 twitter-cli 拉真实推文;失败降级到 fixture。"""
@@ -69,10 +76,7 @@ class L0Collector(BaseCollector):
         max_results = int(cfg.get("max_results", 20))
 
         if not Path(TWITTER_BIN).exists():
-            sys.stderr.write(
-                f"WARNING: twitter-cli not found at {TWITTER_BIN} — fallback to fixture\n"
-            )
-            return self._read_fixture()
+            return self._fallback_to_fixture(f"twitter-cli not found at {TWITTER_BIN}")
 
         cmd = [
             TWITTER_BIN, "search", query_clean,
@@ -87,39 +91,26 @@ class L0Collector(BaseCollector):
                 cmd, capture_output=True, text=True, timeout=TWITTER_TIMEOUT_SEC
             )
         except subprocess.TimeoutExpired:
-            sys.stderr.write(
-                f"WARNING: twitter-cli timeout ({TWITTER_TIMEOUT_SEC}s) — fallback to fixture\n"
-            )
-            return self._read_fixture()
+            return self._fallback_to_fixture(f"twitter-cli timeout ({TWITTER_TIMEOUT_SEC}s)")
 
         if result.returncode != 0:
             stderr_excerpt = (result.stderr or "")[:300].replace("\n", " | ")
-            sys.stderr.write(
-                f"WARNING: twitter-cli exit {result.returncode}: {stderr_excerpt} — fallback to fixture\n"
+            return self._fallback_to_fixture(
+                f"twitter-cli exit {result.returncode}: {stderr_excerpt}"
             )
-            return self._read_fixture()
 
         try:
             payload = json.loads(result.stdout)
         except json.JSONDecodeError as e:
-            sys.stderr.write(
-                f"WARNING: twitter-cli output not JSON ({e}) — fallback to fixture\n"
-            )
-            return self._read_fixture()
+            return self._fallback_to_fixture(f"twitter-cli output not JSON ({e})")
 
         if not payload.get("ok"):
-            sys.stderr.write(
-                "WARNING: twitter-cli payload.ok=false — fallback to fixture\n"
-            )
-            return self._read_fixture()
+            return self._fallback_to_fixture("twitter-cli payload.ok=false")
 
         raw = payload.get("data") or []
         tweets = _twitter_cli_to_akb2(raw)
         if not tweets:
-            sys.stderr.write(
-                "WARNING: twitter-cli returned 0 tweets — fallback to fixture\n"
-            )
-            return self._read_fixture()
+            return self._fallback_to_fixture("twitter-cli returned 0 tweets")
         return tweets
 
 
