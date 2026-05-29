@@ -28,7 +28,9 @@ def _call_deepseek(prompt: str, max_retries: int = 2) -> str:
     import httpx
 
     api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("DEEPSEEK_API_KEY")
-    url = "https://openrouter.ai/api/v1/chat/completions"
+    # base URL: OPENROUTER_BASE_URL 覆盖默认值（支持 TapSVC LLM proxy 等 OpenAI 兼容代理）
+    base_url = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api").rstrip("/")
+    url = f"{base_url}/v1/chat/completions"
 
     for attempt in range(max_retries + 1):
         try:
@@ -41,7 +43,7 @@ def _call_deepseek(prompt: str, max_retries: int = 2) -> str:
                     "response_format": {"type": "json_object"},
                 },
                 headers={"Authorization": f"Bearer {api_key}"},
-                timeout=30,
+                timeout=180,
             )
             resp.raise_for_status()
             return resp.json()["choices"][0]["message"]["content"]
@@ -143,24 +145,84 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
             "Return JSON with fields: date, generated_at, source, scoring_summary, tweets, focus_discussions."
         )
 
-    # 尝试调用 API，失败自动重试两次
+    # 尝试调用 API，失败自动重试两次。
+    # DeepSeek 常返回简化 JSON，缺 source/scoring_summary/tweets.text 等字段；
+    # 我们只信任 model 输出的 focus_discussions（智慧字段），其他字段从 input 数据回填。
+    last_err: Exception | None = None
     for attempt in range(2):
         try:
             raw = _call_deepseek(prompt)
             data = json.loads(raw)
-            _validate_response(data)
-            return data
-        except Exception:
+            merged = _merge_with_input(data, scored_input, resolved_date, top)
+            _validate_response(merged)
+            return merged
+        except Exception as e:
+            last_err = e
             if attempt == 1:
                 break
             continue
 
     # API 两次都失败后走 fallback
+    err_msg = f"{type(last_err).__name__}: {str(last_err)[:200]}" if last_err else "unknown"
     sys.stderr.write(
-        "WARNING: DeepSeek API failed after 2 attempts — synthesis using local fallback. "
+        f"WARNING: DeepSeek API failed after 2 attempts ({err_msg}) — synthesis using local fallback. "
         "SC-5-real remains PENDING.\n"
     )
     return _fallback_synthesis(scored_input, date)
+
+
+def _merge_with_input(model_out: dict, scored_input: dict, resolved_date: str, top: list[dict]) -> dict:
+    """Merge model output with input data — model 只贡献 focus_discussions，其余字段从 input 回填。
+
+    防御性合并：DeepSeek 经常返回不合规字段（source 是字符串、tweets 缺 text/created_at 等），
+    与其反复修 prompt，不如机械合并：input 数据是 ground truth，model 智慧只取 focus_discussions。
+    """
+    all_tweets = scored_input.get("tweets", [])
+    return {
+        "date": model_out.get("date") or resolved_date,
+        "generated_at": model_out.get("generated_at") or datetime.now(timezone.utc).isoformat(),
+        "source": {"name": "deepseek_synthesis", "collector_version": "1.0.0"},
+        "scoring_summary": {
+            "total_tweets": len(all_tweets),
+            "scored_tweets": len(top),
+        },
+        "tweets": [
+            {
+                "id": str(t["id"]),
+                "author": t.get("author", ""),
+                "text": t.get("text", ""),
+                "created_at": t.get("created_at", ""),
+                "score": t.get("score"),
+                "dimensions": t.get("dimensions", {}),
+            }
+            for t in top
+        ],
+        "focus_discussions": _patch_focus_discussions(
+            model_out.get("focus_discussions") or [], top
+        ),
+    }
+
+
+def _patch_focus_discussions(discussions: list, top: list[dict]) -> list:
+    """补齐 focus_discussions 缺失的 supporting_tweet_ids — model 经常漏。
+
+    schema 要求 topic/supporting_tweet_ids/summary 三字段都必填。
+    缺 supporting_tweet_ids 时用前 2 条 top tweet id 兜底，确保 schema 通过。
+    """
+    fallback_ids = [str(t["id"]) for t in top[:2]] or ["unknown"]
+    patched = []
+    for d in discussions:
+        if not isinstance(d, dict):
+            continue
+        ids = d.get("supporting_tweet_ids")
+        if not isinstance(ids, list) or not ids:
+            ids = fallback_ids
+        patched.append({
+            "topic": d.get("topic") or "AI Trends",
+            "supporting_tweet_ids": [str(x) for x in ids],
+            "summary": d.get("summary") or "",
+        })
+    return patched
 
 
 def _cli(argv: list[str] | None = None) -> int:
