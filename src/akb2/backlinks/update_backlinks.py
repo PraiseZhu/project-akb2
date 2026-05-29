@@ -88,13 +88,15 @@ def get_slug_from_file(filepath: Path, frontmatter: dict) -> str:
 def rebuild(wiki_root: Path, backlinks_file: Path) -> int:
     """Full rebuild: scan all synthesis/*.md, extract derived_from, write backlinks.jsonl."""
     synthesis_dir = wiki_root / 'synthesis'
-    if not synthesis_dir.exists():
-        print(f"[WARN] synthesis dir not found: {synthesis_dir}", file=sys.stderr)
-        return 0
+    if not synthesis_dir.is_dir():
+        print(f"[ERROR] synthesis dir not found: {synthesis_dir}", file=sys.stderr)
+        return 1
 
     md_files = list(synthesis_dir.glob('*.md'))
     if not md_files:
-        print(f"[WARN] No .md files found in {synthesis_dir}", file=sys.stderr)
+        # 空 synthesis 是合法状态(还没 promote 任何页面)：写空 backlinks，正常退出。
+        print(f"[WARN] No .md files found in {synthesis_dir} — writing empty backlinks", file=sys.stderr)
+        save_backlinks({}, backlinks_file)
         return 0
 
     backlinks: dict = {}
@@ -136,8 +138,11 @@ def rebuild(wiki_root: Path, backlinks_file: Path) -> int:
 def add_entry(slug: str, wiki_root: Path, backlinks_file: Path) -> int:
     """Incremental update: process only the given slug's query-result page."""
     synthesis_dir = wiki_root / 'synthesis'
-    md_file = synthesis_dir / f'{slug}.md'
+    if not synthesis_dir.is_dir():
+        print(f"[ERROR] synthesis dir not found: {synthesis_dir}", file=sys.stderr)
+        return 1
 
+    md_file = synthesis_dir / f'{slug}.md'
     if not md_file.exists():
         print(f"[WARN] File not found: {md_file}", file=sys.stderr)
         return 0
@@ -182,17 +187,23 @@ def add_entry(slug: str, wiki_root: Path, backlinks_file: Path) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description='AKB2 backlinks updater — maintains data/backlinks.jsonl',
+        description='AKB2 backlinks updater — maintains <root>/data/backlinks.jsonl',
     )
-    parser.add_argument(
+    # root 二选一：--vault-root 对齐生态(generate_index.py)语义=AKB2.0 根，内部推 wiki/synthesis；
+    # --wiki-root 为兼容旧调用(直接指向含 synthesis/ 的 wiki 目录)。
+    root_group = parser.add_mutually_exclusive_group(required=True)
+    root_group.add_argument(
+        '--vault-root',
+        help='AKB2.0 root directory (contains wiki/synthesis/*.md). Output defaults to <vault-root>/data/backlinks.jsonl',
+    )
+    root_group.add_argument(
         '--wiki-root',
-        required=True,
-        help='Path to wiki/ root directory containing synthesis/*.md query-result pages',
+        help='Legacy: path to wiki/ directory directly containing synthesis/*.md',
     )
     parser.add_argument(
         '--backlinks-file',
-        default='data/backlinks.jsonl',
-        help='Path to backlinks.jsonl output file (default: data/backlinks.jsonl)',
+        default=None,
+        help='Path to backlinks.jsonl output (default: <root>/data/backlinks.jsonl)',
     )
     parser.add_argument(
         '--rebuild',
@@ -208,12 +219,26 @@ def main() -> int:
 
     args = parser.parse_args()
 
-    wiki_root = Path(args.wiki_root)
-    backlinks_file = Path(args.backlinks_file)
+    # 路径推导：vault-root → wiki=vault/wiki，输出锚定 vault/data；
+    #          wiki-root → 直接用，输出锚定 wiki 的父目录(即 AKB2.0 根)/data。
+    if args.vault_root:
+        vault_root = Path(args.vault_root)
+        wiki_root = vault_root / 'wiki'
+        default_base = vault_root
+    else:
+        wiki_root = Path(args.wiki_root)
+        default_base = wiki_root.parent
 
-    if not wiki_root.exists():
-        print(f"[WARN] wiki-root does not exist: {wiki_root}", file=sys.stderr)
-        return 0
+    backlinks_file = (
+        Path(args.backlinks_file)
+        if args.backlinks_file
+        else default_base / 'data' / 'backlinks.jsonl'
+    )
+
+    # Fail visibly: 错误的 root 必须非 0 退出，不静默(rule-12)。
+    if not wiki_root.is_dir():
+        print(f"[ERROR] wiki directory not found: {wiki_root}", file=sys.stderr)
+        return 1
 
     if args.rebuild:
         return rebuild(wiki_root, backlinks_file)
