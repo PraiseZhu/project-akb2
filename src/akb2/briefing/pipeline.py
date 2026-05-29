@@ -331,15 +331,13 @@ def main(argv: list[str] | None = None) -> int:
     # Stage 3: Synthesis
     synth = run_synthesis(scored_data, date=date)
 
-    # Prepare paths
-    # The final output file lives at vault-root/AKB2.0/AI TRENDS/Social/<filename>
-    # For gate to accept it (guard_input_path requires staging/candidate/),
-    # we write the physical file to staging/candidate/ and create a symlink at Social/.
-    # When gate resolves the Social symlink, it gets the staging/candidate real path.
-    staging_candidate_dir = vault_root / "staging" / "candidate"
+    # Prepare paths — 落点严格对齐 master plan SC-7: vault-root/Praise Space/AKB2.0/AI TRENDS/Social/
+    # staging 也放进 Praise Space/AKB2.0/ 同子树,加 . 前缀让 Obsidian 默认隐藏,不污染 vault 顶层
+    akb2_root = vault_root / "Praise Space" / "AKB2.0"
+    staging_candidate_dir = akb2_root / ".staging" / "candidate"
     staging_candidate_dir.mkdir(parents=True, exist_ok=True)
 
-    social_dir = vault_root / "AKB2.0" / "AI TRENDS" / "Social"
+    social_dir = akb2_root / "AI TRENDS" / "Social"
     social_dir.mkdir(parents=True, exist_ok=True)
 
 

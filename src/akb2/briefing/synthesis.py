@@ -88,6 +88,7 @@ def _fallback_synthesis(scored_input: dict, date: str | None = None) -> dict:
                 "created_at": t.get("created_at", ""),
                 "score": t.get("score"),
                 "dimensions": t.get("dimensions", {}),
+                "url": t.get("url", ""),
             }
             for t in top
         ],
@@ -194,6 +195,7 @@ def _merge_with_input(model_out: dict, scored_input: dict, resolved_date: str, t
                 "created_at": t.get("created_at", ""),
                 "score": t.get("score"),
                 "dimensions": t.get("dimensions", {}),
+                "url": t.get("url", ""),
             }
             for t in top
         ],
