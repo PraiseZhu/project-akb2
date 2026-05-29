@@ -198,12 +198,33 @@ def build_briefing_markdown(synth: dict, gate_decision: str, date: str) -> str:
         "",
     ]
 
+    # 执行摘要（model 综合给出；fallback 时可能为空）
+    executive_summary = synth.get("executive_summary", "")
+    if executive_summary:
+        body_parts += ["## 执行摘要", "", executive_summary, ""]
+
     if focus_discussions:
         body_parts += ["## 核心讨论", ""]
         for disc in focus_discussions:
             topic = disc.get("topic", "")
             summary = disc.get("summary", "")
             body_parts += [f"### {topic}", "", summary, ""]
+
+    # 关键引述（model 选出的最有信号推文，含 @author + url + context）
+    key_quotes = synth.get("key_quotes", []) or []
+    if key_quotes:
+        body_parts += ["## 关键引述", ""]
+        for q in key_quotes:
+            author = q.get("author", "")
+            quote = q.get("quote", "")
+            url = q.get("url", "")
+            context = q.get("context", "")
+            body_parts += [
+                f"**{author}**" + (f"（{context}）" if context else ""),
+                f"> {quote}",
+                f"[原文]({url})" if url else "",
+                "",
+            ]
 
     body_parts += ["## 关键推文", ""]
     for t in tweets[:10]:
@@ -331,10 +352,11 @@ def main(argv: list[str] | None = None) -> int:
     # Stage 3: Synthesis
     synth = run_synthesis(scored_data, date=date)
 
-    # Prepare paths — 落点严格对齐 master plan SC-7: vault-root/Praise Space/AKB2.0/AI TRENDS/Social/
-    # staging 也放进 Praise Space/AKB2.0/ 同子树,加 . 前缀让 Obsidian 默认隐藏,不污染 vault 顶层
+    # Prepare paths — 落点对齐 master plan SC-7: vault-root/Praise Space/AKB2.0/AI TRENDS/Social/
+    # gate CLI 硬要求 input 在 <akb-root>/staging/candidate/,所以 akb2_root 作为 --akb-root 传给 gate,
+    # staging 放在 AKB2.0 内部(staging/candidate/),Social 也在 AKB2.0/AI TRENDS/Social/
     akb2_root = vault_root / "Praise Space" / "AKB2.0"
-    staging_candidate_dir = akb2_root / ".staging" / "candidate"
+    staging_candidate_dir = akb2_root / "staging" / "candidate"
     staging_candidate_dir.mkdir(parents=True, exist_ok=True)
 
     social_dir = akb2_root / "AI TRENDS" / "Social"
@@ -351,8 +373,9 @@ def main(argv: list[str] | None = None) -> int:
     temp_content = build_temp_briefing_markdown(synth, date)
     real_briefing_path.write_text(temp_content, encoding="utf-8")
 
-    # Stage 4: Run gate on the staging/candidate file
-    gate_decision = run_gate(akb_root=vault_root, input_file=real_briefing_path, date=date)
+    # Stage 4: Run gate on the staging/candidate file — akb-root 必须是 AKB2.0/(不是 vault-root)
+    # 因为 gate 校验 input rel path 必须以 "staging/candidate/" 开头,只有 akb-root=AKB2.0 时才匹配
+    gate_decision = run_gate(akb_root=akb2_root, input_file=real_briefing_path, date=date)
 
     # Stage 5: Write final content with gate_decision in frontmatter
     final_content = build_briefing_markdown(synth, gate_decision, date)
