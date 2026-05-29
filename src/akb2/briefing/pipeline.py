@@ -189,12 +189,12 @@ def build_briefing_markdown(synth: dict, gate_decision: str, date: str) -> str:
     ).isoformat()
 
     body_parts = [
-        f"# AI Social Trends Daily Briefing — {delivery_date}",
+        f"# {delivery_date} AI 社交趋势日报",
         "",
-        "## TLDR",
+        "## 导读",
         "",
-        f"Top AI/ML social signals for {date}, synthesized from public timeline.",
-        f"Gate decision: **{gate_decision}**",
+        f"基于 {date} 公开时间线抓取，对 AI/ML 领域社交信号的综合分析。",
+        f"质量门控：**{gate_decision}**",
         "",
     ]
 
@@ -212,9 +212,9 @@ def build_briefing_markdown(synth: dict, gate_decision: str, date: str) -> str:
         score = t.get("score", 0)
         url = t.get("url", "")
         body_parts += [
-            f"**{author}** (score: {score:.3f})",
+            f"**{author}**（评分：{score:.3f}）",
             f"> {text}",
-            f"[Link]({url})" if url else "",
+            f"[原文]({url})" if url else "",
             "",
         ]
 
@@ -224,10 +224,10 @@ def build_briefing_markdown(synth: dict, gate_decision: str, date: str) -> str:
     body_parts += [
         "## 数据摘要",
         "",
-        f"- 总推文数: {total}",
-        f"- 精选推文: {scored}",
-        f"- 生成时间: {now_iso}",
-        f"- 来源: social_trends_v1_1",
+        f"- 总推文数：{total}",
+        f"- 精选推文：{scored}",
+        f"- 生成时间：{now_iso}",
+        f"- 数据源：social_trends_v1_1",
         "",
     ]
 
@@ -264,15 +264,15 @@ def build_temp_briefing_markdown(synth: dict, date: str) -> str:
     ).isoformat()
 
     body_parts = [
-        f"# AI Social Trends Daily Briefing — {delivery_date}",
+        f"# {delivery_date} AI 社交趋势日报",
         "",
-        "## TLDR",
+        "## 导读",
         "",
-        f"Top AI/ML social signals for {date}, synthesized from public timeline.",
+        f"基于 {date} 公开时间线抓取，对 AI/ML 领域社交信号的综合分析。",
         "",
         "## 关键发现",
         "",
-        "Top tweets from AI/ML public timeline, scored by relevance and authority.",
+        "按相关性与权威性打分后的 top 推文。",
         "",
         "## 关键推文",
         "",
@@ -282,7 +282,7 @@ def build_temp_briefing_markdown(synth: dict, date: str) -> str:
         text = t.get("text", "")
         score = t.get("score", 0)
         body_parts += [
-            f"**{author}** (score: {score:.3f})",
+            f"**{author}**（评分：{score:.3f}）",
             f"> {text}",
             "",
         ]
