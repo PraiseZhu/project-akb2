@@ -154,7 +154,8 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
     )
 
     resolved_date = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    prompt_path = Path(__file__).parent.parent.parent.parent.parent / "docs" / "deepseek-synthesis-prompt-v1.md"
+    # 4 levels up: briefing/ → akb2/ → src/ → repo-root (where docs/ lives)
+    prompt_path = Path(__file__).resolve().parent.parent.parent.parent / "docs" / "deepseek-synthesis-prompt-v1.md"
 
     # 构建 system+user messages — 从 prompt 文档以 "\n## USER\n" 分割
     FALLBACK_SYSTEM = (
@@ -194,6 +195,7 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
     # 仅 API 异常时重试一次；质量问题由 _merge_with_input + _patch_* + _validate_anti_fill 代码兜底
     input_tweet_ids = {str(t["id"]) for t in tweets}
     input_authors = {t.get("author", "") for t in tweets}
+    id_to_author = {str(t["id"]): t.get("author", "") for t in tweets}
     last_err: Exception | None = None
     for attempt in range(2):
         try:
@@ -201,7 +203,7 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
             data = json.loads(raw)
             merged = _merge_with_input(data, scored_input, resolved_date, top)
             _validate_response(merged)
-            _validate_anti_fill(merged, input_tweet_ids, input_authors)
+            _validate_anti_fill(merged, input_tweet_ids, input_authors, id_to_author)
             return merged
         except Exception as e:
             last_err = e
@@ -359,16 +361,25 @@ def _patch_focus_discussions(discussions: list, top: list[dict]) -> list:
     return patched
 
 
-def _validate_anti_fill(merged: dict, input_tweet_ids: set[str], input_authors: set[str]) -> dict:
+def _validate_anti_fill(
+    merged: dict,
+    input_tweet_ids: set[str],
+    input_authors: set[str],
+    id_to_author: dict[str, str] | None = None,
+) -> dict:
     """后验 anti-fill 校验：检测 model 编造的 ID 和 @mention。
 
     不抛出，只写 stderr 警告 + 返回报告 {passed, violations}。
     _patch_key_quotes 已经过滤掉编造 ID，这里是第二道净化记录层。
+
+    id_to_author: tweet_id → real author（lstrip('@').lower()），用于校验 key_quotes.author
+    与该 tweet 的真实作者是否一致。
     """
     import re
 
     violations: list[str] = []
     normalised_authors = {a.lstrip("@").lower() for a in input_authors if a}
+    _id_to_author = id_to_author or {}
 
     # 1. focus_discussions supporting_tweet_ids 必须在 input 中
     for fd in merged.get("focus_discussions", []):
@@ -382,14 +393,22 @@ def _validate_anti_fill(merged: dict, input_tweet_ids: set[str], input_authors: 
         if tid and tid not in input_tweet_ids:
             violations.append(f"fabricated tweet_id in key_quotes: {tid}")
 
-    # 3. key_quotes.author 必须在 input author 集合内
+    # 3. key_quotes.author 必须在 input author 集合内，且应与 tweet_id 真实作者匹配
     for q in merged.get("key_quotes", []):
-        author = q.get("author", "").lstrip("@").lower()
+        tid = str(q.get("tweet_id", ""))
+        author_raw = q.get("author", "")
+        author = author_raw.lstrip("@").lower()
         if author and author not in normalised_authors:
-            violations.append(f"key_quotes author not in input authors: {q.get('author', '')}")
+            violations.append(f"key_quotes author not in input authors: {author_raw}")
+        elif author and tid and tid in _id_to_author:
+            real_author = _id_to_author[tid].lstrip("@").lower()
+            if author != real_author:
+                violations.append(
+                    f"key_quotes author mismatch: claimed {author_raw} but tweet {tid} belongs to @{real_author}"
+                )
 
-    # 4. @mention 在 summary / quote / context 正文里也必须是真实 author
-    all_text = " ".join(
+    # 4. @mention 在所有输出文本（executive_summary + summary + quote + context）里必须是真实 author
+    all_text = (merged.get("executive_summary") or "") + " " + " ".join(
         fd.get("summary", "") for fd in merged.get("focus_discussions", [])
     ) + " " + " ".join(
         (q.get("quote", "") + " " + q.get("context", ""))

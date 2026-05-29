@@ -22,7 +22,7 @@ quote 字段保留英文原文并加中文括注。
     },
     {
       "topic": "Llama-4 Scout 手机端推理突破",
-      "supporting_tweet_ids": ["1927005555555555"],
+      "supporting_tweet_ids": ["1927005555555555", "1927006666666666"],
       "summary": "Meta 发布 Llama-4 Scout 量化版，iPhone 15 Pro 实测 52 token/s，为同尺寸模型最快。@ylecun 强调完全开源，权重可商用。开发者反馈内存占用降至 3.2GB，首次实现在 8GB 内存设备离线运行完整对话模型。"
     }
   ],
