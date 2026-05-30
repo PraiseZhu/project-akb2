@@ -431,3 +431,77 @@ def test_core_excerpt_uses_selected_core_segment():
     # 不应把开头 BBB... 错误地作为核心段
     assert long_tw["core_excerpt"][:5] != "B" * 5, \
         "core_excerpt 不应以噪声开头（取错了整条译文前段）"
+
+
+# ---------------------------------------------------------------------------
+# P2b: 超时降低 + topic 残英重译
+# ---------------------------------------------------------------------------
+
+def test_translate_briefing_uses_short_timeout():
+    """translate_briefing 默认 timeout 应 ≤ 90s（从 180s 降低，SC-P2b-1）。"""
+    from akb2.briefing.translate import translate_briefing
+    import inspect
+
+    sig = inspect.signature(translate_briefing)
+    default_timeout = sig.parameters["timeout"].default
+    assert default_timeout <= 90, f"默认 timeout 应 ≤90s，实际 {default_timeout}s"
+
+
+def test_translate_topic_retranslated_if_english():
+    """_apply_translation_inner：topic 翻译结果含英文时，触发 _translate_snippet 补译。"""
+    import copy
+    from unittest.mock import patch as _patch
+    from akb2.briefing import translate as tr
+    from akb2.briefing.translate import _apply_translation
+
+    synth = copy.deepcopy(FIXTURE_SYNTH)
+    synth["focus_discussions"] = [
+        {"topic": "原始英文topic", "summary": "第一句。第二句。第三句。", "supporting_tweet_ids": ["1"]},
+    ]
+
+    trans = {
+        "executive_summary": "今日摘要。",
+        "focus_discussions": [
+            {"idx": 0, "topic": "Agent Memory Infrastructure", "summary": "智能体记忆基础设施正在快速发展。"},
+        ],
+        "tweets": [{"idx": 0, "text_zh": "短推文中文。", "zh_point": "要点。"}],
+    }
+
+    snippets_called: list[str] = []
+
+    def fake_snippet(text_en: str, timeout: int = 60) -> str:
+        snippets_called.append(text_en)
+        return "智能体记忆基础设施"
+
+    with _patch.object(tr, "_translate_snippet", side_effect=fake_snippet):
+        result = _apply_translation(synth, trans)
+
+    assert snippets_called, "残英 topic 应触发 _translate_snippet"
+    fd = result["focus_discussions"][0]
+    assert "智能体记忆基础设施" in fd["topic"], f"topic 应被补译，实际: {fd['topic']!r}"
+
+
+def test_translate_topic_chinese_no_retranslate():
+    """topic 翻译结果已是中文时，不调 _translate_snippet（无多余 LLM 调用）。"""
+    import copy
+    from unittest.mock import patch as _patch
+    from akb2.briefing import translate as tr
+    from akb2.briefing.translate import _apply_translation
+
+    synth = copy.deepcopy(FIXTURE_SYNTH)
+    synth["focus_discussions"] = [
+        {"topic": "初始topic", "summary": "第一句。第二句。第三句。", "supporting_tweet_ids": ["1"]},
+    ]
+    trans = {
+        "executive_summary": "今日摘要。",
+        "focus_discussions": [{"idx": 0, "topic": "智能体长记忆基础设施", "summary": "已是中文。"}],
+        "tweets": [{"idx": 0, "text_zh": "短推文中文。", "zh_point": "要点。"}],
+    }
+
+    snippets_called: list[str] = []
+
+    with _patch.object(tr, "_translate_snippet", side_effect=lambda t, **k: snippets_called.append(t) or ""):
+        result = _apply_translation(synth, trans)
+
+    assert not snippets_called, f"中文 topic 不应调 _translate_snippet，调了: {snippets_called}"
+    assert result["focus_discussions"][0]["topic"] == "智能体长记忆基础设施"

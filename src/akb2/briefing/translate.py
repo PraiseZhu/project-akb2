@@ -120,6 +120,14 @@ def _build_translate_prompt(synth: dict) -> str:
     )
 
 
+def _is_chinese(text: str, min_ratio: float = 0.4) -> bool:
+    """判断文本是否以中文为主（中文字符占比 ≥ min_ratio）。"""
+    if not text:
+        return False
+    han = sum(1 for c in text if "一" <= c <= "鿿")
+    return han / len(text) >= min_ratio
+
+
 def _is_substring(excerpt: str, original: str) -> bool:
     """检查 excerpt 是否为 original 的子串（允许首尾空白差异）。"""
     excerpt = excerpt.strip()
@@ -142,11 +150,14 @@ def _first_segment(text: str, max_chars: int = 400) -> str:
     return text[:max_chars].strip()
 
 
+_DEFAULT_TRANSLATE_TIMEOUT = 60   # 秒；可用 AKB2_TRANSLATE_TIMEOUT env 覆盖
+
+
 def translate_briefing(
     synth: dict,
     *,
     model: str | None = None,
-    timeout: int = 180,
+    timeout: int = _DEFAULT_TRANSLATE_TIMEOUT,
 ) -> dict:
     """将 synth payload 翻译为中文，返回新 dict；失败时保留原值并 stderr 告警。
 
@@ -241,8 +252,17 @@ def _apply_translation_inner(result: dict, trans: dict) -> dict:
     fds = result.get("focus_discussions", [])
     for i, fd in enumerate(fds):
         t = fd_trans.get(i, {})
-        if t.get("topic", "").strip():
-            fd["topic"] = t["topic"].strip()
+        topic_zh = t.get("topic", "").strip()
+        if topic_zh:
+            if not _is_chinese(topic_zh):
+                # SC-P2b-2: topic 翻译仍含英文 → 补译
+                sys.stderr.write(
+                    f"WARNING [translate]: focus_discussions[{i}].topic 含残留英文 {topic_zh!r}，尝试补译\n"
+                )
+                retranslated = _translate_snippet(topic_zh)
+                fd["topic"] = retranslated if retranslated else topic_zh
+            else:
+                fd["topic"] = topic_zh
         if t.get("summary", "").strip():
             fd["summary"] = t["summary"].strip()
 
