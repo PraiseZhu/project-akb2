@@ -1,10 +1,10 @@
-"""translate.py — 独立翻译阶段：将 synthesis payload 的分析字段与推文正文全部译为简体中文。
+"""translate.py — 独立翻译阶段：将 synthesis payload 的分析字段与展示推文全部译为简体中文。
 
 职责：
-  - 翻译 executive_summary / focus_discussions[topic, summary] / key_quotes[quote, context]
-  - 翻译 tweets[].text 正文（保留专业名词与 @博主id）
+  - 翻译 executive_summary / focus_discussions[topic, summary]
+  - 翻译展示推文集合（被任何主题 supporting_tweet_ids 引用 ∪ 孤儿高分 top-K）
   - 长推（>500字）：先从英文原文抽核心段（子串校验防编造），再译中文；原文存 text_original
-  - 每条引述补 context 中文点题
+  - 每条展示推文生成中文点题 zh_point
   - 任何字段/调用失败逐项回退（不抛异常，不崩流程）
 
 设计：一次 LLM 调用处理全部翻译内容（batch），返回结构化 JSON。
@@ -24,6 +24,9 @@ _TRANSLATE_FALLBACK_MODEL = os.environ.get("AKB2_TRANSLATE_FALLBACK_MODEL", "z-a
 # 长推阈值（字符数，超过则抽核心段）
 LONG_TWEET_THRESHOLD = 500
 
+# 孤儿高分推文上限（被主题引用之外的高分推文最多保留这么多）
+_ORPHAN_TOP_K = int(__import__("os").environ.get("AKB2_ORPHAN_TOP_K", "5"))
+
 _TRANSLATE_SYSTEM = (
     "你是专业的 AI/ML 领域简体中文翻译编辑。"
     "将提供的英文 AI 趋势分析内容翻译为简体中文，要求：\n"
@@ -36,8 +39,39 @@ _TRANSLATE_SYSTEM = (
 )
 
 
+def _display_tweet_indices(synth: dict, orphan_top_k: int = _ORPHAN_TOP_K) -> set[int]:
+    """返回需要翻译的推文在 synth['tweets'] 列表中的下标集合。
+
+    展示集合 = 被任何主题 supporting_tweet_ids 引用的推文
+             ∪ 孤儿高分推文（未被引用，按 score 倒序取 top-k）
+    """
+    tweets = synth.get("tweets", [])
+    id_to_idx = {str(t.get("id", "")): i for i, t in enumerate(tweets)}
+
+    referenced_idx: set[int] = set()
+    for fd in synth.get("focus_discussions", []):
+        for tid in fd.get("supporting_tweet_ids", []):
+            idx = id_to_idx.get(str(tid))
+            if idx is not None:
+                referenced_idx.add(idx)
+
+    # 孤儿高分：未被引用的推文，按评分倒序取 top-k
+    orphan_candidates = [
+        (i, t.get("score", 0))
+        for i, t in enumerate(tweets)
+        if i not in referenced_idx
+    ]
+    orphan_candidates.sort(key=lambda x: x[1], reverse=True)
+    orphan_idx = {i for i, _ in orphan_candidates[:orphan_top_k]}
+
+    return referenced_idx | orphan_idx
+
+
 def _build_translate_prompt(synth: dict) -> str:
-    """构建批量翻译 prompt，返回 JSON 字符串。"""
+    """构建批量翻译 prompt，仅翻译展示集合（被引用 ∪ 孤儿高分）。"""
+    display_indices = _display_tweet_indices(synth)
+    tweets = synth.get("tweets", [])
+
     payload = {
         "executive_summary": synth.get("executive_summary", ""),
         "focus_discussions": [
@@ -48,14 +82,6 @@ def _build_translate_prompt(synth: dict) -> str:
             }
             for i, fd in enumerate(synth.get("focus_discussions", []))
         ],
-        "key_quotes": [
-            {
-                "idx": i,
-                "quote": q.get("quote", ""),
-                "context": q.get("context", ""),
-            }
-            for i, q in enumerate(synth.get("key_quotes", []))
-        ],
         "tweets": [
             {
                 "idx": i,
@@ -65,7 +91,8 @@ def _build_translate_prompt(synth: dict) -> str:
                 **({"core_excerpt_en": t.get("core_excerpt", "")}
                    if t.get("core_excerpt") else {}),
             }
-            for i, t in enumerate(synth.get("tweets", []))
+            for i, t in enumerate(tweets)
+            if i in display_indices
         ],
     }
 
@@ -78,16 +105,14 @@ def _build_translate_prompt(synth: dict) -> str:
         "{\n"
         '  "executive_summary": "<译文>",\n'
         '  "focus_discussions": [{"idx": 0, "topic": "<译文>", "summary": "<译文>"}],\n'
-        '  "key_quotes": [{"idx": 0, "quote_zh": "<将引述译为简体中文，保留专业名词/@id/数字/URL>", "context": "<1句中文点题：说这条为什么值得引述>"}],\n'
-        '  "tweets": [{"idx": 0, "text_zh": "<译文>", '
+        '  "tweets": [{"idx": <原输入 idx 值，不可改变>, "text_zh": "<译文>", '
         '"zh_point": "<一句中文点题（≤30字）：点出这条推文的核心看点或为什么值得关注>", '
         '"core_excerpt_en": "<仅对 is_long=true 且无 core_excerpt_en 输入：从英文原文中逐字摘出最核心1段，≤400字，必须是原文子串>", '
         '"core_excerpt_zh": "<仅当输入中有 core_excerpt_en：将该英文核心段译为中文>"}]\n'
         "}\n"
         "```\n\n"
         "重要约束：\n"
-        "- key_quotes 的 quote_zh 字段：将引述翻译为简体中文（专业名词/@id/数字/URL 保持原样）\n"
-        "- key_quotes 的 context 字段：用1句中文说明引述价值（如「首次公开了xxx数字，有参考意义」）\n"
+        "- tweets 的 idx 必须与输入 idx 一一对应，不可丢失或改变\n"
         "- tweets 的 zh_point：每条都要，1句中文，点出核心看点，不要复述全文\n"
         "- tweets 的 core_excerpt_en：必须是原文 text 的逐字子串，禁止改写或概括\n"
         "- is_long=false 的 tweet 无需输出 core_excerpt_en\n"
@@ -221,28 +246,7 @@ def _apply_translation_inner(result: dict, trans: dict) -> dict:
         if t.get("summary", "").strip():
             fd["summary"] = t["summary"].strip()
 
-    # key_quotes — quote 译为中文（英文原文存 quote_original），context 填中文点题
-    kq_trans = _safe_idx_map(trans.get("key_quotes"))
-    kqs = result.get("key_quotes", [])
-    for i, kq in enumerate(kqs):
-        t = kq_trans.get(i, {})
-        zh_quote = (t.get("quote_zh") or "").strip()
-        if zh_quote:
-            kq["quote_original"] = kq.get("quote", "")  # 备查英文原文
-            kq["quote"] = zh_quote
-        zh_context = (t.get("context") or "").strip()
-        if zh_context:
-            kq["context"] = zh_context
-
-    # 构建 tweet_id → 已 curated 的引述点题（优先复用模型 key_quotes 的 context）
-    quote_point_by_id = {}
-    for kq in result.get("key_quotes", []):
-        tid = str(kq.get("tweet_id", ""))
-        ctx = (kq.get("context") or "").strip()
-        if tid and ctx:
-            quote_point_by_id[tid] = ctx
-
-    # tweets
+    # tweets（仅展示集合有 translation，其余 idx 的 tw_trans[i] 为 {}）
     tw_trans = _safe_idx_map(trans.get("tweets"))
     tweets = result.get("tweets", [])
     for i, tw in enumerate(tweets):
@@ -255,12 +259,9 @@ def _apply_translation_inner(result: dict, trans: dict) -> dict:
             tw["text_original"] = original_text  # 备查英文原文
             tw["text"] = text_zh
 
-        # 中文点题：优先用 key_quotes 的 curated context，否则用 translate 生成的 zh_point
-        curated = quote_point_by_id.get(str(tw.get("id", "")))
+        # 中文点题（来自 translate 模型）
         gen_point = (t.get("zh_point") or "").strip()
-        if curated:
-            tw["zh_point"] = curated
-        elif gen_point:
+        if gen_point:
             tw["zh_point"] = gen_point
 
         # 长推核心段（子串校验 + 直接翻译核心段）

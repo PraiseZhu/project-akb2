@@ -60,14 +60,12 @@ MOCK_TRANSLATE_RESPONSE = {
         {"idx": 0, "topic": "智能体长记忆基础设施", "summary": "多款工具涌现，用于为 AI 智能体提供跨会话的持久记忆。"},
         {"idx": 1, "topic": "Claude 生态系统扩张", "summary": "Claude 与 Vercel、Replit 建立合作，集成持续扩展。"},
     ],
-    "key_quotes": [
-        {"idx": 0, "quote_zh": "现在你可以用 agentmemory 给 AI 智能体无限记忆。", "context": "首次公开了 agentmemory 的能力范围，对开发者有直接参考价值。"}
-    ],
     "tweets": [
-        {"idx": 0, "text_zh": "关于 agentmemory 的简短推文。"},
+        {"idx": 0, "text_zh": "关于 agentmemory 的简短推文。", "zh_point": "记忆工具值得关注。"},
         {
             "idx": 1,
             "text_zh": "关于 AI 智能体和记忆系统核心洞察的长文推文译文。",
+            "zh_point": "长文核心是记忆系统突破。",
             "core_excerpt_en": "This is the core insight about AI agents and memory systems.",
             "core_excerpt_zh": "这是关于 AI 智能体和记忆系统的核心洞察。",  # 模型直接翻译核心段
         },
@@ -142,25 +140,91 @@ def test_core_excerpt_substring_guard():
 
 
 # ---------------------------------------------------------------------------
-# SC-3: 关键引述 context 填中文点题，不截断 quote
+# SC-5: translate 覆盖展示集合（被引用 ∪ 孤儿高分）
 # ---------------------------------------------------------------------------
 
 def test_key_quotes_translated_and_context_filled():
-    """key_quotes quote 译为中文 + context 中文点题 + 英文原文存 quote_original。"""
+    """key_quotes 已从 pipeline 移除（SC-9）；translate 不再处理 key_quotes，字段原样保留。"""
     from akb2.briefing.translate import translate_briefing
 
     with patch("akb2.briefing.synthesis._call_llm", side_effect=_make_mock_call_llm(MOCK_TRANSLATE_RESPONSE)):
         result = translate_briefing(FIXTURE_SYNTH)
 
-    kq = result["key_quotes"][0]
-    # quote 译为中文
-    assert any("一" <= c <= "鿿" for c in kq["quote"]), f"quote 应译为中文，实际: {kq['quote']!r}"
-    assert "现在你可以" in kq["quote"]
-    # 英文原文保留在 quote_original
-    assert kq["quote_original"] == "You can now give AI agents infinite memory with agentmemory."
-    # context 中文点题
-    assert any("一" <= c <= "鿿" for c in kq["context"]), "context 应包含中文"
-    assert "…" not in kq["quote"]
+    # key_quotes 字段原样（不被翻译，不被删除）
+    if "key_quotes" in result:
+        kq = result["key_quotes"][0]
+        # quote 不应被翻译（translate 不再处理）
+        assert kq["quote"] == FIXTURE_SYNTH["key_quotes"][0]["quote"], "key_quotes.quote 应原样保留"
+
+
+def test_translate_covers_referenced_and_orphan():
+    """展示集合中的推文（被引用 + 孤儿高分）都应有 zh_point。"""
+    import copy
+    from akb2.briefing.translate import translate_briefing
+
+    # synth 有 3 条推文：id=1 被主题引用，id=2 孤儿高分，id=3 孤儿低分（不在展示集合）
+    synth = copy.deepcopy(FIXTURE_SYNTH)
+    synth["tweets"].append({
+        "id": "3", "author": "@low", "text": "Low score tweet.",
+        "created_at": "2026-05-30T03:00:00Z", "score": 0.1, "url": "https://x.com/3",
+    })
+
+    mock_response = {
+        **MOCK_TRANSLATE_RESPONSE,
+        "tweets": [
+            {"idx": 0, "text_zh": "简短推文。", "zh_point": "记忆工具值得关注。"},
+            {"idx": 1, "text_zh": "长推译文。", "zh_point": "长文核心。",
+             "core_excerpt_en": "This is the core insight about AI agents and memory systems.",
+             "core_excerpt_zh": "这是核心洞察。"},
+        ],
+    }
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=_make_mock_call_llm(mock_response)):
+        result = translate_briefing(synth)
+
+    # 被引用的 id=1 (idx=0) 应有 zh_point
+    t0 = result["tweets"][0]
+    assert t0.get("zh_point"), "被主题引用的推文应有 zh_point"
+    assert any("一" <= c <= "鿿" for c in t0["zh_point"]), "zh_point 应为中文"
+
+    # 孤儿高分 id=2 (idx=1) 应有 zh_point
+    t1 = result["tweets"][1]
+    assert t1.get("zh_point"), "孤儿高分推文应有 zh_point"
+
+
+def test_display_tweet_indices_basic():
+    """_display_tweet_indices 返回被引用 + 孤儿高分的下标。"""
+    from akb2.briefing.translate import _display_tweet_indices
+
+    synth = {
+        "focus_discussions": [
+            {"supporting_tweet_ids": ["1", "2"]},
+        ],
+        "tweets": [
+            {"id": "1", "score": 0.9},  # idx=0, 被引用
+            {"id": "2", "score": 0.8},  # idx=1, 被引用
+            {"id": "3", "score": 0.7},  # idx=2, 孤儿高分
+            {"id": "4", "score": 0.1},  # idx=3, 孤儿低分（orphan_top_k=2 时不入选）
+        ],
+    }
+    indices = _display_tweet_indices(synth, orphan_top_k=1)
+    assert 0 in indices, "被引用 idx=0 应在展示集合"
+    assert 1 in indices, "被引用 idx=1 应在展示集合"
+    assert 2 in indices, "孤儿高分 idx=2 应在展示集合"
+    assert 3 not in indices, "孤儿低分 idx=3 不在展示集合（top_k=1 只取最高1个孤儿）"
+
+
+def test_display_tweet_indices_nonexistent_id_skipped():
+    """supporting_tweet_ids 里不存在的 id 被跳过（防编造）。"""
+    from akb2.briefing.translate import _display_tweet_indices
+
+    synth = {
+        "focus_discussions": [{"supporting_tweet_ids": ["99", "1"]}],
+        "tweets": [{"id": "1", "score": 0.9}],
+    }
+    indices = _display_tweet_indices(synth, orphan_top_k=0)
+    assert 0 in indices, "真实 id=1(idx=0) 应在"
+    assert len(indices) == 1, "id=99 不存在，应跳过"
 
 
 # ---------------------------------------------------------------------------
