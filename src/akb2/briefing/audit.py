@@ -47,31 +47,29 @@ def _has_chinese(text: str) -> bool:
     return bool(re.search(r"[一-鿿]", text))
 
 
-def _is_english_sentence(text: str) -> bool:
-    """粗判：是否为纯英文句子（含>10个英文单词且几乎无中文）。"""
-    if not text or len(text) < 20:
-        return False
-    chinese_chars = sum(1 for c in text if "一" <= c <= "鿿")
-    words = re.findall(r"[a-zA-Z]{3,}", text)
-    return len(words) >= 5 and chinese_chars < 2
+def _requires_chinese(text: str) -> bool:
+    """分析字段（非空时）必须含中文，否则视为未翻译。"""
+    if not text or len(text.strip()) == 0:
+        return False  # 空字段不判
+    return not _has_chinese(text)
 
 
 def _check_standard(synth_zh: dict) -> list[str]:
     """代码规则检查，返回 issues 列表（空 = pass）。"""
     issues: list[str] = []
 
-    # SC-1: 分析字段全中文检测
+    # SC-1: 分析字段非空时必须含中文（不用词数粗判，防短英文漏检）
     summary = synth_zh.get("executive_summary", "")
-    if summary and _is_english_sentence(summary):
-        issues.append(f"executive_summary 含英文整句: {summary[:80]!r}")
+    if _requires_chinese(summary):
+        issues.append(f"executive_summary 无中文（未翻译）: {summary[:80]!r}")
 
     for i, fd in enumerate(synth_zh.get("focus_discussions", [])):
         topic = (fd.get("topic") or "").strip()
         sm = (fd.get("summary") or "").strip()
         if topic and not _has_chinese(topic):
             issues.append(f"focus_discussions[{i}].topic 无中文: {topic!r}")
-        if sm and _is_english_sentence(sm):
-            issues.append(f"focus_discussions[{i}].summary 含英文整句: {sm[:80]!r}")
+        if _requires_chinese(sm):
+            issues.append(f"focus_discussions[{i}].summary 无中文（未翻译）: {sm[:80]!r}")
 
     # SC-2: topic 非占位符
     for i, fd in enumerate(synth_zh.get("focus_discussions", [])):
@@ -87,11 +85,11 @@ def _check_standard(synth_zh: dict) -> list[str]:
         elif not _has_chinese(ctx):
             issues.append(f"key_quotes[{i}].context 无中文: {ctx!r}")
 
-    # tweets text 应有中文（允许短推文或纯 URL）
+    # tweets text 非空时必须含中文
     for i, tw in enumerate(synth_zh.get("tweets", [])):
         text = (tw.get("text") or "").strip()
-        if len(text) > 30 and _is_english_sentence(text):
-            issues.append(f"tweets[{i}].text 仍为英文: {text[:60]!r}")
+        if _requires_chinese(text):
+            issues.append(f"tweets[{i}].text 无中文（未翻译）: {text[:60]!r}")
 
     return issues
 

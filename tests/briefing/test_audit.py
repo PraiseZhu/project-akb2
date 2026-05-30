@@ -51,11 +51,25 @@ def test_audit_standard_pass():
 
 
 def test_audit_standard_fail_english_summary():
-    """executive_summary 为英文整句 → standard=fail。"""
+    """executive_summary 无中文（含短英文）→ standard=fail。"""
     from akb2.briefing.audit import _check_standard
 
     issues = _check_standard(SYNTH_ZH_BAD)
     assert any("executive_summary" in i for i in issues), f"应检出英文 summary，issues={issues}"
+
+
+def test_audit_standard_fail_short_english_summary():
+    """短英文 summary（<5词）也应被检出（修 Codex F1 回归）。"""
+    from akb2.briefing.audit import _check_standard
+
+    synth = {
+        **SYNTH_ZH_GOOD,
+        "focus_discussions": [
+            {"topic": "智能体长记忆", "summary": "Tools for persistent memory.", "supporting_tweet_ids": ["1"]},
+        ],
+    }
+    issues = _check_standard(synth)
+    assert any("summary" in i for i in issues), f"短英文 summary 应被检出，issues={issues}"
 
 
 def test_audit_standard_fail_placeholder_topic():

@@ -229,8 +229,8 @@ def _apply_translation(synth: dict, trans: dict) -> dict:
                 if core_zh_direct:
                     tw["core_excerpt"] = core_zh_direct
                 else:
-                    # 回退：截取译文前段（近似，但指定段不超过 400 字）
-                    tw["core_excerpt"] = _first_segment(text_zh or original_text) or core_en
+                    # 无直接译文：单独翻译 core_en，确保核心段准确
+                    tw["core_excerpt"] = _translate_snippet(core_en) or core_en
             else:
                 if core_en:
                     sys.stderr.write(
@@ -242,5 +242,28 @@ def _apply_translation(synth: dict, trans: dict) -> dict:
                 tw["core_excerpt"] = first_seg_zh or _first_segment(original_text)
 
     return result
+
+
+def _translate_snippet(text_en: str, timeout: int = 60) -> str:
+    """单独翻译一段英文（用于 core_excerpt_en 无对应 core_excerpt_zh 时）。
+    失败时返回空字符串，由调用方回退到英文原段。
+    """
+    from akb2.briefing.synthesis import _call_llm
+
+    if not text_en or not text_en.strip():
+        return ""
+    try:
+        messages = [
+            {"role": "system", "content": "将以下英文 AI 趋势内容翻译为简体中文，保留专业名词/@id/数字，只返回译文，不加解释。"},
+            {"role": "user", "content": text_en.strip()},
+        ]
+        return _call_llm(
+            messages,
+            model=os.environ.get("AKB2_TRANSLATE_MODEL", "qwen/qwen3.6-plus"),
+            json_mode=False,
+            timeout=timeout,
+        ).strip()
+    except Exception:
+        return ""
 
 

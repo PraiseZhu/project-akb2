@@ -183,6 +183,50 @@ def test_translate_degrades_without_llm():
 # 短推文：不产出 core_excerpt，text_original
 # ---------------------------------------------------------------------------
 
+def test_missing_core_excerpt_zh_triggers_snippet_translate():
+    """core_excerpt_en 通过子串校验但无 core_excerpt_zh 时，应单独翻译该核心段（Codex F2 回归）。"""
+    import copy
+    from akb2.briefing.translate import translate_briefing
+
+    synth = copy.deepcopy(FIXTURE_SYNTH)
+    core_en = "This is the core insight about AI agents and memory systems."
+    synth["tweets"][1]["text"] = "B" * 600 + " " + core_en
+
+    # 模型返回 core_excerpt_en 但不返回 core_excerpt_zh
+    response_no_core_zh = {
+        **MOCK_TRANSLATE_RESPONSE,
+        "tweets": [
+            {"idx": 0, "text_zh": "短推文。"},
+            {
+                "idx": 1,
+                "text_zh": "B" * 30 + "... 长文译文开头噪声...",
+                "core_excerpt_en": core_en,
+                # 无 core_excerpt_zh
+            },
+        ],
+    }
+
+    snippet_calls = []
+
+    def mock_call_llm(messages, model, **kwargs):
+        # 第一次调用是批量翻译，后续调用是 _translate_snippet
+        if len(snippet_calls) == 0:
+            snippet_calls.append("batch")
+            return json.dumps(response_no_core_zh, ensure_ascii=False)
+        else:
+            snippet_calls.append("snippet")
+            return "这是关于 AI 智能体和记忆系统的核心洞察。"  # snippet 翻译结果
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=mock_call_llm):
+        result = translate_briefing(synth)
+
+    assert "snippet" in snippet_calls, "缺 core_excerpt_zh 时应触发 _translate_snippet 单独翻译"
+    long_tw = result["tweets"][1]
+    assert "core_excerpt" in long_tw
+    assert "核心洞察" in long_tw["core_excerpt"], \
+        f"core_excerpt 应包含核心段译文，实际: {long_tw['core_excerpt']!r}"
+
+
 def test_short_tweet_no_excerpt():
     """短推文(<500字)不应产出 core_excerpt 或 text_original（非 is_long）。"""
     from akb2.briefing.translate import translate_briefing
