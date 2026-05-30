@@ -1,0 +1,193 @@
+"""test_translate.py — translate.py 单元测试。"""
+from __future__ import annotations
+
+import json
+from unittest.mock import patch
+
+import pytest
+
+FIXTURE_SYNTH = {
+    "date": "2026-05-30",
+    "executive_summary": "Today AI agents showed strong growth with new memory tools.",
+    "focus_discussions": [
+        {
+            "topic": "Agent Memory Infrastructure",
+            "supporting_tweet_ids": ["1"],
+            "summary": "Multiple tools emerged for giving AI agents persistent memory across sessions.",
+        },
+        {
+            "topic": "Claude ecosystem growth",
+            "supporting_tweet_ids": ["2"],
+            "summary": "Claude integrations expanded with Vercel and Replit partnerships.",
+        },
+    ],
+    "key_quotes": [
+        {
+            "author": "@dr_cintas",
+            "quote": "You can now give AI agents infinite memory with agentmemory.",
+            "tweet_id": "1",
+            "url": "https://x.com/1",
+            "context": "",
+        }
+    ],
+    "tweets": [
+        {
+            "id": "1",
+            "author": "@dr_cintas",
+            "text": "Short tweet about agentmemory.",
+            "created_at": "2026-05-30T01:00:00Z",
+            "score": 0.9,
+            "url": "https://x.com/1",
+        },
+        {
+            "id": "2",
+            "author": "@AndrewYNg",
+            # Long tweet (>500 chars)
+            "text": "A" * 600 + " This is the core insight about AI agents and memory systems. " + "B" * 100,
+            "created_at": "2026-05-30T02:00:00Z",
+            "score": 0.8,
+            "url": "https://x.com/2",
+        },
+    ],
+    "scoring_summary": {"total_tweets": 2, "scored_tweets": 2},
+    "source": {"name": "deepseek_synthesis", "collector_version": "1.0.0"},
+    "generated_at": "2026-05-30T06:00:00Z",
+}
+
+MOCK_TRANSLATE_RESPONSE = {
+    "executive_summary": "今日 AI 智能体在新记忆工具方面表现出强劲增长。",
+    "focus_discussions": [
+        {"idx": 0, "topic": "智能体长记忆基础设施", "summary": "多款工具涌现，用于为 AI 智能体提供跨会话的持久记忆。"},
+        {"idx": 1, "topic": "Claude 生态系统扩张", "summary": "Claude 与 Vercel、Replit 建立合作，集成持续扩展。"},
+    ],
+    "key_quotes": [
+        {"idx": 0, "quote": "You can now give AI agents infinite memory with agentmemory.", "context": "首次公开了 agentmemory 的能力范围，对开发者有直接参考价值。"}
+    ],
+    "tweets": [
+        {"idx": 0, "text_zh": "关于 agentmemory 的简短推文。"},
+        {
+            "idx": 1,
+            "text_zh": "关于 AI 智能体和记忆系统核心洞察的长文推文译文。",
+            "core_excerpt_en": "This is the core insight about AI agents and memory systems.",
+        },
+    ],
+}
+
+
+def _make_mock_call_llm(response: dict):
+    def mock_call_llm(messages, model, **kwargs):
+        return json.dumps(response, ensure_ascii=False)
+    return mock_call_llm
+
+
+# ---------------------------------------------------------------------------
+# SC-1 + SC-2: 翻译后分析字段为中文，topic 非占位符
+# ---------------------------------------------------------------------------
+
+def test_translate_keeps_terms_and_ids():
+    """分析字段译为中文；@id 与专业名词保留（由翻译 prompt 约束，此处验证结构）。"""
+    from akb2.briefing.translate import translate_briefing
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=_make_mock_call_llm(MOCK_TRANSLATE_RESPONSE)):
+        result = translate_briefing(FIXTURE_SYNTH)
+
+    assert result["executive_summary"] == "今日 AI 智能体在新记忆工具方面表现出强劲增长。"
+    assert result["focus_discussions"][0]["topic"] == "智能体长记忆基础设施"
+    assert result["focus_discussions"][1]["topic"] == "Claude 生态系统扩张"
+    assert "AI 趋势观察 #" not in result["focus_discussions"][0]["topic"]
+    assert "AI 趋势观察 #" not in result["focus_discussions"][1]["topic"]
+
+
+# ---------------------------------------------------------------------------
+# SC-3 + SC-4: 长推核心段子串校验 + 折叠
+# ---------------------------------------------------------------------------
+
+def test_translate_long_tweet_excerpt_and_original():
+    """长推(>500字)：core_excerpt 存在，text_original 保留英文原文。"""
+    from akb2.briefing.translate import translate_briefing
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=_make_mock_call_llm(MOCK_TRANSLATE_RESPONSE)):
+        result = translate_briefing(FIXTURE_SYNTH)
+
+    long_tw = result["tweets"][1]
+    assert "text_original" in long_tw, "长推应保留 text_original"
+    assert "core_excerpt" in long_tw, "长推应有 core_excerpt"
+    assert long_tw["text_original"] == FIXTURE_SYNTH["tweets"][1]["text"]
+
+
+def test_core_excerpt_substring_guard():
+    """core_excerpt_en 非子串时回退到首段。"""
+    from akb2.briefing.translate import translate_briefing
+
+    bad_response = {
+        **MOCK_TRANSLATE_RESPONSE,
+        "tweets": [
+            {"idx": 0, "text_zh": "短推文译文。"},
+            {
+                "idx": 1,
+                "text_zh": "长推文译文。",
+                "core_excerpt_en": "This text does NOT appear in the original tweet at all!",
+            },
+        ],
+    }
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=_make_mock_call_llm(bad_response)):
+        result = translate_briefing(FIXTURE_SYNTH)
+
+    long_tw = result["tweets"][1]
+    assert "core_excerpt" in long_tw
+    # 回退首段不应包含编造内容
+    assert "does NOT appear" not in long_tw["core_excerpt"]
+
+
+# ---------------------------------------------------------------------------
+# SC-3: 关键引述 context 填中文点题，不截断 quote
+# ---------------------------------------------------------------------------
+
+def test_key_quotes_context_filled():
+    """key_quotes context 由翻译阶段填入中文点题。"""
+    from akb2.briefing.translate import translate_briefing
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=_make_mock_call_llm(MOCK_TRANSLATE_RESPONSE)):
+        result = translate_briefing(FIXTURE_SYNTH)
+
+    kq = result["key_quotes"][0]
+    assert kq["context"] != ""
+    assert any("一" <= c <= "鿿" for c in kq["context"]), "context 应包含中文"
+    # quote 原文保留英文，不截断
+    assert kq["quote"] == "You can now give AI agents infinite memory with agentmemory."
+    assert "…" not in kq["quote"]
+
+
+# ---------------------------------------------------------------------------
+# SC-7: LLM 不可用时优雅降级，不崩
+# ---------------------------------------------------------------------------
+
+def test_translate_degrades_without_llm():
+    """LLM 调用失败时返回原始 synth，不抛异常。"""
+    from akb2.briefing.translate import translate_briefing
+
+    def raise_error(messages, model, **kwargs):
+        raise ConnectionError("no network")
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=raise_error):
+        result = translate_briefing(FIXTURE_SYNTH)
+
+    # 降级：返回原始 synth
+    assert result["executive_summary"] == FIXTURE_SYNTH["executive_summary"]
+    assert result["tweets"][0]["text"] == FIXTURE_SYNTH["tweets"][0]["text"]
+
+
+# ---------------------------------------------------------------------------
+# 短推文：不产出 core_excerpt，text_original
+# ---------------------------------------------------------------------------
+
+def test_short_tweet_no_excerpt():
+    """短推文(<500字)不应产出 core_excerpt 或 text_original（非 is_long）。"""
+    from akb2.briefing.translate import translate_briefing
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=_make_mock_call_llm(MOCK_TRANSLATE_RESPONSE)):
+        result = translate_briefing(FIXTURE_SYNTH)
+
+    short_tw = result["tweets"][0]
+    assert "core_excerpt" not in short_tw
