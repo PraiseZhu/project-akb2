@@ -321,7 +321,7 @@ def _patch_focus_discussions(discussions: list, top: list[dict]) -> list:
     - topic/summary 原样保留，由 translate 阶段中文化
     """
     valid_ids = {str(t["id"]) for t in top}
-    fallback_ids = [str(t["id"]) for t in top[:5]] or ["unknown"]
+    top_ids = [str(t["id"]) for t in top[:5]] or ["unknown"]
 
     patched = []
     for d in discussions:
@@ -334,7 +334,14 @@ def _patch_focus_discussions(discussions: list, top: list[dict]) -> list:
         else:
             real_ids = []
         if not real_ids:
-            real_ids = fallback_ids
+            real_ids = list(top_ids)
+        elif len(real_ids) < 2:
+            # 补足到 2 个：从 top 高分推文中取未包含的
+            for tid in top_ids:
+                if tid not in real_ids:
+                    real_ids.append(tid)
+                if len(real_ids) >= 2:
+                    break
         patched.append({
             "topic": (d.get("topic") or "").strip(),
             "supporting_tweet_ids": real_ids,

@@ -107,8 +107,13 @@ def _check_standard(synth_zh: dict) -> list[str]:
                     f"focus_discussions[{i}].summary 句数不足（{sent_count} 句 < {_MIN_SUMMARY_SENTENCES} 句）: {sm[:80]!r}"
                 )
 
-        # SC-1: supporting_tweet_ids 引用的推文必须存在于 tweets 列表
-        for tid in fd.get("supporting_tweet_ids", []):
+        # SC-1: supporting_tweet_ids 至少 2 个，且引用的推文必须存在于 tweets 列表
+        sup_ids = fd.get("supporting_tweet_ids", [])
+        if len(sup_ids) < 2:
+            issues.append(
+                f"focus_discussions[{i}].supporting_tweet_ids 少于 2 个（当前 {len(sup_ids)} 个）"
+            )
+        for tid in sup_ids:
             if str(tid) not in tweet_ids_in_payload:
                 issues.append(
                     f"focus_discussions[{i}].supporting_tweet_ids 引用了不存在的 tweet_id: {tid!r}"

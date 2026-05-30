@@ -21,11 +21,12 @@ SYNTH_ZH_GOOD = {
             "topic": "智能体长记忆基础设施",
             # ≥3 句（满足 SC-3）
             "summary": "多款工具涌现，为 AI 智能体提供跨会话的持久记忆能力。其中 agentmemory 首次实现了无限记忆接入，引发开发者广泛讨论。这一趋势表明智能体基础设施正快速成熟，未来将影响多智能体协作场景。",
-            "supporting_tweet_ids": ["1"],
+            "supporting_tweet_ids": ["1", "2"],  # ≥2 个（满足 SC-1）
         },
     ],
     "tweets": [
         {"id": "1", "author": "@x", "text": "关于 agentmemory 的简短推文。", "zh_point": "记忆工具值得关注。", "created_at": "", "score": 0.9, "url": ""},
+        {"id": "2", "author": "@y", "text": "长期记忆系统的新进展。", "zh_point": "持久记忆技术突破。", "created_at": "", "score": 0.8, "url": ""},
     ],
 }
 
