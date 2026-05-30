@@ -215,12 +215,22 @@ def build_briefing_markdown(synth: dict, gate_decision: str, date: str) -> str:
         body_parts += ["## 关键引述", ""]
         for q in key_quotes:
             author = q.get("author", "")
-            quote = q.get("quote", "")
+            quote = q.get("quote", "")              # 中文译文（或原文若未译）
+            quote_original = q.get("quote_original", "")  # 英文原文备查
             url = q.get("url", "")
             context = q.get("context", "")
             body_parts += [
                 f"**{author}**" + (f"（{context}）" if context else ""),
                 f"> {quote}",
+            ]
+            # 英文原文与译文不同时，折叠展示原文
+            if quote_original and quote_original.strip() != quote.strip():
+                folded = [
+                    f"> {line}" if line.strip() else ">"
+                    for line in quote_original.splitlines()
+                ]
+                body_parts += ["", "> [!quote]- 展开英文原文", *folded]
+            body_parts += [
                 f"[原文]({url})" if url else "",
                 "",
             ]

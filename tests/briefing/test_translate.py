@@ -61,7 +61,7 @@ MOCK_TRANSLATE_RESPONSE = {
         {"idx": 1, "topic": "Claude 生态系统扩张", "summary": "Claude 与 Vercel、Replit 建立合作，集成持续扩展。"},
     ],
     "key_quotes": [
-        {"idx": 0, "quote": "You can now give AI agents infinite memory with agentmemory.", "context": "首次公开了 agentmemory 的能力范围，对开发者有直接参考价值。"}
+        {"idx": 0, "quote_zh": "现在你可以用 agentmemory 给 AI 智能体无限记忆。", "context": "首次公开了 agentmemory 的能力范围，对开发者有直接参考价值。"}
     ],
     "tweets": [
         {"idx": 0, "text_zh": "关于 agentmemory 的简短推文。"},
@@ -145,18 +145,21 @@ def test_core_excerpt_substring_guard():
 # SC-3: 关键引述 context 填中文点题，不截断 quote
 # ---------------------------------------------------------------------------
 
-def test_key_quotes_context_filled():
-    """key_quotes context 由翻译阶段填入中文点题。"""
+def test_key_quotes_translated_and_context_filled():
+    """key_quotes quote 译为中文 + context 中文点题 + 英文原文存 quote_original。"""
     from akb2.briefing.translate import translate_briefing
 
     with patch("akb2.briefing.synthesis._call_llm", side_effect=_make_mock_call_llm(MOCK_TRANSLATE_RESPONSE)):
         result = translate_briefing(FIXTURE_SYNTH)
 
     kq = result["key_quotes"][0]
-    assert kq["context"] != ""
+    # quote 译为中文
+    assert any("一" <= c <= "鿿" for c in kq["quote"]), f"quote 应译为中文，实际: {kq['quote']!r}"
+    assert "现在你可以" in kq["quote"]
+    # 英文原文保留在 quote_original
+    assert kq["quote_original"] == "You can now give AI agents infinite memory with agentmemory."
+    # context 中文点题
     assert any("一" <= c <= "鿿" for c in kq["context"]), "context 应包含中文"
-    # quote 原文保留英文，不截断
-    assert kq["quote"] == "You can now give AI agents infinite memory with agentmemory."
     assert "…" not in kq["quote"]
 
 

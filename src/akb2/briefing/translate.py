@@ -78,14 +78,14 @@ def _build_translate_prompt(synth: dict) -> str:
         "{\n"
         '  "executive_summary": "<译文>",\n'
         '  "focus_discussions": [{"idx": 0, "topic": "<译文>", "summary": "<译文>"}],\n'
-        '  "key_quotes": [{"idx": 0, "quote": "<英文原文（必须逐字保留，不翻译）>", "context": "<1句中文点题：说这条为什么值得引述>"}],\n'
+        '  "key_quotes": [{"idx": 0, "quote_zh": "<将引述译为简体中文，保留专业名词/@id/数字/URL>", "context": "<1句中文点题：说这条为什么值得引述>"}],\n'
         '  "tweets": [{"idx": 0, "text_zh": "<译文>", '
         '"core_excerpt_en": "<仅对 is_long=true 且无 core_excerpt_en 输入：从英文原文中逐字摘出最核心1段，≤400字，必须是原文子串>", '
         '"core_excerpt_zh": "<仅当输入中有 core_excerpt_en：将该英文核心段译为中文>"}]\n'
         "}\n"
         "```\n\n"
         "重要约束：\n"
-        "- key_quotes 的 quote 字段：保留英文原文，不翻译\n"
+        "- key_quotes 的 quote_zh 字段：将引述翻译为简体中文（专业名词/@id/数字/URL 保持原样）\n"
         "- key_quotes 的 context 字段：用1句中文说明引述价值（如「首次公开了xxx数字，有参考意义」）\n"
         "- tweets 的 core_excerpt_en：必须是原文 text 的逐字子串，禁止改写或概括\n"
         "- is_long=false 的 tweet 无需输出 core_excerpt_en\n"
@@ -219,11 +219,15 @@ def _apply_translation_inner(result: dict, trans: dict) -> dict:
         if t.get("summary", "").strip():
             fd["summary"] = t["summary"].strip()
 
-    # key_quotes — quote 保留英文，context 填中文点题
+    # key_quotes — quote 译为中文（英文原文存 quote_original），context 填中文点题
     kq_trans = _safe_idx_map(trans.get("key_quotes"))
     kqs = result.get("key_quotes", [])
     for i, kq in enumerate(kqs):
         t = kq_trans.get(i, {})
+        zh_quote = (t.get("quote_zh") or "").strip()
+        if zh_quote:
+            kq["quote_original"] = kq.get("quote", "")  # 备查英文原文
+            kq["quote"] = zh_quote
         zh_context = (t.get("context") or "").strip()
         if zh_context:
             kq["context"] = zh_context
