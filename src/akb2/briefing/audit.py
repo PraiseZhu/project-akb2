@@ -154,18 +154,17 @@ def _check_standard(synth_zh: dict) -> list[str]:
                 f" 未出现在任何主题的 supporting_tweet_ids（top-3 必须有主题支撑）"
             )
 
-    # SC-8: 被主题引用的推文 zh_point 必须存在且含中文
-    id_to_idx = {str(t.get("id", "")): idx for idx, t in enumerate(synth_zh.get("tweets", []))}
-    for tid in referenced_ids:
-        idx = id_to_idx.get(tid)
-        if idx is None:
+    # SC-8: 所有展示推文（被引用 + 孤儿）的 zh_point 必须存在且含中文
+    tweets_list = synth_zh.get("tweets", [])
+    for i in display_idxs:
+        if i >= len(tweets_list):
             continue
-        tw = synth_zh["tweets"][idx]
+        tw = tweets_list[i]
         zh_point = (tw.get("zh_point") or "").strip()
         if not zh_point:
-            issues.append(f"tweets[{idx}].zh_point 缺失（主题引用推文必须有中文点题）")
+            issues.append(f"tweets[{i}].zh_point 缺失（展示推文必须有中文点题）")
         elif not _has_chinese(zh_point):
-            issues.append(f"tweets[{idx}].zh_point 无中文（主题引用推文）: {zh_point!r}")
+            issues.append(f"tweets[{i}].zh_point 无中文: {zh_point!r}")
 
     return issues
 
