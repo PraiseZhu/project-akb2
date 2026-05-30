@@ -79,25 +79,40 @@ def _check_standard(synth_zh: dict) -> list[str]:
     """代码规则检查，返回 issues 列表（空 = pass）。"""
     issues: list[str] = []
 
-    # 分析字段非空时必须含中文（不用词数粗判，防短英文漏检）
-    summary = synth_zh.get("executive_summary", "")
-    if _requires_chinese(summary):
+    # executive_summary 必须非空且含中文
+    summary = (synth_zh.get("executive_summary") or "").strip()
+    if not summary:
+        issues.append("executive_summary 为空（必填字段）")
+    elif _requires_chinese(summary):
         issues.append(f"executive_summary 无中文（未翻译）: {summary[:80]!r}")
+
+    # 构建 tweet_id 集合用于支撑推文校验
+    tweet_ids_in_payload = {str(t.get("id", "")) for t in synth_zh.get("tweets", [])}
 
     for i, fd in enumerate(synth_zh.get("focus_discussions", [])):
         topic = (fd.get("topic") or "").strip()
         sm = (fd.get("summary") or "").strip()
         if topic and not _has_chinese(topic):
             issues.append(f"focus_discussions[{i}].topic 无中文: {topic!r}")
-        if _requires_chinese(sm):
-            issues.append(f"focus_discussions[{i}].summary 无中文（未翻译）: {sm[:80]!r}")
 
-        # SC-3: summary 至少 3 句（深度检查）
-        sent_count = _count_sentences(sm)
-        if sm and sent_count < _MIN_SUMMARY_SENTENCES:
-            issues.append(
-                f"focus_discussions[{i}].summary 句数不足（{sent_count} 句 < {_MIN_SUMMARY_SENTENCES} 句）: {sm[:80]!r}"
-            )
+        # SC-3: summary 必须非空且含中文，且 ≥3 句
+        if not sm:
+            issues.append(f"focus_discussions[{i}].summary 为空（必填字段）")
+        elif _requires_chinese(sm):
+            issues.append(f"focus_discussions[{i}].summary 无中文（未翻译）: {sm[:80]!r}")
+        else:
+            sent_count = _count_sentences(sm)
+            if sent_count < _MIN_SUMMARY_SENTENCES:
+                issues.append(
+                    f"focus_discussions[{i}].summary 句数不足（{sent_count} 句 < {_MIN_SUMMARY_SENTENCES} 句）: {sm[:80]!r}"
+                )
+
+        # SC-1: supporting_tweet_ids 引用的推文必须存在于 tweets 列表
+        for tid in fd.get("supporting_tweet_ids", []):
+            if str(tid) not in tweet_ids_in_payload:
+                issues.append(
+                    f"focus_discussions[{i}].supporting_tweet_ids 引用了不存在的 tweet_id: {tid!r}"
+                )
 
     # topic 非占位符
     for i, fd in enumerate(synth_zh.get("focus_discussions", [])):

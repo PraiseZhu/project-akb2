@@ -266,3 +266,46 @@ def test_audit_flags_missing_zh_point_absent():
     issues = _check_standard(synth)
     assert any("zh_point" in i and "缺失" in i for i in issues), \
         f"应检出 zh_point 缺失，issues={issues}"
+
+
+# ---------------------------------------------------------------------------
+# Codex R4 findings: 空 summary + 缺引用推文
+# ---------------------------------------------------------------------------
+
+def test_audit_flags_empty_executive_summary():
+    """executive_summary 为空 → standard 检出 issue。"""
+    from akb2.briefing.audit import _check_standard
+    import copy
+
+    synth = copy.deepcopy(SYNTH_ZH_GOOD)
+    synth["executive_summary"] = ""
+
+    issues = _check_standard(synth)
+    assert any("executive_summary" in i and "为空" in i for i in issues), \
+        f"应检出空 executive_summary，issues={issues}"
+
+
+def test_audit_flags_empty_focus_summary():
+    """focus_discussions[i].summary 为空 → standard 检出 issue。"""
+    from akb2.briefing.audit import _check_standard
+    import copy
+
+    synth = copy.deepcopy(SYNTH_ZH_GOOD)
+    synth["focus_discussions"][0]["summary"] = ""
+
+    issues = _check_standard(synth)
+    assert any("summary" in i and "为空" in i for i in issues), \
+        f"应检出空 summary，issues={issues}"
+
+
+def test_audit_flags_nonexistent_supporting_tweet():
+    """supporting_tweet_ids 引用不存在的 tweet_id → standard 检出 issue。"""
+    from akb2.briefing.audit import _check_standard
+    import copy
+
+    synth = copy.deepcopy(SYNTH_ZH_GOOD)
+    synth["focus_discussions"][0]["supporting_tweet_ids"] = ["99"]  # tweet 99 不存在
+
+    issues = _check_standard(synth)
+    assert any("supporting_tweet_ids" in i or "99" in i for i in issues), \
+        f"应检出不存在的 tweet_id=99，issues={issues}"
