@@ -105,13 +105,6 @@ def _filter_recent(tweets: list, date: str, days: int = _INTAKE_WINDOW_DAYS_DEFA
             f"INFO [filter_recent]: dropped {len(tweets)-len(kept)} out-of-window tweets, kept {len(kept)}\n"
         )
 
-    # 保守兜底：若过滤后全空（可能 intake 降级了旧 fixture），保留原始数据以防空跑
-    if tweets and not kept:
-        sys.stderr.write(
-            "WARNING [filter_recent]: all tweets filtered out; retaining original to avoid empty pipeline run.\n"
-        )
-        return tweets
-
     return kept
 
 
@@ -476,8 +469,10 @@ def main(argv: list[str] | None = None) -> int:
     # Stage 2: Scoring
     scored_data = run_scoring(intake_data)
 
-    # 产出层日期兜底（SC-7）：去掉超出时间窗的旧推文（dry-run 跳过：fixture 数据日期与当天不同）
-    if not dry_run_intake:
+    # 产出层日期兜底（SC-7）：去掉超出时间窗的旧推文
+    # 跳过条件：dry-run 模式（fixture 日期与今日不同）或 intake 标记了 fallback（降级到旧 fixture）
+    intake_is_fallback = bool(intake_data.get("_fallback_used", False))
+    if not dry_run_intake and not intake_is_fallback:
         scored_data["tweets"] = _filter_recent(
             scored_data.get("tweets", []), date, days=window_days
         )

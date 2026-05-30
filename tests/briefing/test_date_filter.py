@@ -147,8 +147,8 @@ def test_intake_cmd_no_since_when_dry_run(tmp_path):
 # F1 fix: _filter_recent 全清空时保守保留
 # ---------------------------------------------------------------------------
 
-def test_filter_recent_all_dropped_returns_original():
-    """当所有推文都超出窗口时，_filter_recent 保守保留原始推文（intake fallback 防护）。"""
+def test_filter_recent_all_dropped_returns_empty():
+    """当所有推文都超出窗口时，_filter_recent 返回空列表（不做保守保留，intake层负责标记fallback）。"""
     from akb2.briefing.pipeline import _filter_recent
 
     tweets = [
@@ -156,7 +156,7 @@ def test_filter_recent_all_dropped_returns_original():
         {"id": "2", "created_at": "2026-04-02T00:00:00+00:00"},  # 很旧
     ]
     kept = _filter_recent(tweets, "2026-05-30", days=2)
-    assert len(kept) == 2, "全部被过滤时应保守保留原始推文，不返回空列表"
+    assert len(kept) == 0, "全部超窗口时应返回空列表"
 
 
 def test_filter_recent_partial_drop_works_normally():

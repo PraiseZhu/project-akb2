@@ -48,6 +48,10 @@ def _twitter_cli_to_akb2(raw_data: list[dict]) -> list[dict]:
 class L0Collector(BaseCollector):
     source_name = "l0_public_timeline"
 
+    def __init__(self, config=None):
+        super().__init__(config)
+        self.used_fallback: bool = False  # set True when fixture was used as fallback
+
     def collect(
         self,
         dry_run: bool = False,
@@ -55,6 +59,7 @@ class L0Collector(BaseCollector):
         until_date: str | None = None,
     ) -> list[dict]:
         if dry_run:
+            self.used_fallback = True
             return self._read_fixture()
         return self._fetch_real(since_date=since_date, until_date=until_date)
 
@@ -81,6 +86,7 @@ class L0Collector(BaseCollector):
             sys.stderr.write(
                 f"WARNING: twitter-cli not found at {TWITTER_BIN} — fallback to fixture\n"
             )
+            self.used_fallback = True
             return self._read_fixture()
 
         cmd = [
@@ -104,6 +110,7 @@ class L0Collector(BaseCollector):
             sys.stderr.write(
                 f"WARNING: twitter-cli timeout ({TWITTER_TIMEOUT_SEC}s) — fallback to fixture\n"
             )
+            self.used_fallback = True
             return self._read_fixture()
 
         if result.returncode != 0:
@@ -111,6 +118,7 @@ class L0Collector(BaseCollector):
             sys.stderr.write(
                 f"WARNING: twitter-cli exit {result.returncode}: {stderr_excerpt} — fallback to fixture\n"
             )
+            self.used_fallback = True
             return self._read_fixture()
 
         try:
@@ -119,12 +127,14 @@ class L0Collector(BaseCollector):
             sys.stderr.write(
                 f"WARNING: twitter-cli output not JSON ({e}) — fallback to fixture\n"
             )
+            self.used_fallback = True
             return self._read_fixture()
 
         if not payload.get("ok"):
             sys.stderr.write(
                 "WARNING: twitter-cli payload.ok=false — fallback to fixture\n"
             )
+            self.used_fallback = True
             return self._read_fixture()
 
         raw = payload.get("data") or []
@@ -133,6 +143,7 @@ class L0Collector(BaseCollector):
             sys.stderr.write(
                 "WARNING: twitter-cli returned 0 tweets — fallback to fixture\n"
             )
+            self.used_fallback = True
             return self._read_fixture()
         return tweets
 
@@ -152,12 +163,16 @@ def main():
         since_date=args.since,
         until_date=args.until,
     )
+    # 顶层写入 _fallback_used 标记供 pipeline 层跳过日期过滤（SC-7）
     import json as _json
     from pathlib import Path as _Path
     out_path = _Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    output = {"tweets": tweets}
+    if collector.used_fallback:
+        output["_fallback_used"] = True
     with open(out_path, "w") as f:
-        _json.dump({"tweets": tweets}, f, ensure_ascii=False, indent=2)
+        _json.dump(output, f, ensure_ascii=False, indent=2)
 
 
 if __name__ == "__main__":
