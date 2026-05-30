@@ -165,6 +165,22 @@ def test_enforce_llm_fail_verdict_warn():
     assert result["verdict"] == "warn"
 
 
+def test_llm_audit_unknown_verdict_not_pass():
+    """llm_verdict 为非法枚举值时降级为 warn（不接受原始非法值）（Codex R5 F1 回归）。"""
+    from akb2.briefing.audit import audit_briefing
+
+    def mock_bad_verdict(messages, model, **kwargs):
+        return json.dumps({"drift_score": 0.9, "accuracy_issues": ["数字错误"], "llm_verdict": "FAILED"})
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=mock_bad_verdict):
+        result = audit_briefing(SYNTH_ZH_GOOD, SYNTH_EN)
+
+    # "FAILED" 不在白名单 → 降级为 warn（不透传原始值）
+    assert result["llm_audit"] == "warn", f"未知值应降级为 warn，实际: {result['llm_audit']!r}"
+    # warn 在 matrix 中为 pass（不阻断入库，但已记录）
+    assert result["llm_audit"] != "FAILED", "不应透传非法 enum 值"
+
+
 def test_enforce_all_pass_verdict_pass():
     """standard=pass + llm_audit=pass → verdict=pass。"""
     from akb2.briefing.audit import audit_briefing

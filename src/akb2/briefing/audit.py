@@ -184,7 +184,17 @@ def audit_briefing(
         llm_result = _run_llm_audit(synth_zh, synth_en, model=used_model)
         drift_score = float(llm_result.get("drift_score", 0.0))
         accuracy_issues = llm_result.get("accuracy_issues") or []
-        llm_audit = llm_result.get("llm_verdict", "warn")
+        raw_verdict = llm_result.get("llm_verdict", "warn")
+        # 白名单校验：未知值降级为 warn（fail-closed）
+        _VALID_LLM_VERDICTS = {"pass", "warn", "fail"}
+        if raw_verdict not in _VALID_LLM_VERDICTS:
+            sys.stderr.write(
+                f"WARNING [audit]: unexpected llm_verdict={raw_verdict!r}, "
+                "treating as 'warn' (fail-closed).\n"
+            )
+            llm_audit = "warn"
+        else:
+            llm_audit = raw_verdict
     except Exception as e:
         sys.stderr.write(
             f"WARNING [audit]: LLM audit failed ({e}), skipping LLM checks.\n"
