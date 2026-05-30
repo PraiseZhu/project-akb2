@@ -125,8 +125,12 @@ def _check_standard(synth_zh: dict) -> list[str]:
         if re.match(r"^AI\s*趋势观察\s*#\d+$", topic):
             issues.append(f"focus_discussions[{i}].topic 仍是占位符: {topic!r}")
 
-    # tweets text 与 core_excerpt 非空时必须含中文
+    # tweets text 与 core_excerpt：仅检查展示集合（与 translate 对齐，非展示推文无翻译）
+    from akb2.briefing.translate import _display_tweet_indices, _ORPHAN_TOP_K
+    display_idxs = _display_tweet_indices(synth_zh, _ORPHAN_TOP_K)
     for i, tw in enumerate(synth_zh.get("tweets", [])):
+        if i not in display_idxs:
+            continue  # 非展示推文不参与中文检查（未被翻译）
         text = (tw.get("text") or "").strip()
         if _requires_chinese(text):
             issues.append(f"tweets[{i}].text 无中文（未翻译）: {text[:60]!r}")
@@ -151,7 +155,6 @@ def _check_standard(synth_zh: dict) -> list[str]:
             )
 
     # SC-8: 被主题引用的推文 zh_point 必须存在且含中文
-    referenced_ids = _get_referenced_tweet_ids(synth_zh)
     id_to_idx = {str(t.get("id", "")): idx for idx, t in enumerate(synth_zh.get("tweets", []))}
     for tid in referenced_ids:
         idx = id_to_idx.get(tid)
