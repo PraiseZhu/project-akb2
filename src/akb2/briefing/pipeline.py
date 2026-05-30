@@ -118,9 +118,21 @@ def run_intake(
     since_date: str | None = None,
     until_date: str | None = None,
 ) -> dict:
-    """Call l0_collector via subprocess, return parsed JSON dict."""
+    """Call the intake collector via subprocess, return parsed JSON dict.
+
+    Collector 由 env AKB2_INTAKE_COLLECTOR 选择：
+      - "account"（默认）：curator 逐账号抓取（account_collector），内容为策展 AI 账号
+      - "keyword"：旧泛关键词搜索（l0_collector），噪音高，作回退
+    两者 CLI 同构（--output/--dry-run/--since/--until），下游处理不变。
+    """
+    collector_mode = os.environ.get("AKB2_INTAKE_COLLECTOR", "account")
+    collector_module = (
+        "akb2.briefing.intake.l0_collector"
+        if collector_mode == "keyword"
+        else "akb2.briefing.intake.account_collector"
+    )
     cmd = [
-        sys.executable, "-m", "akb2.briefing.intake.l0_collector",
+        sys.executable, "-m", collector_module,
         "--output", str(output_path),
     ]
     if dry_run:
