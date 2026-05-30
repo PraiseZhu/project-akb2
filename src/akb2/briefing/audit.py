@@ -114,7 +114,7 @@ def _check_standard(synth_zh: dict) -> list[str]:
         if _requires_chinese(core):
             issues.append(f"tweets[{i}].core_excerpt 无中文（未翻译）: {core[:60]!r}")
 
-    # SC-8: 被主题引用的推文 zh_point 必须含中文
+    # SC-8: 被主题引用的推文 zh_point 必须存在且含中文
     referenced_ids = _get_referenced_tweet_ids(synth_zh)
     id_to_idx = {str(t.get("id", "")): idx for idx, t in enumerate(synth_zh.get("tweets", []))}
     for tid in referenced_ids:
@@ -123,7 +123,9 @@ def _check_standard(synth_zh: dict) -> list[str]:
             continue
         tw = synth_zh["tweets"][idx]
         zh_point = (tw.get("zh_point") or "").strip()
-        if zh_point and not _has_chinese(zh_point):
+        if not zh_point:
+            issues.append(f"tweets[{idx}].zh_point 缺失（主题引用推文必须有中文点题）")
+        elif not _has_chinese(zh_point):
             issues.append(f"tweets[{idx}].zh_point 无中文（主题引用推文）: {zh_point!r}")
 
     return issues

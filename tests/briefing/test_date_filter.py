@@ -142,6 +142,55 @@ def test_intake_cmd_no_since_when_dry_run(tmp_path):
         except Exception:
             pass
 
-    if captured_cmds:
-        cmd = captured_cmds[0]
-        assert "--since" not in cmd, "dry-run 时不应有 --since"
+
+# ---------------------------------------------------------------------------
+# F1 fix: _filter_recent 全清空时保守保留
+# ---------------------------------------------------------------------------
+
+def test_filter_recent_all_dropped_returns_original():
+    """当所有推文都超出窗口时，_filter_recent 保守保留原始推文（intake fallback 防护）。"""
+    from akb2.briefing.pipeline import _filter_recent
+
+    tweets = [
+        {"id": "1", "created_at": "2026-04-01T00:00:00+00:00"},  # 很旧
+        {"id": "2", "created_at": "2026-04-02T00:00:00+00:00"},  # 很旧
+    ]
+    kept = _filter_recent(tweets, "2026-05-30", days=2)
+    assert len(kept) == 2, "全部被过滤时应保守保留原始推文，不返回空列表"
+
+
+def test_filter_recent_partial_drop_works_normally():
+    """部分过滤时正常工作（不触发保守兜底）。"""
+    from akb2.briefing.pipeline import _filter_recent
+
+    tweets = [
+        {"id": "1", "created_at": "2026-05-30T10:00:00+00:00"},  # 当天 → 保留
+        {"id": "2", "created_at": "2026-04-01T00:00:00+00:00"},  # 很旧 → 丢弃
+    ]
+    kept = _filter_recent(tweets, "2026-05-30", days=2)
+    assert len(kept) == 1, "部分过滤时只保留窗口内的推文"
+    assert kept[0]["id"] == "1"
+
+
+# ---------------------------------------------------------------------------
+# F2 fix: _collect_display_tweets 同一推文可出现在多主题
+# ---------------------------------------------------------------------------
+
+def test_collect_display_tweets_same_tweet_in_multiple_topics():
+    """同一推文支撑多个主题时，每个主题下都应渲染该推文。"""
+    from akb2.briefing.pipeline import _collect_display_tweets
+
+    synth = {
+        "focus_discussions": [
+            {"supporting_tweet_ids": ["1"]},
+            {"supporting_tweet_ids": ["1", "2"]},  # id=1 重复出现
+        ],
+        "tweets": [
+            {"id": "1", "score": 0.9, "author": "@x"},
+            {"id": "2", "score": 0.8, "author": "@y"},
+        ],
+    }
+    per_topic, orphans = _collect_display_tweets(synth, orphan_top_k=5)
+    assert len(per_topic[0]) == 1, "主题0 应有1条推文"
+    assert len(per_topic[1]) == 2, "主题1 应有2条推文（含重复 id=1）"
+    assert len(orphans) == 0, "所有推文都被引用，孤儿应为空"

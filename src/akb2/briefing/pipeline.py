@@ -104,6 +104,14 @@ def _filter_recent(tweets: list, date: str, days: int = _INTAKE_WINDOW_DAYS_DEFA
         sys.stderr.write(
             f"INFO [filter_recent]: dropped {len(tweets)-len(kept)} out-of-window tweets, kept {len(kept)}\n"
         )
+
+    # 保守兜底：若过滤后全空（可能 intake 降级了旧 fixture），保留原始数据以防空跑
+    if tweets and not kept:
+        sys.stderr.write(
+            "WARNING [filter_recent]: all tweets filtered out; retaining original to avoid empty pipeline run.\n"
+        )
+        return tweets
+
     return kept
 
 
@@ -228,26 +236,27 @@ def _collect_display_tweets(
 ) -> tuple[list[list[dict]], list[dict]]:
     """将推文按主题分组，返回 (per_topic_tweets, orphan_tweets)。
 
-    per_topic_tweets[i] = focus_discussions[i] 对应的支撑推文（已去重，按首次出现主题归属）
+    per_topic_tweets[i] = focus_discussions[i] 对应的支撑推文列表（允许同一推文出现在多主题）
     orphan_tweets = 未被任何主题引用的高分推文，按 score 倒序取 top-k
     """
     tweets = synth.get("tweets", [])
     id_to_tweet: dict[str, dict] = {str(t.get("id", "")): t for t in tweets}
-    already_used: set[str] = set()
 
+    # 收集所有主题引用的推文 id（用于孤儿判定）
+    all_referenced: set[str] = set()
     per_topic: list[list[dict]] = []
     for fd in synth.get("focus_discussions", []):
         topic_tweets = []
         for tid in fd.get("supporting_tweet_ids", []):
             sid = str(tid)
-            if sid in id_to_tweet and sid not in already_used:
+            if sid in id_to_tweet:
                 topic_tweets.append(id_to_tweet[sid])
-                already_used.add(sid)
+                all_referenced.add(sid)
         per_topic.append(topic_tweets)
 
-    # 孤儿高分：未被引用，按 score 倒序取 top-k
+    # 孤儿高分：未被任何主题引用，按 score 倒序取 top-k
     orphans = sorted(
-        [t for t in tweets if str(t.get("id", "")) not in already_used],
+        [t for t in tweets if str(t.get("id", "")) not in all_referenced],
         key=lambda t: t.get("score", 0),
         reverse=True,
     )[:orphan_top_k]

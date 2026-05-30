@@ -248,3 +248,21 @@ def test_audit_count_sentences():
     assert _count_sentences("第一句。第二句。第三句。") == 3
     assert _count_sentences("") == 0
     assert _count_sentences("一？二！三。") == 3
+
+
+# ---------------------------------------------------------------------------
+# F3 fix: 缺失 zh_point 也应报 issue
+# ---------------------------------------------------------------------------
+
+def test_audit_flags_missing_zh_point_absent():
+    """被主题引用的推文缺失 zh_point（未设字段）时 → standard 检出 issue。"""
+    from akb2.briefing.audit import _check_standard
+    import copy
+
+    synth = copy.deepcopy(SYNTH_ZH_GOOD)
+    # 删掉 zh_point 字段
+    synth["tweets"][0].pop("zh_point", None)
+
+    issues = _check_standard(synth)
+    assert any("zh_point" in i and "缺失" in i for i in issues), \
+        f"应检出 zh_point 缺失，issues={issues}"
