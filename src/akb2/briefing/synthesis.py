@@ -294,13 +294,39 @@ def _merge_with_input(model_out: dict, scored_input: dict, resolved_date: str, t
             }
             for t in top_for_display
         ],
-        "focus_discussions": patched_fds,
+        "focus_discussions": _ensure_top3_covered(patched_fds, top),
         # executive_summary 原样保留；缺失时用主题列表兜底（确保 audit 不因空值 fail）
         "executive_summary": (
             model_out.get("executive_summary", "").strip()
             or _fallback_executive_summary(patched_fds, resolved_date)
         ),
     }
+
+
+def _ensure_top3_covered(fds: list, top: list[dict]) -> list:
+    """确保 top-3 高分推文至少各出现在某个主题的 supporting_tweet_ids 里。
+
+    若不满足，将未覆盖的 top-3 id 补入第一个主题（不引入新主题）。
+    """
+    import copy
+    fds = copy.deepcopy(fds)
+    if not fds:
+        return fds
+    covered: set[str] = {
+        str(sid)
+        for fd in fds
+        for sid in fd.get("supporting_tweet_ids", [])
+    }
+    top3_ids = [str(t["id"]) for t in top[:3]]
+    missing = [tid for tid in top3_ids if tid not in covered]
+    if missing:
+        # 补入第一个主题
+        existing = list(fds[0].get("supporting_tweet_ids", []))
+        for tid in missing:
+            if tid not in existing:
+                existing.append(tid)
+        fds[0]["supporting_tweet_ids"] = existing
+    return fds
 
 
 def _fallback_executive_summary(fds: list, date: str) -> str:
