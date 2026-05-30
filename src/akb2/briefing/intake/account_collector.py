@@ -39,6 +39,8 @@ CURATOR_CONFIG = REPO_ROOT / "config" / "curator-accounts.yaml"
 _DEFAULT_TIER = "en"
 _DEFAULT_CAP = 10           # 每账号最多取最新 N 条
 _DEFAULT_PACING_SEC = 3.0   # 账号间停顿，规避限流
+_DEFAULT_SUPPLEMENT_THRESHOLD = 30  # en 层低于此数时从 reserve_tier 补抓
+_DEFAULT_MAX_RESERVE_ACCOUNTS = 10  # reserve 最多抓多少个账号（限流防护）
 
 
 def _load_fetch_tier(tier: str = _DEFAULT_TIER) -> list[str]:
@@ -62,10 +64,14 @@ class AccountCollector:
         tier: str = _DEFAULT_TIER,
         per_account_cap: int = _DEFAULT_CAP,
         pacing_sec: float = _DEFAULT_PACING_SEC,
+        supplement_threshold: int = _DEFAULT_SUPPLEMENT_THRESHOLD,
+        max_reserve_accounts: int = _DEFAULT_MAX_RESERVE_ACCOUNTS,
     ):
         self.tier = tier
         self.per_account_cap = per_account_cap
         self.pacing_sec = pacing_sec
+        self.supplement_threshold = supplement_threshold
+        self.max_reserve_accounts = max_reserve_accounts
         self.used_fallback: bool = False
 
     def collect(
@@ -174,6 +180,35 @@ class AccountCollector:
             f"INFO [account_collector]: tier={self.tier} {ok_accounts}/{len(handles)} accounts "
             f"yielded {len(aggregated)} unique tweets\n"
         )
+
+        # SC-P3c-1: reserve 补抓 — en 层不足时从 reserve_tier 顺序补
+        if len(aggregated) < self.supplement_threshold:
+            reserve_handles = _load_fetch_tier("reserve")
+            if reserve_handles:
+                sys.stderr.write(
+                    f"INFO [account_collector]: {len(aggregated)} tweets < threshold "
+                    f"{self.supplement_threshold}, supplementing from reserve_tier "
+                    f"(cap={self.max_reserve_accounts} accounts)\n"
+                )
+                reserve_used = 0
+                for rh in reserve_handles:
+                    if len(aggregated) >= self.supplement_threshold:
+                        break
+                    if reserve_used >= self.max_reserve_accounts:
+                        break
+                    if reserve_used > 0 and self.pacing_sec > 0:
+                        time.sleep(self.pacing_sec)
+                    new_tweets = self._fetch_one(rh, since_date, until_date)
+                    reserve_used += 1
+                    for t in new_tweets:
+                        tid = str(t.get("id", ""))
+                        if tid and tid not in seen:
+                            seen.add(tid)
+                            aggregated.append(t)
+                sys.stderr.write(
+                    f"INFO [account_collector]: after reserve supplement: {len(aggregated)} tweets\n"
+                )
+
         return aggregated
 
 

@@ -273,9 +273,10 @@ def _apply_translation_inner(result: dict, trans: dict) -> dict:
         t = tw_trans.get(i, {})
         original_text = tw.get("text", "")
 
-        # 译文
+        # SC-P3a-2: lang=zh 推文跳过 text 翻译（中文原文直接保留），lang=en 或无 lang 正常翻译
+        is_zh_tweet = (tw.get("lang") or "").lower() == "zh"
         text_zh = (t.get("text_zh") or "").strip()
-        if text_zh:
+        if text_zh and not is_zh_tweet:
             tw["text_original"] = original_text  # 备查英文原文
             tw["text"] = text_zh
 

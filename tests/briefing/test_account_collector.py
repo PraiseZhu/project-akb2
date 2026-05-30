@@ -129,7 +129,7 @@ def test_all_empty_falls_back_to_fixture():
 
 def test_pacing_called_between_accounts():
     """账号间 pacing：N 个账号调用 sleep N-1 次（限流防护）。"""
-    col = ac.AccountCollector(pacing_sec=3)
+    col = ac.AccountCollector(pacing_sec=3, supplement_threshold=0)  # 关闭 reserve 补抓
     with patch.object(ac, "_load_fetch_tier", return_value=["a", "b", "c"]), \
          patch.object(ac.subprocess, "run",
                       return_value=_fake_proc(payload={"ok": True, "data": [_tw("1", "a")]})), \
@@ -179,3 +179,83 @@ def test_run_intake_keyword_override(monkeypatch, tmp_path):
     with patch.object(pl.subprocess, "run", side_effect=_intake_fake_run_factory(captured)):
         pl.run_intake(dry_run=False, output_path=tmp_path / "o.json")
     assert "akb2.briefing.intake.l0_collector" in captured["cmd"]
+
+
+# ---------------------------------------------------------------------------
+# P3c: reserve_tier 补抓（en 层不足时自动顶替）
+# ---------------------------------------------------------------------------
+
+def test_reserve_supplement_when_en_below_threshold():
+    """SC-P3c-1: en 层推文数 < threshold 时，从 reserve_tier 顺序补抓到 threshold。"""
+    col = ac.AccountCollector(pacing_sec=0, supplement_threshold=5)
+    en_handles = ["a", "b"]
+    reserve_handles = ["r1", "r2", "r3"]
+
+    call_count = {"n": 0}
+
+    def fake_run(cmd, **kw):
+        h = cmd[cmd.index("--from") + 1]
+        call_count["n"] += 1
+        if h in en_handles:
+            # en 层只给 1 条
+            return _fake_proc(payload={"ok": True, "data": [_tw(f"en-{h}", h)]})
+        # reserve 层各给 2 条
+        return _fake_proc(payload={"ok": True, "data": [_tw(f"r-{h}-1", h), _tw(f"r-{h}-2", h)]})
+
+    with patch.object(ac, "_load_fetch_tier", side_effect=lambda tier: en_handles if tier == "en" else reserve_handles), \
+         patch.object(ac.subprocess, "run", side_effect=fake_run), \
+         patch.object(ac.time, "sleep"), \
+         patch("pathlib.Path.exists", return_value=True):
+        tweets = col.collect()
+
+    assert len(tweets) >= 5, f"补抓后应达到阈值 5，实际 {len(tweets)}"
+    assert col.used_fallback is False
+
+
+def test_reserve_not_called_when_en_sufficient():
+    """SC-P3c-2: en 层充足时不调用 reserve_tier（不额外消耗配额）。"""
+    col = ac.AccountCollector(pacing_sec=0, supplement_threshold=3)
+    en_handles = ["a", "b"]
+
+    reserve_called: list[str] = []
+
+    def fake_run(cmd, **kw):
+        h = cmd[cmd.index("--from") + 1]
+        if h == "reserve_should_not_be_called":
+            reserve_called.append(h)
+        # en 层给足 5 条
+        return _fake_proc(payload={"ok": True, "data": [
+            _tw(f"{h}-{i}", h) for i in range(3)
+        ]})
+
+    with patch.object(ac, "_load_fetch_tier", side_effect=lambda tier: en_handles if tier == "en" else ["reserve_should_not_be_called"]), \
+         patch.object(ac.subprocess, "run", side_effect=fake_run), \
+         patch.object(ac.time, "sleep"), \
+         patch("pathlib.Path.exists", return_value=True):
+        tweets = col.collect()
+
+    assert not reserve_called, f"en 充足时 reserve 不应被调用，实际调了: {reserve_called}"
+    assert len(tweets) >= 3
+
+
+def test_reserve_has_budget_cap():
+    """SC-P3c-2: reserve 补抓有账号上限（max_reserve_accounts），不触发 429。"""
+    col = ac.AccountCollector(pacing_sec=0, supplement_threshold=100, max_reserve_accounts=2)
+    en_handles = ["a"]
+    reserve_handles = ["r1", "r2", "r3", "r4", "r5"]  # 5个，但只允许调 2 个
+
+    reserve_calls: list[str] = []
+
+    def fake_run(cmd, **kw):
+        h = cmd[cmd.index("--from") + 1]
+        if h in reserve_handles:
+            reserve_calls.append(h)
+        return _fake_proc(payload={"ok": True, "data": [_tw(f"{h}-1", h)]})
+
+    with patch.object(ac, "_load_fetch_tier", side_effect=lambda tier: en_handles if tier == "en" else reserve_handles), \
+         patch.object(ac.subprocess, "run", side_effect=fake_run), \
+         patch.object(ac.time, "sleep"), \
+         patch("pathlib.Path.exists", return_value=True):
+        col.collect()
+
+    assert len(reserve_calls) <= 2, f"reserve 调用数应 ≤ max_reserve_accounts=2，实际 {len(reserve_calls)}"

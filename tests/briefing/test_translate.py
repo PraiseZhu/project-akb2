@@ -505,3 +505,60 @@ def test_translate_topic_chinese_no_retranslate():
 
     assert not snippets_called, f"中文 topic 不应调 _translate_snippet，调了: {snippets_called}"
     assert result["focus_discussions"][0]["topic"] == "智能体长记忆基础设施"
+
+
+# ---------------------------------------------------------------------------
+# P3a: lang=zh 推文跳过 text 翻译，lang=en 正常翻译
+# ---------------------------------------------------------------------------
+
+def test_lang_zh_tweet_skips_text_translation():
+    """SC-P3a-2: lang=zh 的推文不替换 text（中文原文保留），zh_point 仍可写入。"""
+    import copy
+    from akb2.briefing.translate import _apply_translation
+
+    synth = copy.deepcopy(FIXTURE_SYNTH)
+    synth["tweets"][0]["lang"] = "zh"
+    synth["tweets"][0]["text"] = "这是中文原文，不应被翻译覆盖。"
+    original_zh_text = synth["tweets"][0]["text"]
+
+    trans = {
+        "executive_summary": "今日摘要。",
+        "focus_discussions": [{"idx": 0, "topic": "智能体", "summary": "已是中文。"}],
+        "tweets": [
+            # 模型返回了 zh 推文的 text_zh（但应被忽略）
+            {"idx": 0, "text_zh": "错误覆盖", "zh_point": "中文推文要点。"},
+            {"idx": 1, "text_zh": "英文推文的中文译文。", "zh_point": "英文推文要点。"},
+        ],
+    }
+
+    result = _apply_translation(synth, trans)
+
+    zh_tweet = result["tweets"][0]
+    assert zh_tweet["text"] == original_zh_text, \
+        f"lang=zh 的 text 不应被翻译覆盖，实际: {zh_tweet['text']!r}"
+    assert "text_original" not in zh_tweet, "lang=zh 不应设置 text_original"
+    assert zh_tweet.get("zh_point") == "中文推文要点。", "lang=zh 仍应写入 zh_point"
+
+
+def test_lang_en_tweet_translated_normally():
+    """SC-P3a-2: lang=en（或无 lang）的推文正常翻译，text 被中文译文替换。"""
+    import copy
+    from akb2.briefing.translate import _apply_translation
+
+    synth = copy.deepcopy(FIXTURE_SYNTH)
+    synth["tweets"][0]["lang"] = "en"
+    synth["tweets"][0]["text"] = "This is an English tweet."
+
+    trans = {
+        "executive_summary": "今日摘要。",
+        "focus_discussions": [{"idx": 0, "topic": "智能体", "summary": "已是中文。"}],
+        "tweets": [
+            {"idx": 0, "text_zh": "这是英文推文的中文译文。", "zh_point": "英文推文要点。"},
+            {"idx": 1, "text_zh": "另一条译文。", "zh_point": "要点。"},
+        ],
+    }
+
+    result = _apply_translation(synth, trans)
+    en_tweet = result["tweets"][0]
+    assert en_tweet["text"] == "这是英文推文的中文译文。", "lang=en 推文应被翻译"
+    assert en_tweet.get("text_original") == "This is an English tweet.", "应保留英文原文"
