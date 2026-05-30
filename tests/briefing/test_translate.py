@@ -291,6 +291,30 @@ def test_audit_checks_core_excerpt_english():
     assert any("core_excerpt" in i for i in issues), f"应检出英文 core_excerpt，issues={issues}"
 
 
+def test_malformed_idx_does_not_crash():
+    """模型返回 idx 为列表等非法结构时，translate_briefing 不崩溃（Codex R4 F1 回归）。"""
+    from akb2.briefing.translate import translate_briefing
+
+    malformed_response = {
+        "executive_summary": "今日 AI 趋势。",
+        "focus_discussions": [
+            {"idx": [0, 1], "topic": "MALFORMED", "summary": "bad"},  # idx 是 list，非 int
+        ],
+        "key_quotes": [{"idx": "zero", "context": "点题"}],  # idx 是字符串
+        "tweets": [
+            {"idx": None, "text_zh": "推文。"},  # idx 是 None
+        ],
+    }
+
+    with patch("akb2.briefing.synthesis._call_llm",
+               side_effect=lambda m, model, **kw: json.dumps(malformed_response, ensure_ascii=False)):
+        result = translate_briefing(FIXTURE_SYNTH)
+
+    # 不崩溃，至少返回合法 dict
+    assert isinstance(result, dict)
+    assert "tweets" in result
+
+
 def test_short_tweet_no_excerpt():
     """短推文(<500字)不应产出 core_excerpt 或 text_original（非 is_long）。"""
     from akb2.briefing.translate import translate_briefing

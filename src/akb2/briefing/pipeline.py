@@ -416,7 +416,8 @@ def main(argv: list[str] | None = None) -> int:
             f"standard_issues: {verdict.get('standard_issues')}\n"
         )
         print(f"proposed_gate_decision: {gate_decision}")
-        return 0  # 非错误退出，但未入库
+        print(f"audit_verdict: {audit_verdict}")
+        sys.exit(2)  # 2 = audit fail，不入库；调度器可据此区分成功(0)与审计拒绝(2)
 
     # Copy to Social
     if final_briefing_path.exists() or final_briefing_path.is_symlink():

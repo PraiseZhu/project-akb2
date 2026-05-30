@@ -179,14 +179,38 @@ def _apply_translation(synth: dict, trans: dict) -> dict:
     import copy
     result = copy.deepcopy(synth)
 
+    try:
+        return _apply_translation_inner(result, trans)
+    except Exception as e:
+        sys.stderr.write(
+            f"WARNING [translate]: _apply_translation failed ({e}), "
+            "returning original synth.\n"
+        )
+        return synth
+
+
+def _safe_idx_map(items: list | None) -> dict:
+    """从 list 中构建 {idx: item} 映射，跳过 idx 不是 int 的 item（防模型返回非法结构崩溃）。"""
+    result = {}
+    for item in (items or []):
+        if not isinstance(item, dict):
+            continue
+        idx = item.get("idx")
+        if not isinstance(idx, int):
+            continue
+        result[idx] = item
+    return result
+
+
+def _apply_translation_inner(result: dict, trans: dict) -> dict:
+    """实际合并逻辑，由 _apply_translation 包裹捕获。"""
     # executive_summary
     zh_summary = (trans.get("executive_summary") or "").strip()
     if zh_summary:
         result["executive_summary"] = zh_summary
 
     # focus_discussions
-    fd_trans = {item["idx"]: item for item in (trans.get("focus_discussions") or [])
-                if isinstance(item, dict) and "idx" in item}
+    fd_trans = _safe_idx_map(trans.get("focus_discussions"))
     fds = result.get("focus_discussions", [])
     for i, fd in enumerate(fds):
         t = fd_trans.get(i, {})
@@ -196,8 +220,7 @@ def _apply_translation(synth: dict, trans: dict) -> dict:
             fd["summary"] = t["summary"].strip()
 
     # key_quotes — quote 保留英文，context 填中文点题
-    kq_trans = {item["idx"]: item for item in (trans.get("key_quotes") or [])
-                if isinstance(item, dict) and "idx" in item}
+    kq_trans = _safe_idx_map(trans.get("key_quotes"))
     kqs = result.get("key_quotes", [])
     for i, kq in enumerate(kqs):
         t = kq_trans.get(i, {})
@@ -206,8 +229,7 @@ def _apply_translation(synth: dict, trans: dict) -> dict:
             kq["context"] = zh_context
 
     # tweets
-    tw_trans = {item["idx"]: item for item in (trans.get("tweets") or [])
-                if isinstance(item, dict) and "idx" in item}
+    tw_trans = _safe_idx_map(trans.get("tweets"))
     tweets = result.get("tweets", [])
     for i, tw in enumerate(tweets):
         t = tw_trans.get(i, {})

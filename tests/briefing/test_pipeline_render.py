@@ -138,7 +138,8 @@ def test_english_synth_reaches_translate(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_enforce_fail_no_social(tmp_path):
-    """audit verdict=fail → Social 无文件，briefing 留 staging。"""
+    """audit verdict=fail → Social 无文件，briefing 留 staging，sys.exit(2)。"""
+    import pytest
     from akb2.briefing import pipeline as pl
 
     vault_root = tmp_path
@@ -158,14 +159,15 @@ def test_enforce_fail_no_social(tmp_path):
         patch("akb2.briefing.pipeline.translate_briefing", return_value=SYNTH_ZH),
         patch("akb2.briefing.pipeline.audit_briefing", side_effect=mock_audit),
     ):
-        result = pl.main(["--date", "2026-05-30", "--vault-root", str(vault_root)])
+        with pytest.raises(SystemExit) as exc_info:
+            pl.main(["--date", "2026-05-30", "--vault-root", str(vault_root)])
 
     social_file = vault_root / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social" / "2026-05-30 Daily Briefing.md"
     staging_file = vault_root / "Praise Space" / "AKB2.0" / "staging" / "candidate" / "2026-05-30 Daily Briefing.md"
 
+    assert exc_info.value.code == 2, "audit=fail 应 sys.exit(2) 以便调度器区分"
     assert not social_file.exists(), "audit=fail 时 Social 不应有文件"
     assert staging_file.exists(), "audit=fail 时 staging 应保留文件"
-    assert result == 0  # 非错误退出，但未入库
 
 
 def test_enforce_warn_writes_flagged(tmp_path):
