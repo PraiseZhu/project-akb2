@@ -54,11 +54,32 @@ def _requires_chinese(text: str) -> bool:
     return not _has_chinese(text)
 
 
+_MIN_SUMMARY_SENTENCES = 3
+
+
+def _count_sentences(text: str) -> int:
+    """粗计句数（按中文句末标点切分；英文句末标点也计入）。"""
+    if not text or not text.strip():
+        return 0
+    # 中文句末标点 + 英文句末 ". " / "! " / "? "
+    parts = re.split(r'[。？！；…]+|(?<=[.!?])\s', text.strip())
+    return len([p for p in parts if p.strip()])
+
+
+def _get_referenced_tweet_ids(synth: dict) -> set[str]:
+    """返回被任何主题 supporting_tweet_ids 引用的推文 id 集合。"""
+    ids: set[str] = set()
+    for fd in synth.get("focus_discussions", []):
+        for tid in fd.get("supporting_tweet_ids", []):
+            ids.add(str(tid))
+    return ids
+
+
 def _check_standard(synth_zh: dict) -> list[str]:
     """代码规则检查，返回 issues 列表（空 = pass）。"""
     issues: list[str] = []
 
-    # SC-1: 分析字段非空时必须含中文（不用词数粗判，防短英文漏检）
+    # 分析字段非空时必须含中文（不用词数粗判，防短英文漏检）
     summary = synth_zh.get("executive_summary", "")
     if _requires_chinese(summary):
         issues.append(f"executive_summary 无中文（未翻译）: {summary[:80]!r}")
@@ -71,19 +92,18 @@ def _check_standard(synth_zh: dict) -> list[str]:
         if _requires_chinese(sm):
             issues.append(f"focus_discussions[{i}].summary 无中文（未翻译）: {sm[:80]!r}")
 
-    # SC-2: topic 非占位符
+        # SC-3: summary 至少 3 句（深度检查）
+        sent_count = _count_sentences(sm)
+        if sm and sent_count < _MIN_SUMMARY_SENTENCES:
+            issues.append(
+                f"focus_discussions[{i}].summary 句数不足（{sent_count} 句 < {_MIN_SUMMARY_SENTENCES} 句）: {sm[:80]!r}"
+            )
+
+    # topic 非占位符
     for i, fd in enumerate(synth_zh.get("focus_discussions", [])):
         topic = (fd.get("topic") or "").strip()
         if re.match(r"^AI\s*趋势观察\s*#\d+$", topic):
             issues.append(f"focus_discussions[{i}].topic 仍是占位符: {topic!r}")
-
-    # key_quotes context 应有中文
-    for i, kq in enumerate(synth_zh.get("key_quotes", [])):
-        ctx = (kq.get("context") or "").strip()
-        if not ctx:
-            issues.append(f"key_quotes[{i}].context 为空（应有中文点题）")
-        elif not _has_chinese(ctx):
-            issues.append(f"key_quotes[{i}].context 无中文: {ctx!r}")
 
     # tweets text 与 core_excerpt 非空时必须含中文
     for i, tw in enumerate(synth_zh.get("tweets", [])):
@@ -93,6 +113,18 @@ def _check_standard(synth_zh: dict) -> list[str]:
         core = (tw.get("core_excerpt") or "").strip()
         if _requires_chinese(core):
             issues.append(f"tweets[{i}].core_excerpt 无中文（未翻译）: {core[:60]!r}")
+
+    # SC-8: 被主题引用的推文 zh_point 必须含中文
+    referenced_ids = _get_referenced_tweet_ids(synth_zh)
+    id_to_idx = {str(t.get("id", "")): idx for idx, t in enumerate(synth_zh.get("tweets", []))}
+    for tid in referenced_ids:
+        idx = id_to_idx.get(tid)
+        if idx is None:
+            continue
+        tw = synth_zh["tweets"][idx]
+        zh_point = (tw.get("zh_point") or "").strip()
+        if zh_point and not _has_chinese(zh_point):
+            issues.append(f"tweets[{idx}].zh_point 无中文（主题引用推文）: {zh_point!r}")
 
     return issues
 

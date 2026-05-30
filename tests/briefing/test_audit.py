@@ -9,7 +9,6 @@ SYNTH_EN = {
     "focus_discussions": [
         {"topic": "Agent Memory Infrastructure", "summary": "Tools for persistent memory.", "supporting_tweet_ids": ["1"]},
     ],
-    "key_quotes": [{"author": "@x", "quote": "Quote here.", "tweet_id": "1", "url": "", "context": ""}],
     "tweets": [
         {"id": "1", "author": "@x", "text": "Short tweet.", "created_at": "", "score": 0.9, "url": ""},
     ],
@@ -18,20 +17,27 @@ SYNTH_EN = {
 SYNTH_ZH_GOOD = {
     "executive_summary": "今日 AI 智能体在记忆工具方面增长强劲。",
     "focus_discussions": [
-        {"topic": "智能体长记忆基础设施", "summary": "多款工具涌现，提供持久记忆能力。", "supporting_tweet_ids": ["1"]},
+        {
+            "topic": "智能体长记忆基础设施",
+            # ≥3 句（满足 SC-3）
+            "summary": "多款工具涌现，为 AI 智能体提供跨会话的持久记忆能力。其中 agentmemory 首次实现了无限记忆接入，引发开发者广泛讨论。这一趋势表明智能体基础设施正快速成熟，未来将影响多智能体协作场景。",
+            "supporting_tweet_ids": ["1"],
+        },
     ],
-    "key_quotes": [{"author": "@x", "quote": "Quote here.", "tweet_id": "1", "url": "", "context": "首次展示了跨会话记忆能力，有参考价值。"}],
     "tweets": [
-        {"id": "1", "author": "@x", "text": "关于 agentmemory 的简短推文。", "created_at": "", "score": 0.9, "url": ""},
+        {"id": "1", "author": "@x", "text": "关于 agentmemory 的简短推文。", "zh_point": "记忆工具值得关注。", "created_at": "", "score": 0.9, "url": ""},
     ],
 }
 
 SYNTH_ZH_BAD = {
     "executive_summary": "AI agents showed strong growth with new memory tools.",  # 英文
     "focus_discussions": [
-        {"topic": "AI 趋势观察 #1", "summary": "Multiple tools emerged.", "supporting_tweet_ids": ["1"]},  # 占位
+        {
+            "topic": "AI 趋势观察 #1",                               # 占位
+            "summary": "Multiple tools emerged.",                     # 英文且 < 3句
+            "supporting_tweet_ids": ["1"],
+        },
     ],
-    "key_quotes": [{"author": "@x", "quote": "Quote here.", "tweet_id": "1", "url": "", "context": ""}],  # 空 context
     "tweets": [
         {"id": "1", "author": "@x", "text": "This is still an English tweet with many words.", "created_at": "", "score": 0.9, "url": ""},
     ],
@@ -81,11 +87,14 @@ def test_audit_standard_fail_placeholder_topic():
 
 
 def test_audit_standard_fail_empty_context():
-    """key_quotes context 为空 → standard=fail。"""
+    """key_quotes context 检查已移除（SC-9）；此测试验证 SYNTH_ZH_BAD 因其他规则失败。"""
     from akb2.briefing.audit import _check_standard
 
     issues = _check_standard(SYNTH_ZH_BAD)
-    assert any("context" in i for i in issues), f"应检出空 context，issues={issues}"
+    # SYNTH_ZH_BAD 仍因英文 summary / 占位 topic 等失败
+    assert len(issues) > 0, f"SYNTH_ZH_BAD 应有 issues，issues={issues}"
+    # 不再检查 context（key_quotes 已从 pipeline 移除）
+    assert not any("key_quotes" in i for i in issues), "key_quotes context 检查应已移除"
 
 
 # ---------------------------------------------------------------------------
@@ -193,3 +202,49 @@ def test_enforce_all_pass_verdict_pass():
     assert result["standard"] == "pass"
     assert result["llm_audit"] == "pass"
     assert result["verdict"] == "pass"
+
+
+# ---------------------------------------------------------------------------
+# SC-8: 新增检查 — summary 句数 + zh_point 中文
+# ---------------------------------------------------------------------------
+
+def test_audit_flags_short_summary():
+    """summary 不足 3 句时 → standard=fail。"""
+    from akb2.briefing.audit import _check_standard
+    import copy
+
+    synth = copy.deepcopy(SYNTH_ZH_GOOD)
+    synth["focus_discussions"][0]["summary"] = "只有一句。"  # < 3 句
+
+    issues = _check_standard(synth)
+    assert any("句数不足" in i for i in issues), f"应检出 summary 句数不足，issues={issues}"
+
+
+def test_audit_flags_missing_zh_point():
+    """被主题引用的推文 zh_point 无中文 → standard 检出 issue。"""
+    from akb2.briefing.audit import _check_standard
+    import copy
+
+    synth = copy.deepcopy(SYNTH_ZH_GOOD)
+    synth["tweets"][0]["zh_point"] = "memory tool worth watching"  # 英文
+
+    issues = _check_standard(synth)
+    assert any("zh_point" in i for i in issues), f"应检出 zh_point 无中文，issues={issues}"
+
+
+def test_audit_good_synth_passes_standard():
+    """SYNTH_ZH_GOOD（≥3句 summary + 中文 zh_point）通过所有代码检查。"""
+    from akb2.briefing.audit import _check_standard
+
+    issues = _check_standard(SYNTH_ZH_GOOD)
+    assert issues == [], f"SYNTH_ZH_GOOD 应全部通过，issues={issues}"
+
+
+def test_audit_count_sentences():
+    """_count_sentences 正确计算中文句数。"""
+    from akb2.briefing.audit import _count_sentences
+
+    assert _count_sentences("一句话。") == 1
+    assert _count_sentences("第一句。第二句。第三句。") == 3
+    assert _count_sentences("") == 0
+    assert _count_sentences("一？二！三。") == 3
