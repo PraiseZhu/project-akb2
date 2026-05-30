@@ -241,6 +241,21 @@ def test_validate_quality_passes_good():
     _validate_quality(merged)  # 不抛 = pass
 
 
+def test_patch_focus_discussions_filters_fabricated_id():
+    """SC-4：模型编造的 supporting_tweet_id 被过滤、真实 id 保留（非全编造，不走 top[:5] 兜底）。"""
+    from akb2.briefing.synthesis import _patch_focus_discussions
+
+    top = [{"id": "1"}, {"id": "2"}, {"id": "3"}]
+    discs = [{"topic": "T", "summary": "第一句。第二句。第三句。", "supporting_tweet_ids": ["1", "FAKE999"]}]
+
+    patched = _patch_focus_discussions(discs, top)
+    ids = patched[0]["supporting_tweet_ids"]
+
+    assert "FAKE999" not in ids, "编造 id 必须被过滤掉"
+    assert "1" in ids, "真实 id 必须保留"
+    assert all(i in {"1", "2", "3"} for i in ids), "结果只能含真实 top 推文 id"
+
+
 def test_synthesize_retries_on_degraded_then_succeeds():
     """合成首次退化(summary空)→重试→第二次正常，最终返回好结果。"""
     import json as _json

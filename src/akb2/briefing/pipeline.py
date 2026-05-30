@@ -393,6 +393,10 @@ def build_temp_briefing_markdown(synth: dict, date: str) -> str:
     ]
     frontmatter = "\n".join(frontmatter_lines)
 
+    # v2 骨架（与 build_briefing_markdown 保持一致，Step5）：
+    # 执行摘要 → 核心讨论(嵌套推文) → 其他高分推文 → 数据摘要。
+    # temp 在翻译前用 synth_en 跑 gate，推文为英文（无 zh_point/core_excerpt），
+    # _render_tweet 会自然降级为 `> text` + 原文链接。
     body_parts = [
         f"# {date} AI 社交趋势日报",
         "",
@@ -400,22 +404,38 @@ def build_temp_briefing_markdown(synth: dict, date: str) -> str:
         "",
         f"基于 {date} 公开时间线抓取，对 AI/ML 领域社交信号的综合分析。",
         "",
-        "## 关键发现",
+    ]
+
+    executive_summary = synth.get("executive_summary", "")
+    if executive_summary:
+        body_parts += ["## 执行摘要", "", executive_summary, ""]
+
+    focus_discussions = synth.get("focus_discussions", [])
+    per_topic, orphans = _collect_display_tweets(synth, _ORPHAN_TOP_K)
+    if focus_discussions:
+        body_parts += ["## 核心讨论", ""]
+        for i, disc in enumerate(focus_discussions):
+            body_parts += [f"### {disc.get('topic', '')}", "", disc.get("summary", ""), ""]
+            for t in per_topic[i]:
+                body_parts += _render_tweet(t)
+
+    if orphans:
+        body_parts += ["## 其他高分推文", ""]
+        for t in orphans:
+            body_parts += _render_tweet(t)
+
+    scoring_summary = synth.get("scoring_summary", {})
+    total = scoring_summary.get("total_tweets", len(tweets))
+    scored = scoring_summary.get("scored_tweets", len(tweets))
+    body_parts += [
+        "## 数据摘要",
         "",
-        "按相关性与权威性打分后的 top 推文。",
-        "",
-        "## 关键推文",
+        f"- 总推文数：{total}",
+        f"- 精选推文：{scored}",
+        f"- 生成时间：{now_iso}",
         "",
     ]
-    for t in tweets[:5]:
-        author = t.get("author", "")
-        text = t.get("text", "")
-        score = t.get("score", 0)
-        body_parts += [
-            f"**{author}**（评分：{score:.3f}）",
-            f"> {text}",
-            "",
-        ]
+
     body = "\n".join(body_parts)
     return frontmatter + "\n" + body
 

@@ -194,3 +194,23 @@ def test_collect_display_tweets_same_tweet_in_multiple_topics():
     assert len(per_topic[0]) == 1, "主题0 应有1条推文"
     assert len(per_topic[1]) == 2, "主题1 应有2条推文（含重复 id=1）"
     assert len(orphans) == 0, "所有推文都被引用，孤儿应为空"
+
+
+def test_collect_display_tweets_skips_fabricated_supporting_id():
+    """SC-4：render 层 supporting_tweet_ids 指向不存在的 tweet → 静默跳过，不崩、不渲染幽灵。"""
+    from akb2.briefing.pipeline import _collect_display_tweets
+
+    synth = {
+        "focus_discussions": [
+            {"supporting_tweet_ids": ["1", "GHOST404"]},  # GHOST404 不存在
+        ],
+        "tweets": [
+            {"id": "1", "score": 0.9, "author": "@x"},
+        ],
+    }
+    per_topic, orphans = _collect_display_tweets(synth, orphan_top_k=5)
+
+    rendered_ids = [t.get("id") for t in per_topic[0]]
+    assert rendered_ids == ["1"], "只渲染真实推文，GHOST404 被跳过"
+    assert all(t.get("id") != "GHOST404" for grp in per_topic for t in grp)
+    assert len(orphans) == 0, "唯一推文已被引用，无孤儿"

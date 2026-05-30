@@ -67,6 +67,18 @@ def test_no_standalone_key_tweets_section():
     assert "## 关键推文" not in md, "独立关键推文板块应已移除（推文嵌入主题）"
 
 
+def test_temp_briefing_synced_to_v2_skeleton():
+    """v2 Step5：temp（gate 内部产物）也同步骨架结构，移除旧"关键推文"/"关键发现"扁平板块。"""
+    from akb2.briefing.pipeline import build_temp_briefing_markdown
+
+    md = build_temp_briefing_markdown(SYNTH_EN, "2026-05-30")
+
+    assert "## 关键推文" not in md, "temp 不应再有独立关键推文板块"
+    assert "## 关键发现" not in md, "temp 不应再有独立关键发现板块"
+    assert "## 核心讨论" in md, "temp 应包含核心讨论骨架"
+    assert "Agent Memory" in md, "temp 核心讨论应含主题标题"
+
+
 def test_exec_summary_and_data_summary_kept():
     """SC-2：执行摘要和数据摘要应保留。"""
     from akb2.briefing.pipeline import build_briefing_markdown
