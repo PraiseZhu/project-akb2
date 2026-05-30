@@ -110,7 +110,7 @@ def _validate_quality(merged: dict) -> None:
     """额外质量校验 — 只校验"中文 topic"这个最关键的约束,其他缺失字段由 _merge_with_input 兜底合成。
 
     - 至少 50% 的 topic 含中文字符(防 model 全英文输出),不通过 raise 触发重试
-    - executive_summary 和 key_quotes 缺失不 raise(由 merge 兜底合成),不浪费 API 重试
+    - executive_summary 缺失不 raise(由 merge 兜底),不浪费 API 重试
     """
     fds = merged.get("focus_discussions", [])
     if len(fds) < 1:
@@ -240,7 +240,7 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
 
 
 def _merge_with_input(model_out: dict, scored_input: dict, resolved_date: str, top: list[dict]) -> dict:
-    """Merge model output with input data — model 只贡献 focus_discussions/executive_summary/key_quotes,
+    """Merge model output with input data — model 只贡献 focus_discussions/executive_summary,
     其余字段从 input 回填。
 
     防御性合并:DeepSeek 经常返回不合规字段(source 是字符串、tweets 缺 text/created_at 等),
@@ -272,75 +272,38 @@ def _merge_with_input(model_out: dict, scored_input: dict, resolved_date: str, t
         "focus_discussions": _patch_focus_discussions(
             model_out.get("focus_discussions") or [], top
         ),
-        # executive_summary / key_quotes 原样保留；translate 阶段负责中文化与点题
+        # executive_summary 原样保留；key_quotes 已从 prompt 移除（SC-9），不再输出
         "executive_summary": model_out.get("executive_summary", "").strip(),
-        "key_quotes": (
-            _patch_key_quotes(model_out.get("key_quotes") or [], top)
-            or _synthesize_key_quotes(top_for_display)
-        ),
     }
 
 
 
-def _synthesize_key_quotes(top_tweets: list[dict]) -> list:
-    """model 漏 key_quotes 时,从 top 推文取前 3 条作引述兜底,确保章节完整。
-    不截断原文；context 留空由翻译阶段填中文点题。
-    """
-    quotes = []
-    for t in top_tweets[:3]:
-        text = (t.get("text") or "").strip()
-        if not text:
-            continue
-        quotes.append({
-            "author": t.get("author", ""),
-            "quote": text,
-            "tweet_id": str(t.get("id", "")),
-            "url": t.get("url", ""),
-            "context": "",  # 由 translate 阶段填中文点题
-        })
-    return quotes
-
-
-def _patch_key_quotes(quotes: list, top: list[dict]) -> list:
-    """补齐 key_quotes — 防御 model 漏字段,过滤掉非 dict / 缺 tweet_id 的条目,
-    给每条 quote 找对应 tweet 的 url 字段(model 一般不会给 url)。
-    """
-    id_to_url = {str(t["id"]): t.get("url", "") for t in top}
-    id_to_author = {str(t["id"]): t.get("author", "") for t in top}
-    patched = []
-    for q in quotes:
-        if not isinstance(q, dict):
-            continue
-        tid = str(q.get("tweet_id", ""))
-        # 必须能 trace 到真实 tweet,否则丢弃(防 model 编造 id)
-        if tid and tid in id_to_url:
-            patched.append({
-                "author": q.get("author") or id_to_author.get(tid, ""),
-                "quote": q.get("quote", ""),
-                "tweet_id": tid,
-                "url": id_to_url.get(tid, ""),
-                "context": q.get("context", ""),
-            })
-    return patched
-
 
 def _patch_focus_discussions(discussions: list, top: list[dict]) -> list:
-    """补齐 focus_discussions 缺失的 supporting_tweet_ids。
+    """补齐 focus_discussions 缺失或编造的 supporting_tweet_ids。
 
-    - 只做结构合规修复(补 supporting_tweet_ids)；topic/summary 原样保留，交翻译阶段处理
-    - 删除空洞 topic 占位符逻辑（`AI 趋势观察 #N`）：保留原 topic，让 translate 去改写
+    - 过滤掉模型编造的 id（不在 top 推文中）
+    - 缺失或全部编造时，fallback 到 top[:5]（保守覆盖高分推文）
+    - topic/summary 原样保留，由 translate 阶段中文化
     """
-    fallback_ids = [str(t["id"]) for t in top[:2]] or ["unknown"]
+    valid_ids = {str(t["id"]) for t in top}
+    fallback_ids = [str(t["id"]) for t in top[:5]] or ["unknown"]
+
     patched = []
     for d in discussions:
         if not isinstance(d, dict):
             continue
-        ids = d.get("supporting_tweet_ids")
-        if not isinstance(ids, list) or not ids:
-            ids = fallback_ids
+        raw_ids = d.get("supporting_tweet_ids")
+        if isinstance(raw_ids, list) and raw_ids:
+            # 过滤编造 id，保留真实存在的
+            real_ids = [str(x) for x in raw_ids if str(x) in valid_ids]
+        else:
+            real_ids = []
+        if not real_ids:
+            real_ids = fallback_ids
         patched.append({
             "topic": (d.get("topic") or "").strip(),
-            "supporting_tweet_ids": [str(x) for x in ids],
+            "supporting_tweet_ids": real_ids,
             "summary": d.get("summary") or "",
         })
     return patched
