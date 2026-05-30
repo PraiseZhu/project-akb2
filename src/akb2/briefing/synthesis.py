@@ -162,9 +162,12 @@ def _fallback_synthesis(scored_input: dict, date: str | None = None) -> dict:
                 "topic": "AI Technology Trends",
                 "supporting_tweet_ids": [str(t["id"]) for t in top[:3]],
                 "summary": (
-                    f"Top {len(top)} tweets about AI trends, scored by relevance and authority. "
-                    f"Highest scoring tweet by {top[0].get('author', 'unknown')} with score "
-                    f"{top[0].get('score', 0):.3f}."
+                    f"Top {len(top)} tweets about AI trends, scored by relevance and authority."
+                    + (
+                        f" Highest scoring tweet by {top[0].get('author', 'unknown')} with score "
+                        f"{top[0].get('score', 0):.3f}."
+                        if top else ""
+                    )
                 ),
             }
         ],

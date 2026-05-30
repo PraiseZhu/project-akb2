@@ -467,10 +467,11 @@ def main(argv: list[str] | None = None) -> int:
     # Stage 2: Scoring
     scored_data = run_scoring(intake_data)
 
-    # 产出层日期兜底（SC-7）：去掉超出时间窗的旧推文
-    scored_data["tweets"] = _filter_recent(
-        scored_data.get("tweets", []), date, days=window_days
-    )
+    # 产出层日期兜底（SC-7）：去掉超出时间窗的旧推文（dry-run 跳过：fixture 数据日期与当天不同）
+    if not dry_run_intake:
+        scored_data["tweets"] = _filter_recent(
+            scored_data.get("tweets", []), date, days=window_days
+        )
 
     # Stage 3: Synthesis（产出英文结构化分析，语言交翻译阶段负责）
     synth_en = run_synthesis(scored_data, date=date)
