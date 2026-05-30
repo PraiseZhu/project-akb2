@@ -229,8 +229,13 @@ def _apply_translation(synth: dict, trans: dict) -> dict:
                 if core_zh_direct:
                     tw["core_excerpt"] = core_zh_direct
                 else:
-                    # 无直接译文：单独翻译 core_en，确保核心段准确
-                    tw["core_excerpt"] = _translate_snippet(core_en) or core_en
+                    # 无直接译文：单独翻译 core_en
+                    snippet_zh = _translate_snippet(core_en)
+                    if snippet_zh:
+                        tw["core_excerpt"] = snippet_zh
+                    else:
+                        # snippet 翻译失败 → 用中文译文第一段（不回退英文原段）
+                        tw["core_excerpt"] = _first_segment(text_zh) if text_zh else ""
             else:
                 if core_en:
                     sys.stderr.write(

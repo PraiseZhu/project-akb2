@@ -85,11 +85,14 @@ def _check_standard(synth_zh: dict) -> list[str]:
         elif not _has_chinese(ctx):
             issues.append(f"key_quotes[{i}].context 无中文: {ctx!r}")
 
-    # tweets text 非空时必须含中文
+    # tweets text 与 core_excerpt 非空时必须含中文
     for i, tw in enumerate(synth_zh.get("tweets", [])):
         text = (tw.get("text") or "").strip()
         if _requires_chinese(text):
             issues.append(f"tweets[{i}].text 无中文（未翻译）: {text[:60]!r}")
+        core = (tw.get("core_excerpt") or "").strip()
+        if _requires_chinese(core):
+            issues.append(f"tweets[{i}].core_excerpt 无中文（未翻译）: {core[:60]!r}")
 
     return issues
 

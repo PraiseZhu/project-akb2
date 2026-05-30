@@ -227,6 +227,70 @@ def test_missing_core_excerpt_zh_triggers_snippet_translate():
         f"core_excerpt 应包含核心段译文，实际: {long_tw['core_excerpt']!r}"
 
 
+def test_snippet_translate_failure_no_english_core_excerpt():
+    """_translate_snippet 失败时 core_excerpt 不应回退英文原段（Codex R3 F1 回归）。"""
+    import copy
+    from akb2.briefing.translate import translate_briefing
+
+    synth = copy.deepcopy(FIXTURE_SYNTH)
+    core_en = "This is the core insight about AI agents and memory systems."
+    synth["tweets"][1]["text"] = "B" * 600 + " " + core_en
+
+    response_no_core_zh = {
+        **MOCK_TRANSLATE_RESPONSE,
+        "tweets": [
+            {"idx": 0, "text_zh": "短推文。"},
+            {
+                "idx": 1,
+                "text_zh": "长文译文，包含有意义的中文内容，关于 AI 智能体的分析。",
+                "core_excerpt_en": core_en,
+                # 无 core_excerpt_zh
+            },
+        ],
+    }
+
+    call_count = [0]
+
+    def mock_call_llm(messages, model, **kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return json.dumps(response_no_core_zh, ensure_ascii=False)
+        # _translate_snippet 模拟失败
+        raise ConnectionError("snippet translate failed")
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=mock_call_llm):
+        result = translate_briefing(synth)
+
+    long_tw = result["tweets"][1]
+    core = long_tw.get("core_excerpt", "")
+    # 核心段不应是英文原段
+    assert core != core_en, "snippet 失败时不应回退英文原段"
+    # 应是中文（取自 text_zh 首段）或空
+    if core:
+        assert any("一" <= c <= "鿿" for c in core), f"core_excerpt 应含中文，实际: {core!r}"
+
+
+def test_audit_checks_core_excerpt_english():
+    """audit._check_standard 应检出英文 core_excerpt（Codex R3 F1 回归）。"""
+    from akb2.briefing.audit import _check_standard
+
+    synth = {
+        "executive_summary": "今日 AI 智能体增长强劲。",
+        "focus_discussions": [{"topic": "智能体记忆", "summary": "多款工具涌现。", "supporting_tweet_ids": ["1"]}],
+        "key_quotes": [{"author": "@x", "quote": "q", "tweet_id": "1", "url": "", "context": "有参考价值。"}],
+        "tweets": [
+            {
+                "id": "1", "author": "@x",
+                "text": "关于 AI 的中文推文。",
+                "core_excerpt": "This is an English core excerpt that was not translated.",
+                "created_at": "", "score": 0.9, "url": "",
+            },
+        ],
+    }
+    issues = _check_standard(synth)
+    assert any("core_excerpt" in i for i in issues), f"应检出英文 core_excerpt，issues={issues}"
+
+
 def test_short_tweet_no_excerpt():
     """短推文(<500字)不应产出 core_excerpt 或 text_original（非 is_long）。"""
     from akb2.briefing.translate import translate_briefing
