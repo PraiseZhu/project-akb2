@@ -6,6 +6,7 @@ CLI: python -m akb2.briefing.synthesis --input <scored.json> --output <synth.jso
 - 若无凭证：使用 deterministic fallback（从 scored.json 中前 5 条推文构造合规 payload）
 - 输出必须通过 social_trends_v1_1 schema 校验
 - 失败时最多重试 2 次（指数退避，间隔 1s / 2s）
+- 中文化由独立 translate.py 阶段负责，synthesis 只产出干净结构化分析
 """
 
 from __future__ import annotations
@@ -17,43 +18,85 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+# 合成阶段专用模型（可由环境变量覆盖）
+_SYNTHESIS_MODEL = os.environ.get("AKB2_SYNTHESIS_MODEL", "deepseek/deepseek-v4-pro")
+
+# synthesis system message：约束分析质量，语言交由后续翻译阶段
+_SYNTHESIS_SYSTEM = (
+    "You are an expert AI/ML trend analyst. "
+    "Analyze the provided tweets and return a structured JSON report following the schema exactly. "
+    "Focus on genuine signal: specific tools, models, metrics, and developer sentiment. "
+    "Avoid vague summaries. Every topic must be specific (e.g. 'Agent memory infrastructure' not 'AI Trends'). "
+    "Do NOT fabricate events or numbers not present in the input tweets."
+)
+
 
 def _has_api_key() -> bool:
     """检测是否有可用 API 凭证。"""
     return bool(os.environ.get("OPENROUTER_API_KEY") or os.environ.get("DEEPSEEK_API_KEY"))
 
 
-def _call_deepseek(prompt: str, max_retries: int = 2) -> str:
-    """调 DeepSeek API（经由 OpenRouter），失败自动重试，返回 raw response string。"""
+def _call_llm(
+    messages: list[dict],
+    model: str,
+    *,
+    json_mode: bool = True,
+    max_retries: int = 1,
+    timeout: int = 300,
+) -> str:
+    """通用 LLM 调用（OpenAI-compatible），失败重试一次，返回 raw content string。"""
     import httpx
 
     api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("DEEPSEEK_API_KEY")
-    # base URL: OPENROUTER_BASE_URL 覆盖默认值（支持 TapSVC LLM proxy 等 OpenAI 兼容代理）
     base_url = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api").rstrip("/")
     url = f"{base_url}/v1/chat/completions"
+
+    payload: dict = {"model": model, "messages": messages, "temperature": 0.2}
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
 
     for attempt in range(max_retries + 1):
         try:
             resp = httpx.post(
                 url,
-                json={
-                    "model": "deepseek/deepseek-v4-pro",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.2,
-                    "response_format": {"type": "json_object"},
-                },
+                json=payload,
                 headers={"Authorization": f"Bearer {api_key}"},
-                timeout=300,
+                timeout=timeout,
             )
             resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
-        except Exception as e:
+            raw = resp.json()["choices"][0]["message"]["content"]
+            _log_raw_response(model=model, raw=raw)
+            return raw
+        except Exception:
             if attempt == max_retries:
                 raise
-            time.sleep(2**attempt)
+            time.sleep(2 ** attempt)
 
-    # unreachable — loop raises on last attempt
-    raise RuntimeError("_call_deepseek: exhausted retries")  # pragma: no cover
+    raise RuntimeError(f"_call_llm({model}): exhausted retries")  # pragma: no cover
+
+
+def _log_raw_response(model: str, raw: str) -> None:
+    """将原始响应元数据追加到日志（脱敏：仅记录 model + 长度，不含 key）。"""
+    log_dir = Path(os.environ.get("AKB2_LOG_DIR", "/tmp/akb2-logs"))
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        entry = json.dumps(
+            {"ts": datetime.now(timezone.utc).isoformat(), "model": model, "raw_len": len(raw)},
+            ensure_ascii=False,
+        )
+        with open(log_dir / "synthesis-raw.jsonl", "a") as f:
+            f.write(entry + "\n")
+    except Exception:
+        pass
+
+
+def _call_deepseek(prompt: str, max_retries: int = 2) -> str:
+    """调主合成模型（带 system message），返回 raw response string。"""
+    messages = [
+        {"role": "system", "content": _SYNTHESIS_SYSTEM},
+        {"role": "user", "content": prompt},
+    ]
+    return _call_llm(messages, model=_SYNTHESIS_MODEL, json_mode=True, max_retries=max_retries)
 
 
 def _validate_response(data: dict) -> None:
@@ -226,15 +269,11 @@ def _merge_with_input(model_out: dict, scored_input: dict, resolved_date: str, t
             }
             for t in top_for_display
         ],
-        "focus_discussions": (patched_fds := _patch_focus_discussions(
+        "focus_discussions": _patch_focus_discussions(
             model_out.get("focus_discussions") or [], top
-        )),
-        # 扩展字段 — model 经常漏,由代码兜底合成确保 markdown 章节完整;
-        # executive_summary fallback 用已 patched 的(中文化后的)focus_discussions
-        "executive_summary": (
-            model_out.get("executive_summary", "").strip()
-            or _synthesize_executive_summary(patched_fds)
         ),
+        # executive_summary / key_quotes 原样保留；translate 阶段负责中文化与点题
+        "executive_summary": model_out.get("executive_summary", "").strip(),
         "key_quotes": (
             _patch_key_quotes(model_out.get("key_quotes") or [], top)
             or _synthesize_key_quotes(top_for_display)
@@ -242,31 +281,22 @@ def _merge_with_input(model_out: dict, scored_input: dict, resolved_date: str, t
     }
 
 
-def _synthesize_executive_summary(focus_discussions: list) -> str:
-    """model 漏 executive_summary 时,从 focus_discussions 拼接合成。"""
-    if not focus_discussions:
-        return ""
-    topics = [(fd.get("topic") or "").strip() for fd in focus_discussions if isinstance(fd, dict)]
-    topics = [t for t in topics if t]
-    if not topics:
-        return ""
-    return "今日 AI/ML 讨论聚焦：" + "、".join(topics[:5]) + "。详见下方核心讨论与关键推文。"
-
 
 def _synthesize_key_quotes(top_tweets: list[dict]) -> list:
-    """model 漏 key_quotes 时,从 top 推文取前 3 条作引述兜底,确保章节完整。"""
+    """model 漏 key_quotes 时,从 top 推文取前 3 条作引述兜底,确保章节完整。
+    不截断原文；context 留空由翻译阶段填中文点题。
+    """
     quotes = []
     for t in top_tweets[:3]:
-        text = (t.get("text") or "").replace("\n", " ").strip()
+        text = (t.get("text") or "").strip()
         if not text:
             continue
-        snippet = text[:180] + ("…" if len(text) > 180 else "")
         quotes.append({
             "author": t.get("author", ""),
-            "quote": snippet,
+            "quote": text,
             "tweet_id": str(t.get("id", "")),
             "url": t.get("url", ""),
-            "context": f"评分 {t.get('score', 0):.2f}",
+            "context": "",  # 由 translate 阶段填中文点题
         })
     return quotes
 
@@ -295,42 +325,21 @@ def _patch_key_quotes(quotes: list, top: list[dict]) -> list:
 
 
 def _patch_focus_discussions(discussions: list, top: list[dict]) -> list:
-    """补齐 focus_discussions 缺失的 supporting_tweet_ids + 空洞 topic 自动改写。
+    """补齐 focus_discussions 缺失的 supporting_tweet_ids。
 
-    - schema 要求 topic/supporting_tweet_ids/summary 三字段都必填
-    - 缺 supporting_tweet_ids 时用前 2 条 top tweet id 兜底
-    - topic 是 "AI Trends" 等空洞词时,从 summary 前 25 字提取作 topic(去掉句末标点)
+    - 只做结构合规修复(补 supporting_tweet_ids)；topic/summary 原样保留，交翻译阶段处理
+    - 删除空洞 topic 占位符逻辑（`AI 趋势观察 #N`）：保留原 topic，让 translate 去改写
     """
     fallback_ids = [str(t["id"]) for t in top[:2]] or ["unknown"]
-    BANNED = {"ai trends", "ai 趋势", "trends", "ai trend", "today's trends", "今日趋势", ""}
     patched = []
-    for i, d in enumerate(discussions, 1):
+    for d in discussions:
         if not isinstance(d, dict):
             continue
         ids = d.get("supporting_tweet_ids")
         if not isinstance(ids, list) or not ids:
             ids = fallback_ids
-        topic = (d.get("topic") or "").strip()
-        # 含中文字符数(≥2 视为合格中文 topic)
-        chinese_chars = sum(1 for c in topic if "一" <= c <= "鿿")
-        is_banned = topic.lower() in BANNED
-        is_english = chinese_chars < 2  # 全英文或几乎全英文
-        if is_banned or is_english:
-            summary = (d.get("summary") or "").strip()
-            # summary 也优先取中文段:扫描第一句中文(到首个句号/分号/换行)
-            if summary and any("一" <= c <= "鿿" for c in summary):
-                # 取 summary 第一段(中文优先),≤30 字
-                first_seg = summary.split("。")[0].split("\n")[0].split(";")[0].strip()
-                if first_seg and any("一" <= c <= "鿿" for c in first_seg):
-                    topic = first_seg[:30].rstrip("，。；,;.：:").rstrip()
-                    if len(first_seg) > 30:
-                        topic = topic + "…"
-                else:
-                    topic = f"AI 趋势观察 #{i}"
-            else:
-                topic = f"AI 趋势观察 #{i}"
         patched.append({
-            "topic": topic,
+            "topic": (d.get("topic") or "").strip(),
             "supporting_tweet_ids": [str(x) for x in ids],
             "summary": d.get("summary") or "",
         })
