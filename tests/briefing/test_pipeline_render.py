@@ -13,9 +13,6 @@ SYNTH_EN = {
     "focus_discussions": [
         {"topic": "Agent Memory", "summary": "Tools for persistent memory.", "supporting_tweet_ids": ["1"]},
     ],
-    "key_quotes": [
-        {"author": "@x", "quote": "Quote here.", "tweet_id": "1", "url": "https://x.com/1", "context": ""},
-    ],
     "tweets": [
         {"id": "1", "author": "@x", "text": "Short tweet.", "created_at": "2026-05-30T01:00:00Z", "score": 0.9, "url": "https://x.com/1"},
         {"id": "2", "author": "@y", "text": "A" * 600 + " core insight here.", "created_at": "2026-05-30T02:00:00Z", "score": 0.8, "url": "https://x.com/2"},
@@ -29,10 +26,8 @@ SYNTH_ZH = {
     **SYNTH_EN,
     "executive_summary": "今日 AI 智能体增长强劲。",
     "focus_discussions": [
+        # tweet id=1 被引用；tweet id=2 是孤儿高分
         {"topic": "智能体长记忆", "summary": "多款记忆工具涌现。", "supporting_tweet_ids": ["1"]},
-    ],
-    "key_quotes": [
-        {"author": "@x", "quote": "Quote here.", "tweet_id": "1", "url": "https://x.com/1", "context": "首次公开了相关能力。"},
     ],
     "tweets": [
         {"id": "1", "author": "@x", "text": "简短推文。", "text_original": "Short tweet.", "zh_point": "记忆工具值得关注。", "created_at": "2026-05-30T01:00:00Z", "score": 0.9, "url": "https://x.com/1"},
@@ -59,27 +54,63 @@ def test_date_no_offset():
 
 
 # ---------------------------------------------------------------------------
-# 合并板块：关键引述已移除，关键推文含中文点题
+# SC-1/SC-2: v2 结构 — 无独立关键推文板块，推文嵌入核心讨论主题 + 孤儿高分
 # ---------------------------------------------------------------------------
 
-def test_merged_section_no_key_quotes_block():
-    """关键引述板块应已移除，只保留关键推文。"""
+def test_no_standalone_key_tweets_section():
+    """v2：独立"关键推文"和"关键引述"板块均已移除。"""
     from akb2.briefing.pipeline import build_briefing_markdown
 
     md = build_briefing_markdown(SYNTH_ZH, "active", "2026-05-30")
 
-    assert "## 关键引述" not in md, "关键引述板块应已合并移除"
-    assert "## 关键推文" in md, "关键推文板块应保留"
+    assert "## 关键引述" not in md, "关键引述板块应已移除"
+    assert "## 关键推文" not in md, "独立关键推文板块应已移除（推文嵌入主题）"
+
+
+def test_exec_summary_and_data_summary_kept():
+    """SC-2：执行摘要和数据摘要应保留。"""
+    from akb2.briefing.pipeline import build_briefing_markdown
+
+    md = build_briefing_markdown(SYNTH_ZH, "active", "2026-05-30")
+
+    assert "## 执行摘要" in md, "执行摘要应保留"
+    assert "## 数据摘要" in md, "数据摘要应保留"
+    assert "今日 AI 智能体增长强劲。" in md, "执行摘要内容应渲染"
+
+
+def test_tweets_nested_under_topics():
+    """SC-1：推文嵌入对应主题下（按 supporting_tweet_ids），而非独立板块。"""
+    from akb2.briefing.pipeline import build_briefing_markdown
+
+    md = build_briefing_markdown(SYNTH_ZH, "active", "2026-05-30")
+
+    # 主题标题应渲染
+    assert "### 智能体长记忆" in md, "主题标题应渲染"
+    # topic summary 应渲染
+    assert "多款记忆工具涌现。" in md, "主题 summary 应渲染"
+    # 被引用的 tweet id=1 应出现在核心讨论区域，且带中文点题
+    assert "*记忆工具值得关注。*" in md, "被引用推文应有中文点题"
+
+
+def test_orphan_highscore_listed():
+    """SC-4：孤儿高分推文出现在「其他高分推文」板块，而非主题下。"""
+    from akb2.briefing.pipeline import build_briefing_markdown
+
+    md = build_briefing_markdown(SYNTH_ZH, "active", "2026-05-30")
+
+    # tweet id=2 是孤儿（未被任何主题 supporting_tweet_ids 引用）
+    assert "## 其他高分推文" in md, "孤儿高分推文应有单独板块"
+    assert "*长文核心是记忆系统突破。*" in md, "孤儿高分推文应有中文点题"
 
 
 def test_merged_tweet_has_zh_point():
-    """每条关键推文应渲染中文点题（斜体）。"""
+    """每条展示推文（主题嵌套 + 孤儿）应有中文点题（斜体）。"""
     from akb2.briefing.pipeline import build_briefing_markdown
 
     md = build_briefing_markdown(SYNTH_ZH, "active", "2026-05-30")
 
-    assert "*记忆工具值得关注。*" in md, "短推应有中文点题"
-    assert "*长文核心是记忆系统突破。*" in md, "长推应有中文点题"
+    assert "*记忆工具值得关注。*" in md, "被引用推文应有中文点题"
+    assert "*长文核心是记忆系统突破。*" in md, "孤儿高分推文应有中文点题"
 
 
 # ---------------------------------------------------------------------------

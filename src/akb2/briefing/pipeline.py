@@ -219,6 +219,72 @@ def run_gate(akb_root: Path, input_file: Path, date: str) -> str:
 # Stage 5: Build markdown briefing
 # ---------------------------------------------------------------------------
 
+_ORPHAN_TOP_K = int(os.environ.get("AKB2_ORPHAN_TOP_K", "5"))
+
+
+def _collect_display_tweets(
+    synth: dict,
+    orphan_top_k: int = _ORPHAN_TOP_K,
+) -> tuple[list[list[dict]], list[dict]]:
+    """将推文按主题分组，返回 (per_topic_tweets, orphan_tweets)。
+
+    per_topic_tweets[i] = focus_discussions[i] 对应的支撑推文（已去重，按首次出现主题归属）
+    orphan_tweets = 未被任何主题引用的高分推文，按 score 倒序取 top-k
+    """
+    tweets = synth.get("tweets", [])
+    id_to_tweet: dict[str, dict] = {str(t.get("id", "")): t for t in tweets}
+    already_used: set[str] = set()
+
+    per_topic: list[list[dict]] = []
+    for fd in synth.get("focus_discussions", []):
+        topic_tweets = []
+        for tid in fd.get("supporting_tweet_ids", []):
+            sid = str(tid)
+            if sid in id_to_tweet and sid not in already_used:
+                topic_tweets.append(id_to_tweet[sid])
+                already_used.add(sid)
+        per_topic.append(topic_tweets)
+
+    # 孤儿高分：未被引用，按 score 倒序取 top-k
+    orphans = sorted(
+        [t for t in tweets if str(t.get("id", "")) not in already_used],
+        key=lambda t: t.get("score", 0),
+        reverse=True,
+    )[:orphan_top_k]
+
+    return per_topic, orphans
+
+
+def _render_tweet(t: dict) -> list[str]:
+    """渲染一条推文为 markdown 行列表（作者 + 评分 + 点题 + 译文/核心段）。"""
+    author = t.get("author", "")
+    text = t.get("text", "")
+    text_original = t.get("text_original", "")
+    core_excerpt = t.get("core_excerpt", "")
+    zh_point = t.get("zh_point", "")
+    score = t.get("score", 0)
+    url = t.get("url", "")
+
+    parts: list[str] = [f"**{author}**（评分：{score:.3f}）"]
+    if zh_point:
+        parts += [f"*{zh_point}*", ""]
+
+    if core_excerpt:
+        original_for_fold = text_original or text
+        folded_lines = [
+            f"> {line}" if line.strip() else ">"
+            for line in original_for_fold.splitlines()
+        ]
+        parts += [core_excerpt, "", "> [!quote]- 展开英文原文", *folded_lines, ""]
+    else:
+        parts += [f"> {text}", ""]
+
+    if url:
+        parts += [f"[原文]({url})", ""]
+
+    return parts
+
+
 def build_briefing_markdown(synth: dict, gate_decision: str, date: str) -> str:
     """Build the final markdown briefing content with YAML frontmatter.
 
@@ -251,7 +317,7 @@ def build_briefing_markdown(synth: dict, gate_decision: str, date: str) -> str:
     ]
     frontmatter = "\n".join(frontmatter_lines)
 
-    # Build body — 文件名/标题与 frontmatter date 一致，不再 +1
+    # Build body — v2 结构：执行摘要 → 核心讨论(嵌套推文) → 其他高分推文 → 数据摘要
     body_parts = [
         f"# {date} AI 社交趋势日报",
         "",
@@ -267,51 +333,22 @@ def build_briefing_markdown(synth: dict, gate_decision: str, date: str) -> str:
     if executive_summary:
         body_parts += ["## 执行摘要", "", executive_summary, ""]
 
+    # 核心讨论骨架：每主题 summary + 嵌套支撑推文
+    per_topic, orphans = _collect_display_tweets(synth, _ORPHAN_TOP_K)
     if focus_discussions:
         body_parts += ["## 核心讨论", ""]
-        for disc in focus_discussions:
+        for i, disc in enumerate(focus_discussions):
             topic = disc.get("topic", "")
             summary = disc.get("summary", "")
             body_parts += [f"### {topic}", "", summary, ""]
+            for t in per_topic[i]:
+                body_parts += _render_tweet(t)
 
-    # 关键推文（合并板块：每条 = 作者 + 评分 + 中文点题 + 中文译文，长推折叠英文原文）
-    body_parts += ["## 关键推文", ""]
-    for t in tweets[:10]:
-        author = t.get("author", "")
-        text = t.get("text", "")          # 译后为中文（或原英文若翻译失败）
-        text_original = t.get("text_original", "")  # 英文原文备查（长推）
-        core_excerpt = t.get("core_excerpt", "")    # 长推中文核心段
-        zh_point = t.get("zh_point", "")            # 中文点题
-        score = t.get("score", 0)
-        url = t.get("url", "")
-
-        body_parts += [f"**{author}**（评分：{score:.3f}）"]
-        # 中文点题行（斜体，区别于正文）
-        if zh_point:
-            body_parts += [f"*{zh_point}*", ""]
-
-        if core_excerpt:
-            # 长推：显示中文核心段 + 折叠英文原文（多行逐行加 > 前缀）
-            original_for_fold = text_original or text
-            folded_lines = [
-                f"> {line}" if line.strip() else ">"
-                for line in original_for_fold.splitlines()
-            ]
-            body_parts += [
-                core_excerpt,
-                "",
-                "> [!quote]- 展开英文原文",
-                *folded_lines,
-                "",
-            ]
-        else:
-            body_parts += [
-                f"> {text}",
-                "",
-            ]
-
-        if url:
-            body_parts += [f"[原文]({url})", ""]
+    # 其他高分推文（孤儿：未被任何主题引用）
+    if orphans:
+        body_parts += ["## 其他高分推文", ""]
+        for t in orphans:
+            body_parts += _render_tweet(t)
 
     scoring_summary = synth.get("scoring_summary", {})
     total = scoring_summary.get("total_tweets", len(tweets))
