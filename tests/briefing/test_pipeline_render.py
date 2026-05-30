@@ -126,42 +126,61 @@ def test_merged_tweet_has_zh_point():
 
 
 # ---------------------------------------------------------------------------
-# SC-3: 长推折叠渲染
+# SC-3 / P2a: 长推只展示中文核心段，不保留英文原文
 # ---------------------------------------------------------------------------
 
-def test_long_tweet_rendered_with_callout():
-    """长推（有 core_excerpt）渲染为折叠块。"""
+def test_long_tweet_shows_chinese_core_no_english_original():
+    """长推只展示中文核心段；不再有英文原文折叠块（用户决策：简报不保留英文原文）。"""
     from akb2.briefing.pipeline import build_briefing_markdown
 
     md = build_briefing_markdown(SYNTH_ZH, "active", "2026-05-30")
 
-    assert "核心洞察：AI 智能体记忆系统的新突破。" in md, "核心段应出现在正文"
-    assert "[!quote]- 展开英文原文" in md, "长推应有折叠块"
-    assert "core insight here." in md, "英文原文应在折叠块内"
+    assert "核心洞察：AI 智能体记忆系统的新突破。" in md, "中文核心段应出现在正文"
+    assert "展开英文原文" not in md, "不应再有英文原文折叠块"
+    assert "core insight here." not in md, "英文原文不应出现在简报中"
+    assert "AAAA" not in md, "长推英文原文（A*600）不应出现"
 
 
 # ---------------------------------------------------------------------------
-# Codex F2 (SC-3): 多行英文原文完整折叠
+# P2a: 每条推文只保留 1 个原文链接，正文内联短链被剥离
 # ---------------------------------------------------------------------------
 
-def test_long_tweet_multiline_original_stays_in_callout():
-    """多行英文原文在折叠块中每行都有 > 前缀。"""
-    import copy
-    from akb2.briefing.pipeline import build_briefing_markdown
+def test_tweet_body_strips_inline_links():
+    """推文正文内联链接（t.co / pic.twitter）被剥离，正文区不含 http。"""
+    from akb2.briefing.pipeline import _render_tweet
 
-    synth_multiline = copy.deepcopy(SYNTH_ZH)
-    synth_multiline["tweets"][1]["text_original"] = "line1\nline2\nline3"
-    synth_multiline["tweets"][1]["core_excerpt"] = "核心内容。"
+    t = {
+        "author": "@x",
+        "text": "重大发布：新模型上线 https://t.co/abc123 详见 pic.twitter.com/xyz",
+        "zh_point": "新模型上线。",
+        "score": 0.9,
+        "url": "https://x.com/123",
+    }
+    body = "\n".join(_render_tweet(t))
+    body_before_link = body.split("[原文]")[0]
+    assert "重大发布" in body_before_link, "正文文字应保留"
+    assert "http" not in body_before_link, "正文不应含任何 http 链接"
+    assert "t.co" not in body_before_link, "t.co 内联链接应被剥离"
+    assert "pic.twitter.com" not in body_before_link, "pic.twitter 应被剥离"
 
-    md = build_briefing_markdown(synth_multiline, "active", "2026-05-30")
 
-    assert "> line1" in md, "第1行应有 > 前缀"
-    assert "> line2" in md, "第2行应有 > 前缀"
-    assert "> line3" in md, "第3行应有 > 前缀"
-    # 确保不是裸文本（脱离折叠块）
-    lines = md.splitlines()
-    for line in ["line1", "line2", "line3"]:
-        assert line not in lines, f"{line!r} 不应作为裸行出现（应带 > 前缀）"
+def test_tweet_has_single_original_link():
+    """渲染后整条推文只有 1 个 markdown 链接（底部 [原文]）；正文裸链接清零。"""
+    import re
+    from akb2.briefing.pipeline import _render_tweet
+
+    t = {
+        "author": "@y",
+        "text": "看看这个 https://t.co/aaa 和 https://t.co/bbb",
+        "zh_point": "多链接推文。",
+        "score": 0.7,
+        "url": "https://x.com/999",
+    }
+    body = "\n".join(_render_tweet(t))
+    md_links = re.findall(r"\]\(https?://", body)
+    assert len(md_links) == 1, f"应只有 1 个 markdown 链接，实际 {len(md_links)}"
+    assert re.findall(r"https?://t\.co", body) == [], "正文不应残留裸 t.co 链接"
+    assert "[原文](https://x.com/999)" in body, "底部应保留唯一 [原文] 链接"
 
 
 # ---------------------------------------------------------------------------

@@ -28,6 +28,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import subprocess
 import sys
 import shutil
@@ -269,12 +270,35 @@ def _collect_display_tweets(
     return per_topic, orphans
 
 
+_INLINE_LINK_RE = re.compile(r"https?://\S+")
+_PIC_TWITTER_RE = re.compile(r"\bpic\.twitter\.com/\S+")
+
+
+def _strip_inline_links(text: str) -> str:
+    """剥离正文内联链接（http(s) URL / pic.twitter 短链）。
+
+    用户决策：每条推文只保留底部唯一 [原文] 链接，正文不再出现内联短链
+    （避免与 [原文] 重复）。剥离后折叠多余空白。
+    """
+    if not text:
+        return text
+    cleaned = _INLINE_LINK_RE.sub("", text)
+    cleaned = _PIC_TWITTER_RE.sub("", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r" +\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
 def _render_tweet(t: dict) -> list[str]:
-    """渲染一条推文为 markdown 行列表（作者 + 评分 + 点题 + 译文/核心段）。"""
+    """渲染一条推文为 markdown 行列表（作者 + 评分 + 点题 + 中文正文 + 唯一 [原文] 链接）。
+
+    用户决策：简报不保留英文原文（移除英文折叠块）；正文内联链接剥离，
+    每条推文只在底部保留一个 [原文] 链接。长推优先展示中文核心段。
+    """
     author = t.get("author", "")
-    text = t.get("text", "")
-    text_original = t.get("text_original", "")
-    core_excerpt = t.get("core_excerpt", "")
+    text = _strip_inline_links(t.get("text", ""))
+    core_excerpt = _strip_inline_links(t.get("core_excerpt", ""))
     zh_point = t.get("zh_point", "")
     score = t.get("score", 0)
     url = t.get("url", "")
@@ -283,15 +307,8 @@ def _render_tweet(t: dict) -> list[str]:
     if zh_point:
         parts += [f"*{zh_point}*", ""]
 
-    if core_excerpt:
-        original_for_fold = text_original or text
-        folded_lines = [
-            f"> {line}" if line.strip() else ">"
-            for line in original_for_fold.splitlines()
-        ]
-        parts += [core_excerpt, "", "> [!quote]- 展开英文原文", *folded_lines, ""]
-    else:
-        parts += [f"> {text}", ""]
+    body = core_excerpt or text
+    parts += [f"> {body}", ""]
 
     if url:
         parts += [f"[原文]({url})", ""]
