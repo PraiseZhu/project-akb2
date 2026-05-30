@@ -129,6 +129,25 @@ def test_merged_tweet_has_zh_point():
 # SC-3 / P2a: 长推只展示中文核心段，不保留英文原文
 # ---------------------------------------------------------------------------
 
+def test_evidence_paths_reflect_actual_collector():
+    """SC-P3b-1: 非 dry-run 时 evidence_paths 应含实际 collector 名，不含 dry_run。"""
+    from akb2.briefing.pipeline import build_briefing_markdown
+
+    md = build_briefing_markdown(SYNTH_ZH, "active", "2026-05-30",
+                                 collector_name="account_collector")
+    assert "account_collector" in md, "evidence_paths 应含 account_collector"
+    assert "dry_run" not in md, "非 dry-run 时不应含 dry_run"
+
+
+def test_evidence_paths_dry_run_collector():
+    """dry-run 模式传入 collector_name='dry_run' 时，frontmatter 保留 dry_run 标记。"""
+    from akb2.briefing.pipeline import build_briefing_markdown
+
+    md = build_briefing_markdown(SYNTH_ZH, "active", "2026-05-30",
+                                 collector_name="dry_run")
+    assert "dry_run" in md, "dry-run 模式应含 dry_run"
+
+
 def test_long_tweet_shows_chinese_core_no_english_original():
     """长推只展示中文核心段；不再有英文原文折叠块（用户决策：简报不保留英文原文）。"""
     from akb2.briefing.pipeline import build_briefing_markdown

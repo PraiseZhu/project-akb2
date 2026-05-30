@@ -316,18 +316,22 @@ def _render_tweet(t: dict) -> list[str]:
     return parts
 
 
-def build_briefing_markdown(synth: dict, gate_decision: str, date: str) -> str:
+def build_briefing_markdown(
+    synth: dict,
+    gate_decision: str,
+    date: str,
+    collector_name: str = "account_collector",
+) -> str:
     """Build the final markdown briefing content with YAML frontmatter.
 
     The frontmatter includes all AKB gate-compatible fields so that a re-run of
     the gate CLI on this file produces the same proposed_gate_decision.
+    collector_name: 实际 collector 名（SC-P3b-1）；dry-run 时传 "dry_run"。
     """
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
     tweets = synth.get("tweets", [])
     focus_discussions = synth.get("focus_discussions", [])
 
-    # Build frontmatter with full AKB gate-compatible fields
-    # These mirror the temp briefing frontmatter so gate produces the same decision.
     frontmatter_lines = [
         "---",
         f"date: {date}",
@@ -338,7 +342,7 @@ def build_briefing_markdown(synth: dict, gate_decision: str, date: str) -> str:
         f"source_type: news",
         f"template_type: synthesis",
         "evidence_paths:",
-        "  - social/l0_collector/dry_run",
+        f"  - social/{collector_name}",
         "future_questions:",
         "  - What are the top AI trends this week?",
         "  - Which models are gaining the most developer attention?",
@@ -398,8 +402,14 @@ def build_briefing_markdown(synth: dict, gate_decision: str, date: str) -> str:
     return frontmatter + "\n" + body
 
 
-def build_temp_briefing_markdown(synth: dict, date: str) -> str:
-    """Build briefing markdown WITHOUT gate decision in frontmatter (for initial gate check)."""
+def build_temp_briefing_markdown(
+    synth: dict,
+    date: str,
+    collector_name: str = "account_collector",
+) -> str:
+    """Build briefing markdown WITHOUT gate decision in frontmatter (for initial gate check).
+    collector_name: 实际 collector 名（SC-P3b-1）；dry-run 时传 "dry_run"。
+    """
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
     tweets = synth.get("tweets", [])
 
@@ -412,7 +422,7 @@ def build_temp_briefing_markdown(synth: dict, date: str) -> str:
         f"source: social_trends_v1_1",
         f"generated_at: {now_iso}",
         "evidence_paths:",
-        "  - social/l0_collector/dry_run",
+        f"  - social/{collector_name}",
         "future_questions:",
         "  - What are the top AI trends this week?",
         "  - Which models are gaining the most developer attention?",
@@ -540,8 +550,16 @@ def main(argv: list[str] | None = None) -> int:
     real_briefing_path = staging_candidate_dir / briefing_filename
     final_briefing_path = social_dir / briefing_filename
 
+    # SC-P3b-1: collector_name 从实际模式推导，干 run 标 dry_run
+    collector_mode = os.environ.get("AKB2_INTAKE_COLLECTOR", "account")
+    effective_collector = (
+        "dry_run"
+        if dry_run_intake
+        else ("l0_collector" if collector_mode == "keyword" else "account_collector")
+    )
+
     # Stage 4a: Write temp briefing → gate（自检①：schema/结构，语言无关）
-    temp_content = build_temp_briefing_markdown(synth_en, date)
+    temp_content = build_temp_briefing_markdown(synth_en, date, collector_name=effective_collector)
     real_briefing_path.write_text(temp_content, encoding="utf-8")
 
     gate_decision = run_gate(akb_root=akb2_root, input_file=real_briefing_path, date=date)
@@ -559,7 +577,8 @@ def main(argv: list[str] | None = None) -> int:
     audit_verdict = verdict["verdict"]  # pass | warn | fail
 
     # Stage 5: 写最终内容（含 gate_decision + audit_verdict）
-    final_content = build_briefing_markdown(synth_zh, gate_decision, date)
+    final_content = build_briefing_markdown(synth_zh, gate_decision, date,
+                                            collector_name=effective_collector)
     # 将 audit_verdict 写入 frontmatter（在 proposed_gate_decision 行后追加）
     final_content = final_content.replace(
         f"proposed_gate_decision: {gate_decision}",
