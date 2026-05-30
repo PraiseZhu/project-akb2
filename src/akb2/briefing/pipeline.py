@@ -34,6 +34,9 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from akb2.briefing.translate import translate_briefing  # noqa: E402
+from akb2.briefing.audit import audit_briefing  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -183,13 +186,9 @@ def build_briefing_markdown(synth: dict, gate_decision: str, date: str) -> str:
     ]
     frontmatter = "\n".join(frontmatter_lines)
 
-    # Build body
-    delivery_date = (
-        datetime.date.fromisoformat(date) + datetime.timedelta(days=1)
-    ).isoformat()
-
+    # Build body — 文件名/标题与 frontmatter date 一致，不再 +1
     body_parts = [
-        f"# {delivery_date} AI 社交趋势日报",
+        f"# {date} AI 社交趋势日报",
         "",
         "## 导读",
         "",
@@ -229,15 +228,32 @@ def build_briefing_markdown(synth: dict, gate_decision: str, date: str) -> str:
     body_parts += ["## 关键推文", ""]
     for t in tweets[:10]:
         author = t.get("author", "")
-        text = t.get("text", "")
+        text = t.get("text", "")          # 译后为中文（或原英文若翻译失败）
+        text_original = t.get("text_original", "")  # 英文原文备查（长推）
+        core_excerpt = t.get("core_excerpt", "")    # 长推中文核心段
         score = t.get("score", 0)
         url = t.get("url", "")
-        body_parts += [
-            f"**{author}**（评分：{score:.3f}）",
-            f"> {text}",
-            f"[原文]({url})" if url else "",
-            "",
-        ]
+
+        body_parts += [f"**{author}**（评分：{score:.3f}）"]
+
+        if core_excerpt:
+            # 长推：显示中文核心段 + 折叠英文原文
+            body_parts += [
+                "",
+                core_excerpt,
+                "",
+                f"> [!quote]- 展开英文原文",
+                f"> {text_original or text}",
+                "",
+            ]
+        else:
+            body_parts += [
+                f"> {text}",
+                "",
+            ]
+
+        if url:
+            body_parts += [f"[原文]({url})", ""]
 
     scoring_summary = synth.get("scoring_summary", {})
     total = scoring_summary.get("total_tweets", len(tweets))
@@ -280,12 +296,8 @@ def build_temp_briefing_markdown(synth: dict, date: str) -> str:
     ]
     frontmatter = "\n".join(frontmatter_lines)
 
-    delivery_date = (
-        datetime.date.fromisoformat(date) + datetime.timedelta(days=1)
-    ).isoformat()
-
     body_parts = [
-        f"# {delivery_date} AI 社交趋势日报",
+        f"# {date} AI 社交趋势日报",
         "",
         "## 导读",
         "",
@@ -334,9 +346,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         sys.exit(1)
 
-    # Compute delivery date (date + 1 day)
-    delivery_date = (datetime.date.fromisoformat(date) + datetime.timedelta(days=1)).isoformat()
-    briefing_filename = f"{delivery_date} Daily Briefing.md"
+    # 文件名 = 抓取日（去掉旧的 +1 偏移）
+    briefing_filename = f"{date} Daily Briefing.md"
 
     # Stage 1: Intake
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
@@ -349,50 +360,64 @@ def main(argv: list[str] | None = None) -> int:
     # Stage 2: Scoring
     scored_data = run_scoring(intake_data)
 
-    # Stage 3: Synthesis
-    synth = run_synthesis(scored_data, date=date)
+    # Stage 3: Synthesis（产出英文结构化分析，语言交翻译阶段负责）
+    synth_en = run_synthesis(scored_data, date=date)
 
-    # Prepare paths — 落点对齐 master plan SC-7: vault-root/Praise Space/AKB2.0/AI TRENDS/Social/
-    # gate CLI 硬要求 input 在 <akb-root>/staging/candidate/,所以 akb2_root 作为 --akb-root 传给 gate,
-    # staging 放在 AKB2.0 内部(staging/candidate/),Social 也在 AKB2.0/AI TRENDS/Social/
+    # Prepare paths
     akb2_root = vault_root / "Praise Space" / "AKB2.0"
     staging_candidate_dir = akb2_root / "staging" / "candidate"
     staging_candidate_dir.mkdir(parents=True, exist_ok=True)
-
     social_dir = akb2_root / "AI TRENDS" / "Social"
     social_dir.mkdir(parents=True, exist_ok=True)
 
-
-
-    # Physical file location (under staging/candidate/ for gate compliance)
     real_briefing_path = staging_candidate_dir / briefing_filename
-    # Final output location in Social directory (physical file, no symlink)
     final_briefing_path = social_dir / briefing_filename
 
-    # Stage 4: Write temp briefing (with AKB gate-compatible frontmatter, no gate_decision yet)
-    temp_content = build_temp_briefing_markdown(synth, date)
+    # Stage 4a: Write temp briefing → gate（自检①：schema/结构，语言无关）
+    temp_content = build_temp_briefing_markdown(synth_en, date)
     real_briefing_path.write_text(temp_content, encoding="utf-8")
 
-    # Stage 4: Run gate on the staging/candidate file — akb-root 必须是 AKB2.0/(不是 vault-root)
-    # 因为 gate 校验 input rel path 必须以 "staging/candidate/" 开头,只有 akb-root=AKB2.0 时才匹配
     gate_decision = run_gate(akb_root=akb2_root, input_file=real_briefing_path, date=date)
 
-    # Stage 5: Write final content with gate_decision in frontmatter
-    final_content = build_briefing_markdown(synth, gate_decision, date)
-    real_briefing_path.write_text(final_content, encoding="utf-8")
-
-    # Reject gate decision: do not write to Social/active path
     if gate_decision == "reject":
-        sys.stderr.write("gate decision: reject — skipping Social/active write\n")
+        sys.stderr.write("gate decision: reject — skipping translate/audit/Social write\n")
+        print(f"proposed_gate_decision: {gate_decision}")
         sys.exit(1)
 
-    # Copy physical file to Social directory (no symlink — ensures Obsidian/iCloud compatibility)
-    # Unlink first in case a symlink from a previous run exists at this path
+    # Stage 4b: 翻译（全中文化）
+    synth_zh = translate_briefing(synth_en)
+
+    # Stage 4c: 译后审计（自检②：代码标准 + LLM 漂移/准确）
+    verdict = audit_briefing(synth_zh, synth_en)
+    audit_verdict = verdict["verdict"]  # pass | warn | fail
+
+    # Stage 5: 写最终内容（含 gate_decision + audit_verdict）
+    final_content = build_briefing_markdown(synth_zh, gate_decision, date)
+    # 将 audit_verdict 写入 frontmatter（在 proposed_gate_decision 行后追加）
+    final_content = final_content.replace(
+        f"proposed_gate_decision: {gate_decision}",
+        f"proposed_gate_decision: {gate_decision}\naudit_verdict: {audit_verdict}",
+        1,
+    )
+    real_briefing_path.write_text(final_content, encoding="utf-8")
+
+    # Provisional enforcement matrix:
+    #   fail  → 不入库（文件留 staging，不 copy 到 Social）
+    #   warn  → 入库但 frontmatter 已标 audit_verdict: warn
+    #   pass  → 正常入库
+    if audit_verdict == "fail":
+        sys.stderr.write(
+            f"audit verdict: fail — briefing留在 staging/candidate，不写入 Social。\n"
+            f"standard_issues: {verdict.get('standard_issues')}\n"
+        )
+        print(f"proposed_gate_decision: {gate_decision}")
+        return 0  # 非错误退出，但未入库
+
+    # Copy to Social
     if final_briefing_path.exists() or final_briefing_path.is_symlink():
         final_briefing_path.unlink()
     shutil.copy2(real_briefing_path, final_briefing_path)
 
-    # Print to stdout (SC-6 greps for this)
     print(f"proposed_gate_decision: {gate_decision}")
     return 0
 
