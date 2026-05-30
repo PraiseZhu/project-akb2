@@ -237,13 +237,18 @@ def build_briefing_markdown(synth: dict, gate_decision: str, date: str) -> str:
         body_parts += [f"**{author}**（评分：{score:.3f}）"]
 
         if core_excerpt:
-            # 长推：显示中文核心段 + 折叠英文原文
+            # 长推：显示中文核心段 + 折叠英文原文（多行逐行加 > 前缀）
+            original_for_fold = text_original or text
+            folded_lines = [
+                f"> {line}" if line.strip() else ">"
+                for line in original_for_fold.splitlines()
+            ]
             body_parts += [
                 "",
                 core_excerpt,
                 "",
-                f"> [!quote]- 展开英文原文",
-                f"> {text_original or text}",
+                "> [!quote]- 展开英文原文",
+                *folded_lines,
                 "",
             ]
         else:

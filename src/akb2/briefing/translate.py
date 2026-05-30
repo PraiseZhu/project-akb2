@@ -61,6 +61,9 @@ def _build_translate_prompt(synth: dict) -> str:
                 "idx": i,
                 "text": t.get("text", ""),
                 "is_long": len(t.get("text", "")) > LONG_TWEET_THRESHOLD,
+                # 若已有通过校验的核心英文段，请求模型直接翻译该段
+                **({"core_excerpt_en": t.get("core_excerpt", "")}
+                   if t.get("core_excerpt") else {}),
             }
             for i, t in enumerate(synth.get("tweets", []))
         ],
@@ -76,7 +79,9 @@ def _build_translate_prompt(synth: dict) -> str:
         '  "executive_summary": "<译文>",\n'
         '  "focus_discussions": [{"idx": 0, "topic": "<译文>", "summary": "<译文>"}],\n'
         '  "key_quotes": [{"idx": 0, "quote": "<英文原文（必须逐字保留，不翻译）>", "context": "<1句中文点题：说这条为什么值得引述>"}],\n'
-        '  "tweets": [{"idx": 0, "text_zh": "<译文>", "core_excerpt_en": "<仅对 is_long=true：从英文原文中逐字摘出最核心1段，≤400字，必须是原文子串>"}]\n'
+        '  "tweets": [{"idx": 0, "text_zh": "<译文>", '
+        '"core_excerpt_en": "<仅对 is_long=true 且无 core_excerpt_en 输入：从英文原文中逐字摘出最核心1段，≤400字，必须是原文子串>", '
+        '"core_excerpt_zh": "<仅当输入中有 core_excerpt_en：将该英文核心段译为中文>"}]\n'
         "}\n"
         "```\n\n"
         "重要约束：\n"
@@ -214,38 +219,28 @@ def _apply_translation(synth: dict, trans: dict) -> dict:
             tw["text_original"] = original_text  # 备查英文原文
             tw["text"] = text_zh
 
-        # 长推核心段（子串校验）
+        # 长推核心段（子串校验 + 直接翻译核心段）
         if len(original_text) > LONG_TWEET_THRESHOLD:
             core_en = (t.get("core_excerpt_en") or "").strip()
+            core_zh_direct = (t.get("core_excerpt_zh") or "").strip()
+
             if core_en and _is_substring(core_en, original_text):
-                # 核心段通过子串校验 → 翻译核心段
-                core_zh = _translate_core_excerpt(core_en, tw.get("text", text_zh or original_text))
-                tw["core_excerpt"] = core_zh or core_en  # 译失败保留英文原段
+                # 模型直接返回了核心段译文 → 优先使用
+                if core_zh_direct:
+                    tw["core_excerpt"] = core_zh_direct
+                else:
+                    # 回退：截取译文前段（近似，但指定段不超过 400 字）
+                    tw["core_excerpt"] = _first_segment(text_zh or original_text) or core_en
             else:
                 if core_en:
                     sys.stderr.write(
                         f"WARNING [translate]: tweet[{i}] core_excerpt_en failed substring check, "
                         "falling back to first segment.\n"
                     )
-                # 回退：取原文第一段再翻译
-                first_seg = _first_segment(original_text)
-                tw["core_excerpt"] = _translate_core_excerpt(first_seg, first_seg) or first_seg
+                # 回退：取译文第一段（已是中文）
+                first_seg_zh = _first_segment(text_zh) if text_zh else _first_segment(original_text)
+                tw["core_excerpt"] = first_seg_zh or _first_segment(original_text)
 
     return result
 
 
-def _translate_core_excerpt(excerpt_en: str, zh_text: str) -> str:
-    """从已翻译的全文中提取对应核心段（启发式：取前 400 字的中文译文）。
-    若 zh_text 与 excerpt_en 相同（翻译失败），直接返回空让调用方回退。
-    """
-    if not zh_text or zh_text == excerpt_en:
-        return ""
-    # 取译文前 400 字作为核心段近似
-    zh_text = zh_text.strip()
-    if len(zh_text) <= 400:
-        return zh_text
-    for sep in ["。\n", "。", "！", "？", "\n\n", "\n"]:
-        idx = zh_text.find(sep, 100)
-        if 0 < idx <= 400:
-            return zh_text[:idx + len(sep)].strip()
-    return zh_text[:400].strip()

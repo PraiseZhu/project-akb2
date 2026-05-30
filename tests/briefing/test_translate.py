@@ -69,6 +69,7 @@ MOCK_TRANSLATE_RESPONSE = {
             "idx": 1,
             "text_zh": "关于 AI 智能体和记忆系统核心洞察的长文推文译文。",
             "core_excerpt_en": "This is the core insight about AI agents and memory systems.",
+            "core_excerpt_zh": "这是关于 AI 智能体和记忆系统的核心洞察。",  # 模型直接翻译核心段
         },
     ],
 }
@@ -191,3 +192,43 @@ def test_short_tweet_no_excerpt():
 
     short_tw = result["tweets"][0]
     assert "core_excerpt" not in short_tw
+
+
+# ---------------------------------------------------------------------------
+# Codex F1: 长推核心段使用模型直接翻译的核心段译文（不取整条译文前段）
+# ---------------------------------------------------------------------------
+
+def test_core_excerpt_uses_selected_core_segment():
+    """核心英文段在原文末尾时，core_excerpt 应使用模型直接翻译该段，而非整条译文前 400 字。"""
+    import copy
+    from akb2.briefing.translate import translate_briefing
+
+    # 核心段在原文末尾（前 600 字是噪声，核心内容在后半部分）
+    synth_with_tail_core = copy.deepcopy(FIXTURE_SYNTH)
+    tail_core_en = "This is the core insight about AI agents and memory systems."
+    synth_with_tail_core["tweets"][1]["text"] = "B" * 600 + " " + tail_core_en
+
+    response_with_core_zh = {
+        **MOCK_TRANSLATE_RESPONSE,
+        "tweets": [
+            {"idx": 0, "text_zh": "短推文。"},
+            {
+                "idx": 1,
+                "text_zh": "B" * 30 + "...这是一条关于 AI 智能体的长文译文开头...",  # 前段无核心含义
+                "core_excerpt_en": tail_core_en,
+                "core_excerpt_zh": "这是关于 AI 智能体和记忆系统的核心洞察。",  # 模型直接翻译核心段
+            },
+        ],
+    }
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=_make_mock_call_llm(response_with_core_zh)):
+        result = translate_briefing(synth_with_tail_core)
+
+    long_tw = result["tweets"][1]
+    assert "core_excerpt" in long_tw
+    # core_excerpt 应是模型直接翻译的核心段，不应包含开头的噪声内容
+    assert "这是关于 AI 智能体和记忆系统的核心洞察" in long_tw["core_excerpt"], \
+        f"core_excerpt 应包含核心段译文，实际: {long_tw['core_excerpt'][:100]!r}"
+    # 不应把开头 BBB... 错误地作为核心段
+    assert long_tw["core_excerpt"][:5] != "B" * 5, \
+        "core_excerpt 不应以噪声开头（取错了整条译文前段）"

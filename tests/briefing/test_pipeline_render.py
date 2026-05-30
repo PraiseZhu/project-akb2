@@ -74,6 +74,30 @@ def test_long_tweet_rendered_with_callout():
 
 
 # ---------------------------------------------------------------------------
+# Codex F2 (SC-3): 多行英文原文完整折叠
+# ---------------------------------------------------------------------------
+
+def test_long_tweet_multiline_original_stays_in_callout():
+    """多行英文原文在折叠块中每行都有 > 前缀。"""
+    import copy
+    from akb2.briefing.pipeline import build_briefing_markdown
+
+    synth_multiline = copy.deepcopy(SYNTH_ZH)
+    synth_multiline["tweets"][1]["text_original"] = "line1\nline2\nline3"
+    synth_multiline["tweets"][1]["core_excerpt"] = "核心内容。"
+
+    md = build_briefing_markdown(synth_multiline, "active", "2026-05-30")
+
+    assert "> line1" in md, "第1行应有 > 前缀"
+    assert "> line2" in md, "第2行应有 > 前缀"
+    assert "> line3" in md, "第3行应有 > 前缀"
+    # 确保不是裸文本（脱离折叠块）
+    lines = md.splitlines()
+    for line in ["line1", "line2", "line3"]:
+        assert line not in lines, f"{line!r} 不应作为裸行出现（应带 > 前缀）"
+
+
+# ---------------------------------------------------------------------------
 # Codex F1 (SC-8): 英文 synth 能通过 gate 进入 translate
 # ---------------------------------------------------------------------------
 
