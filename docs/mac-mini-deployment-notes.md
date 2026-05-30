@@ -136,7 +136,7 @@ ls "/Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/AKB2.0/"
 | B5 | iCloud Drive 登录 + Obsidian vault 同步开 | 系统设置检查 | 写入成功但 Obsidian 看不到 |
 | B6 | VAULT_ROOT 父目录存在且可写 | `test -w "/Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents"` | pipeline fail |
 | B7 | X_BEARER_TOKEN 配置 + secrets 文件权限 | `test -f ~/.akb2-secrets.sh \|\| echo "FAIL: missing secrets file"` → `test "$(stat -f '%Lp' ~/.akb2-secrets.sh)" = "600" \|\| echo "FAIL: must be chmod 600"` → `source ~/.akb2-secrets.sh; [[ -n "${X_BEARER_TOKEN:-}" ]] && echo "X_BEARER_TOKEN SET" \|\| echo "FAIL: X_BEARER_TOKEN empty"` | SC-3-real fail；secrets 宽权限 → API key 本机泄露风险 |
-| B8 | OPENROUTER_API_KEY 配置（chmod 600 已在 B7 验证） | `source ~/.akb2-secrets.sh; [[ -n "${OPENROUTER_API_KEY:-}" ]] && echo "OPENROUTER_API_KEY SET" \|\| echo "FAIL: OPENROUTER_API_KEY empty"` → launchd-like env 验证：`env -i HOME="$HOME" PATH="..." bash -c 'source ~/.akb2-secrets.sh; [[ -n "${OPENROUTER_API_KEY:-}" ]] && echo OK'` | SC-5-real fail；synthesis 走 fallback，日志有 WARNING |
+| B8 | AI_GATEWAY_API_KEY 配置（chmod 600 已在 B7 验证） | `source ~/.akb2-secrets.sh; [[ -n "${AI_GATEWAY_API_KEY:-}" ]] && echo "AI_GATEWAY_API_KEY SET" \|\| echo "FAIL: AI_GATEWAY_API_KEY empty"` → launchd-like env 验证：`env -i HOME="$HOME" PATH="..." bash -c 'source ~/.akb2-secrets.sh; [[ -n "${AI_GATEWAY_API_KEY:-}" ]] && echo OK'` | SC-5-real fail；synthesis 走 fallback，日志有 WARNING |
 | B9 | logs/ 目录预创建 | `mkdir -p $REPO_ROOT/logs` | launchctl load 拒绝（StandardOutPath 不可写） |
 | B10 | launchctl load 成功 | `launchctl load ~/Library/LaunchAgents/com.akb2.briefing.plist; launchctl list \| grep akb2` | 未注册 |
 | B11 | next fire date ≤ 24h | `launchctl print gui/$(id -u)/com.akb2.briefing \| grep "next fire"` | 时区/Hour/Minute 配置错 |

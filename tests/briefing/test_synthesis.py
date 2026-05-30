@@ -187,3 +187,87 @@ def test_synthesize_output_file():
     )
     assert val_result.returncode == 0, f"validator failed:\n{val_result.stderr}"
     assert "passes social_trends_v1_1" in val_result.stdout
+
+
+# ---------------------------------------------------------------------------
+# 质量门控：summary 空 / topic 非中文 触发重试
+# ---------------------------------------------------------------------------
+
+def test_validate_quality_empty_summary_raises():
+    """focus_discussions 有空 summary → _validate_quality raise（触发合成重试）。"""
+    from akb2.briefing.synthesis import _validate_quality
+
+    merged = {
+        "focus_discussions": [
+            {"topic": "智能体长记忆", "summary": "完整的中文总结内容。", "supporting_tweet_ids": ["1"]},
+            {"topic": "开源权重模型", "summary": "", "supporting_tweet_ids": ["2"]},  # 空
+        ],
+    }
+    with pytest.raises(ValueError, match="summary 为空"):
+        _validate_quality(merged)
+
+
+def test_validate_quality_english_topics_pass():
+    """topic 英文也通过（合成语言无关，中文化交 translate）——只要 summary 非空。"""
+    from akb2.briefing.synthesis import _validate_quality
+
+    merged = {
+        "focus_discussions": [
+            {"topic": "Agent memory infrastructure", "summary": "Real content.", "supporting_tweet_ids": ["1"]},
+            {"topic": "Open weight models", "summary": "More content.", "supporting_tweet_ids": ["2"]},
+        ],
+    }
+    _validate_quality(merged)  # 不抛 = pass
+
+
+def test_validate_quality_banned_topic_raises():
+    """空洞词 topic（如 AI Trends）→ raise。"""
+    from akb2.briefing.synthesis import _validate_quality
+
+    merged = {"focus_discussions": [{"topic": "AI Trends", "summary": "x.", "supporting_tweet_ids": ["1"]}]}
+    with pytest.raises(ValueError, match="空洞词"):
+        _validate_quality(merged)
+
+
+def test_validate_quality_passes_good():
+    """中文 topic + 非空 summary → 不 raise。"""
+    from akb2.briefing.synthesis import _validate_quality
+
+    merged = {
+        "focus_discussions": [
+            {"topic": "智能体长记忆基础设施", "summary": "第一句。第二句。第三句。", "supporting_tweet_ids": ["1"]},
+        ],
+    }
+    _validate_quality(merged)  # 不抛 = pass
+
+
+def test_synthesize_retries_on_degraded_then_succeeds():
+    """合成首次退化(summary空)→重试→第二次正常，最终返回好结果。"""
+    import json as _json
+    from unittest.mock import patch
+    from akb2.briefing import synthesis as syn
+
+    scored = _load_fixture()
+    top = sorted(scored["tweets"], key=lambda t: t.get("score", 0), reverse=True)
+    ids = [str(t["id"]) for t in top[:3]]
+
+    degraded = _json.dumps({"focus_discussions": [{"topic": "退化主题", "supporting_tweet_ids": ids}]})  # 无 summary
+    good = _json.dumps({
+        "executive_summary": "今日要点综述。",
+        "focus_discussions": [
+            {"topic": "智能体长记忆基础设施", "summary": "第一句。第二句。第三句。", "supporting_tweet_ids": ids},
+        ],
+    })
+    responses = [degraded, good]
+
+    def fake_call(prompt, max_retries=2):
+        return responses.pop(0)
+
+    with patch.object(syn, "_has_api_key", return_value=True), \
+         patch.object(syn, "_call_deepseek", side_effect=fake_call):
+        r = syn.synthesize(scored, date="2026-05-30")
+
+    fds = r.get("focus_discussions", [])
+    assert fds and fds[0]["summary"].strip(), "重试后应拿到非空 summary"
+    assert fds[0]["topic"] == "智能体长记忆基础设施"
+    assert not responses, "应消耗掉退化响应、用第二次"

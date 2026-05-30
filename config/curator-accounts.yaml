@@ -1,0 +1,127 @@
+# AKB2 社交日报 — 原始策展博主清单（留档）
+#
+# 来源：session 3d39f955（2026-05-26/27「社交热点日报 MVP」规划讨论）
+#   reference/history/transcripts/AKB2/3d39f955-7a21-48dc-953b-d6795269ef2b.jsonl
+#
+# 内容：用户提供的「AYI 推荐图」OCR 出来的全集，共 101 个 handle。
+#
+# 重要状态：
+#   - 该清单当前【尚未接入抓取管线】。intake 实际走 L0 关键词广搜
+#     ("AI OR LLM OR AGI" -t latest)，不按账号抓 → 这份清单从未驱动过抓取。
+#   - 落地残留：仅 22 个进了 scoring.py 的 AUTHORITY_WHITELIST（仅打分加权），
+#     3 个进了 intake_sources.yaml 的 L3（且 L3 未被 pipeline 调用）。
+#   - 同一 session 还做过分层（Top 50 / parking / 排除营销号 / 标注 18 个
+#     OCR 不存在 handle），该分层表【尚未提取】，后续可补。
+#   - 下方 accounts 为 OCR 全集原样保留；已知 OCR 噪声见 suspected_ocr_errors。
+#
+# 用途：后续把 l3_collector 改为按账号抓取时的源清单。接入前需人工核对
+#       handle 拼写、剔除不存在账号、按 Top 50/parking 分层。
+
+accounts:
+  - 0xROAS
+  - 9hills
+  - AlchainHust
+  - AmirMushich
+  - AndrewYNg
+  - AnthropicAI
+  - AravSrinivas
+  - DashHuang
+  - EXM7777
+  - GitTrend0x
+  - GoogleDeepMind
+  - JeffDean
+  - KyeGomezB
+  - LangChainAI
+  - LawrenceW_Zen
+  - LlamaIndex
+  - MengTo
+  - NorthstarBrain
+  - OpenAI
+  - SaitoWu
+  - StabilityAI
+  - Suhail
+  - TianheYu
+  - _akhaliq
+  - abskoop
+  - adcock_brett
+  - aidangomez
+  - alin_zone
+  - amasad
+  - arankomatsuzaki
+  - aronhouyu
+  - arxiv_org
+  - baoyu
+  - boringmarketer
+  - clementdelangue
+  - dario_amodei
+  - demishassabis
+  - dotey
+  - dr_cintas
+  - drjimfan
+  - eptwts
+  - fankaishuoai
+  - gdb
+  - gergelyorosz
+  - ggerganov
+  - gm8xx8
+  - godofprompt
+  - gregisenberg
+  - hanxiao_2017
+  - hwchase17
+  - ilyasut
+  - indigo11
+  - jackfriks
+  - jerryjliu0
+  - jhyuxm
+  - jianshuo
+  - julien_c
+  - karinanguyen_
+  - karpathy
+  - kimmonismus
+  - lateinteraction
+  - levelsio
+  - lmsysorg
+  - marclou
+  - mickaywiggley
+  - midjourney
+  - miles_brundage
+  - nateherk
+  - nexudotio
+  - nickfloats
+  - nirantk
+  - omarsar0
+  - op7418
+  - oran_ge
+  - paulg
+  - rasbt
+  - rileybrown
+  - ring_hyacinth
+  - rohanpaul_ai
+  - runwayml
+  - sama
+  - shengjia_zhao
+  - shuchaobi
+  - simonw
+  - sleepinyourhat
+  - somolicick
+  - somonie
+  - soumithchintala
+  - steipete
+  - sunjiao123sun_
+  - swyx
+  - togethercompute
+  - tuturetom
+  - vasuman
+  - vllm_project
+  - wangray
+  - woj_zaremba
+  - yangyi_io
+  - yannickkilcher
+  - ylecun
+  - yulikay
+
+# 疑似 OCR 识别错误（接入前需核对/修正）
+suspected_ocr_errors:
+  - mickaywiggley   # 应为 mckaywrigley
+  - somolicick      # 拼写存疑
+  - somonie         # 拼写存疑

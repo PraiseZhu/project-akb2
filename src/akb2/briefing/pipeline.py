@@ -448,10 +448,11 @@ def main(argv: list[str] | None = None) -> int:
     briefing_filename = f"{date} Daily Briefing.md"
 
     # 采集层时间窗（SC-6）
+    # twitter 的 --until 是排他上界（"早于该日"），要包含抓取当天必须 +1 天
     date_dt = datetime.datetime.strptime(date, "%Y-%m-%d")
     since_dt = date_dt - datetime.timedelta(days=window_days - 1)
     since_date_str = since_dt.strftime("%Y-%m-%d")
-    until_date_str = date
+    until_date_str = (date_dt + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
 
     # Stage 1: Intake
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:

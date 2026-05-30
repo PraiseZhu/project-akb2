@@ -2,7 +2,7 @@
 
 CLI: python -m akb2.briefing.synthesis --input <scored.json> --output <synth.json>
 
-- 若 OPENROUTER_API_KEY 或 DEEPSEEK_API_KEY 可用：调真实 API
+- 若 AI_GATEWAY_API_KEY 可用：调真实 API（AI Gateway，默认 llm-proxy.tapsvc.com，OpenAI 兼容）
 - 若无凭证：使用 deterministic fallback（从 scored.json 中前 5 条推文构造合规 payload）
 - 输出必须通过 social_trends_v1_1 schema 校验
 - 失败时最多重试 2 次（指数退避，间隔 1s / 2s）
@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # 合成阶段专用模型（可由环境变量覆盖）
-_SYNTHESIS_MODEL = os.environ.get("AKB2_SYNTHESIS_MODEL", "deepseek/deepseek-v4-pro")
+_SYNTHESIS_MODEL = os.environ.get("AKB2_SYNTHESIS_MODEL", "gemini-3.1-pro-preview")
 
 # synthesis system message：约束分析质量，语言交由后续翻译阶段
 _SYNTHESIS_SYSTEM = (
@@ -33,7 +33,7 @@ _SYNTHESIS_SYSTEM = (
 
 def _has_api_key() -> bool:
     """检测是否有可用 API 凭证。"""
-    return bool(os.environ.get("OPENROUTER_API_KEY") or os.environ.get("DEEPSEEK_API_KEY"))
+    return bool(os.environ.get("AI_GATEWAY_API_KEY"))
 
 
 def _call_llm(
@@ -47,8 +47,8 @@ def _call_llm(
     """通用 LLM 调用（OpenAI-compatible），失败重试一次，返回 raw content string。"""
     import httpx
 
-    api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("DEEPSEEK_API_KEY")
-    base_url = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api").rstrip("/")
+    api_key = os.environ.get("AI_GATEWAY_API_KEY")
+    base_url = os.environ.get("AI_GATEWAY_BASE_URL", "https://llm-proxy.tapsvc.com").rstrip("/")
     url = f"{base_url}/v1/chat/completions"
 
     payload: dict = {"model": model, "messages": messages, "temperature": 0.2}
@@ -107,25 +107,27 @@ def _validate_response(data: dict) -> None:
 
 
 def _validate_quality(merged: dict) -> None:
-    """额外质量校验 — 只校验"中文 topic"这个最关键的约束,其他缺失字段由 _merge_with_input 兜底合成。
+    """质量门控 — 校验合成产出可用，不通过则 raise 触发重试（防 model 退化输出直接放行到 audit）。
 
-    - 至少 50% 的 topic 含中文字符(防 model 全英文输出),不通过 raise 触发重试
-    - executive_summary 缺失不 raise(由 merge 兜底),不浪费 API 重试
+    注意架构：合成阶段语言无关（英文 OK），中文化由 translate 阶段负责、audit 阶段把关。
+    因此这里**不**要求 topic 中文，只确保结构可用，让 translate 有东西可译：
+    - 每个 focus_discussion 的 topic 必须非空且非空洞词
+    - 每个 focus_discussion 的 summary 必须非空(deepseek/gemini 偶发只给 topic 丢 summary)
+    - executive_summary 缺失不 raise(由 merge 的 _fallback_executive_summary 兜底)
     """
     fds = merged.get("focus_discussions", [])
     if len(fds) < 1:
         raise ValueError("quality: 无 focus_discussions")
 
     BANNED = {"ai trends", "ai 趋势", "trends", "核心讨论", "ai trend"}
-    chinese_count = 0
-    for fd in fds:
+    for i, fd in enumerate(fds):
         topic = (fd.get("topic") or "").strip()
+        if not topic:
+            raise ValueError(f"quality: focus_discussions[{i}].topic 为空")
         if topic.lower() in BANNED:
             raise ValueError(f"quality: topic 是空洞词 '{topic}'")
-        if sum(1 for c in topic if "一" <= c <= "鿿") >= 2:
-            chinese_count += 1
-    if chinese_count < len(fds) * 0.5:
-        raise ValueError(f"quality: 仅 {chinese_count}/{len(fds)} 个 topic 是中文,违反语言要求")
+        if not (fd.get("summary") or "").strip():
+            raise ValueError(f"quality: focus_discussions[{i}].summary 为空（合成退化）")
 
 
 def _fallback_synthesis(scored_input: dict, date: str | None = None) -> dict:
@@ -190,7 +192,7 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
     """
     if not _has_api_key():
         sys.stderr.write(
-            "WARNING: OPENROUTER_API_KEY not set — synthesis using local fallback. "
+            "WARNING: AI_GATEWAY_API_KEY not set — synthesis using local fallback. "
             "Set SC-5-real = PENDING until real API key is configured.\n"
         )
         return _fallback_synthesis(scored_input, date)
@@ -222,21 +224,21 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
             "Return JSON with fields: date, generated_at, source, scoring_summary, tweets, focus_discussions."
         )
 
-    # 调一次 API,不重试质量问题(model 不稳定,重试也不一定改善,白白浪费 5+ 分钟);
-    # 仅在 API 抛异常(网络/超时/schema 失败)时重试一次。
-    # model 偷懒输出(topic="AI Trends"、英文 summary、漏字段)由 _merge_with_input + _patch_*
-    # 系列函数代码兜底补救,不依赖重试。
+    # 最多 3 次尝试：API 异常(网络/超时/schema)或质量门控不过(summary 空/topic 非中文)都触发重试。
+    # model 偶发退化(只给 topic 丢 summary/ids)由 _validate_quality 拦下并重试，而非放行到 audit 才发现。
     last_err: Exception | None = None
-    for attempt in range(2):
+    max_attempts = 3
+    for attempt in range(max_attempts):
         try:
             raw = _call_deepseek(prompt)
             data = json.loads(raw)
             merged = _merge_with_input(data, scored_input, resolved_date, top)
             _validate_response(merged)
+            _validate_quality(merged)
             return merged
         except Exception as e:
             last_err = e
-            if attempt == 1:
+            if attempt == max_attempts - 1:
                 break
             continue
 

@@ -11,11 +11,7 @@ _x_bearer() {
 }
 
 _llm_key() {
-  echo "${OPENROUTER_KEY:-${DEEPSEEK_KEY:-}}"
-}
-
-_use_openrouter() {
-  [[ -n "${OPENROUTER_KEY:-}" ]]
+  echo "${AI_GATEWAY_API_KEY:-}"
 }
 
 case "${1:-}" in
@@ -47,9 +43,9 @@ case "${1:-}" in
     echo "Running DeepSeek synthesis..."
     LLM_KEY="$(_llm_key)"
     if [[ -z "$LLM_KEY" ]]; then
-      echo "WARNING: No LLM API credentials found (OPENROUTER_KEY / DEEPSEEK_KEY)."
+      echo "WARNING: No LLM API credentials found (AI_GATEWAY_API_KEY)."
       echo "         Existing synthetic fixture at: $FIXTURE_DIR/deepseek-output.json"
-      echo "         Set OPENROUTER_KEY or DEEPSEEK_KEY and re-run for real model output."
+      echo "         Set AI_GATEWAY_API_KEY and re-run for real model output."
       exit 0
     fi
     SAMPLE_PATH="$REPO_ROOT/$FIXTURE_DIR/sample.json"
@@ -57,13 +53,12 @@ case "${1:-}" in
       echo "ERROR: $SAMPLE_PATH not found. Run --collect first." >&2
       exit 1
     fi
-    echo "Calling DeepSeek (or OpenRouter)..."
-    USE_OPENROUTER="$( _use_openrouter && echo 1 || echo 0 )"
+    echo "Calling DeepSeek via AI Gateway..."
     python3 - "$SAMPLE_PATH" "$REPO_ROOT/$FIXTURE_DIR/deepseek-output.json" \
-              "$LLM_KEY" "$USE_OPENROUTER" <<'PYEOF'
+              "$LLM_KEY" <<'PYEOF'
 import json, sys, urllib.request, urllib.error
 
-sample_path, out_path, api_key, use_openrouter_flag = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+sample_path, out_path, api_key = sys.argv[1], sys.argv[2], sys.argv[3]
 
 sample = json.load(open(sample_path))
 tweets = sample.get("tweets", [])[:5]
@@ -72,12 +67,10 @@ tweets_text = "\n".join(
 )
 total = len(sample.get("tweets", []))
 
-if use_openrouter_flag == "1":
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    model = "deepseek/deepseek-v4-pro"
-else:
-    url = "https://api.deepseek.com/v1/chat/completions"
-    model = "deepseek-v4-pro"
+import os
+base = os.environ.get("AI_GATEWAY_BASE_URL", "https://llm-proxy.tapsvc.com").rstrip("/")
+url = f"{base}/v1/chat/completions"
+model = "deepseek/deepseek-v4-pro"
 
 payload = {
     "model": model,
