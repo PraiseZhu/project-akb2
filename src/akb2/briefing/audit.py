@@ -57,13 +57,32 @@ def _requires_chinese(text: str) -> bool:
 _MIN_SUMMARY_SENTENCES = 3
 
 
+_MIN_COMMA_CLAUSE_LEN = 50   # 逗号连缀判达标的最小字数
+_MIN_COMMA_CLAUSES = 3       # 逗号分段数达到此值视为"≥3 句"
+
+
 def _count_sentences(text: str) -> int:
-    """粗计句数（按中文句末标点切分；英文句末标点也计入）。"""
+    """计算句数，兼容两种写法：
+
+    1. 句末标点分句（。？！；…）—— 标准写法
+    2. 逗号连缀长句 —— DeepSeek 实际产出；当标点分句 < _MIN_SUMMARY_SENTENCES 且
+       文本够长（≥_MIN_COMMA_CLAUSE_LEN 字）且逗号分段数 ≥_MIN_COMMA_CLAUSES 时，
+       返回逗号分段数，避免误判"句数不足"
+    """
     if not text or not text.strip():
         return 0
-    # 中文句末标点 + 英文句末 ". " / "! " / "? "
-    parts = re.split(r'[。？！；…]+|(?<=[.!?])\s', text.strip())
-    return len([p for p in parts if p.strip()])
+    stripped = text.strip()
+    # 按句末标点切分
+    parts = re.split(r'[。？！；…]+|(?<=[.!?])\s', stripped)
+    punct_count = len([p for p in parts if p.strip()])
+    if punct_count >= _MIN_SUMMARY_SENTENCES:
+        return punct_count
+    # 兜底：逗号连缀长句
+    if len(stripped) >= _MIN_COMMA_CLAUSE_LEN:
+        comma_parts = [c for c in re.split(r'[，,]+', stripped) if c.strip()]
+        if len(comma_parts) >= _MIN_COMMA_CLAUSES:
+            return len(comma_parts)
+    return punct_count
 
 
 def _get_referenced_tweet_ids(synth: dict) -> set[str]:

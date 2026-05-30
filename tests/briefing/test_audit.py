@@ -312,6 +312,65 @@ def test_audit_flags_nonexistent_supporting_tweet():
         f"应检出不存在的 tweet_id=99，issues={issues}"
 
 
+# ---------------------------------------------------------------------------
+# P1: _count_sentences 兼容逗号连缀长句（DeepSeek 实际写法）
+# ---------------------------------------------------------------------------
+
+def test_count_sentences_comma_clauses_pass():
+    """逗号连缀的丰富长句（≥60字，≥3逗号段）应判为 ≥3 句，不误判句数不足。"""
+    from akb2.briefing.audit import _count_sentences
+
+    # DeepSeek 实际输出的典型写法：一句话包含多个逗号分句
+    rich = (
+        "Karpathy 提出 LLM 作为操作系统的新范式，"
+        "每个智能体拥有记忆、规划和工具访问能力，"
+        "这代表着从单模型调用向多智能体协作的根本性转变，"
+        "对整个 AI 工程栈的架构设计产生深远影响。"
+    )
+    count = _count_sentences(rich)
+    assert count >= 3, f"逗号连缀丰富长句应判 ≥3，实际 {count}，文本: {rich!r}"
+
+
+def test_count_sentences_short_empty_fail():
+    """空泛短句（<60字，标点切分 <3 句）仍判不足，不被逗号规则误放行。"""
+    from akb2.briefing.audit import _count_sentences
+
+    short = "AI 发展很快，值得关注。"  # 只有1个句号，字数少
+    count = _count_sentences(short)
+    assert count < 3, f"空泛短句应判 <3，实际 {count}"
+
+
+def test_count_sentences_single_rich_comma_clause():
+    """100字以上仅含逗号（无句号）的单句：应按逗号段数而非句末标点计。"""
+    from akb2.briefing.audit import _count_sentences
+
+    # 模拟"没有任何句号，但内容丰富有3个逗号分句，共100+字"
+    long_no_period = (
+        "Claude 4 Opus 在 SWE-bench 上达到 72% 准确率，"
+        "多智能体循环让复杂软件工程任务在数分钟内自主完成，"
+        "这标志着 AI 辅助编程进入生产级可靠性阶段并引发行业重新评估开发流程"
+    )
+    count = _count_sentences(long_no_period)
+    assert count >= 3, f"长逗号连缀句应判 ≥3，实际 {count}"
+
+
+def test_audit_standard_rich_comma_summary_passes():
+    """_check_standard：逗号连缀丰富 summary 不报 '句数不足'。"""
+    from akb2.briefing.audit import _check_standard
+    import copy
+
+    synth = copy.deepcopy(SYNTH_ZH_GOOD)
+    synth["focus_discussions"][0]["summary"] = (
+        "Karpathy 提出 LLM 作为操作系统的新范式，"
+        "每个智能体拥有记忆、规划和工具访问能力，"
+        "这代表从单模型向多智能体协作的根本转变，"
+        "对整个 AI 工程栈的架构设计产生深远影响。"
+    )
+    issues = _check_standard(synth)
+    sent_issues = [i for i in issues if "句数不足" in i]
+    assert not sent_issues, f"逗号连缀丰富 summary 不应报句数不足，issues={issues}"
+
+
 def test_audit_flags_top3_tweet_not_covered():
     """top-3 高分推文未被任何主题引用 → standard 检出 issue。"""
     from akb2.briefing.audit import _check_standard
