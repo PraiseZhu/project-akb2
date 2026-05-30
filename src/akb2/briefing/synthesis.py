@@ -184,6 +184,34 @@ def _fallback_synthesis(scored_input: dict, date: str | None = None) -> dict:
     return payload
 
 
+def _build_indexed_tweet_listing(top: list[dict]) -> tuple[str, dict[str, str]]:
+    """推文列表用短序号 [1][2]... 展示，返回 (文本, {序号→真实id}) 映射。
+
+    用短序号替代 19 位 tweet id，解决 DeepSeek 无法准确回显长数字 ID 的问题（P0 根因）。
+    模型在 supporting_tweet_ids 里写 ["1","3"] 而非真实 ID，事后由 _map_index_refs_to_ids 还原。
+    """
+    lines = []
+    idx_to_id: dict[str, str] = {}
+    for i, t in enumerate(top, start=1):
+        idx = str(i)
+        idx_to_id[idx] = str(t["id"])
+        lines.append(f"[{idx}] @{t.get('author', '?')} (score={t.get('score', 0):.2f}): {t.get('text', '')}")
+    return "\n".join(lines), idx_to_id
+
+
+def _map_index_refs_to_ids(raw_ids: list, idx_to_id: dict[str, str]) -> list[str]:
+    """将模型返回的短序号（"1"、"[1]"）映射回真实 tweet id；越界/非法序号丢弃。"""
+    import re as _re
+    result = []
+    for raw in raw_ids:
+        s = str(raw).strip()
+        # 去掉可能的方括号：[1] → 1
+        s = _re.sub(r"^\[(\d+)\]$", r"\1", s)
+        if s in idx_to_id:
+            result.append(idx_to_id[s])
+    return result
+
+
 def synthesize(scored_input: dict, date: str | None = None) -> dict:
     """核心逻辑：从打分结果生成 social_trends_v1_1 payload。
 
@@ -197,13 +225,11 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
         )
         return _fallback_synthesis(scored_input, date)
 
-    # 构建 prompt — 全部推文都给 model,让它自己决定取舍(top-N 早期是 5,信号窄;
-    # 现在 20 条都给,model 在 prompt 里被约束选 3-5 个主题,supporting_tweet_ids 必须真实)
     tweets = scored_input.get("tweets", [])
     top = sorted(tweets, key=lambda t: t.get("score", 0), reverse=True)
-    tweets_text = "\n".join(
-        [f"[{t['id']}] @{t.get('author', '?')} (score={t.get('score', 0):.2f}): {t.get('text', '')}" for t in top]
-    )
+
+    # P0 fix: 用短序号 [1][2]... 而非 19 位 ID，解决 DeepSeek 无法准确回显长整数 ID 的问题
+    tweets_text, idx_to_id = _build_indexed_tweet_listing(top)
 
     resolved_date = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     prompt_path = Path(__file__).parent.parent.parent.parent.parent / "docs" / "deepseek-synthesis-prompt-v1.md"
@@ -216,7 +242,6 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
             tweet_count=len(tweets),
         )
     else:
-        # inline fallback prompt if doc not found
         prompt = (
             f"Analyze the following AI/ML tweets from {resolved_date} "
             f"and output a JSON object conforming to social_trends_v1_1 schema.\n\n"
@@ -224,15 +249,13 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
             "Return JSON with fields: date, generated_at, source, scoring_summary, tweets, focus_discussions."
         )
 
-    # 最多 3 次尝试：API 异常(网络/超时/schema)或质量门控不过(summary 空/topic 非中文)都触发重试。
-    # model 偶发退化(只给 topic 丢 summary/ids)由 _validate_quality 拦下并重试，而非放行到 audit 才发现。
     last_err: Exception | None = None
     max_attempts = 3
     for attempt in range(max_attempts):
         try:
             raw = _call_deepseek(prompt)
             data = json.loads(raw)
-            merged = _merge_with_input(data, scored_input, resolved_date, top)
+            merged = _merge_with_input(data, scored_input, resolved_date, top, idx_to_id)
             _validate_response(merged)
             _validate_quality(merged)
             return merged
@@ -242,7 +265,6 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
                 break
             continue
 
-    # API 两次都失败后走 fallback
     err_msg = f"{type(last_err).__name__}: {str(last_err)[:200]}" if last_err else "unknown"
     sys.stderr.write(
         f"WARNING: DeepSeek API failed after 2 attempts ({err_msg}) — synthesis using local fallback. "
@@ -251,18 +273,39 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
     return _fallback_synthesis(scored_input, date)
 
 
-def _merge_with_input(model_out: dict, scored_input: dict, resolved_date: str, top: list[dict]) -> dict:
+def _merge_with_input(
+    model_out: dict,
+    scored_input: dict,
+    resolved_date: str,
+    top: list[dict],
+    idx_to_id: dict[str, str] | None = None,
+) -> dict:
     """Merge model output with input data — model 只贡献 focus_discussions/executive_summary,
     其余字段从 input 回填。
 
     防御性合并:DeepSeek 经常返回不合规字段(source 是字符串、tweets 缺 text/created_at 等),
     与其反复修 prompt,不如机械合并:input 数据是 ground truth,model 智慧只取分析字段。
+
+    idx_to_id: 短序号→真实 ID 映射（P0 fix）。若提供，在 _patch_focus_discussions 前先将
+    模型返回的序号还原为真实 ID，解决 DeepSeek 无法准确回显 19 位 ID 的根因。
     """
     all_tweets = scored_input.get("tweets", [])
     id_to_tweet = {str(t["id"]): t for t in top}
 
+    # P0 fix: 若有序号映射，先把模型返回的短序号还原为真实 id
+    raw_fds = model_out.get("focus_discussions") or []
+    if idx_to_id:
+        mapped_fds = []
+        for fd in raw_fds:
+            if not isinstance(fd, dict):
+                continue
+            raw_ids = fd.get("supporting_tweet_ids") or []
+            mapped = _map_index_refs_to_ids(raw_ids, idx_to_id)
+            mapped_fds.append({**fd, "supporting_tweet_ids": mapped})
+        raw_fds = mapped_fds
+
     # 先 patch focus_discussions，确定哪些 id 被引用
-    patched_fds = _patch_focus_discussions(model_out.get("focus_discussions") or [], top)
+    patched_fds = _patch_focus_discussions(raw_fds, top)
     referenced_ids = {
         str(sid)
         for fd in patched_fds

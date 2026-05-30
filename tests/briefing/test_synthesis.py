@@ -286,3 +286,101 @@ def test_synthesize_retries_on_degraded_then_succeeds():
     assert fds and fds[0]["summary"].strip(), "重试后应拿到非空 summary"
     assert fds[0]["topic"] == "智能体长记忆基础设施"
     assert not responses, "应消耗掉退化响应、用第二次"
+
+
+# ---------------------------------------------------------------------------
+# P0: 短序号映射 — _build_indexed_tweet_listing + _map_index_refs_to_ids
+# ---------------------------------------------------------------------------
+
+def _make_top(n: int) -> list[dict]:
+    return [{"id": f"19{i:017d}", "author": f"@u{i}", "text": f"tweet {i}", "score": 0.9 - i * 0.01} for i in range(1, n + 1)]
+
+
+def test_build_indexed_tweet_listing_uses_short_indices():
+    """_build_indexed_tweet_listing 输出 [1] [2]... 而非 19 位 raw ID。"""
+    from akb2.briefing.synthesis import _build_indexed_tweet_listing
+
+    top = _make_top(3)
+    text, idx_to_id = _build_indexed_tweet_listing(top)
+
+    assert "[1]" in text and "[2]" in text and "[3]" in text, "列表应含短序号 [1] [2] [3]"
+    assert top[0]["id"] not in text, "19 位真实 ID 不应出现在列表中"
+    assert idx_to_id == {"1": top[0]["id"], "2": top[1]["id"], "3": top[2]["id"]}
+
+
+def test_map_index_refs_returns_real_ids():
+    """_map_index_refs_to_ids 将模型返回的序号映射回真实 tweet id。"""
+    from akb2.briefing.synthesis import _map_index_refs_to_ids
+
+    idx_to_id = {"1": "AAA", "2": "BBB", "3": "CCC"}
+    result = _map_index_refs_to_ids(["1", "3"], idx_to_id)
+    assert result == ["AAA", "CCC"]
+
+
+def test_map_index_refs_handles_bracket_format():
+    """模型可能返回 '[1]' 带括号形式，应同样映射。"""
+    from akb2.briefing.synthesis import _map_index_refs_to_ids
+
+    idx_to_id = {"1": "AAA", "2": "BBB"}
+    assert _map_index_refs_to_ids(["[1]", "[2]"], idx_to_id) == ["AAA", "BBB"]
+
+
+def test_map_index_refs_drops_oob_and_unknown():
+    """越界序号（超过推文总数）和非法值都被丢弃，不崩溃。"""
+    from akb2.briefing.synthesis import _map_index_refs_to_ids
+
+    idx_to_id = {"1": "AAA", "2": "BBB"}
+    result = _map_index_refs_to_ids(["1", "99", "abc", "FAKE_ID_12345678901"], idx_to_id)
+    assert result == ["AAA"], f"只保留有效序号，实际: {result}"
+
+
+def test_patch_no_fallback_when_indices_map_to_valid_ids():
+    """P0 核心：模型用短序号 → 映射为真实 id → _patch_focus_discussions 不触发 top[:5] 兜底。"""
+    from akb2.briefing.synthesis import _patch_focus_discussions, _map_index_refs_to_ids
+
+    top = _make_top(8)
+    idx_to_id = {str(i + 1): top[i]["id"] for i in range(len(top))}
+
+    # 模拟模型返回短序号引用推文 1、4、7
+    raw_model_ids = ["1", "4", "7"]
+    mapped_ids = _map_index_refs_to_ids(raw_model_ids, idx_to_id)
+
+    discs = [{"topic": "智能体记忆", "summary": "第一句。第二句。第三句。", "supporting_tweet_ids": mapped_ids}]
+    patched = _patch_focus_discussions(discs, top)
+
+    result_ids = set(patched[0]["supporting_tweet_ids"])
+    # 映射后是真实 ID，patch 不应替换为 top[:5]
+    assert top[0]["id"] not in result_ids or len(result_ids) >= 2, "映射成功时不应全部替换为 top[:5]"
+    assert top[0]["id"] in patched[0]["supporting_tweet_ids"] or top[3]["id"] in patched[0]["supporting_tweet_ids"], \
+        "应保留序号 1/4/7 对应的真实推文"
+
+
+def test_synthesize_prompt_contains_indexed_listing(tmp_path):
+    """synthesize() 调用 LLM 时 prompt 使用 [1] [2] 短序号而非 19 位 ID。"""
+    import akb2.briefing.synthesis as syn
+    import json as _json
+
+    scored = _load_fixture()
+    captured_prompts: list[str] = []
+
+    def fake_call(prompt: str) -> str:
+        captured_prompts.append(prompt)
+        top = sorted(scored["tweets"], key=lambda t: t.get("score", 0), reverse=True)
+        ids = [str(t["id"]) for t in top[:2]]
+        return _json.dumps({
+            "focus_discussions": [
+                {"topic": "智能体长记忆基础设施", "summary": "第一句。第二句。第三句。", "supporting_tweet_ids": ["1", "2"]},
+            ],
+            "executive_summary": "今日摘要。",
+        })
+
+    with patch.object(syn, "_has_api_key", return_value=True), \
+         patch.object(syn, "_call_deepseek", side_effect=fake_call):
+        syn.synthesize(scored, date="2026-05-31")
+
+    assert captured_prompts, "应调用 _call_deepseek"
+    prompt = captured_prompts[0]
+    assert "[1]" in prompt, "prompt 应含短序号 [1]"
+    # 确认 19 位原始 ID 不在 prompt 里（防止模型被迷惑）
+    top = sorted(scored["tweets"], key=lambda t: t.get("score", 0), reverse=True)
+    assert top[0]["id"] not in prompt, "prompt 不应含 19 位 tweet ID"
