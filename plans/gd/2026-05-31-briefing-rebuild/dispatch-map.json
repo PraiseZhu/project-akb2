@@ -1,0 +1,511 @@
+{
+  "dispatch_id": "akb2-briefing-rebuild",
+  "source_master_plan": "plans/gd/2026-05-31-briefing-rebuild/master-plan.md",
+  "goal_chain": {
+    "PROJECT_GOAL": "在 Claude Code 中建设 /gd Goal-Driven 多 Agent 主链路，提升复杂任务的计划、审查、执行、验收效率，并通过 Codex 作为 cross-review sidecar 降低填表式计划与执行遗漏风险。",
+    "CHAIN_GOAL": "用 shared core 固定目标链、SC、任务包、review contract 和 anti-fill 标准，保证后续 /gd command、multi-agent dispatch、execution review、Codex cross-review 都引用同一套契约。",
+    "PHASE_GOAL": "AKB2 社交日报抓取从关键词广搜重建为按策展博主清单抓时间线，与后半段无缝对接不改对接 dict 形状，并把结构精炼为核心讨论不限字数提炼、每条挂 2-3 条高分支撑推文带原文链接+全文500字截断去折叠。"
+  },
+  "max_parallel_planning": 2,
+  "max_parallel_execution": 2,
+  "max_parallel_review": 2,
+  "max_parallel_validation": 2,
+  "tracks": [
+    {
+      "track_id": "t-intake-collector",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "src/akb2/briefing/intake/account_collector.py",
+        "src/akb2/briefing/intake/base.py",
+        "src/akb2/briefing/intake/l0_collector.py",
+        "tests/briefing/test_account_collector.py"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "src/akb2/briefing/pipeline.py",
+        "config/curator-accounts.yaml"
+      ],
+      "required_context": [
+        "docs/briefing-rebuild-plan.md",
+        "src/akb2/briefing/intake/l0_collector.py",
+        "src/akb2/briefing/intake/base.py"
+      ],
+      "deliverables": [
+        {
+          "path": "src/akb2/briefing/intake/account_collector.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/briefing/test_account_collector.py",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [],
+      "can_parallel_with": [
+        "t-curator-tier"
+      ],
+      "sc_refs": [
+        "SC-1",
+        "SC-2",
+        "SC-3",
+        "SC-4"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-1",
+          "method": "test",
+          "cmd": "pytest tests/briefing/test_account_collector.py::test_account_collect_reads_tier_and_fetches -q",
+          "expect": "PASS"
+        },
+        {
+          "sc_ref": "SC-2",
+          "method": "test",
+          "cmd": "pytest tests/briefing/test_account_collector.py::test_account_collect_dedup -q",
+          "expect": "PASS"
+        },
+        {
+          "sc_ref": "SC-3",
+          "method": "test",
+          "cmd": "pytest tests/briefing/test_account_collector.py::test_account_collect_caps -q",
+          "expect": "PASS"
+        },
+        {
+          "sc_ref": "SC-4",
+          "method": "test",
+          "cmd": "pytest tests/briefing/test_account_collector.py::test_account_collect_fallback_chain -q",
+          "expect": "PASS"
+        }
+      ]
+    },
+    {
+      "track_id": "t-curator-tier",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "config/curator-accounts.yaml",
+        "config/intake_sources.yaml",
+        "tests/briefing/test_curator_tier.py"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "src/akb2/briefing/intake/account_collector.py",
+        "src/akb2/briefing/pipeline.py"
+      ],
+      "required_context": [
+        "docs/briefing-rebuild-plan.md",
+        "tests/briefing/test_intake_config.py"
+      ],
+      "deliverables": [
+        {
+          "path": "config/curator-accounts.yaml",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/briefing/test_curator_tier.py",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [],
+      "can_parallel_with": [
+        "t-intake-collector"
+      ],
+      "sc_refs": [
+        "SC-5"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-5",
+          "method": "test",
+          "cmd": "pytest tests/briefing/test_curator_tier.py::test_curator_fetch_tier_loaded -q",
+          "expect": "PASS"
+        }
+      ]
+    },
+    {
+      "track_id": "t-synthesis",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "src/akb2/briefing/synthesis.py",
+        "docs/deepseek-synthesis-prompt-v1.md",
+        "tests/briefing/test_synthesis.py"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "src/akb2/briefing/translate.py",
+        "src/akb2/briefing/pipeline.py"
+      ],
+      "required_context": [
+        "docs/briefing-rebuild-plan.md"
+      ],
+      "deliverables": [
+        {
+          "path": "src/akb2/briefing/synthesis.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "docs/deepseek-synthesis-prompt-v1.md",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [],
+      "can_parallel_with": [
+        "t-translate"
+      ],
+      "sc_refs": [
+        "SC-7"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-7",
+          "method": "test",
+          "cmd": "python -m pytest tests/briefing/test_synthesis.py -q -k validate_quality",
+          "expect": "PASS"
+        }
+      ]
+    },
+    {
+      "track_id": "t-translate",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "src/akb2/briefing/translate.py",
+        "tests/briefing/test_translate.py"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "src/akb2/briefing/synthesis.py",
+        "src/akb2/briefing/audit.py"
+      ],
+      "required_context": [
+        "docs/briefing-rebuild-plan.md"
+      ],
+      "deliverables": [
+        {
+          "path": "src/akb2/briefing/translate.py",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [],
+      "can_parallel_with": [
+        "t-synthesis"
+      ],
+      "sc_refs": [
+        "SC-10",
+        "SC-15"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-10",
+          "method": "test",
+          "cmd": "python -m pytest tests/briefing/test_translate.py -q",
+          "expect": "PASS"
+        },
+        {
+          "sc_ref": "SC-15",
+          "method": "test",
+          "cmd": "python -m pytest tests/briefing/test_translate.py -q -k 'lang'",
+          "expect": "PASS"
+        }
+      ]
+    },
+    {
+      "track_id": "t-audit",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "src/akb2/briefing/audit.py",
+        "tests/briefing/test_audit.py"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "src/akb2/briefing/pipeline.py",
+        "src/akb2/briefing/synthesis.py"
+      ],
+      "required_context": [
+        "docs/briefing-rebuild-plan.md",
+        "src/akb2/briefing/translate.py"
+      ],
+      "deliverables": [
+        {
+          "path": "src/akb2/briefing/audit.py",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [
+        "t-translate"
+      ],
+      "can_parallel_with": [
+        "t-scoring"
+      ],
+      "sc_refs": [
+        "SC-11"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-11",
+          "method": "test",
+          "cmd": "python -m pytest tests/briefing/test_audit.py -q",
+          "expect": "PASS"
+        }
+      ]
+    },
+    {
+      "track_id": "t-pipeline",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "src/akb2/briefing/pipeline.py",
+        "tests/briefing/test_pipeline_intake_wire.py",
+        "tests/briefing/test_pipeline_render.py"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "src/akb2/briefing/intake/account_collector.py",
+        "src/akb2/briefing/translate.py"
+      ],
+      "required_context": [
+        "docs/briefing-rebuild-plan.md",
+        "src/akb2/briefing/intake/account_collector.py",
+        "config/intake_sources.yaml",
+        "src/akb2/briefing/translate.py"
+      ],
+      "deliverables": [
+        {
+          "path": "src/akb2/briefing/pipeline.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/briefing/test_pipeline_intake_wire.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/briefing/test_pipeline_render.py",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [
+        "t-intake-collector",
+        "t-curator-tier",
+        "t-translate"
+      ],
+      "can_parallel_with": [],
+      "sc_refs": [
+        "SC-6",
+        "SC-8",
+        "SC-9"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-6",
+          "method": "test",
+          "cmd": "python -m pytest tests/briefing/test_pipeline_intake_wire.py -q",
+          "expect": "PASS"
+        },
+        {
+          "sc_ref": "SC-8",
+          "method": "test",
+          "cmd": "python -m pytest tests/briefing/test_pipeline_render.py -q -k 'cap or top'",
+          "expect": "PASS"
+        },
+        {
+          "sc_ref": "SC-9",
+          "method": "test",
+          "cmd": "python -m pytest tests/briefing/test_pipeline_render.py -q -k 'no_fold or truncate or link'",
+          "expect": "PASS"
+        }
+      ]
+    },
+    {
+      "track_id": "t-scoring",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "src/akb2/briefing/scoring.py",
+        "tests/briefing/test_scoring.py"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "src/akb2/briefing/pipeline.py",
+        "src/akb2/briefing/translate.py"
+      ],
+      "required_context": [
+        "docs/briefing-rebuild-plan.md",
+        "config/curator-accounts.yaml"
+      ],
+      "deliverables": [
+        {
+          "path": "src/akb2/briefing/scoring.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/briefing/test_scoring.py",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [
+        "t-curator-tier"
+      ],
+      "can_parallel_with": [
+        "t-audit"
+      ],
+      "sc_refs": [
+        "SC-14",
+        "SC-15",
+        "SC-17"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-14",
+          "method": "test",
+          "cmd": "python -m pytest tests/briefing/test_scoring.py -q -k 'authority and tier'",
+          "expect": "PASS"
+        },
+        {
+          "sc_ref": "SC-15",
+          "method": "test",
+          "cmd": "python -m pytest tests/briefing/test_scoring.py -q -k 'chinese or zh'",
+          "expect": "PASS"
+        },
+        {
+          "sc_ref": "SC-17",
+          "method": "test",
+          "cmd": "python -m pytest tests/briefing/test_scoring.py -q -k 'topic and (offtopic or holiday)'",
+          "expect": "PASS"
+        }
+      ]
+    },
+    {
+      "track_id": "t-verify",
+      "mode": "validate",
+      "agent_role": "child_validator",
+      "owned_paths": [
+        "plans/gd/2026-05-31-briefing-rebuild/acceptance-report.md"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "src/akb2/briefing/pipeline.py",
+        "src/akb2/briefing/intake/account_collector.py"
+      ],
+      "required_context": [
+        "docs/briefing-rebuild-plan.md",
+        "src/akb2/briefing/pipeline.py"
+      ],
+      "deliverables": [
+        {
+          "path": "plans/gd/2026-05-31-briefing-rebuild/acceptance-report.md",
+          "kind": "report",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [
+        "t-intake-collector",
+        "t-curator-tier",
+        "t-synthesis",
+        "t-translate",
+        "t-audit",
+        "t-pipeline",
+        "t-scoring"
+      ],
+      "can_parallel_with": [],
+      "sc_refs": [
+        "SC-12",
+        "SC-13"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-12",
+          "method": "test",
+          "cmd": "python -m pytest tests/briefing/ -q",
+          "expect": "exit 0, 0 failed"
+        },
+        {
+          "sc_ref": "SC-13",
+          "method": "command",
+          "cmd": "AKB2_INTAKE_MODE=account python -m akb2.briefing.pipeline --date 2026-05-31 --vault-root /tmp/akb2-accept-vault",
+          "expect": "产出 md 无折叠标记且含原文链接，内容为策展账号真实推文"
+        }
+      ]
+    }
+  ],
+  "waves": [
+    {
+      "wave_id": "w1",
+      "track_ids": [
+        "t-intake-collector",
+        "t-curator-tier"
+      ],
+      "description": "P0 抓取重建基座：account_collector + curator fetch tier（owned 不重叠）"
+    },
+    {
+      "wave_id": "w2",
+      "track_ids": [
+        "t-synthesis",
+        "t-translate"
+      ],
+      "description": "P1 第一批：synthesis 去字数下限 + translate 去 core_excerpt/语言感知（owned 不重叠）"
+    },
+    {
+      "wave_id": "w3",
+      "track_ids": [
+        "t-scoring",
+        "t-audit"
+      ],
+      "description": "评分加固 + 审计：scoring 白名单对齐/topic_relevance + audit 去句数（owned 不重叠）"
+    },
+    {
+      "wave_id": "w4",
+      "track_ids": [
+        "t-pipeline"
+      ],
+      "description": "pipeline 接账号 collector & 渲染去折叠截断（独占 pipeline.py）"
+    },
+    {
+      "wave_id": "w5",
+      "track_ids": [
+        "t-verify"
+      ],
+      "description": "P2 验收：全量 pytest 绿 + 真实链路单跑人读"
+    }
+  ],
+  "merge_gates": [
+    {
+      "gate_id": "G1",
+      "description": "child 输出格式合规（每 track deliverables 存在）"
+    },
+    {
+      "gate_id": "G2",
+      "description": "files_added/modified 全在各自 track owned_paths 内（无越界写）"
+    },
+    {
+      "gate_id": "G3",
+      "description": "对接 dict 形状不变（tweets + 可选 _fallback_used），无 schema 变更"
+    },
+    {
+      "gate_id": "G4",
+      "description": "每条 SC 有 verify 命令证据（pytest/grep PASS）"
+    },
+    {
+      "gate_id": "G5",
+      "description": "并行 wave 全完才进下一 wave；t-pipeline 独占 pipeline.py 消除 P0/P2 冲突"
+    },
+    {
+      "gate_id": "G6",
+      "description": "t-verify 真实跑产出无折叠 + 含原文链接 + 内容为策展账号真实推文"
+    }
+  ]
+}
