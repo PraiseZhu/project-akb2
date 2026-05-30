@@ -305,8 +305,33 @@ def test_audit_flags_nonexistent_supporting_tweet():
     import copy
 
     synth = copy.deepcopy(SYNTH_ZH_GOOD)
-    synth["focus_discussions"][0]["supporting_tweet_ids"] = ["99"]  # tweet 99 不存在
+    synth["focus_discussions"][0]["supporting_tweet_ids"] = ["1", "99"]  # tweet 99 不存在
 
     issues = _check_standard(synth)
-    assert any("supporting_tweet_ids" in i or "99" in i for i in issues), \
+    assert any("不存在" in i and "99" in i for i in issues), \
         f"应检出不存在的 tweet_id=99，issues={issues}"
+
+
+def test_audit_flags_top3_tweet_not_covered():
+    """top-3 高分推文未被任何主题引用 → standard 检出 issue。"""
+    from akb2.briefing.audit import _check_standard
+
+    synth = {
+        "executive_summary": "执行摘要测试内容，包含足够的中文文字信息。",
+        "focus_discussions": [
+            {
+                "topic": "测试主题",
+                "summary": "第一句总结。第二句补充。第三句展望。",
+                "supporting_tweet_ids": ["3", "4"],  # id=1(top1)、id=2(top2) 未被引用
+            },
+        ],
+        "tweets": [
+            {"id": "1", "score": 0.95, "text": "最高分推文。", "zh_point": "最重要。", "author": "@a"},
+            {"id": "2", "score": 0.90, "text": "次高分推文。", "zh_point": "次重要。", "author": "@b"},
+            {"id": "3", "score": 0.85, "text": "第三推文。", "zh_point": "第三要点。", "author": "@c"},
+            {"id": "4", "score": 0.80, "text": "第四推文。", "zh_point": "第四要点。", "author": "@d"},
+        ],
+    }
+    issues = _check_standard(synth)
+    top_issues = [i for i in issues if "top-3" in i or "rank=1" in i or "rank=2" in i]
+    assert top_issues, f"应检出 top-3 推文未被引用，issues={issues}"

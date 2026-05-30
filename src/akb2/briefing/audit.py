@@ -134,6 +134,22 @@ def _check_standard(synth_zh: dict) -> list[str]:
         if _requires_chinese(core):
             issues.append(f"tweets[{i}].core_excerpt 无中文（未翻译）: {core[:60]!r}")
 
+    # SC-1: top-3 高分推文至少要出现在某个主题的 supporting_tweet_ids 里
+    # （位置 4-10 的推文可作为孤儿单列于「其他高分推文」）
+    referenced_ids = _get_referenced_tweet_ids(synth_zh)
+    all_tweets_sorted = sorted(
+        synth_zh.get("tweets", []),
+        key=lambda t: t.get("score", 0),
+        reverse=True,
+    )
+    for rank, tw in enumerate(all_tweets_sorted[:3], start=1):
+        tid = str(tw.get("id", ""))
+        if tid and tid not in referenced_ids:
+            issues.append(
+                f"tweets[rank={rank}] id={tid!r} score={tw.get('score',0):.3f}"
+                f" 未出现在任何主题的 supporting_tweet_ids（top-3 必须有主题支撑）"
+            )
+
     # SC-8: 被主题引用的推文 zh_point 必须存在且含中文
     referenced_ids = _get_referenced_tweet_ids(synth_zh)
     id_to_idx = {str(t.get("id", "")): idx for idx, t in enumerate(synth_zh.get("tweets", []))}
