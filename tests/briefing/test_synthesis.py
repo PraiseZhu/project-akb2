@@ -121,6 +121,36 @@ def test_fallback_schema_valid():
     validate_payload(result)  # 不抛异常 = pass
 
 
+def test_merge_with_input_includes_referenced_tweets_beyond_top10():
+    """_merge_with_input 应确保 supporting_tweet_ids 引用的推文出现在 tweets 输出集里。"""
+    from akb2.briefing.synthesis import _merge_with_input
+    from akb2.briefing.audit import _check_standard
+
+    # 11 条 scored tweets；model 引用第 11 名（idx=10）
+    scored_input = {
+        "tweets": [{"id": str(i), "text": f"tweet {i}", "author": f"@u{i}", "created_at": "", "score": 1.0 - i * 0.05, "url": ""} for i in range(1, 12)],
+    }
+    top = sorted(scored_input["tweets"], key=lambda t: t.get("score", 0), reverse=True)
+    assert str(top[10]["id"]) == "11", "第11名应为 id=11"
+
+    model_out = {
+        "focus_discussions": [
+            {"topic": "AI趋势讨论", "supporting_tweet_ids": ["11"], "summary": "这是第11条推文。"},
+        ],
+        "executive_summary": "执行摘要。",
+    }
+    merged = _merge_with_input(model_out, scored_input, "2026-05-30", top)
+
+    # id=11 应在 tweets 输出中
+    tweet_ids = [t["id"] for t in merged["tweets"]]
+    assert "11" in tweet_ids, f"id=11 应在 tweets 输出中，实际 tweet_ids={tweet_ids}"
+
+    # _check_standard 不应报 tweet_id 不存在（因为已补入 tweets）
+    issues = _check_standard(merged)
+    missing_issues = [i for i in issues if "不存在" in i and "11" in i]
+    assert not missing_issues, f"audit 不应报 id=11 不存在，issues={missing_issues}"
+
+
 # ---------------------------------------------------------------------------
 # SC-5b test 5: CLI e2e — 产出文件且通过 validator
 # ---------------------------------------------------------------------------

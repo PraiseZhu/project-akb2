@@ -251,8 +251,23 @@ def _merge_with_input(model_out: dict, scored_input: dict, resolved_date: str, t
     与其反复修 prompt,不如机械合并:input 数据是 ground truth,model 智慧只取分析字段。
     """
     all_tweets = scored_input.get("tweets", [])
-    # tweets 字段只渲染前 10 条最高分(markdown 模板也只展示 top 10),减少简报噪声
-    top_for_display = top[:10]
+    id_to_tweet = {str(t["id"]): t for t in top}
+
+    # 先 patch focus_discussions，确定哪些 id 被引用
+    patched_fds = _patch_focus_discussions(model_out.get("focus_discussions") or [], top)
+    referenced_ids = {
+        str(sid)
+        for fd in patched_fds
+        for sid in fd.get("supporting_tweet_ids", [])
+    }
+
+    # tweets 输出集 = top 10 ∪ 被引用的推文（确保 supporting_tweet_ids 总有对应 tweet 对象）
+    top10_ids = {str(t["id"]) for t in top[:10]}
+    extra_ids = referenced_ids - top10_ids
+    top_for_display = list(top[:10]) + [
+        id_to_tweet[eid] for eid in extra_ids if eid in id_to_tweet
+    ]
+
     return {
         "date": model_out.get("date") or resolved_date,
         "generated_at": model_out.get("generated_at") or datetime.now(timezone.utc).isoformat(),
@@ -273,9 +288,7 @@ def _merge_with_input(model_out: dict, scored_input: dict, resolved_date: str, t
             }
             for t in top_for_display
         ],
-        "focus_discussions": _patch_focus_discussions(
-            model_out.get("focus_discussions") or [], top
-        ),
+        "focus_discussions": patched_fds,
         # executive_summary 原样保留；key_quotes 已从 prompt 移除（SC-9），不再输出
         "executive_summary": model_out.get("executive_summary", "").strip(),
     }
