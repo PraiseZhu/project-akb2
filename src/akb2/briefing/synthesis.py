@@ -166,8 +166,9 @@ def _fallback_synthesis(scored_input: dict, date: str | None = None) -> dict:
                     + (
                         f" Highest scoring tweet by {top[0].get('author', 'unknown')} with score "
                         f"{top[0].get('score', 0):.3f}."
-                        if top else ""
+                        if top else " No tweets available for this period."
                     )
+                    + " This is a fallback summary generated when the synthesis model is unavailable."
                 ),
             }
         ],
