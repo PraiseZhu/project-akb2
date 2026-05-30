@@ -209,42 +209,21 @@ def build_briefing_markdown(synth: dict, gate_decision: str, date: str) -> str:
             summary = disc.get("summary", "")
             body_parts += [f"### {topic}", "", summary, ""]
 
-    # 关键引述（model 选出的最有信号推文，含 @author + url + context）
-    key_quotes = synth.get("key_quotes", []) or []
-    if key_quotes:
-        body_parts += ["## 关键引述", ""]
-        for q in key_quotes:
-            author = q.get("author", "")
-            quote = q.get("quote", "")              # 中文译文（或原文若未译）
-            quote_original = q.get("quote_original", "")  # 英文原文备查
-            url = q.get("url", "")
-            context = q.get("context", "")
-            body_parts += [
-                f"**{author}**" + (f"（{context}）" if context else ""),
-                f"> {quote}",
-            ]
-            # 英文原文与译文不同时，折叠展示原文
-            if quote_original and quote_original.strip() != quote.strip():
-                folded = [
-                    f"> {line}" if line.strip() else ">"
-                    for line in quote_original.splitlines()
-                ]
-                body_parts += ["", "> [!quote]- 展开英文原文", *folded]
-            body_parts += [
-                f"[原文]({url})" if url else "",
-                "",
-            ]
-
+    # 关键推文（合并板块：每条 = 作者 + 评分 + 中文点题 + 中文译文，长推折叠英文原文）
     body_parts += ["## 关键推文", ""]
     for t in tweets[:10]:
         author = t.get("author", "")
         text = t.get("text", "")          # 译后为中文（或原英文若翻译失败）
         text_original = t.get("text_original", "")  # 英文原文备查（长推）
         core_excerpt = t.get("core_excerpt", "")    # 长推中文核心段
+        zh_point = t.get("zh_point", "")            # 中文点题
         score = t.get("score", 0)
         url = t.get("url", "")
 
         body_parts += [f"**{author}**（评分：{score:.3f}）"]
+        # 中文点题行（斜体，区别于正文）
+        if zh_point:
+            body_parts += [f"*{zh_point}*", ""]
 
         if core_excerpt:
             # 长推：显示中文核心段 + 折叠英文原文（多行逐行加 > 前缀）
@@ -254,7 +233,6 @@ def build_briefing_markdown(synth: dict, gate_decision: str, date: str) -> str:
                 for line in original_for_fold.splitlines()
             ]
             body_parts += [
-                "",
                 core_excerpt,
                 "",
                 "> [!quote]- 展开英文原文",

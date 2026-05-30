@@ -35,8 +35,8 @@ SYNTH_ZH = {
         {"author": "@x", "quote": "Quote here.", "tweet_id": "1", "url": "https://x.com/1", "context": "首次公开了相关能力。"},
     ],
     "tweets": [
-        {"id": "1", "author": "@x", "text": "简短推文。", "text_original": "Short tweet.", "created_at": "2026-05-30T01:00:00Z", "score": 0.9, "url": "https://x.com/1"},
-        {"id": "2", "author": "@y", "text": "长文推文译文。", "text_original": "A" * 600 + " core insight here.", "core_excerpt": "核心洞察：AI 智能体记忆系统的新突破。", "created_at": "2026-05-30T02:00:00Z", "score": 0.8, "url": "https://x.com/2"},
+        {"id": "1", "author": "@x", "text": "简短推文。", "text_original": "Short tweet.", "zh_point": "记忆工具值得关注。", "created_at": "2026-05-30T01:00:00Z", "score": 0.9, "url": "https://x.com/1"},
+        {"id": "2", "author": "@y", "text": "长文推文译文。", "text_original": "A" * 600 + " core insight here.", "core_excerpt": "核心洞察：AI 智能体记忆系统的新突破。", "zh_point": "长文核心是记忆系统突破。", "created_at": "2026-05-30T02:00:00Z", "score": 0.8, "url": "https://x.com/2"},
     ],
 }
 
@@ -56,6 +56,30 @@ def test_date_no_offset():
     assert "# 2026-05-31 AI 社交趋势日报" not in final_md, "不应有 +1 日期"
     assert "# 2026-05-30 AI 社交趋势日报" in temp_md
     assert "date: 2026-05-30" in final_md
+
+
+# ---------------------------------------------------------------------------
+# 合并板块：关键引述已移除，关键推文含中文点题
+# ---------------------------------------------------------------------------
+
+def test_merged_section_no_key_quotes_block():
+    """关键引述板块应已移除，只保留关键推文。"""
+    from akb2.briefing.pipeline import build_briefing_markdown
+
+    md = build_briefing_markdown(SYNTH_ZH, "active", "2026-05-30")
+
+    assert "## 关键引述" not in md, "关键引述板块应已合并移除"
+    assert "## 关键推文" in md, "关键推文板块应保留"
+
+
+def test_merged_tweet_has_zh_point():
+    """每条关键推文应渲染中文点题（斜体）。"""
+    from akb2.briefing.pipeline import build_briefing_markdown
+
+    md = build_briefing_markdown(SYNTH_ZH, "active", "2026-05-30")
+
+    assert "*记忆工具值得关注。*" in md, "短推应有中文点题"
+    assert "*长文核心是记忆系统突破。*" in md, "长推应有中文点题"
 
 
 # ---------------------------------------------------------------------------

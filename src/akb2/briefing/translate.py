@@ -80,6 +80,7 @@ def _build_translate_prompt(synth: dict) -> str:
         '  "focus_discussions": [{"idx": 0, "topic": "<译文>", "summary": "<译文>"}],\n'
         '  "key_quotes": [{"idx": 0, "quote_zh": "<将引述译为简体中文，保留专业名词/@id/数字/URL>", "context": "<1句中文点题：说这条为什么值得引述>"}],\n'
         '  "tweets": [{"idx": 0, "text_zh": "<译文>", '
+        '"zh_point": "<一句中文点题（≤30字）：点出这条推文的核心看点或为什么值得关注>", '
         '"core_excerpt_en": "<仅对 is_long=true 且无 core_excerpt_en 输入：从英文原文中逐字摘出最核心1段，≤400字，必须是原文子串>", '
         '"core_excerpt_zh": "<仅当输入中有 core_excerpt_en：将该英文核心段译为中文>"}]\n'
         "}\n"
@@ -87,6 +88,7 @@ def _build_translate_prompt(synth: dict) -> str:
         "重要约束：\n"
         "- key_quotes 的 quote_zh 字段：将引述翻译为简体中文（专业名词/@id/数字/URL 保持原样）\n"
         "- key_quotes 的 context 字段：用1句中文说明引述价值（如「首次公开了xxx数字，有参考意义」）\n"
+        "- tweets 的 zh_point：每条都要，1句中文，点出核心看点，不要复述全文\n"
         "- tweets 的 core_excerpt_en：必须是原文 text 的逐字子串，禁止改写或概括\n"
         "- is_long=false 的 tweet 无需输出 core_excerpt_en\n"
         "- 专业名词/@id/数字/URL 保持原样"
@@ -232,6 +234,14 @@ def _apply_translation_inner(result: dict, trans: dict) -> dict:
         if zh_context:
             kq["context"] = zh_context
 
+    # 构建 tweet_id → 已 curated 的引述点题（优先复用模型 key_quotes 的 context）
+    quote_point_by_id = {}
+    for kq in result.get("key_quotes", []):
+        tid = str(kq.get("tweet_id", ""))
+        ctx = (kq.get("context") or "").strip()
+        if tid and ctx:
+            quote_point_by_id[tid] = ctx
+
     # tweets
     tw_trans = _safe_idx_map(trans.get("tweets"))
     tweets = result.get("tweets", [])
@@ -244,6 +254,14 @@ def _apply_translation_inner(result: dict, trans: dict) -> dict:
         if text_zh:
             tw["text_original"] = original_text  # 备查英文原文
             tw["text"] = text_zh
+
+        # 中文点题：优先用 key_quotes 的 curated context，否则用 translate 生成的 zh_point
+        curated = quote_point_by_id.get(str(tw.get("id", "")))
+        gen_point = (t.get("zh_point") or "").strip()
+        if curated:
+            tw["zh_point"] = curated
+        elif gen_point:
+            tw["zh_point"] = gen_point
 
         # 长推核心段（子串校验 + 直接翻译核心段）
         if len(original_text) > LONG_TWEET_THRESHOLD:
