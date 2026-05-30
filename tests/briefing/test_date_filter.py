@@ -1,0 +1,147 @@
+"""test_date_filter.py — SC-6 / SC-7 日期过滤测试。"""
+from __future__ import annotations
+
+import sys
+from unittest.mock import patch, MagicMock
+
+
+# ---------------------------------------------------------------------------
+# SC-7: _filter_recent 单元测试
+# ---------------------------------------------------------------------------
+
+def test_filter_recent_drops_old():
+    """超出 N 天窗口的旧推文被过滤掉。"""
+    from akb2.briefing.pipeline import _filter_recent
+
+    tweets = [
+        {"id": "1", "created_at": "2026-05-30T10:00:00+00:00"},   # 当天 → 保留
+        {"id": "2", "created_at": "2026-05-29T10:00:00+00:00"},   # 昨天 → 保留（N=2）
+        {"id": "3", "created_at": "2026-05-28T10:00:00+00:00"},   # 2天前 → 丢弃
+        {"id": "4", "created_at": "2026-04-01T00:00:00+00:00"},   # 4月 → 丢弃
+    ]
+    kept = _filter_recent(tweets, "2026-05-30", days=2)
+    ids = [t["id"] for t in kept]
+    assert "1" in ids, "当天推文应保留"
+    assert "2" in ids, "昨天推文应保留（N=2）"
+    assert "3" not in ids, "2天前应丢弃"
+    assert "4" not in ids, "4月推文应丢弃"
+
+
+def test_filter_recent_keeps_missing_date(capsys):
+    """缺 created_at 的推文保守保留，同时打 WARNING。"""
+    from akb2.briefing.pipeline import _filter_recent
+
+    tweets = [
+        {"id": "1", "created_at": ""},
+        {"id": "2"},  # 无 created_at key
+        {"id": "3", "created_at": "2026-05-30T10:00:00+00:00"},
+    ]
+    kept = _filter_recent(tweets, "2026-05-30", days=2)
+    ids = [t["id"] for t in kept]
+    assert "1" in ids, "空 created_at 应保守保留"
+    assert "2" in ids, "缺 created_at key 应保守保留"
+    assert "3" in ids, "正常推文应保留"
+
+
+def test_filter_recent_keeps_bad_format(capsys):
+    """created_at 格式非法时保守保留。"""
+    from akb2.briefing.pipeline import _filter_recent
+
+    tweets = [{"id": "1", "created_at": "not-a-date"}]
+    kept = _filter_recent(tweets, "2026-05-30", days=2)
+    assert len(kept) == 1
+
+
+def test_filter_recent_invalid_date_skips_filter():
+    """date 参数本身非法时，跳过过滤返回全部。"""
+    from akb2.briefing.pipeline import _filter_recent
+
+    tweets = [{"id": "1", "created_at": "2026-04-01T00:00:00+00:00"}]
+    kept = _filter_recent(tweets, "bad-date", days=2)
+    assert len(kept) == 1, "date 非法时应跳过过滤"
+
+
+def test_filter_recent_timezone_boundary():
+    """时区转换正确：UTC 23:00 = CST 次日 07:00，应算在次日。"""
+    from akb2.briefing.pipeline import _filter_recent
+
+    # 2026-05-29T23:30:00Z = 2026-05-30T07:30:00+08:00 → 算 5-30 → 应保留
+    tweets = [{"id": "1", "created_at": "2026-05-29T23:30:00Z"}]
+    kept = _filter_recent(tweets, "2026-05-30", days=1)  # 只保留5-30当天
+    assert len(kept) == 1, "UTC 23:30 折算 CST 次日 07:30，应保留"
+
+
+def test_filter_recent_no_tweets_returns_empty():
+    from akb2.briefing.pipeline import _filter_recent
+    assert _filter_recent([], "2026-05-30") == []
+
+
+# ---------------------------------------------------------------------------
+# SC-6: 采集层时间窗 — intake cmd 含 --since / --until
+# ---------------------------------------------------------------------------
+
+def test_intake_cmd_has_time_window(tmp_path):
+    """run_intake 非 dry-run 时，子进程 cmd 包含 --since 和 --until。"""
+    from akb2.briefing import pipeline as pl
+
+    captured_cmds = []
+
+    def fake_run(cmd, **kwargs):
+        captured_cmds.append(cmd)
+        m = MagicMock()
+        m.returncode = 0
+        return m
+
+    # run_intake writes output_path; we also need it to be readable
+    out_path = tmp_path / "intake.json"
+    out_path.write_text('{"tweets": []}')
+
+    with patch("akb2.briefing.pipeline.subprocess.run", side_effect=fake_run):
+        with patch("builtins.open", side_effect=lambda p, *a, **k: open(str(out_path), *a, **k) if str(p) == str(out_path) else open(p, *a, **k)):
+            try:
+                pl.run_intake(
+                    dry_run=False,
+                    output_path=out_path,
+                    since_date="2026-05-29",
+                    until_date="2026-05-30",
+                )
+            except Exception:
+                pass  # subprocess.run is mocked, file may not exist
+
+    assert captured_cmds, "subprocess.run should have been called"
+    cmd = captured_cmds[0]
+    assert "--since" in cmd, "cmd 应包含 --since"
+    assert "2026-05-29" in cmd, "since 值应为 2026-05-29"
+    assert "--until" in cmd, "cmd 应包含 --until"
+    assert "2026-05-30" in cmd, "until 值应为 2026-05-30"
+
+
+def test_intake_cmd_no_since_when_dry_run(tmp_path):
+    """dry-run 时不传 since/until（用 fixture，无意义）。"""
+    from akb2.briefing import pipeline as pl
+
+    captured_cmds = []
+
+    def fake_run(cmd, **kwargs):
+        captured_cmds.append(cmd)
+        m = MagicMock()
+        m.returncode = 0
+        return m
+
+    out_path = tmp_path / "intake.json"
+    out_path.write_text('{"tweets": []}')
+
+    with patch("akb2.briefing.pipeline.subprocess.run", side_effect=fake_run):
+        try:
+            pl.run_intake(
+                dry_run=True,
+                output_path=out_path,
+                since_date=None,
+                until_date=None,
+            )
+        except Exception:
+            pass
+
+    if captured_cmds:
+        cmd = captured_cmds[0]
+        assert "--since" not in cmd, "dry-run 时不应有 --since"

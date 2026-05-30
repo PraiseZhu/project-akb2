@@ -48,17 +48,26 @@ def _twitter_cli_to_akb2(raw_data: list[dict]) -> list[dict]:
 class L0Collector(BaseCollector):
     source_name = "l0_public_timeline"
 
-    def collect(self, dry_run: bool = False) -> list[dict]:
+    def collect(
+        self,
+        dry_run: bool = False,
+        since_date: str | None = None,
+        until_date: str | None = None,
+    ) -> list[dict]:
         if dry_run:
             return self._read_fixture()
-        return self._fetch_real()
+        return self._fetch_real(since_date=since_date, until_date=until_date)
 
     def _read_fixture(self) -> list[dict]:
         with open(FIXTURE_PATH) as f:
             data = json.load(f)
         return data.get("tweets", [])
 
-    def _fetch_real(self) -> list[dict]:
+    def _fetch_real(
+        self,
+        since_date: str | None = None,
+        until_date: str | None = None,
+    ) -> list[dict]:
         """通过 twitter-cli 拉真实推文;失败降级到 fixture。"""
         cfg = (self.config or load_config()).get("sources", {}).get("l0", {})
         query = cfg.get("query", "AI OR LLM OR AGI")
@@ -76,11 +85,16 @@ class L0Collector(BaseCollector):
 
         cmd = [
             TWITTER_BIN, "search", query_clean,
+            "-t", "latest",           # 按时间倒序，确保近期推文优先
             "--lang", "en",
             "--exclude", "retweets",
             "-n", str(max_results),
             "--json",
         ]
+        if since_date:
+            cmd += ["--since", since_date]
+        if until_date:
+            cmd += ["--until", until_date]
 
         try:
             result = subprocess.run(
@@ -129,9 +143,21 @@ def main():
     parser.add_argument(
         "--dry-run", action="store_true", default=False, help="Use fixture data instead of twitter-cli"
     )
+    parser.add_argument("--since", default=None, help="Collect tweets since YYYY-MM-DD")
+    parser.add_argument("--until", default=None, help="Collect tweets until YYYY-MM-DD")
     args = parser.parse_args()
     collector = L0Collector()
-    collector.run_cli(args.output, dry_run=args.dry_run)
+    tweets = collector.collect(
+        dry_run=args.dry_run,
+        since_date=args.since,
+        until_date=args.until,
+    )
+    import json as _json
+    from pathlib import Path as _Path
+    out_path = _Path(args.output)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w") as f:
+        _json.dump({"tweets": tweets}, f, ensure_ascii=False, indent=2)
 
 
 if __name__ == "__main__":

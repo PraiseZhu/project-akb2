@@ -32,6 +32,7 @@ import subprocess
 import sys
 import shutil
 import tempfile
+import zoneinfo
 from pathlib import Path
 
 from akb2.briefing.translate import translate_briefing  # noqa: E402
@@ -50,12 +51,72 @@ GATE_DECISION_ENUM = {
     "brief_only", "archive", "reject",
 }
 
+_TZ_SH = zoneinfo.ZoneInfo("Asia/Shanghai")
+_INTAKE_WINDOW_DAYS_DEFAULT = 2
+
+
+# ---------------------------------------------------------------------------
+# 产出层日期兜底（SC-7）
+# ---------------------------------------------------------------------------
+
+def _filter_recent(tweets: list, date: str, days: int = _INTAKE_WINDOW_DAYS_DEFAULT) -> list:
+    """保留 created_at 在 [date-(days-1), date] 范围内的推文（时区 Asia/Shanghai）。
+
+    - 缺 created_at 或格式异常 → 保守保留，stderr 告警
+    - days=2 表示今天+昨天（近2天）
+    """
+    try:
+        end_day = datetime.datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        sys.stderr.write(f"WARNING [filter_recent]: invalid date '{date}', skipping filter\n")
+        return tweets
+
+    start_day = end_day - datetime.timedelta(days=days - 1)
+    # Asia/Shanghai 时区边界
+    start_dt = datetime.datetime(
+        start_day.year, start_day.month, start_day.day, 0, 0, 0, tzinfo=_TZ_SH
+    )
+    end_dt = datetime.datetime(
+        end_day.year, end_day.month, end_day.day, 23, 59, 59, 999999, tzinfo=_TZ_SH
+    )
+
+    kept = []
+    for t in tweets:
+        raw_ts = t.get("created_at", "")
+        if not raw_ts:
+            sys.stderr.write(
+                f"WARNING [filter_recent]: tweet {t.get('id','?')} missing created_at, keeping\n"
+            )
+            kept.append(t)
+            continue
+        try:
+            dt = datetime.datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
+            dt_sh = dt.astimezone(_TZ_SH)
+            if start_dt <= dt_sh <= end_dt:
+                kept.append(t)
+        except (ValueError, TypeError):
+            sys.stderr.write(
+                f"WARNING [filter_recent]: tweet {t.get('id','?')} bad created_at '{raw_ts}', keeping\n"
+            )
+            kept.append(t)
+
+    if len(kept) < len(tweets):
+        sys.stderr.write(
+            f"INFO [filter_recent]: dropped {len(tweets)-len(kept)} out-of-window tweets, kept {len(kept)}\n"
+        )
+    return kept
+
 
 # ---------------------------------------------------------------------------
 # Stage 1: Intake
 # ---------------------------------------------------------------------------
 
-def run_intake(dry_run: bool, output_path: Path) -> dict:
+def run_intake(
+    dry_run: bool,
+    output_path: Path,
+    since_date: str | None = None,
+    until_date: str | None = None,
+) -> dict:
     """Call l0_collector via subprocess, return parsed JSON dict."""
     cmd = [
         sys.executable, "-m", "akb2.briefing.intake.l0_collector",
@@ -63,6 +124,10 @@ def run_intake(dry_run: bool, output_path: Path) -> dict:
     ]
     if dry_run:
         cmd.append("--dry-run")
+    if since_date:
+        cmd += ["--since", since_date]
+    if until_date:
+        cmd += ["--until", until_date]
 
     env = os.environ.copy()
     env["PYTHONPATH"] = str(REPO_ROOT / "src") + (
@@ -330,6 +395,7 @@ def main(argv: list[str] | None = None) -> int:
     date = args.date
     vault_root = Path(args.vault_root).resolve()
     dry_run_intake = args.dry_run_intake
+    window_days = int(os.environ.get("AKB2_INTAKE_WINDOW_DAYS", str(_INTAKE_WINDOW_DAYS_DEFAULT)))
 
     # Fail-closed: check vault_root before running any expensive stages.
     if not vault_root.is_dir():
@@ -342,16 +408,32 @@ def main(argv: list[str] | None = None) -> int:
     # 文件名 = 抓取日（去掉旧的 +1 偏移）
     briefing_filename = f"{date} Daily Briefing.md"
 
+    # 采集层时间窗（SC-6）
+    date_dt = datetime.datetime.strptime(date, "%Y-%m-%d")
+    since_dt = date_dt - datetime.timedelta(days=window_days - 1)
+    since_date_str = since_dt.strftime("%Y-%m-%d")
+    until_date_str = date
+
     # Stage 1: Intake
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
         intake_tmp = Path(tf.name)
     try:
-        intake_data = run_intake(dry_run=dry_run_intake, output_path=intake_tmp)
+        intake_data = run_intake(
+            dry_run=dry_run_intake,
+            output_path=intake_tmp,
+            since_date=since_date_str if not dry_run_intake else None,
+            until_date=until_date_str if not dry_run_intake else None,
+        )
     finally:
         intake_tmp.unlink(missing_ok=True)
 
     # Stage 2: Scoring
     scored_data = run_scoring(intake_data)
+
+    # 产出层日期兜底（SC-7）：去掉超出时间窗的旧推文
+    scored_data["tweets"] = _filter_recent(
+        scored_data.get("tweets", []), date, days=window_days
+    )
 
     # Stage 3: Synthesis（产出英文结构化分析，语言交翻译阶段负责）
     synth_en = run_synthesis(scored_data, date=date)
