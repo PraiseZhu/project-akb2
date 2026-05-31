@@ -17,9 +17,18 @@ import os
 import sys
 from datetime import datetime, timezone
 
-# 翻译阶段专用模型（默认中文母语模型；可由环境变量覆盖）
-_TRANSLATE_MODEL = os.environ.get("AKB2_TRANSLATE_MODEL", "qwen/qwen3.6-plus")
-_TRANSLATE_FALLBACK_MODEL = os.environ.get("AKB2_TRANSLATE_FALLBACK_MODEL", "z-ai/glm-5.1")
+# 翻译阶段模型链（实测：gemini 每次调用固定开销最低 ~24s，deepseek/glm ~42-47s，
+# 质量三家持平；故主力 gemini，备用按不同厂商排 deepseek→glm，规避单厂商故障。
+# 均可由环境变量覆盖。）
+_TRANSLATE_MODEL = os.environ.get("AKB2_TRANSLATE_MODEL", "gemini-3.1-pro-preview")
+_TRANSLATE_FALLBACK_MODELS = [
+    m.strip()
+    for m in os.environ.get(
+        "AKB2_TRANSLATE_FALLBACK_MODELS",
+        "deepseek/deepseek-v4-pro,z-ai/glm-5.1",
+    ).split(",")
+    if m.strip()
+]
 
 # 长推阈值（字符数，超过则抽核心段）
 LONG_TWEET_THRESHOLD = 500
@@ -150,7 +159,7 @@ def _first_segment(text: str, max_chars: int = 400) -> str:
     return text[:max_chars].strip()
 
 
-_DEFAULT_TRANSLATE_TIMEOUT = 60   # 秒；可用 AKB2_TRANSLATE_TIMEOUT env 覆盖
+_DEFAULT_TRANSLATE_TIMEOUT = 120   # 秒；可用 AKB2_TRANSLATE_TIMEOUT env 覆盖
 
 
 def translate_briefing(
@@ -161,6 +170,8 @@ def translate_briefing(
 ) -> dict:
     """将 synth payload 翻译为中文，返回新 dict；失败时保留原值并 stderr 告警。
 
+    模型链：主力 + 备用链按序尝试，任一成功即用其结果；全部失败则返回原 synth。
+
     新增字段（可选）：
       tweets[i].text       → 中文译文（原 text 移到 text_original）
       tweets[i].text_original → 英文原文备查
@@ -169,45 +180,39 @@ def translate_briefing(
     """
     from akb2.briefing.synthesis import _call_llm
 
-    used_model = model or _TRANSLATE_MODEL
+    # 构建模型链（主力 + 备用），去重保序
+    chain: list[str] = []
+    for m in [model or _TRANSLATE_MODEL, *_TRANSLATE_FALLBACK_MODELS]:
+        if m and m not in chain:
+            chain.append(m)
 
-    try:
-        prompt = _build_translate_prompt(synth)
-        messages = [
-            {"role": "system", "content": _TRANSLATE_SYSTEM},
-            {"role": "user", "content": prompt},
-        ]
-        raw = _call_llm(messages, model=used_model, json_mode=True, timeout=timeout)
-        trans = json.loads(raw)
-    except Exception as e:
-        # 主模型失败，尝试备用模型
-        if used_model != _TRANSLATE_FALLBACK_MODEL:
-            sys.stderr.write(
-                f"WARNING [translate]: {used_model} failed ({e}), "
-                f"retrying with {_TRANSLATE_FALLBACK_MODEL}\n"
-            )
-            try:
-                messages = [
-                    {"role": "system", "content": _TRANSLATE_SYSTEM},
-                    {"role": "user", "content": _build_translate_prompt(synth)},
-                ]
-                raw = _call_llm(
-                    messages, model=_TRANSLATE_FALLBACK_MODEL,
-                    json_mode=True, timeout=timeout,
-                )
-                trans = json.loads(raw)
-            except Exception as e2:
+    prompt = _build_translate_prompt(synth)
+    messages = [
+        {"role": "system", "content": _TRANSLATE_SYSTEM},
+        {"role": "user", "content": prompt},
+    ]
+
+    trans = None
+    for i, used_model in enumerate(chain):
+        try:
+            raw = _call_llm(messages, model=used_model, json_mode=True, timeout=timeout)
+            trans = json.loads(raw)
+            break
+        except Exception as e:
+            remaining = chain[i + 1:]
+            if remaining:
                 sys.stderr.write(
-                    f"WARNING [translate]: fallback {_TRANSLATE_FALLBACK_MODEL} also failed ({e2}). "
-                    "Returning original synth without translation.\n"
+                    f"WARNING [translate]: {used_model} failed ({e}), "
+                    f"retrying with {remaining[0]}\n"
                 )
-                return synth
-        else:
-            sys.stderr.write(
-                f"WARNING [translate]: {used_model} failed ({e}). "
-                "Returning original synth without translation.\n"
-            )
-            return synth
+            else:
+                sys.stderr.write(
+                    f"WARNING [translate]: all translate models failed "
+                    f"(last {used_model}: {e}). Returning original synth without translation.\n"
+                )
+
+    if trans is None:
+        return synth
 
     return _apply_translation(synth, trans)
 
@@ -330,7 +335,7 @@ def _translate_snippet(text_en: str, timeout: int = 60) -> str:
         ]
         return _call_llm(
             messages,
-            model=os.environ.get("AKB2_TRANSLATE_MODEL", "qwen/qwen3.6-plus"),
+            model=os.environ.get("AKB2_TRANSLATE_MODEL", "gemini-3.1-pro-preview"),
             json_mode=False,
             timeout=timeout,
         ).strip()

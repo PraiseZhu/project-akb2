@@ -437,14 +437,76 @@ def test_core_excerpt_uses_selected_core_segment():
 # P2b: 超时降低 + topic 残英重译
 # ---------------------------------------------------------------------------
 
-def test_translate_briefing_uses_short_timeout():
-    """translate_briefing 默认 timeout 应 ≤ 90s（从 180s 降低，SC-P2b-1）。"""
-    from akb2.briefing.translate import translate_briefing
+def test_translate_model_chain_and_timeout():
+    """SC-P2b-1: 翻译主力=gemini，备用链=[deepseek, glm]，默认 timeout=120。
+
+    根因实测：翻译慢是模型每次调用的固定开销（~30s 思考期+TTFT），不是 prompt/接口问题。
+    gemini 固定开销最低（实测整批 ~24s），deepseek/glm ~42-47s。主力选 gemini，
+    备用按不同厂商排 deepseek→glm；timeout 120s 给备用留 2.6 倍余量。
+    """
+    from akb2.briefing import translate as tr
     import inspect
 
-    sig = inspect.signature(translate_briefing)
-    default_timeout = sig.parameters["timeout"].default
-    assert default_timeout <= 90, f"默认 timeout 应 ≤90s，实际 {default_timeout}s"
+    assert tr._TRANSLATE_MODEL == "gemini-3.1-pro-preview", \
+        f"翻译主力应为 gemini，实际 {tr._TRANSLATE_MODEL}"
+    assert tr._TRANSLATE_FALLBACK_MODELS == ["deepseek/deepseek-v4-pro", "z-ai/glm-5.1"], \
+        f"备用链应为 [deepseek, glm]，实际 {tr._TRANSLATE_FALLBACK_MODELS}"
+
+    sig = inspect.signature(tr.translate_briefing)
+    assert sig.parameters["timeout"].default == 120, \
+        f"默认 timeout 应为 120s，实际 {sig.parameters['timeout'].default}s"
+
+
+def test_translate_falls_through_chain_to_second_fallback():
+    """主(gemini)+备1(deepseek) 都失败 → 用备2(glm)；按链顺序尝试，最终翻译生效。"""
+    from akb2.briefing.translate import translate_briefing
+
+    synth = {
+        "executive_summary": "Summary.",
+        "focus_discussions": [{"topic": "T", "summary": "S.", "supporting_tweet_ids": ["1"]}],
+        "tweets": [{"id": "1", "author": "@x", "text": "short tweet", "score": 0.9, "url": "u"}],
+    }
+    calls: list[str] = []
+    good = json.dumps({
+        "executive_summary": "今日摘要。",
+        "focus_discussions": [{"idx": 0, "topic": "智能体话题", "summary": "中文总结。"}],
+        "tweets": [{"idx": 0, "text_zh": "短推文中文。", "zh_point": "要点。"}],
+    })
+
+    def fake(messages, model, **kw):
+        calls.append(model)
+        if model in ("gemini-3.1-pro-preview", "deepseek/deepseek-v4-pro"):
+            raise TimeoutError("read timed out")
+        return good
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=fake):
+        result = translate_briefing(synth)
+
+    assert calls == ["gemini-3.1-pro-preview", "deepseek/deepseek-v4-pro", "z-ai/glm-5.1"], \
+        f"应按 [gemini, deepseek, glm] 顺序尝试，实际: {calls}"
+    assert result["focus_discussions"][0]["topic"] == "智能体话题", "备2 成功后翻译应生效"
+
+
+def test_translate_all_models_fail_returns_original():
+    """三档全失败 → 返回原始 synth 不抛异常，且确实尝试了全部 3 个模型。"""
+    from akb2.briefing.translate import translate_briefing
+
+    synth = {
+        "executive_summary": "Summary.",
+        "focus_discussions": [{"topic": "T", "summary": "S.", "supporting_tweet_ids": ["1"]}],
+        "tweets": [{"id": "1", "author": "@x", "text": "short tweet", "score": 0.9, "url": "u"}],
+    }
+    calls: list[str] = []
+
+    def always_fail(messages, model, **kw):
+        calls.append(model)
+        raise ConnectionError("down")
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=always_fail):
+        result = translate_briefing(synth)
+
+    assert len(calls) == 3, f"应尝试全部 3 个模型，实际 {calls}"
+    assert result["executive_summary"] == "Summary.", "全失败应返回原始 synth"
 
 
 def test_translate_topic_retranslated_if_english():
