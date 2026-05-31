@@ -45,6 +45,17 @@ def test_fetch_tier_zh_count():
     assert len(ac._load_fetch_tier("zh")) == 11
 
 
+def test_fetch_tier_reserve_loads_from_top_level():
+    """P3c 集成回归：reserve_tier 是顶层 key（非 fetch_tier.reserve）。
+
+    _load_fetch_tier('reserve') 必须能读到顶层 reserve_tier，否则补抓没数据可补
+    → 安静日 en 不足时无法补充 → 主题数偏少。
+    """
+    handles = ac._load_fetch_tier("reserve")
+    assert len(handles) > 0, "reserve 层应能读到账号（P3c 补抓依赖它）"
+    assert len(handles) == 69, f"reserve 应 69 个，实际 {len(handles)}"
+
+
 # ---------------------------------------------------------------------------
 # 单账号命令形态
 # ---------------------------------------------------------------------------

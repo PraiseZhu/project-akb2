@@ -44,14 +44,22 @@ _DEFAULT_MAX_RESERVE_ACCOUNTS = 10  # reserve 最多抓多少个账号（限流�
 
 
 def _load_fetch_tier(tier: str = _DEFAULT_TIER) -> list[str]:
-    """从 curator-accounts.yaml 读取 fetch_tier.<tier> 账号列表（去掉行内注释/空白）。"""
+    """从 curator-accounts.yaml 读取账号列表（去掉行内注释/空白）。
+
+    优先 fetch_tier.<tier>（en/zh）；找不到时回退顶层 <tier>_tier（如 reserve_tier，
+    它在配置里是顶层 key 而非 fetch_tier 子项）。
+    """
     try:
         with open(CURATOR_CONFIG) as f:
             cfg = yaml.safe_load(f) or {}
     except FileNotFoundError:
         sys.stderr.write(f"WARNING: curator config not found at {CURATOR_CONFIG}\n")
         return []
-    raw = ((cfg.get("fetch_tier") or {}).get(tier)) or []
+    raw = (cfg.get("fetch_tier") or {}).get(tier)
+    if raw is None:
+        # 顶层 <tier>_tier 兼容（reserve_tier 等）
+        raw = cfg.get(f"{tier}_tier")
+    raw = raw or []
     # yaml 已剥注释；再防御性 strip + 去空
     return [str(h).strip() for h in raw if str(h).strip()]
 
