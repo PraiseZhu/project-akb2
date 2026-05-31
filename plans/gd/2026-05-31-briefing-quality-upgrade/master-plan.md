@@ -164,7 +164,7 @@ VALIDATE_CMD: n_a
 - [ ] 目标链、SC、NON_GOALS 清楚
 - [ ] REVIEW_DOMAIN / REVIEW_FOCUS 清楚
 - [ ] owned_paths 串行约束已声明（scoring.py 多步不并行）
-- [ ] 改 scoring 本体已获用户授权
+- [x] 改 scoring 本体已获用户授权（2026-05-31 用户显式授权：解锁 P1 全套 + P2-2/P2-3）
 - [ ] 嵌入失败降级（SC-6）+ eval 量化闸门（SC-8）已覆盖
 - [ ] P1-4 排在 P1-3 之后、与 P1-5 捆绑（排序与耦合修复）
 - [ ] 部署 cadence（P0-1 先上线、P3-1 再上线）清楚
