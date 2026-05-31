@@ -76,6 +76,26 @@ def test_filter_recent_no_tweets_returns_empty():
     assert _filter_recent([], "2026-05-30") == []
 
 
+def test_intake_window_default_is_3_days():
+    """时间窗默认 3 天（从 2 改，安静日凑够 4-5 主题；可 AKB2_INTAKE_WINDOW_DAYS 覆盖）。"""
+    from akb2.briefing.pipeline import _INTAKE_WINDOW_DAYS_DEFAULT
+    assert _INTAKE_WINDOW_DAYS_DEFAULT == 3, \
+        f"窗口默认应为 3，实际 {_INTAKE_WINDOW_DAYS_DEFAULT}"
+
+
+def test_filter_recent_default_window_keeps_3_days():
+    """默认窗口下保留近 3 天（今天/昨天/前天），第 4 天丢弃。"""
+    from akb2.briefing.pipeline import _filter_recent
+    tweets = [
+        {"id": "1", "created_at": "2026-05-30T10:00:00+00:00"},  # 当天
+        {"id": "2", "created_at": "2026-05-29T10:00:00+00:00"},  # 昨天
+        {"id": "3", "created_at": "2026-05-28T10:00:00+00:00"},  # 前天 → 近3天保留
+        {"id": "4", "created_at": "2026-05-27T10:00:00+00:00"},  # 3天前 → 丢弃
+    ]
+    kept = [t["id"] for t in _filter_recent(tweets, "2026-05-30")]  # 用默认 days
+    assert kept == ["1", "2", "3"], f"近3天应保留 1/2/3，实际 {kept}"
+
+
 # ---------------------------------------------------------------------------
 # SC-6: 采集层时间窗 — intake cmd 含 --since / --until
 # ---------------------------------------------------------------------------

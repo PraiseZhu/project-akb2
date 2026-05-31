@@ -53,7 +53,9 @@ GATE_DECISION_ENUM = {
 }
 
 _TZ_SH = zoneinfo.ZoneInfo("Asia/Shanghai")
-_INTAKE_WINDOW_DAYS_DEFAULT = 2
+# 默认 3 天：19 个活跃账号在 2 天窗口下安静日仅 ~10 条原创、只够 3 主题；
+# 放宽到 3 天提升素材量（够 4-5 主题），新鲜度损失可接受。可 AKB2_INTAKE_WINDOW_DAYS 覆盖。
+_INTAKE_WINDOW_DAYS_DEFAULT = 3
 
 
 # ---------------------------------------------------------------------------
@@ -64,7 +66,7 @@ def _filter_recent(tweets: list, date: str, days: int = _INTAKE_WINDOW_DAYS_DEFA
     """保留 created_at 在 [date-(days-1), date] 范围内的推文（时区 Asia/Shanghai）。
 
     - 缺 created_at 或格式异常 → 保守保留，stderr 告警
-    - days=2 表示今天+昨天（近2天）
+    - days=3 表示今天+昨天+前天（近3天）
     """
     try:
         end_day = datetime.datetime.strptime(date, "%Y-%m-%d")
