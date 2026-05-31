@@ -334,6 +334,65 @@ def test_map_index_refs_drops_oob_and_unknown():
     assert result == ["AAA"], f"只保留有效序号，实际: {result}"
 
 
+def test_synthesis_prompt_path_resolves_to_real_file():
+    """P0 实跑根因回归：synthesize 的 prompt 路径必须指向真实存在的 prompt 文件。
+
+    路径 off-by-one（多一层 parent）→ 文件找不到 → 回退内联兜底 prompt（无短序号
+    指令、无 supporting_tweet_ids 格式说明）→ 模型乱返回 → 映射空 → 4 主题全塌 top[:5]。
+    """
+    from akb2.briefing import synthesis as syn
+
+    assert syn._PROMPT_PATH.exists(), \
+        f"合成 prompt 文件不存在（路径算错？）: {syn._PROMPT_PATH}"
+    content = syn._PROMPT_PATH.read_text()
+    assert "短序号" in content, "prompt 应包含短序号指令（确认加载的是正确文件，非内联兜底）"
+
+
+def test_map_index_refs_accepts_real_ids_when_model_ignores_indices():
+    """P0 实跑回归：gemini 不稳定，有时直接返回真实 19 位 id 而非短序号。
+
+    映射必须同时接受两种格式——短序号翻译、真实 id 原样保留——否则真实 id 被全部
+    丢弃 → 每个主题兜底 top[:5] → 4 主题挂相同推文（真跑暴露的 77% 冗余）。
+    """
+    from akb2.briefing.synthesis import _map_index_refs_to_ids
+
+    idx_to_id = {"1": "1925001000000000012", "2": "1925001000000000007"}
+    valid_ids = {"1925001000000000012", "1925001000000000007", "1925001000000000099"}
+
+    # 模型直接返回真实 id（没听短序号指令）→ 应保留，不丢弃
+    assert _map_index_refs_to_ids(["1925001000000000099"], idx_to_id, valid_ids) == \
+        ["1925001000000000099"], "真实 id 应被保留"
+
+    # 短序号 + 真实 id 混合 → 都保留
+    assert _map_index_refs_to_ids(["1", "1925001000000000099"], idx_to_id, valid_ids) == \
+        ["1925001000000000012", "1925001000000000099"], "短序号和真实 id 混合都应处理"
+
+    # 既非短序号也非真实 id（编造）→ 丢弃
+    assert _map_index_refs_to_ids(["FAKE999"], idx_to_id, valid_ids) == [], "编造 id 应丢弃"
+
+
+def test_merge_keeps_distinct_ids_when_model_returns_real_ids():
+    """P0 实跑回归：模型对各主题返回不同的真实 id → 合并后主题 ids 仍 distinct，不塌 top5。"""
+    from akb2.briefing.synthesis import _merge_with_input, _build_indexed_tweet_listing
+
+    scored = _load_fixture()
+    top = sorted(scored["tweets"], key=lambda t: t.get("score", 0), reverse=True)
+    _, idx_to_id = _build_indexed_tweet_listing(top)
+
+    # 模型对 3 个主题返回不同的真实 19 位 id（模拟 gemini 不用短序号那次）
+    real_ids = [str(t["id"]) for t in top[:6]]
+    model_out = {
+        "focus_discussions": [
+            {"topic": "A", "summary": "一。二。三。", "supporting_tweet_ids": [real_ids[0], real_ids[1]]},
+            {"topic": "B", "summary": "一。二。三。", "supporting_tweet_ids": [real_ids[2], real_ids[3]]},
+            {"topic": "C", "summary": "一。二。三。", "supporting_tweet_ids": [real_ids[4], real_ids[5]]},
+        ]
+    }
+    merged = _merge_with_input(model_out, scored, "2026-05-31", top, idx_to_id)
+    id_sets = [tuple(fd["supporting_tweet_ids"]) for fd in merged["focus_discussions"]]
+    assert len(set(id_sets)) == 3, f"3 主题应有 3 组不同 ids，实际塌成 {len(set(id_sets))} 组: {id_sets}"
+
+
 def test_patch_no_fallback_when_indices_map_to_valid_ids():
     """P0 核心：模型用短序号 → 映射为真实 id → _patch_focus_discussions 不触发 top[:5] 兜底。"""
     from akb2.briefing.synthesis import _patch_focus_discussions, _map_index_refs_to_ids

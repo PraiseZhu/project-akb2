@@ -543,6 +543,34 @@ def test_translate_topic_retranslated_if_english():
     assert "智能体记忆基础设施" in fd["topic"], f"topic 应被补译，实际: {fd['topic']!r}"
 
 
+def test_translate_topic_with_product_name_not_retranslated():
+    """P2b-2 误报回归：含产品名/版本号但已正确翻译的 topic 不应被误判残英而重译。
+
+    'vLLM v0.22.0 发布与推理优化' 中文占比仅 ~28%（产品名占了大半），但它是正确翻译，
+    旧的 0.4 比例阈值会误触发重译，浪费调用且可能改坏。改用绝对中文字数判断。
+    """
+    import copy
+    from unittest.mock import patch as _patch
+    from akb2.briefing import translate as tr
+    from akb2.briefing.translate import _apply_translation
+
+    synth = copy.deepcopy(FIXTURE_SYNTH)
+    synth["focus_discussions"] = [
+        {"topic": "init", "summary": "第一句。第二句。第三句。", "supporting_tweet_ids": ["1"]},
+    ]
+    trans = {
+        "executive_summary": "今日摘要。",
+        "focus_discussions": [{"idx": 0, "topic": "vLLM v0.22.0 发布与推理优化", "summary": "已是中文。"}],
+        "tweets": [{"idx": 0, "text_zh": "短推文中文。", "zh_point": "要点。"}],
+    }
+    snippets_called: list[str] = []
+    with _patch.object(tr, "_translate_snippet", side_effect=lambda t, **k: snippets_called.append(t) or ""):
+        result = _apply_translation(synth, trans)
+
+    assert not snippets_called, f"含产品名的正确中文 topic 不应触发重译，调了: {snippets_called}"
+    assert result["focus_discussions"][0]["topic"] == "vLLM v0.22.0 发布与推理优化", "topic 应原样保留"
+
+
 def test_translate_topic_chinese_no_retranslate():
     """topic 翻译结果已是中文时，不调 _translate_snippet（无多余 LLM 调用）。"""
     import copy

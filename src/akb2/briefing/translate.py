@@ -129,12 +129,19 @@ def _build_translate_prompt(synth: dict) -> str:
     )
 
 
-def _is_chinese(text: str, min_ratio: float = 0.4) -> bool:
-    """判断文本是否以中文为主（中文字符占比 ≥ min_ratio）。"""
-    if not text:
-        return False
-    han = sum(1 for c in text if "一" <= c <= "鿿")
-    return han / len(text) >= min_ratio
+def _han_count(text: str) -> int:
+    """统计中文字符数。"""
+    return sum(1 for c in text if "一" <= c <= "鿿") if text else 0
+
+
+def _is_translated_topic(text: str, min_han: int = 2) -> bool:
+    """判断 topic 是否已翻译（含足够中文）。
+
+    用绝对中文字数而非比例：AI topic 术语密集（产品名/型号/英文缩写），
+    '已正确翻译但产品名占大半' 的 topic（如 'vLLM v0.22.0 发布与推理优化'，中文占比仅 ~28%）
+    若用比例阈值会被误判残英。只要含 ≥min_han 个中文字即视为已翻译；纯英文（0 中文）才补译。
+    """
+    return _han_count(text) >= min_han
 
 
 def _is_substring(excerpt: str, original: str) -> bool:
@@ -259,10 +266,10 @@ def _apply_translation_inner(result: dict, trans: dict) -> dict:
         t = fd_trans.get(i, {})
         topic_zh = t.get("topic", "").strip()
         if topic_zh:
-            if not _is_chinese(topic_zh):
-                # SC-P2b-2: topic 翻译仍含英文 → 补译
+            if not _is_translated_topic(topic_zh):
+                # SC-P2b-2: topic 几乎无中文（纯英文未翻译）→ 补译
                 sys.stderr.write(
-                    f"WARNING [translate]: focus_discussions[{i}].topic 含残留英文 {topic_zh!r}，尝试补译\n"
+                    f"WARNING [translate]: focus_discussions[{i}].topic 未翻译（纯英文）{topic_zh!r}，尝试补译\n"
                 )
                 retranslated = _translate_snippet(topic_zh)
                 fd["topic"] = retranslated if retranslated else topic_zh

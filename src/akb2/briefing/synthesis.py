@@ -21,6 +21,12 @@ from pathlib import Path
 # 合成阶段专用模型（可由环境变量覆盖）
 _SYNTHESIS_MODEL = os.environ.get("AKB2_SYNTHESIS_MODEL", "gemini-3.1-pro-preview")
 
+# 合成 prompt 文件路径：synthesis.py 在 <root>/src/akb2/briefing/ 下，docs/ 在 <root>/，
+# 故 4 层 parent 到 <root>（worktree 与主仓库结构一致，均适用）。
+# 历史 bug：曾用 5 层 → 多跳一级到不存在的目录 → 回退内联兜底 prompt（无短序号指令）
+# → supporting_tweet_ids 全塌 top[:5]（P0 实跑根因）。
+_PROMPT_PATH = Path(__file__).parent.parent.parent.parent / "docs" / "deepseek-synthesis-prompt-v1.md"
+
 # synthesis system message：约束分析质量，语言交由后续翻译阶段
 _SYNTHESIS_SYSTEM = (
     "You are an expert AI/ML trend analyst. "
@@ -199,16 +205,30 @@ def _build_indexed_tweet_listing(top: list[dict]) -> tuple[str, dict[str, str]]:
     return "\n".join(lines), idx_to_id
 
 
-def _map_index_refs_to_ids(raw_ids: list, idx_to_id: dict[str, str]) -> list[str]:
-    """将模型返回的短序号（"1"、"[1]"）映射回真实 tweet id；越界/非法序号丢弃。"""
+def _map_index_refs_to_ids(
+    raw_ids: list,
+    idx_to_id: dict[str, str],
+    valid_ids: set[str] | None = None,
+) -> list[str]:
+    """将模型返回的引用映射为真实 tweet id，同时兼容两种格式：
+
+    - 短序号（"1"、"[1]"）→ 翻译为真实 id
+    - 已是真实 tweet id（在 valid_ids 中）→ 原样保留
+
+    模型（gemini）不稳定：有时遵守短序号指令，有时直接返回真实 19 位 id。只认短序号会把
+    真实 id 全部丢弃 → 每个主题兜底 top[:5] → 多主题挂相同推文（P0 实跑回归）。
+    既非短序号也非真实 id（编造）→ 丢弃。
+    """
     import re as _re
+    valid_ids = valid_ids or set()
     result = []
     for raw in raw_ids:
         s = str(raw).strip()
-        # 去掉可能的方括号：[1] → 1
-        s = _re.sub(r"^\[(\d+)\]$", r"\1", s)
-        if s in idx_to_id:
-            result.append(idx_to_id[s])
+        s_idx = _re.sub(r"^\[(\d+)\]$", r"\1", s)  # 去方括号：[1] → 1
+        if s_idx in idx_to_id:
+            result.append(idx_to_id[s_idx])        # 短序号
+        elif s in valid_ids:
+            result.append(s)                        # 已是真实 id
     return result
 
 
@@ -232,7 +252,7 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
     tweets_text, idx_to_id = _build_indexed_tweet_listing(top)
 
     resolved_date = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    prompt_path = Path(__file__).parent.parent.parent.parent.parent / "docs" / "deepseek-synthesis-prompt-v1.md"
+    prompt_path = _PROMPT_PATH
 
     if prompt_path.exists():
         prompt_template = prompt_path.read_text()
@@ -292,15 +312,16 @@ def _merge_with_input(
     all_tweets = scored_input.get("tweets", [])
     id_to_tweet = {str(t["id"]): t for t in top}
 
-    # P0 fix: 若有序号映射，先把模型返回的短序号还原为真实 id
+    # P0 fix: 把模型返回的引用还原为真实 id（短序号翻译 + 真实 id 保留，兼容模型不稳定）
     raw_fds = model_out.get("focus_discussions") or []
     if idx_to_id:
+        valid_ids = {str(t["id"]) for t in top}
         mapped_fds = []
         for fd in raw_fds:
             if not isinstance(fd, dict):
                 continue
             raw_ids = fd.get("supporting_tweet_ids") or []
-            mapped = _map_index_refs_to_ids(raw_ids, idx_to_id)
+            mapped = _map_index_refs_to_ids(raw_ids, idx_to_id, valid_ids)
             mapped_fds.append({**fd, "supporting_tweet_ids": mapped})
         raw_fds = mapped_fds
 
