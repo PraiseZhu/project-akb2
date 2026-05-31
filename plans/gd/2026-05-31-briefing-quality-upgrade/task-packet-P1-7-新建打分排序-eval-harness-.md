@@ -14,7 +14,7 @@ TEMPLATE_KIND: gd-task-packet
 task_id: p1-7-新建打分排序-eval-harness-+-标注
 agent_role: implementer
 parent_step: P1-7
-parent_plan: plans/gd/2026-05-31-briefing-quality-upgrade/step-P1-7-*.md
+parent_plan: plans/gd/2026-05-31-briefing-quality-upgrade/step-P1-7-新建打分排序-eval-harness-.md
 created_at: 2026-05-31T11:00:00Z
 ```
 
@@ -44,7 +44,7 @@ can_parallel_with:
   - P1-5
   - P1-6
 required_context:
-  - evals/briefing-scoring/
+  - plans/gd/2026-05-31-briefing-quality-upgrade/step-P1-7-新建打分排序-eval-harness-.md
 ```
 
 ---
@@ -58,6 +58,16 @@ forbidden_paths:
   - "/Users/praise/.claude/**"
   - 调度 plist / cron / LaunchAgent
   - 其他 step 的 owned_paths（未列入 required_context）
+```
+
+---
+
+## 4b. 交付物（deliverables）
+
+```yaml
+deliverables:
+  - evals/briefing-scoring/run.py（eval runner）
+  - evals/briefing-scoring/fixtures/（~30 AI + ~15 离题标注集）
 ```
 
 ---
@@ -76,7 +86,7 @@ forbidden_paths:
   - verify (path): `ls evals/briefing-scoring/`
   - expect: `含 runner+fixtures`
 - [ ] SC-2：一键跑出排序质量指标（nDCG 或 top-k）
-  - verify (command): `跑 eval runner`
+  - verify (command): `python3 evals/briefing-scoring/run.py`
   - expect: `输出指标`
 
 ---

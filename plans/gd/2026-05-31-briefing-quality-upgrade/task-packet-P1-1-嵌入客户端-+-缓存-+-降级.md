@@ -14,7 +14,7 @@ TEMPLATE_KIND: gd-task-packet
 task_id: p1-1-嵌入客户端-+-缓存-+-降级
 agent_role: implementer
 parent_step: P1-1
-parent_plan: plans/gd/2026-05-31-briefing-quality-upgrade/step-P1-1-*.md
+parent_plan: plans/gd/2026-05-31-briefing-quality-upgrade/step-P1-1-嵌入客户端-+-缓存-+-降级.md
 created_at: 2026-05-31T11:00:00Z
 ```
 
@@ -35,12 +35,14 @@ TASK_GOAL:    实现 embeddings.py：批量调网关 /v1/embeddings + 文本 has
 
 ```yaml
 blocked_by:
-  - 改 scoring 授权
+  []
 can_parallel_with:
   []
 required_context:
-  - master-plan.md
-  - step-P1-semantic-core.md（如存）
+  - plans/gd/2026-05-31-briefing-quality-upgrade/master-plan.md
+  - plans/gd/2026-05-31-briefing-quality-upgrade/step-P1-1-嵌入客户端-+-缓存-+-降级.md
+  - src/akb2/briefing/scoring.py
+authorization_gate: 改 scoring 本体（P1 语义内核需用户显式解锁）；本 task 仅新建 embeddings.py 不改 scoring.py，可在授权前开工
 ```
 
 ---
@@ -55,6 +57,16 @@ forbidden_paths:
   - "/Users/praise/.claude/**"
   - 调度 plist / cron / LaunchAgent
   - 其他 step 的 owned_paths（未列入 required_context）
+```
+
+---
+
+## 4b. 交付物（deliverables）
+
+```yaml
+deliverables:
+  - src/akb2/briefing/embeddings.py
+  - tests/briefing/test_embeddings.py
 ```
 
 ---

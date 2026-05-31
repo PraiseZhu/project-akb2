@@ -14,7 +14,7 @@ TEMPLATE_KIND: gd-task-packet
 task_id: p2-1-接入-zh-抓取合并
 agent_role: implementer
 parent_step: P2-1
-parent_plan: plans/gd/2026-05-31-briefing-quality-upgrade/step-P2-1-*.md
+parent_plan: plans/gd/2026-05-31-briefing-quality-upgrade/step-P2-1-接入-zh-抓取合并.md
 created_at: 2026-05-31T11:00:00Z
 ```
 
@@ -39,8 +39,9 @@ blocked_by:
 can_parallel_with:
   - P0-1
 required_context:
-  - src/akb2/briefing/intake/account_collector.py
   - config/curator-accounts.yaml
+  - plans/gd/2026-05-31-briefing-quality-upgrade/step-P2-1-接入-zh-抓取合并.md
+precondition: 首步先真跑复验 fetch_tier.zh 11 账号产量非空（即 SC-2 的 zh 探测）；产量为 0 则先修账号配置再做合并，不直接改抓取层（Codex F1 修订）
 ```
 
 ---
@@ -59,6 +60,17 @@ forbidden_paths:
 
 ---
 
+## 4b. 交付物（deliverables）
+
+```yaml
+deliverables:
+  - src/akb2/briefing/intake/account_collector.py（en+zh 合并）
+  - src/akb2/briefing/pipeline.py
+  - tests/briefing/test_account_collector.py -k zh 用例
+```
+
+---
+
 ## 5. 执行要求
 
 - TDD：先写失败测试再实现（适用于代码 step）
@@ -73,7 +85,7 @@ forbidden_paths:
   - verify (test): `pytest tests/briefing/test_account_collector.py -k zh`
   - expect: `绿`
 - [ ] SC-2：真跑产出含中文大号内容
-  - verify (command): `真跑 grep 中文账号`
+  - verify (command): `PYTHONPATH=src python3 -m akb2.briefing.intake.account_collector --output /tmp/akb2_zh_probe.json && grep -c '"lang": "zh"' /tmp/akb2_zh_probe.json`
   - expect: `命中`
 
 ---

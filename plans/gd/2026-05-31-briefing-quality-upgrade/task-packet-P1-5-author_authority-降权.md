@@ -14,7 +14,7 @@ TEMPLATE_KIND: gd-task-packet
 task_id: p1-5-author_authority-降权
 agent_role: implementer
 parent_step: P1-5
-parent_plan: plans/gd/2026-05-31-briefing-quality-upgrade/step-P1-5-*.md
+parent_plan: plans/gd/2026-05-31-briefing-quality-upgrade/step-P1-5-author_authority-降权.md
 created_at: 2026-05-31T11:00:00Z
 ```
 
@@ -39,7 +39,7 @@ blocked_by:
 can_parallel_with:
   []
 required_context:
-  - src/akb2/briefing/scoring.py
+  - plans/gd/2026-05-31-briefing-quality-upgrade/step-P1-5-author_authority-降权.md
 ```
 
 ---
@@ -57,6 +57,15 @@ forbidden_paths:
 
 ---
 
+## 4b. 交付物（deliverables）
+
+```yaml
+deliverables:
+  - src/akb2/briefing/scoring.py（DEFAULT_WEIGHTS 重平衡：author_authority≤0.10）
+```
+
+---
+
 ## 5. 执行要求
 
 - TDD：先写失败测试再实现（适用于代码 step）
@@ -68,10 +77,10 @@ forbidden_paths:
 ## 6. 成功标准（SC，1:1 可验收）
 
 - [ ] SC-1：权重 ≤0.10 且和=1.0
-  - verify (assertion): `python3 -c 断言 sum==1 and authority<=0.1`
+  - verify (assertion): `PYTHONPATH=src python3 -c "from akb2.briefing.scoring import DEFAULT_WEIGHTS as w; assert abs(sum(w.values())-1)<1e-9 and w['author_authority']<=0.10"`
   - expect: `True`
 - [ ] SC-2：与 P1-4 同 PR 提交（只做一半互相抵消）
-  - verify (assertion): `git 同提交含 relevance+weight 改动`
+  - verify (assertion): `git show --stat HEAD -- src/akb2/briefing/scoring.py（确认 relevance+weight 同次提交）`
   - expect: `同 PR`
 
 ---

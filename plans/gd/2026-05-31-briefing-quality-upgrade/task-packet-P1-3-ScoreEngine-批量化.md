@@ -14,7 +14,7 @@ TEMPLATE_KIND: gd-task-packet
 task_id: p1-3-ScoreEngine-批量化
 agent_role: implementer
 parent_step: P1-3
-parent_plan: plans/gd/2026-05-31-briefing-quality-upgrade/step-P1-3-*.md
+parent_plan: plans/gd/2026-05-31-briefing-quality-upgrade/step-P1-3-ScoreEngine-批量化.md
 created_at: 2026-05-31T11:00:00Z
 ```
 
@@ -39,8 +39,8 @@ blocked_by:
 can_parallel_with:
   []
 required_context:
-  - src/akb2/briefing/scoring.py
   - src/akb2/briefing/embeddings.py
+  - plans/gd/2026-05-31-briefing-quality-upgrade/step-P1-3-ScoreEngine-批量化.md
 ```
 
 ---
@@ -54,6 +54,16 @@ forbidden_paths:
   - "/Users/praise/.claude/**"
   - 调度 plist / cron / LaunchAgent
   - 其他 step 的 owned_paths（未列入 required_context）
+```
+
+---
+
+## 4b. 交付物（deliverables）
+
+```yaml
+deliverables:
+  - src/akb2/briefing/scoring.py（批量预嵌入入口）
+  - tests/briefing/test_scoring.py 批量化用例
 ```
 
 ---
@@ -72,7 +82,7 @@ forbidden_paths:
   - verify (test): `pytest tests/briefing/test_scoring.py -k batch`
   - expect: `绿`
 - [ ] SC-2：scoring 不逐条联网（嵌入调用次数==1批）
-  - verify (test): `mock 计数断言`
+  - verify (test): `pytest tests/briefing/test_scoring.py -k batch_embed_call_count`
   - expect: `调用1次`
 
 ---

@@ -14,7 +14,7 @@ TEMPLATE_KIND: gd-task-packet
 task_id: p2-3-engagement-velocity
 agent_role: implementer
 parent_step: P2-3
-parent_plan: plans/gd/2026-05-31-briefing-quality-upgrade/step-P2-3-*.md
+parent_plan: plans/gd/2026-05-31-briefing-quality-upgrade/step-P2-3-engagement-velocity.md
 created_at: 2026-05-31T11:00:00Z
 ```
 
@@ -39,7 +39,7 @@ blocked_by:
 can_parallel_with:
   []
 required_context:
-  - src/akb2/briefing/scoring.py
+  - plans/gd/2026-05-31-briefing-quality-upgrade/step-P2-3-engagement-velocity.md
 ```
 
 ---
@@ -53,6 +53,16 @@ forbidden_paths:
   - "/Users/praise/.claude/**"
   - 调度 plist / cron / LaunchAgent
   - 其他 step 的 owned_paths（未列入 required_context）
+```
+
+---
+
+## 4b. 交付物（deliverables）
+
+```yaml
+deliverables:
+  - src/akb2/briefing/scoring.py（engagement velocity）
+  - tests/briefing/test_scoring.py -k velocity 用例
 ```
 
 ---
@@ -71,7 +81,7 @@ forbidden_paths:
   - verify (test): `pytest tests/briefing/test_scoring.py -k velocity`
   - expect: `绿`
 - [ ] SC-2：缺 created_at 时回退累计值不崩
-  - verify (test): `缺字段单测`
+  - verify (test): `pytest tests/briefing/test_scoring.py -k velocity_missing_created_at`
   - expect: `不抛异常`
 
 ---

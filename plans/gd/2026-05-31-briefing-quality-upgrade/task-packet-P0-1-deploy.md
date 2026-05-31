@@ -56,6 +56,16 @@ forbidden_paths:
 
 ---
 
+## 4b. 交付物（deliverables）
+
+```yaml
+deliverables:
+  - 合并后的 feature/automation-pipeline-v2 分支（含 8 项已验证修复）
+  - pytest tests/ 全绿输出记录
+```
+
+---
+
 ## 5. 执行步骤
 
 1. 确认调度分支：读 `~/Library/LaunchAgents/com.akb2.briefing.plist` 的 ProgramArguments → 确认跑的是主仓库 `Project AKB2/scripts/daily_briefing.sh`；`cd 主仓库; git rev-parse --abbrev-ref HEAD` 确认当前分支（预期 `feature/automation-pipeline-v2`）。

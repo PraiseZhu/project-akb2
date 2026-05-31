@@ -14,7 +14,7 @@ TEMPLATE_KIND: gd-task-packet
 task_id: p3-1-P1-P2-完成后再次-ff-合并上线
 agent_role: implementer
 parent_step: P3-1
-parent_plan: plans/gd/2026-05-31-briefing-quality-upgrade/step-P3-1-*.md
+parent_plan: plans/gd/2026-05-31-briefing-quality-upgrade/step-P3-1-P1-P2-完成后再次-ff-合并上线.md
 created_at: 2026-05-31T11:00:00Z
 ```
 
@@ -36,9 +36,10 @@ TASK_GOAL:    P1/P2 新改动再次 ff 合并到调度分支，触发真跑验�
 ```yaml
 blocked_by:
   - P1-8
-can_parallel_with:
   - P2-1
-  - P2-3
+  - P2-3   # P2-3 已 transitively 含 P2-2 → blocked_by 覆盖全部 P2（Codex F2 修订：不在 P2 未上线前合并）
+can_parallel_with:
+  []
 required_context:
   - plans/gd/2026-05-31-briefing-quality-upgrade/master-plan.md
 ```
@@ -59,6 +60,16 @@ forbidden_paths:
 
 ---
 
+## 4b. 交付物（deliverables）
+
+```yaml
+deliverables:
+  - 再次 ff 合并上线的 feature/automation-pipeline-v2 分支
+  - 上线后真跑产出验证记录（语义排序 + zh 内容）
+```
+
+---
+
 ## 5. 执行要求
 
 - TDD：先写失败测试再实现（适用于代码 step）
@@ -73,7 +84,7 @@ forbidden_paths:
   - verify (command): `合并后 pytest tests/`
   - expect: `all passed`
 - [ ] SC-2：真跑产出体现语义排序+zh内容
-  - verify (command): `真跑 grep`
+  - verify (command): `合并后真跑，grep -E "account_collector|evidence_paths" "<vault>/AI TRENDS/Social/<date> Daily Briefing.md"`
   - expect: `命中新行为`
 
 ---

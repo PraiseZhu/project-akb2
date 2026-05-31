@@ -14,7 +14,7 @@ TEMPLATE_KIND: gd-task-packet
 task_id: p1-4-语义-topic_relevance
 agent_role: implementer
 parent_step: P1-4
-parent_plan: plans/gd/2026-05-31-briefing-quality-upgrade/step-P1-4-*.md
+parent_plan: plans/gd/2026-05-31-briefing-quality-upgrade/step-P1-4-语义-topic_relevance.md
 created_at: 2026-05-31T11:00:00Z
 ```
 
@@ -40,8 +40,9 @@ blocked_by:
 can_parallel_with:
   []
 required_context:
-  - src/akb2/briefing/scoring.py
-  - reports/（标定）
+  - src/akb2/briefing/embeddings.py
+  - reports/（P1-2 标定输出）
+  - plans/gd/2026-05-31-briefing-quality-upgrade/step-P1-4-语义-topic_relevance.md
 ```
 
 ---
@@ -55,6 +56,16 @@ forbidden_paths:
   - "/Users/praise/.claude/**"
   - 调度 plist / cron / LaunchAgent
   - 其他 step 的 owned_paths（未列入 required_context）
+```
+
+---
+
+## 4b. 交付物（deliverables）
+
+```yaml
+deliverables:
+  - src/akb2/briefing/scoring.py（语义 topic_relevance + 关键词回退）
+  - tests/briefing/test_scoring.py -k semantic 用例
 ```
 
 ---
@@ -73,7 +84,7 @@ forbidden_paths:
   - verify (test): `pytest tests/briefing/test_scoring.py -k semantic`
   - expect: `绿`
 - [ ] SC-2：嵌入失败回退 _topic_relevance_keywords 不崩
-  - verify (test): `注入失败单测`
+  - verify (test): `pytest tests/briefing/test_scoring.py -k semantic_fallback`
   - expect: `不抛异常`
 
 ---

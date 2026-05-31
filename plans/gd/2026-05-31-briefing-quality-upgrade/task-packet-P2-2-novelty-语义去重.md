@@ -14,7 +14,7 @@ TEMPLATE_KIND: gd-task-packet
 task_id: p2-2-novelty-语义去重
 agent_role: implementer
 parent_step: P2-2
-parent_plan: plans/gd/2026-05-31-briefing-quality-upgrade/step-P2-2-*.md
+parent_plan: plans/gd/2026-05-31-briefing-quality-upgrade/step-P2-2-novelty-语义去重.md
 created_at: 2026-05-31T11:00:00Z
 ```
 
@@ -35,12 +35,12 @@ TASK_GOAL:    novelty 改语义近似去重（cosine>阈值判重），复用 P1
 
 ```yaml
 blocked_by:
-  - P1-1
+  - P1-6   # 串到 scoring.py 串行链尾（P1-6 已 transitively 含 P1-1 嵌入依赖），避免与 P1-3 并发写 scoring.py
 can_parallel_with:
   []
 required_context:
-  - src/akb2/briefing/scoring.py
   - src/akb2/briefing/embeddings.py
+  - plans/gd/2026-05-31-briefing-quality-upgrade/step-P2-2-novelty-语义去重.md
 ```
 
 ---
@@ -54,6 +54,16 @@ forbidden_paths:
   - "/Users/praise/.claude/**"
   - 调度 plist / cron / LaunchAgent
   - 其他 step 的 owned_paths（未列入 required_context）
+```
+
+---
+
+## 4b. 交付物（deliverables）
+
+```yaml
+deliverables:
+  - src/akb2/briefing/scoring.py（novelty 语义去重）
+  - tests/briefing/test_scoring.py -k novelty 用例
 ```
 
 ---
@@ -72,7 +82,7 @@ forbidden_paths:
   - verify (test): `pytest tests/briefing/test_scoring.py -k novelty_semantic`
   - expect: `绿`
 - [ ] SC-2：异质同主题内容不误判重
-  - verify (test): `保守阈值单测`
+  - verify (test): `pytest tests/briefing/test_scoring.py -k novelty_threshold`
   - expect: `novelty>0`
 
 ---

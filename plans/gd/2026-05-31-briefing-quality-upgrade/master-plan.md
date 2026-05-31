@@ -54,7 +54,7 @@ PHASE_GOAL:   见各 Phase / Step
 - [ ] **SC-7**：`BANNED_KEYWORDS` 不误杀含 exploit/hack 的 AI 安全内容
   - verify (test): AI 安全推文（含 "exploit"）`safety` ≠ 0
   - expect: safety=1.0（除非真违禁）
-- [ ] **SC-8a**：新建简报打分排序 eval harness + 标注集（~30 AI + ~15 离题）
+- [ ] **SC-8-1**：新建简报打分排序 eval harness + 标注集（~30 AI + ~15 离题）
   - verify (path): `evals/briefing-scoring/` 含 runner + 标注 fixtures
   - expect: 可一键跑出排序质量指标
 - [ ] **SC-8**：eval 量化新算法排序 ≥ 关键词版（nDCG 或 top-k 命中）
@@ -102,12 +102,12 @@ PHASE_GOAL:   见各 Phase / Step
 | P1-4 | 语义 topic_relevance | `src/akb2/briefing/scoring.py` | **P1-2, P1-3** | SC-4 | 高 |
 | P1-5 | author_authority 降权 | `src/akb2/briefing/scoring.py` | P1-4 | SC-5 | 高（与 P1-4 同 PR 捆绑）|
 | P1-6 | BANNED 精确化 | `src/akb2/briefing/scoring.py` | P1-5 | SC-7 | 高（防误杀）|
-| P1-7 | 新建 eval harness + 标注集 | `evals/briefing-scoring/` | — | SC-8a | 高（验收前提，可早开工）|
-| P1-8 | eval 验收 + 测试重写 | `tests/`、`reports/` | P1-4,5,6,7 | SC-8,9 | 高（正确性闸门）|
-| P2-1 | 接入 zh 抓取合并（**不需 scoring 授权，可独立先做**）| `account_collector.py`、`pipeline.py` | — | SC-10 | 中-高 |
-| P2-2 | novelty 语义去重（共用 P1-1 缓存）| `src/akb2/briefing/scoring.py` | P1-1 | SC-11 | 中-高 |
+| P1-7 | 新建 eval harness + 标注集 | `evals/briefing-scoring/` | — | SC-8-1 | 高（验收前提，可早开工）|
+| P1-8 | eval 验收 + 测试重写 | `tests/`、`reports/` | P1-4, P1-5, P1-6, P1-7 | SC-8,9 | 高（正确性闸门）|
+| P2-1 | 接入 zh 抓取合并（**不需 scoring 授权，可独立先做**）| `account_collector.py`、`pipeline.py` | zh 账号复验(前置) | SC-10 | 中-高 |
+| P2-2 | novelty 语义去重（共用 P1-1 缓存）| `src/akb2/briefing/scoring.py` | P1-6 | SC-11 | 中-高 |
 | P2-3 | engagement velocity | `src/akb2/briefing/scoring.py` | P2-2 | SC-12 | 中-高（时效）|
-| **P3-1** | P1/P2 完成后再次 ff 合并上线 | git 分支操作 | P1-8 | SC-1（再验）| 高（部署 cadence）|
+| **P3-1** | P1/P2 完成后再次 ff 合并上线 | git 分支操作 | P1-8, P2-1, P2-3 | SC-1（再验）| 高（部署 cadence）|
 
 ---
 
@@ -119,6 +119,7 @@ VALIDATE_CMD: n_a
 ```
 
 > **scoring.py 串行硬约束**：P1-3 / P1-4 / P1-5 / P1-6 + P2-2 / P2-3 **全部改同一文件 `scoring.py`，owned_paths 重叠** → 必须作为**一条串行工作流（顺序改、可合为一个或少数几个 PR）**，**不得**拆成独立并行 task packet（会撞文件）。故 DISPATCH_MAP_PATH = n_a，不伪造并行 dispatch。
+> **依赖图落实串行（自审 P1⑤ 修订）**：单一无分叉链 P1-1 → P1-3 → P1-4 → P1-5 → P1-6 → **P2-2** → **P2-3**。P2-2 `blocked_by: P1-6`（不再是 P1-1）、P2-3 `blocked_by: P2-2`，使所有改 `scoring.py` 的 task 在依赖图上也串成一条线，杜绝 P1-3 与 P2-2 并发写同文件。
 > 可真正并行的只有跨文件的：P1-1（embeddings.py）、P1-7（evals/）、P2-1（account_collector/pipeline）—— 但本计划仍按串行执行，避免协调成本。
 
 ---
@@ -147,7 +148,7 @@ VALIDATE_CMD: n_a
 
 阻塞：
 1. **「改 scoring 本体」授权**（你之前锁的 NON_GOAL）→ 卡住整个 P1 + P2-2/P2-3；需你显式解锁
-2. **zh 11 账号"待复验"** → 卡 P2-1，先真跑验证产量
+2. **zh 11 账号"待复验"** → P2-1 内置 precondition（首步先真跑验证产量，见 P2-1 packet），不是独立阻塞 task；§5 表 P2-1 blocked_by 标「zh 账号复验(前置)」与此一致（Codex F1 修订）
 3. ~~eval harness 不存在~~ → 已转为 P1-7 显式新建任务
 
 风险排序：

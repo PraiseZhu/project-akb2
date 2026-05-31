@@ -14,7 +14,7 @@ TEMPLATE_KIND: gd-task-packet
 task_id: p0-2-清理-06-01-残报-+-🔗-+-needs_
 agent_role: implementer
 parent_step: P0-2
-parent_plan: plans/gd/2026-05-31-briefing-quality-upgrade/step-P0-2-*.md
+parent_plan: plans/gd/2026-05-31-briefing-quality-upgrade/step-P0-2-cleanup-and-gate-investigation.md
 created_at: 2026-05-31T11:00:00Z
 ```
 
@@ -60,6 +60,17 @@ forbidden_paths:
 
 ---
 
+## 4b. 交付物（deliverables）
+
+```yaml
+deliverables:
+  - reports/gate-needs-repair-diagnosis.md
+  - src/akb2/briefing/pipeline.py（孤立 🔗 清理 diff）
+  - vault 06-01 英文残报归档记录
+```
+
+---
+
 ## 5. 执行要求
 
 - TDD：先写失败测试再实现（适用于代码 step）
@@ -74,7 +85,7 @@ forbidden_paths:
   - verify (command): `ls Social/ | grep 06-01`
   - expect: `不在正式目录`
 - [ ] SC-2：正文孤立 🔗 清零
-  - verify (test): `含🔗推文渲染单测`
+  - verify (test): `pytest tests/briefing/test_pipeline.py -k strip_links`
   - expect: `无孤立🔗`
 - [ ] SC-3：needs_repair 根因报告
   - verify (path): `ls reports/gate-needs-repair-diagnosis.md`

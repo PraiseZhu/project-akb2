@@ -14,7 +14,7 @@ TEMPLATE_KIND: gd-task-packet
 task_id: p1-6-BANNED-精确化
 agent_role: implementer
 parent_step: P1-6
-parent_plan: plans/gd/2026-05-31-briefing-quality-upgrade/step-P1-6-*.md
+parent_plan: plans/gd/2026-05-31-briefing-quality-upgrade/step-P1-6-BANNED-精确化.md
 created_at: 2026-05-31T11:00:00Z
 ```
 
@@ -39,7 +39,7 @@ blocked_by:
 can_parallel_with:
   []
 required_context:
-  - src/akb2/briefing/scoring.py
+  - plans/gd/2026-05-31-briefing-quality-upgrade/step-P1-6-BANNED-精确化.md
 ```
 
 ---
@@ -53,6 +53,16 @@ forbidden_paths:
   - "/Users/praise/.claude/**"
   - 调度 plist / cron / LaunchAgent
   - 其他 step 的 owned_paths（未列入 required_context）
+```
+
+---
+
+## 4b. 交付物（deliverables）
+
+```yaml
+deliverables:
+  - src/akb2/briefing/scoring.py（BANNED 精确判定）
+  - tests/briefing/test_scoring.py -k safety 用例
 ```
 
 ---
@@ -71,7 +81,7 @@ forbidden_paths:
   - verify (test): `pytest tests/briefing/test_scoring.py -k safety`
   - expect: `绿`
 - [ ] SC-2：真违禁内容仍 safety=0
-  - verify (test): `违禁样例单测`
+  - verify (test): `pytest tests/briefing/test_scoring.py -k banned_true_positive`
   - expect: `safety=0`
 
 ---

@@ -14,7 +14,7 @@ TEMPLATE_KIND: gd-task-packet
 task_id: p1-8-eval-验收-+-测试重写
 agent_role: implementer
 parent_step: P1-8
-parent_plan: plans/gd/2026-05-31-briefing-quality-upgrade/step-P1-8-*.md
+parent_plan: plans/gd/2026-05-31-briefing-quality-upgrade/step-P1-8-eval-验收-+-测试重写.md
 created_at: 2026-05-31T11:00:00Z
 ```
 
@@ -42,8 +42,8 @@ blocked_by:
 can_parallel_with:
   []
 required_context:
-  - tests/briefing/test_scoring.py
   - evals/briefing-scoring/
+  - plans/gd/2026-05-31-briefing-quality-upgrade/step-P1-8-eval-验收-+-测试重写.md
 ```
 
 ---
@@ -58,6 +58,16 @@ forbidden_paths:
   - "/Users/praise/.claude/**"
   - 调度 plist / cron / LaunchAgent
   - 其他 step 的 owned_paths（未列入 required_context）
+```
+
+---
+
+## 4b. 交付物（deliverables）
+
+```yaml
+deliverables:
+  - reports/scoring-eval-<date>.md（新旧排序对比）
+  - tests/briefing/test_scoring.py（重写后断言语义/降权）
 ```
 
 ---

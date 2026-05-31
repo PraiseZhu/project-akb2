@@ -14,7 +14,7 @@ TEMPLATE_KIND: gd-task-packet
 task_id: p1-2-离线对比-+-标定
 agent_role: implementer
 parent_step: P1-2
-parent_plan: plans/gd/2026-05-31-briefing-quality-upgrade/step-P1-2-*.md
+parent_plan: plans/gd/2026-05-31-briefing-quality-upgrade/step-P1-2-离线对比-+-标定.md
 created_at: 2026-05-31T11:00:00Z
 ```
 
@@ -39,8 +39,9 @@ blocked_by:
 can_parallel_with:
   []
 required_context:
-  - reports/
   - src/akb2/briefing/scoring.py
+  - src/akb2/briefing/embeddings.py
+  - plans/gd/2026-05-31-briefing-quality-upgrade/step-P1-2-离线对比-+-标定.md
 ```
 
 ---
@@ -59,6 +60,17 @@ forbidden_paths:
 
 ---
 
+## 4b. 交付物（deliverables）
+
+```yaml
+deliverables:
+  - scripts/scoring-semantic-offline-compare.py
+  - reports/scoring-semantic-offline-compare-<date>.md
+  - 标定后的归一化区间常量（写入 scoring.py 或 embeddings.py）
+```
+
+---
+
 ## 5. 执行要求
 
 - TDD：先写失败测试再实现（适用于代码 step）
@@ -73,7 +85,7 @@ forbidden_paths:
   - verify (path): `ls reports/scoring-semantic-offline-compare-*.md`
   - expect: `存在含两列`
 - [ ] SC-2：标定归一化区间写入常量（替换估值 [0.12,0.40]）
-  - verify (assertion): `grep 归一化常量 in scoring/embeddings`
+  - verify (assertion): `grep -nE "RELEVANCE_NORM|NORM_RANGE" src/akb2/briefing/scoring.py`
   - expect: `命中标定值`
 
 ---
