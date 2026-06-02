@@ -239,6 +239,42 @@ def run_gate(akb_root: Path, input_file: Path, date: str) -> str:
 # ---------------------------------------------------------------------------
 
 _ORPHAN_TOP_K = int(os.environ.get("AKB2_ORPHAN_TOP_K", "5"))
+# 展示层质量过滤（2026-06-02 试跑发现的 3 个缺陷修复）
+_MIN_DISPLAY_SCORE = float(os.environ.get("AKB2_MIN_DISPLAY_SCORE", "0.35"))  # 低于此分不入正文（去低分噪音）
+_PER_AUTHOR_CAP = int(os.environ.get("AKB2_PER_AUTHOR_CAP", "2"))             # 单作者每主题/孤儿区上限（防霸屏）
+
+
+def _apply_display_filters(
+    tweets: list[dict],
+    *,
+    min_score: float = _MIN_DISPLAY_SCORE,
+    per_author_cap: int = _PER_AUTHOR_CAP,
+) -> list[dict]:
+    """简报展示过滤（保持入参顺序）：
+
+    1. 剔除近重复：`dimensions.novelty == 0`（语义/精确去重已判定为重复的后出现者）——
+       修复"novelty 软扣分 0.05 不足以剔重，重复内容仍进简报"（试跑发现 @lmsysorg 两条
+       cosine=0.8776>0.85 公告都入选）。
+    2. 最低分门槛：score < min_score 不入正文（去 0.27 这类低分噪音）。
+    3. per-author 上限：同作者超过 per_author_cap 条丢弃（防单作者霸占整个主题）。
+    """
+    out: list[dict] = []
+    author_count: dict[str, int] = {}
+    for t in tweets:
+        dims = t.get("dimensions") or {}
+        # 1) 剔重：novelty==0 表示已有近重复在前
+        if "novelty" in dims and dims.get("novelty") == 0:
+            continue
+        # 2) 最低分
+        if float(t.get("score", 0) or 0) < min_score:
+            continue
+        # 3) per-author 上限
+        author = (t.get("author") or "").lower().lstrip("@")
+        if author and author_count.get(author, 0) >= per_author_cap:
+            continue
+        author_count[author] = author_count.get(author, 0) + 1
+        out.append(t)
+    return out
 
 
 def _collect_display_tweets(
@@ -247,13 +283,13 @@ def _collect_display_tweets(
 ) -> tuple[list[list[dict]], list[dict]]:
     """将推文按主题分组，返回 (per_topic_tweets, orphan_tweets)。
 
-    per_topic_tweets[i] = focus_discussions[i] 对应的支撑推文列表（允许同一推文出现在多主题）
-    orphan_tweets = 未被任何主题引用的高分推文，按 score 倒序取 top-k
+    per_topic_tweets[i] = focus_discussions[i] 对应的支撑推文列表（应用展示过滤：剔重/最低分/per-author）
+    orphan_tweets = 未被任何主题引用的高分推文，按 score 倒序取 top-k（同样过滤）
     """
     tweets = synth.get("tweets", [])
     id_to_tweet: dict[str, dict] = {str(t.get("id", "")): t for t in tweets}
 
-    # 收集所有主题引用的推文 id（用于孤儿判定）
+    # 收集所有主题引用的推文 id（用于孤儿判定）；per-topic 各自应用过滤（per-author 上限按主题独立）
     all_referenced: set[str] = set()
     per_topic: list[list[dict]] = []
     for fd in synth.get("focus_discussions", []):
@@ -263,14 +299,15 @@ def _collect_display_tweets(
             if sid in id_to_tweet:
                 topic_tweets.append(id_to_tweet[sid])
                 all_referenced.add(sid)
-        per_topic.append(topic_tweets)
+        per_topic.append(_apply_display_filters(topic_tweets))
 
-    # 孤儿高分：未被任何主题引用，按 score 倒序取 top-k
-    orphans = sorted(
+    # 孤儿高分：未被任何主题引用，按 score 倒序，过滤后取 top-k
+    orphans_sorted = sorted(
         [t for t in tweets if str(t.get("id", "")) not in all_referenced],
         key=lambda t: t.get("score", 0),
         reverse=True,
-    )[:orphan_top_k]
+    )
+    orphans = _apply_display_filters(orphans_sorted)[:orphan_top_k]
 
     return per_topic, orphans
 
@@ -364,7 +401,7 @@ def build_briefing_markdown(
     body_parts = [
         f"# {date} AI 社交趋势日报",
         "",
-        "## 导读",
+        "## 总览",  # P0-2 SC-14 修复：用 gate HC-08 白名单内的标题（导读→总览），消除恒 needs_repair
         "",
         f"基于 {date} 公开时间线抓取，对 AI/ML 领域社交信号的综合分析。",
         f"质量门控：**{gate_decision}**",
@@ -447,7 +484,7 @@ def build_temp_briefing_markdown(
     body_parts = [
         f"# {date} AI 社交趋势日报",
         "",
-        "## 导读",
+        "## 总览",  # P0-2 SC-14 修复：用 gate HC-08 白名单内的标题（导读→总览），消除恒 needs_repair
         "",
         f"基于 {date} 公开时间线抓取，对 AI/ML 领域社交信号的综合分析。",
         "",

@@ -183,6 +183,71 @@ def test_tweet_body_strips_inline_links():
     assert "pic.twitter.com" not in body_before_link, "pic.twitter 应被剥离"
 
 
+# ---------------------------------------------------------------------------
+# 2026-06-02 试跑发现的展示层质量过滤：剔重 / 最低分 / per-author 上限
+# ---------------------------------------------------------------------------
+
+def _scored(id_, author, score, novelty=1.0):
+    return {"id": id_, "author": author, "text": f"t{id_}", "score": score,
+            "dimensions": {"novelty": novelty}}
+
+
+def test_display_filter_drops_novelty_zero_duplicates():
+    """近重复（novelty==0）被硬剔除——修复 @lmsysorg 两条公告都入选的问题。"""
+    from akb2.briefing.pipeline import _apply_display_filters
+    tweets = [_scored("1", "@a", 0.72, novelty=1.0), _scored("2", "@a2", 0.27, novelty=0.0)]
+    out = _apply_display_filters(tweets, min_score=0.0, per_author_cap=10)
+    ids = [t["id"] for t in out]
+    assert ids == ["1"], "novelty==0 的重复推文应被剔除"
+
+
+def test_display_filter_min_score_threshold():
+    """低于最低分的推文不入正文。"""
+    from akb2.briefing.pipeline import _apply_display_filters
+    tweets = [_scored("1", "@a", 0.50), _scored("2", "@b", 0.27), _scored("3", "@c", 0.34)]
+    out = _apply_display_filters(tweets, min_score=0.35, per_author_cap=10)
+    assert [t["id"] for t in out] == ["1"], "score<0.35 应被剔除"
+
+
+def test_display_filter_per_author_cap():
+    """单作者超过上限的推文被丢弃（防霸屏）——修复 @fankaishuoai 霸占整个主题。"""
+    from akb2.briefing.pipeline import _apply_display_filters
+    tweets = [_scored(str(i), "@fankaishuoai", 0.7 - i * 0.01) for i in range(4)]
+    tweets.append(_scored("x", "@other", 0.6))
+    out = _apply_display_filters(tweets, min_score=0.0, per_author_cap=2)
+    authors = [t["author"] for t in out]
+    assert authors.count("@fankaishuoai") == 2, "单作者最多保留 2 条"
+    assert "@other" in authors
+
+
+def test_collect_display_tweets_applies_filters():
+    """_collect_display_tweets 端到端应用过滤（主题内剔重+限作者，孤儿区去低分）。"""
+    from akb2.briefing.pipeline import _collect_display_tweets
+    synth = {
+        "tweets": [
+            _scored("1", "@a", 0.72, novelty=1.0),
+            _scored("2", "@a", 0.27, novelty=0.0),   # 重复+低分
+            _scored("3", "@b", 0.60, novelty=1.0),   # 孤儿高分
+            _scored("4", "@c", 0.20, novelty=1.0),   # 孤儿低分
+        ],
+        "focus_discussions": [
+            {"topic": "T1", "supporting_tweet_ids": ["1", "2"]},
+        ],
+    }
+    per_topic, orphans = _collect_display_tweets(synth)
+    assert [t["id"] for t in per_topic[0]] == ["1"], "主题内重复+低分被剔除"
+    orphan_ids = [t["id"] for t in orphans]
+    assert "3" in orphan_ids and "4" not in orphan_ids, "孤儿区保留高分剔低分"
+
+
+def test_briefing_uses_gate_whitelisted_heading():
+    """简报首章标题用 gate HC-08 白名单内的「总览」（修复恒 needs_repair）。"""
+    from akb2.briefing.pipeline import build_briefing_markdown
+    md = build_briefing_markdown(SYNTH_ZH, "active", "2026-05-30")
+    assert "## 总览" in md, "应使用白名单标题 ## 总览"
+    assert "## 导读" not in md, "不应再用未在白名单的 ## 导读"
+
+
 def test_strip_links_removes_orphan_link_emoji():
     """P0-2 SC-2：剥内联链接后，正文不残留孤立的 🔗 链接标记。"""
     from akb2.briefing.pipeline import _strip_inline_links
