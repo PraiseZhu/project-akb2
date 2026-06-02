@@ -70,9 +70,15 @@ TOPIC_KEYWORDS = {
 }
 
 BANNED_KEYWORDS = {
-    "violence", "hack", "exploit", "malware", "ransomware",
+    "violence", "malware", "ransomware",
     "scam", "phishing", "spam", "nsfw", "illegal",
 }
+# P1-6 精确化：exploit/hack 移出（AI 安全/红队内容常用，子串匹配误杀率高）；
+# 其余违禁词改词边界精确匹配，避免 "scampi"→"scam" 之类子串误判。
+_BANNED_RE = re.compile(
+    r"\b(" + "|".join(re.escape(w) for w in sorted(BANNED_KEYWORDS)) + r")\b",
+    re.IGNORECASE,
+)
 
 DEFAULT_WEIGHTS = {
     "recency": 0.10,
@@ -179,11 +185,13 @@ def novelty(tweet: dict, seen_hashes: set) -> float:
 
 
 def safety(tweet: dict) -> float:
-    """命中违禁词返回 SAFETY_FLOOR=0.0，否则 1.0。"""
-    text = tweet.get("text", "").lower()
-    for kw in BANNED_KEYWORDS:
-        if kw in text:
-            return SAFETY_FLOOR
+    """命中违禁词（词边界精确匹配）返回 SAFETY_FLOOR=0.0，否则 1.0。
+
+    P1-6：exploit/hack 不再硬禁（AI 安全/红队内容常用），词边界避免子串误杀。
+    """
+    text = tweet.get("text", "")
+    if _BANNED_RE.search(text):
+        return SAFETY_FLOOR
     return 1.0
 
 
