@@ -19,7 +19,7 @@ GOAL_SOURCE: Project AKB2 — 社交日报系统
 | **P2-1** | SC-2 真跑含中文内容 | ✅ pass | 真实 zh 探测：3 账号 9 条中文 AI 内容全 lang=zh（dotey/oran_ge 等大号）|
 | **P0-2** | SC-14 needs_repair 诊断 | ✅ pass | `reports/gate-needs-repair-diagnosis.md`：根因 HC-08 白名单缺 `导读` |
 | **P0-2** | SC-2(13) 孤立 🔗 清零 | ✅ pass | `pytest -k strip_links` 绿 + `_strip_inline_links` 修复 |
-| **P0-2** | SC-1(13) 清 06-01 残报 | ⚠️ 未执行（surface）| 见下方「未执行/发现」 |
+| **P0-2** | SC-1(13) 清 06-01 残报 | ✅ pass | `AKB2.0/AI TRENDS/Social/2026-06-01 Daily Briefing.md`（2% 中文=英文残报、candidate 泄漏）已归档至 `AKB2.0/archive/ai-trends-residuals/`；`ls Social/ \| grep 06-01` 空 |
 
 全仓库测试：**273 passed**（P0-1 时 232 → 现 273，新增 41 测试无回归）。
 
@@ -33,24 +33,27 @@ GOAL_SOURCE: Project AKB2 — 社交日报系统
 
 ---
 
-## 未执行 / 发现（fail-visibly）
+## P0-2 SC-1（清理 06-01 英文残报）— 已执行（更正：先前查错路径）
 
-### P0-2 SC-1（清理 06-01 英文残报）— 未执行，按「删除前核对」原则 surface
+**更正说明**：本报告初版误判 SC-1 为"目标不存在"，原因是只查了旧 vault `AKB/AI TRENDS/`（notebooklm 旧链路）和 `staging/candidate/`，**漏查了 `AKB2.0/AI TRENDS/Social/`**——残报就在那里。用户指正后复查确认。
 
-调查真实 vault（`<iCloud>/Praise Space/`）后发现与计划描述不符：
+实际残报：`AKB2.0/AI TRENDS/Social/2026-06-01 Daily Briefing.md`
+- 中文占比 **2%**（80/3627 字）——骨架中文但正文全英文（@AndrewYNg 整段未翻译），synthesis 跑了翻译没跑
+- `page_status: candidate`、frontmatter date=05-31 与文件名 06-01 不符、生成于 2026-05-30T23:30（早于 P0-1 翻译修复）——典型 candidate 泄漏进正式 Social 目录的残报
 
-1. **正式目录 `AKB/AI TRENDS/` 的 06-01、06-02 简报 `source: notebooklm`** —— 是**另一套简报系统**的产物（Reddit/X 趋势摘要），**不是 AKB2 pipeline 产出**。不是我建的、是用户另一工具的数据 → **不擅自删/移**。
-2. **不存在"06-01 英文残报"**：正式 06-01 是中文（notebooklm）；AKB2 的 06-01 只是 `AKB2.0/staging/candidate/` 里的 **dry_run 中文候选**（evidence=`l0_collector/dry_run`），在 staging 不在正式目录。
-3. 结论：SC-1 描述的清理目标不存在；真实 vault 是双系统并存，需用户确认后才动。
+处置（P0-2 owned「vault 清理 archive」）：**移至** `AKB2.0/archive/ai-trends-residuals/2026-06-01 Daily Briefing (english-residual, was in Social).md`（可逆，非删除）。
+验收：`ls Social/ | grep 06-01` → 空 ✅
 
-### ⚠️ 对 P3-1（上线）的重大影响
+### 旧 vault `AKB/AI TRENDS/` = 旧 AKB 链路（notebooklm），独立说明
 
-用户当前**看到的每日简报来自 notebooklm 系统**，AKB2 pipeline 只产到 `AKB2.0/staging/candidate/`（最后一篇候选是 06-01，06-02 无 AKB2 候选）。这意味着 P3-1「ff 合并上线让 cron 产出生效」的**前提需重新确认**：AKB2 pipeline 与 notebooklm 是什么关系？AKB2 上线后写哪、是否取代/并存 notebooklm？**P3-1 执行前必须澄清，否则可能产出无人看的简报或与 notebooklm 冲突。**
+附带发现（与 SC-1 无关）：旧 vault `AKB/AI TRENDS/` 是**旧 AKB 链路**（notebooklm，跑在另一台设备、经 iCloud 同步），与 AKB2.0 新链路是 old→new 继任关系。旧链路下线属另一台设备的事（见会话记录），不在本 P0-2 范围。
 
 ---
 
 ## 残余 / 待决策
 
-- **L3 正式 review**（task #9）：对本批 3 commit 跑 `/gd review`（Codex bridge，daemon 已活）做正式闸门——会把 code diff 发给 Codex（用户自有 review 链路）。
-- **P3-1 上线**（task #8，硬停）：需用户确认 + 上面 notebooklm 关系澄清。
+- **L3 正式 review**：✅ 已完成 APPROVED（见 `reports/l3-review-2026-06-02.md`，round 2 findings=none）。
+- **P3-1 上线**（task #8，硬停）：未做（用户选不上线）。notebooklm 关系已澄清=旧 AKB 链路、与 AKB2 写不同目录不冲突，P3-1 只动 AKB2。
+- **AKB2 cron 停摆**：`com.akb2.briefing` 日志冻在 5/31 07:30，6/1、6/2 未跑——AKB2 链路当前零产出，需复活。
 - **gate 修复**（诊断推荐方案 B：pipeline `导读→总览`）：未应用，留用户决定。
+- **配 `OPENROUTER_API_KEY`**：cron synthesis 走 local fallback，未配。
