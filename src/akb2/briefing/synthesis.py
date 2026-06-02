@@ -2,10 +2,11 @@
 
 CLI: python -m akb2.briefing.synthesis --input <scored.json> --output <synth.json>
 
-- 若 OPENROUTER_API_KEY 或 DEEPSEEK_API_KEY 可用：调真实 API
+- 若 AI_GATEWAY_API_KEY 可用：调真实 API（AI Gateway，默认 llm-proxy.tapsvc.com，OpenAI 兼容）
 - 若无凭证：使用 deterministic fallback（从 scored.json 中前 5 条推文构造合规 payload）
 - 输出必须通过 social_trends_v1_1 schema 校验
 - 失败时最多重试 2 次（指数退避，间隔 1s / 2s）
+- 中文化由独立 translate.py 阶段负责，synthesis 只产出干净结构化分析
 """
 
 from __future__ import annotations
@@ -17,43 +18,91 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+# 合成阶段专用模型（可由环境变量覆盖）
+_SYNTHESIS_MODEL = os.environ.get("AKB2_SYNTHESIS_MODEL", "gemini-3.1-pro-preview")
+
+# 合成 prompt 文件路径：synthesis.py 在 <root>/src/akb2/briefing/ 下，docs/ 在 <root>/，
+# 故 4 层 parent 到 <root>（worktree 与主仓库结构一致，均适用）。
+# 历史 bug：曾用 5 层 → 多跳一级到不存在的目录 → 回退内联兜底 prompt（无短序号指令）
+# → supporting_tweet_ids 全塌 top[:5]（P0 实跑根因）。
+_PROMPT_PATH = Path(__file__).parent.parent.parent.parent / "docs" / "deepseek-synthesis-prompt-v1.md"
+
+# synthesis system message：约束分析质量，语言交由后续翻译阶段
+_SYNTHESIS_SYSTEM = (
+    "You are an expert AI/ML trend analyst. "
+    "Analyze the provided tweets and return a structured JSON report following the schema exactly. "
+    "Focus on genuine signal: specific tools, models, metrics, and developer sentiment. "
+    "Avoid vague summaries. Every topic must be specific (e.g. 'Agent memory infrastructure' not 'AI Trends'). "
+    "Do NOT fabricate events or numbers not present in the input tweets."
+)
+
 
 def _has_api_key() -> bool:
     """检测是否有可用 API 凭证。"""
-    return bool(os.environ.get("OPENROUTER_API_KEY") or os.environ.get("DEEPSEEK_API_KEY"))
+    return bool(os.environ.get("AI_GATEWAY_API_KEY"))
 
 
-def _call_deepseek(prompt: str, max_retries: int = 2) -> str:
-    """调 DeepSeek API（经由 OpenRouter），失败自动重试，返回 raw response string。"""
+def _call_llm(
+    messages: list[dict],
+    model: str,
+    *,
+    json_mode: bool = True,
+    max_retries: int = 1,
+    timeout: int = 300,
+) -> str:
+    """通用 LLM 调用（OpenAI-compatible），失败重试一次，返回 raw content string。"""
     import httpx
 
-    api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("DEEPSEEK_API_KEY")
-    # base URL: OPENROUTER_BASE_URL 覆盖默认值（支持 TapSVC LLM proxy 等 OpenAI 兼容代理）
-    base_url = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api").rstrip("/")
+    api_key = os.environ.get("AI_GATEWAY_API_KEY")
+    base_url = os.environ.get("AI_GATEWAY_BASE_URL", "https://llm-proxy.tapsvc.com").rstrip("/")
     url = f"{base_url}/v1/chat/completions"
+
+    payload: dict = {"model": model, "messages": messages, "temperature": 0.2}
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
 
     for attempt in range(max_retries + 1):
         try:
             resp = httpx.post(
                 url,
-                json={
-                    "model": "deepseek/deepseek-v4-pro",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.2,
-                    "response_format": {"type": "json_object"},
-                },
+                json=payload,
                 headers={"Authorization": f"Bearer {api_key}"},
-                timeout=300,
+                timeout=timeout,
             )
             resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
-        except Exception as e:
+            raw = resp.json()["choices"][0]["message"]["content"]
+            _log_raw_response(model=model, raw=raw)
+            return raw
+        except Exception:
             if attempt == max_retries:
                 raise
-            time.sleep(2**attempt)
+            time.sleep(2 ** attempt)
 
-    # unreachable — loop raises on last attempt
-    raise RuntimeError("_call_deepseek: exhausted retries")  # pragma: no cover
+    raise RuntimeError(f"_call_llm({model}): exhausted retries")  # pragma: no cover
+
+
+def _log_raw_response(model: str, raw: str) -> None:
+    """将原始响应元数据追加到日志（脱敏：仅记录 model + 长度，不含 key）。"""
+    log_dir = Path(os.environ.get("AKB2_LOG_DIR", "/tmp/akb2-logs"))
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        entry = json.dumps(
+            {"ts": datetime.now(timezone.utc).isoformat(), "model": model, "raw_len": len(raw)},
+            ensure_ascii=False,
+        )
+        with open(log_dir / "synthesis-raw.jsonl", "a") as f:
+            f.write(entry + "\n")
+    except Exception:
+        pass
+
+
+def _call_deepseek(prompt: str, max_retries: int = 2) -> str:
+    """调主合成模型（带 system message），返回 raw response string。"""
+    messages = [
+        {"role": "system", "content": _SYNTHESIS_SYSTEM},
+        {"role": "user", "content": prompt},
+    ]
+    return _call_llm(messages, model=_SYNTHESIS_MODEL, json_mode=True, max_retries=max_retries)
 
 
 def _validate_response(data: dict) -> None:
@@ -64,25 +113,27 @@ def _validate_response(data: dict) -> None:
 
 
 def _validate_quality(merged: dict) -> None:
-    """额外质量校验 — 只校验"中文 topic"这个最关键的约束,其他缺失字段由 _merge_with_input 兜底合成。
+    """质量门控 — 校验合成产出可用，不通过则 raise 触发重试（防 model 退化输出直接放行到 audit）。
 
-    - 至少 50% 的 topic 含中文字符(防 model 全英文输出),不通过 raise 触发重试
-    - executive_summary 和 key_quotes 缺失不 raise(由 merge 兜底合成),不浪费 API 重试
+    注意架构：合成阶段语言无关（英文 OK），中文化由 translate 阶段负责、audit 阶段把关。
+    因此这里**不**要求 topic 中文，只确保结构可用，让 translate 有东西可译：
+    - 每个 focus_discussion 的 topic 必须非空且非空洞词
+    - 每个 focus_discussion 的 summary 必须非空(deepseek/gemini 偶发只给 topic 丢 summary)
+    - executive_summary 缺失不 raise(由 merge 的 _fallback_executive_summary 兜底)
     """
     fds = merged.get("focus_discussions", [])
     if len(fds) < 1:
         raise ValueError("quality: 无 focus_discussions")
 
     BANNED = {"ai trends", "ai 趋势", "trends", "核心讨论", "ai trend"}
-    chinese_count = 0
-    for fd in fds:
+    for i, fd in enumerate(fds):
         topic = (fd.get("topic") or "").strip()
+        if not topic:
+            raise ValueError(f"quality: focus_discussions[{i}].topic 为空")
         if topic.lower() in BANNED:
             raise ValueError(f"quality: topic 是空洞词 '{topic}'")
-        if sum(1 for c in topic if "一" <= c <= "鿿") >= 2:
-            chinese_count += 1
-    if chinese_count < len(fds) * 0.5:
-        raise ValueError(f"quality: 仅 {chinese_count}/{len(fds)} 个 topic 是中文,违反语言要求")
+        if not (fd.get("summary") or "").strip():
+            raise ValueError(f"quality: focus_discussions[{i}].summary 为空（合成退化）")
 
 
 def _fallback_synthesis(scored_input: dict, date: str | None = None) -> dict:
@@ -94,10 +145,16 @@ def _fallback_synthesis(scored_input: dict, date: str | None = None) -> dict:
     now = datetime.now(timezone.utc)
     resolved_date = date or now.strftime("%Y-%m-%d")
 
+    exec_summary = (
+        f"{resolved_date} AI/ML 趋势快照，采集自公开社交时间线，共 {len(top)} 条高分推文。"
+        " 本期数据为离线 fallback 产物，模型合成不可用时的确定性输出。"
+        " 以下为基于评分排名的推文概览，供参考。"
+    )
     payload: dict = {
         "date": resolved_date,
         "generated_at": now.isoformat(),
         "source": {"name": "synthesis_fallback", "collector_version": "1.0.0"},
+        "executive_summary": exec_summary,
         "scoring_summary": {
             "total_tweets": len(tweets),
             "scored_tweets": len(top),
@@ -111,6 +168,7 @@ def _fallback_synthesis(scored_input: dict, date: str | None = None) -> dict:
                 "score": t.get("score"),
                 "dimensions": t.get("dimensions", {}),
                 "url": t.get("url", ""),
+                "lang": t.get("lang", ""),  # P2-1: 透传 lang，供 translate per-tweet 分流
             }
             for t in top
         ],
@@ -119,14 +177,60 @@ def _fallback_synthesis(scored_input: dict, date: str | None = None) -> dict:
                 "topic": "AI Technology Trends",
                 "supporting_tweet_ids": [str(t["id"]) for t in top[:3]],
                 "summary": (
-                    f"Top {len(top)} tweets about AI trends, scored by relevance and authority. "
-                    f"Highest scoring tweet by {top[0].get('author', 'unknown')} with score "
-                    f"{top[0].get('score', 0):.3f}."
+                    f"Top {len(top)} tweets about AI trends, scored by relevance and authority."
+                    + (
+                        f" Highest scoring tweet by {top[0].get('author', 'unknown')} with score "
+                        f"{top[0].get('score', 0):.3f}."
+                        if top else " No tweets available for this period."
+                    )
+                    + " This is a fallback summary generated when the synthesis model is unavailable."
                 ),
             }
         ],
     }
     return payload
+
+
+def _build_indexed_tweet_listing(top: list[dict]) -> tuple[str, dict[str, str]]:
+    """推文列表用短序号 [1][2]... 展示，返回 (文本, {序号→真实id}) 映射。
+
+    用短序号替代 19 位 tweet id，解决 DeepSeek 无法准确回显长数字 ID 的问题（P0 根因）。
+    模型在 supporting_tweet_ids 里写 ["1","3"] 而非真实 ID，事后由 _map_index_refs_to_ids 还原。
+    """
+    lines = []
+    idx_to_id: dict[str, str] = {}
+    for i, t in enumerate(top, start=1):
+        idx = str(i)
+        idx_to_id[idx] = str(t["id"])
+        lines.append(f"[{idx}] @{t.get('author', '?')} (score={t.get('score', 0):.2f}): {t.get('text', '')}")
+    return "\n".join(lines), idx_to_id
+
+
+def _map_index_refs_to_ids(
+    raw_ids: list,
+    idx_to_id: dict[str, str],
+    valid_ids: set[str] | None = None,
+) -> list[str]:
+    """将模型返回的引用映射为真实 tweet id，同时兼容两种格式：
+
+    - 短序号（"1"、"[1]"）→ 翻译为真实 id
+    - 已是真实 tweet id（在 valid_ids 中）→ 原样保留
+
+    模型（gemini）不稳定：有时遵守短序号指令，有时直接返回真实 19 位 id。只认短序号会把
+    真实 id 全部丢弃 → 每个主题兜底 top[:5] → 多主题挂相同推文（P0 实跑回归）。
+    既非短序号也非真实 id（编造）→ 丢弃。
+    """
+    import re as _re
+    valid_ids = valid_ids or set()
+    result = []
+    for raw in raw_ids:
+        s = str(raw).strip()
+        s_idx = _re.sub(r"^\[(\d+)\]$", r"\1", s)  # 去方括号：[1] → 1
+        if s_idx in idx_to_id:
+            result.append(idx_to_id[s_idx])        # 短序号
+        elif s in valid_ids:
+            result.append(s)                        # 已是真实 id
+    return result
 
 
 def synthesize(scored_input: dict, date: str | None = None) -> dict:
@@ -137,21 +241,19 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
     """
     if not _has_api_key():
         sys.stderr.write(
-            "WARNING: OPENROUTER_API_KEY not set — synthesis using local fallback. "
+            "WARNING: AI_GATEWAY_API_KEY not set — synthesis using local fallback. "
             "Set SC-5-real = PENDING until real API key is configured.\n"
         )
         return _fallback_synthesis(scored_input, date)
 
-    # 构建 prompt — 全部推文都给 model,让它自己决定取舍(top-N 早期是 5,信号窄;
-    # 现在 20 条都给,model 在 prompt 里被约束选 3-5 个主题,supporting_tweet_ids 必须真实)
     tweets = scored_input.get("tweets", [])
     top = sorted(tweets, key=lambda t: t.get("score", 0), reverse=True)
-    tweets_text = "\n".join(
-        [f"[{t['id']}] @{t.get('author', '?')} (score={t.get('score', 0):.2f}): {t.get('text', '')}" for t in top]
-    )
+
+    # P0 fix: 用短序号 [1][2]... 而非 19 位 ID，解决 DeepSeek 无法准确回显长整数 ID 的问题
+    tweets_text, idx_to_id = _build_indexed_tweet_listing(top)
 
     resolved_date = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    prompt_path = Path(__file__).parent.parent.parent.parent.parent / "docs" / "deepseek-synthesis-prompt-v1.md"
+    prompt_path = _PROMPT_PATH
 
     if prompt_path.exists():
         prompt_template = prompt_path.read_text()
@@ -161,7 +263,6 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
             tweet_count=len(tweets),
         )
     else:
-        # inline fallback prompt if doc not found
         prompt = (
             f"Analyze the following AI/ML tweets from {resolved_date} "
             f"and output a JSON object conforming to social_trends_v1_1 schema.\n\n"
@@ -169,25 +270,22 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
             "Return JSON with fields: date, generated_at, source, scoring_summary, tweets, focus_discussions."
         )
 
-    # 调一次 API,不重试质量问题(model 不稳定,重试也不一定改善,白白浪费 5+ 分钟);
-    # 仅在 API 抛异常(网络/超时/schema 失败)时重试一次。
-    # model 偷懒输出(topic="AI Trends"、英文 summary、漏字段)由 _merge_with_input + _patch_*
-    # 系列函数代码兜底补救,不依赖重试。
     last_err: Exception | None = None
-    for attempt in range(2):
+    max_attempts = 3
+    for attempt in range(max_attempts):
         try:
             raw = _call_deepseek(prompt)
             data = json.loads(raw)
-            merged = _merge_with_input(data, scored_input, resolved_date, top)
+            merged = _merge_with_input(data, scored_input, resolved_date, top, idx_to_id)
             _validate_response(merged)
+            _validate_quality(merged)
             return merged
         except Exception as e:
             last_err = e
-            if attempt == 1:
+            if attempt == max_attempts - 1:
                 break
             continue
 
-    # API 两次都失败后走 fallback
     err_msg = f"{type(last_err).__name__}: {str(last_err)[:200]}" if last_err else "unknown"
     sys.stderr.write(
         f"WARNING: DeepSeek API failed after 2 attempts ({err_msg}) — synthesis using local fallback. "
@@ -196,16 +294,53 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
     return _fallback_synthesis(scored_input, date)
 
 
-def _merge_with_input(model_out: dict, scored_input: dict, resolved_date: str, top: list[dict]) -> dict:
-    """Merge model output with input data — model 只贡献 focus_discussions/executive_summary/key_quotes,
+def _merge_with_input(
+    model_out: dict,
+    scored_input: dict,
+    resolved_date: str,
+    top: list[dict],
+    idx_to_id: dict[str, str] | None = None,
+) -> dict:
+    """Merge model output with input data — model 只贡献 focus_discussions/executive_summary,
     其余字段从 input 回填。
 
     防御性合并:DeepSeek 经常返回不合规字段(source 是字符串、tweets 缺 text/created_at 等),
     与其反复修 prompt,不如机械合并:input 数据是 ground truth,model 智慧只取分析字段。
+
+    idx_to_id: 短序号→真实 ID 映射（P0 fix）。若提供，在 _patch_focus_discussions 前先将
+    模型返回的序号还原为真实 ID，解决 DeepSeek 无法准确回显 19 位 ID 的根因。
     """
     all_tweets = scored_input.get("tweets", [])
-    # tweets 字段只渲染前 10 条最高分(markdown 模板也只展示 top 10),减少简报噪声
-    top_for_display = top[:10]
+    id_to_tweet = {str(t["id"]): t for t in top}
+
+    # P0 fix: 把模型返回的引用还原为真实 id（短序号翻译 + 真实 id 保留，兼容模型不稳定）
+    raw_fds = model_out.get("focus_discussions") or []
+    if idx_to_id:
+        valid_ids = {str(t["id"]) for t in top}
+        mapped_fds = []
+        for fd in raw_fds:
+            if not isinstance(fd, dict):
+                continue
+            raw_ids = fd.get("supporting_tweet_ids") or []
+            mapped = _map_index_refs_to_ids(raw_ids, idx_to_id, valid_ids)
+            mapped_fds.append({**fd, "supporting_tweet_ids": mapped})
+        raw_fds = mapped_fds
+
+    # 先 patch focus_discussions，确定哪些 id 被引用
+    patched_fds = _patch_focus_discussions(raw_fds, top)
+    referenced_ids = {
+        str(sid)
+        for fd in patched_fds
+        for sid in fd.get("supporting_tweet_ids", [])
+    }
+
+    # tweets 输出集 = top 10 ∪ 被引用的推文（确保 supporting_tweet_ids 总有对应 tweet 对象）
+    top10_ids = {str(t["id"]) for t in top[:10]}
+    extra_ids = referenced_ids - top10_ids
+    top_for_display = list(top[:10]) + [
+        id_to_tweet[eid] for eid in extra_ids if eid in id_to_tweet
+    ]
+
     return {
         "date": model_out.get("date") or resolved_date,
         "generated_at": model_out.get("generated_at") or datetime.now(timezone.utc).isoformat(),
@@ -223,115 +358,87 @@ def _merge_with_input(model_out: dict, scored_input: dict, resolved_date: str, t
                 "score": t.get("score"),
                 "dimensions": t.get("dimensions", {}),
                 "url": t.get("url", ""),
+                "lang": t.get("lang", ""),  # P2-1: 透传 lang，供 translate per-tweet 分流
             }
             for t in top_for_display
         ],
-        "focus_discussions": (patched_fds := _patch_focus_discussions(
-            model_out.get("focus_discussions") or [], top
-        )),
-        # 扩展字段 — model 经常漏,由代码兜底合成确保 markdown 章节完整;
-        # executive_summary fallback 用已 patched 的(中文化后的)focus_discussions
+        "focus_discussions": _ensure_top3_covered(patched_fds, top),
+        # executive_summary 原样保留；缺失时用主题列表兜底（确保 audit 不因空值 fail）
         "executive_summary": (
             model_out.get("executive_summary", "").strip()
-            or _synthesize_executive_summary(patched_fds)
-        ),
-        "key_quotes": (
-            _patch_key_quotes(model_out.get("key_quotes") or [], top)
-            or _synthesize_key_quotes(top_for_display)
+            or _fallback_executive_summary(patched_fds, resolved_date)
         ),
     }
 
 
-def _synthesize_executive_summary(focus_discussions: list) -> str:
-    """model 漏 executive_summary 时,从 focus_discussions 拼接合成。"""
-    if not focus_discussions:
-        return ""
-    topics = [(fd.get("topic") or "").strip() for fd in focus_discussions if isinstance(fd, dict)]
-    topics = [t for t in topics if t]
-    if not topics:
-        return ""
-    return "今日 AI/ML 讨论聚焦：" + "、".join(topics[:5]) + "。详见下方核心讨论与关键推文。"
+def _ensure_top3_covered(fds: list, top: list[dict]) -> list:
+    """确保 top-3 高分推文至少各出现在某个主题的 supporting_tweet_ids 里。
 
-
-def _synthesize_key_quotes(top_tweets: list[dict]) -> list:
-    """model 漏 key_quotes 时,从 top 推文取前 3 条作引述兜底,确保章节完整。"""
-    quotes = []
-    for t in top_tweets[:3]:
-        text = (t.get("text") or "").replace("\n", " ").strip()
-        if not text:
-            continue
-        snippet = text[:180] + ("…" if len(text) > 180 else "")
-        quotes.append({
-            "author": t.get("author", ""),
-            "quote": snippet,
-            "tweet_id": str(t.get("id", "")),
-            "url": t.get("url", ""),
-            "context": f"评分 {t.get('score', 0):.2f}",
-        })
-    return quotes
-
-
-def _patch_key_quotes(quotes: list, top: list[dict]) -> list:
-    """补齐 key_quotes — 防御 model 漏字段,过滤掉非 dict / 缺 tweet_id 的条目,
-    给每条 quote 找对应 tweet 的 url 字段(model 一般不会给 url)。
+    若不满足，将未覆盖的 top-3 id 补入第一个主题（不引入新主题）。
     """
-    id_to_url = {str(t["id"]): t.get("url", "") for t in top}
-    id_to_author = {str(t["id"]): t.get("author", "") for t in top}
-    patched = []
-    for q in quotes:
-        if not isinstance(q, dict):
-            continue
-        tid = str(q.get("tweet_id", ""))
-        # 必须能 trace 到真实 tweet,否则丢弃(防 model 编造 id)
-        if tid and tid in id_to_url:
-            patched.append({
-                "author": q.get("author") or id_to_author.get(tid, ""),
-                "quote": q.get("quote", ""),
-                "tweet_id": tid,
-                "url": id_to_url.get(tid, ""),
-                "context": q.get("context", ""),
-            })
-    return patched
+    import copy
+    fds = copy.deepcopy(fds)
+    if not fds:
+        return fds
+    covered: set[str] = {
+        str(sid)
+        for fd in fds
+        for sid in fd.get("supporting_tweet_ids", [])
+    }
+    top3_ids = [str(t["id"]) for t in top[:3]]
+    missing = [tid for tid in top3_ids if tid not in covered]
+    if missing:
+        # 补入第一个主题
+        existing = list(fds[0].get("supporting_tweet_ids", []))
+        for tid in missing:
+            if tid not in existing:
+                existing.append(tid)
+        fds[0]["supporting_tweet_ids"] = existing
+    return fds
+
+
+def _fallback_executive_summary(fds: list, date: str) -> str:
+    """生成确定性执行摘要兜底（模型漏 executive_summary 时使用）。"""
+    topics = [fd.get("topic", "") for fd in fds[:3] if fd.get("topic")]
+    if topics:
+        return f"{date} AI/ML 领域核心讨论主题：{' · '.join(topics)}。本期趋势信号聚焦于上述方向，以下为详细分析。"
+    return f"{date} AI/ML 领域社交趋势简报，基于公开时间线抓取与综合分析。"
+
+
 
 
 def _patch_focus_discussions(discussions: list, top: list[dict]) -> list:
-    """补齐 focus_discussions 缺失的 supporting_tweet_ids + 空洞 topic 自动改写。
+    """补齐 focus_discussions 缺失或编造的 supporting_tweet_ids。
 
-    - schema 要求 topic/supporting_tweet_ids/summary 三字段都必填
-    - 缺 supporting_tweet_ids 时用前 2 条 top tweet id 兜底
-    - topic 是 "AI Trends" 等空洞词时,从 summary 前 25 字提取作 topic(去掉句末标点)
+    - 过滤掉模型编造的 id（不在 top 推文中）
+    - 缺失或全部编造时，fallback 到 top[:5]（保守覆盖高分推文）
+    - topic/summary 原样保留，由 translate 阶段中文化
     """
-    fallback_ids = [str(t["id"]) for t in top[:2]] or ["unknown"]
-    BANNED = {"ai trends", "ai 趋势", "trends", "ai trend", "today's trends", "今日趋势", ""}
+    valid_ids = {str(t["id"]) for t in top}
+    top_ids = [str(t["id"]) for t in top[:5]] or ["unknown"]
+
     patched = []
-    for i, d in enumerate(discussions, 1):
+    for d in discussions:
         if not isinstance(d, dict):
             continue
-        ids = d.get("supporting_tweet_ids")
-        if not isinstance(ids, list) or not ids:
-            ids = fallback_ids
-        topic = (d.get("topic") or "").strip()
-        # 含中文字符数(≥2 视为合格中文 topic)
-        chinese_chars = sum(1 for c in topic if "一" <= c <= "鿿")
-        is_banned = topic.lower() in BANNED
-        is_english = chinese_chars < 2  # 全英文或几乎全英文
-        if is_banned or is_english:
-            summary = (d.get("summary") or "").strip()
-            # summary 也优先取中文段:扫描第一句中文(到首个句号/分号/换行)
-            if summary and any("一" <= c <= "鿿" for c in summary):
-                # 取 summary 第一段(中文优先),≤30 字
-                first_seg = summary.split("。")[0].split("\n")[0].split(";")[0].strip()
-                if first_seg and any("一" <= c <= "鿿" for c in first_seg):
-                    topic = first_seg[:30].rstrip("，。；,;.：:").rstrip()
-                    if len(first_seg) > 30:
-                        topic = topic + "…"
-                else:
-                    topic = f"AI 趋势观察 #{i}"
-            else:
-                topic = f"AI 趋势观察 #{i}"
+        raw_ids = d.get("supporting_tweet_ids")
+        if isinstance(raw_ids, list) and raw_ids:
+            # 过滤编造 id，保留真实存在的
+            real_ids = [str(x) for x in raw_ids if str(x) in valid_ids]
+        else:
+            real_ids = []
+        if not real_ids:
+            real_ids = list(top_ids)
+        elif len(real_ids) < 2:
+            # 补足到 2 个：从 top 高分推文中取未包含的
+            for tid in top_ids:
+                if tid not in real_ids:
+                    real_ids.append(tid)
+                if len(real_ids) >= 2:
+                    break
         patched.append({
-            "topic": topic,
-            "supporting_tweet_ids": [str(x) for x in ids],
+            "topic": (d.get("topic") or "").strip(),
+            "supporting_tweet_ids": real_ids,
             "summary": d.get("summary") or "",
         })
     return patched

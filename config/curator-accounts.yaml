@@ -1,0 +1,238 @@
+# AKB2 社交日报 — 策展博主清单（留档 + 实跑验证分层）
+#
+# 来源：session 3d39f955（2026-05-26/27「社交热点日报 MVP」规划讨论）
+#   reference/history/transcripts/AKB2/3d39f955-7a21-48dc-953b-d6795269ef2b.jsonl
+# 内容：用户提供的「AYI 推荐图」OCR 全集，共 101 个 handle。
+#
+# ── 分层（2026-05-31 实跑 twitter CLI 验证后定稿）──
+#   accounts      : OCR 全集 101，原样留档（含已知 OCR 噪声，见 suspected_ocr_errors）
+#   fetch_tier    : 实际获取层 30（en 19 + zh 11），account_collector 逐账号抓
+#   reserve_tier  : 候补层，获取层账号失败/0 条时自动顶替补抓（不删除，内容不足时启用）
+#
+# ── 抓取约定（实跑验证确认）──
+#   - cmd: twitter search "" --from <h> -t latest --exclude retweets --exclude replies --since --until -n <cap> --json
+#     （--exclude 可重复；不加则混入大量 @回复 碎片噪音）
+#   - 语言：按每条推文的 lang 字段处理（en→翻译；zh→跳翻译只点题），不靠账号分类猜
+#   - 限流：pacing 2.5s 跑到 ~34 个触发 429；获取层控在 30、pacing 建议 ≥3s
+#   - ⚠ fetch_tier.zh 末 6 个标 (待复验)：实跑被限流未测到，接入前需复验
+
+accounts:
+  - 0xROAS
+  - 9hills
+  - AlchainHust
+  - AmirMushich
+  - AndrewYNg
+  - AnthropicAI
+  - AravSrinivas
+  - DashHuang
+  - EXM7777
+  - GitTrend0x
+  - GoogleDeepMind
+  - JeffDean
+  - KyeGomezB
+  - LangChainAI
+  - LawrenceW_Zen
+  - LlamaIndex
+  - MengTo
+  - NorthstarBrain
+  - OpenAI
+  - SaitoWu
+  - StabilityAI
+  - Suhail
+  - TianheYu
+  - _akhaliq
+  - abskoop
+  - adcock_brett
+  - aidangomez
+  - alin_zone
+  - amasad
+  - arankomatsuzaki
+  - aronhouyu
+  - arxiv_org
+  - baoyu
+  - boringmarketer
+  - clementdelangue
+  - dario_amodei
+  - demishassabis
+  - dotey
+  - dr_cintas
+  - drjimfan
+  - eptwts
+  - fankaishuoai
+  - gdb
+  - gergelyorosz
+  - ggerganov
+  - gm8xx8
+  - godofprompt
+  - gregisenberg
+  - hanxiao_2017
+  - hwchase17
+  - ilyasut
+  - indigo11
+  - jackfriks
+  - jerryjliu0
+  - jhyuxm
+  - jianshuo
+  - julien_c
+  - karinanguyen_
+  - karpathy
+  - kimmonismus
+  - lateinteraction
+  - levelsio
+  - lmsysorg
+  - marclou
+  - mickaywiggley
+  - midjourney
+  - miles_brundage
+  - nateherk
+  - nexudotio
+  - nickfloats
+  - nirantk
+  - omarsar0
+  - op7418
+  - oran_ge
+  - paulg
+  - rasbt
+  - rileybrown
+  - ring_hyacinth
+  - rohanpaul_ai
+  - runwayml
+  - sama
+  - shengjia_zhao
+  - shuchaobi
+  - simonw
+  - sleepinyourhat
+  - somolicick
+  - somonie
+  - soumithchintala
+  - steipete
+  - sunjiao123sun_
+  - swyx
+  - togethercompute
+  - tuturetom
+  - vasuman
+  - vllm_project
+  - wangray
+  - woj_zaremba
+  - yangyi_io
+  - yannickkilcher
+  - ylecun
+  - yulikay
+
+# ───────────────────────────────────────────────────────────────
+# fetch_tier — 实际获取层 30（2026-05-31 实跑验证活跃）
+#   en 19：均确认 15 天窗口有原创 AI 内容
+#   zh 11：dotey/oran_ge/op7418/DashHuang/tuturetom 确认；末 6 个待复验
+fetch_tier:
+  en:
+    - OpenAI
+    - AnthropicAI
+    - GoogleDeepMind
+    - lmsysorg
+    - vllm_project
+    - karpathy
+    - ylecun
+    - sama
+    - gdb
+    - JeffDean
+    - demishassabis
+    - AndrewYNg
+    - swyx
+    - simonw
+    - ggerganov
+    - rasbt
+    - omarsar0
+    - _akhaliq
+    - AravSrinivas
+  zh:
+    - dotey
+    - oran_ge
+    - op7418
+    - DashHuang
+    - tuturetom
+    - fankaishuoai     # 待复验（实跑被限流）
+    - abskoop          # 待复验
+    - ring_hyacinth    # 待复验
+    - yangyi_io        # 待复验
+    - SaitoWu          # 待复验
+    - alin_zone        # 待复验
+
+# reserve_tier — 候补层（获取层失败/0条时自动顶替；不删除）
+reserve_tier:
+  # —— 2026-05-31 实跑降级（15天窗口0条原创 / 离题）——
+  - LangChainAI       # 验证空窗（多为转推）
+  - LlamaIndex        # 验证空窗
+  - ilyasut           # 验证空窗（极少发原创）
+  - dario_amodei      # 验证空窗（极少发原创）
+  - drjimfan          # 验证空窗
+  - soumithchintala   # 验证空窗
+  - baoyu             # 验证空窗（疑回复/转推为主）
+  - indigo11          # 验证空窗
+  - hanxiao_2017      # 验证空窗
+  - jianshuo          # 验证离题（博物馆/古董，互动极低）
+  # —— 原候补池（含修正后的 mckaywrigley，原 OCR mickaywiggley）——
+  - 0xROAS
+  - 9hills
+  - AlchainHust
+  - AmirMushich
+  - EXM7777
+  - GitTrend0x
+  - KyeGomezB
+  - LawrenceW_Zen
+  - MengTo
+  - NorthstarBrain
+  - StabilityAI
+  - Suhail
+  - TianheYu
+  - adcock_brett
+  - aidangomez
+  - amasad
+  - arankomatsuzaki
+  - aronhouyu
+  - arxiv_org
+  - boringmarketer
+  - clementdelangue
+  - dr_cintas
+  - eptwts
+  - gergelyorosz
+  - gm8xx8
+  - godofprompt
+  - gregisenberg
+  - hwchase17
+  - jackfriks
+  - jerryjliu0
+  - jhyuxm
+  - julien_c
+  - karinanguyen_
+  - kimmonismus
+  - lateinteraction
+  - levelsio
+  - marclou
+  - midjourney
+  - miles_brundage
+  - nateherk
+  - nexudotio
+  - nickfloats
+  - nirantk
+  - paulg
+  - rileybrown
+  - rohanpaul_ai
+  - runwayml
+  - shengjia_zhao
+  - shuchaobi
+  - sleepinyourhat
+  - steipete
+  - sunjiao123sun_
+  - togethercompute
+  - vasuman
+  - wangray
+  - woj_zaremba
+  - yannickkilcher
+  - yulikay
+  - mckaywrigley
+
+# 疑似 OCR 识别错误（接入前需核对/修正）
+suspected_ocr_errors:
+  - mickaywiggley   # 应为 mckaywrigley（已修正版收入 reserve_tier）
+  - somolicick      # 拼写存疑
+  - somonie         # 拼写存疑

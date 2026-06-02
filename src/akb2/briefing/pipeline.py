@@ -28,11 +28,16 @@ import argparse
 import datetime
 import json
 import os
+import re
 import subprocess
 import sys
 import shutil
 import tempfile
+import zoneinfo
 from pathlib import Path
+
+from akb2.briefing.translate import translate_briefing  # noqa: E402
+from akb2.briefing.audit import audit_briefing  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -47,19 +52,101 @@ GATE_DECISION_ENUM = {
     "brief_only", "archive", "reject",
 }
 
+_TZ_SH = zoneinfo.ZoneInfo("Asia/Shanghai")
+# 默认 3 天：19 个活跃账号在 2 天窗口下安静日仅 ~10 条原创、只够 3 主题；
+# 放宽到 3 天提升素材量（够 4-5 主题），新鲜度损失可接受。可 AKB2_INTAKE_WINDOW_DAYS 覆盖。
+_INTAKE_WINDOW_DAYS_DEFAULT = 3
+
+
+# ---------------------------------------------------------------------------
+# 产出层日期兜底（SC-7）
+# ---------------------------------------------------------------------------
+
+def _filter_recent(tweets: list, date: str, days: int = _INTAKE_WINDOW_DAYS_DEFAULT) -> list:
+    """保留 created_at 在 [date-(days-1), date] 范围内的推文（时区 Asia/Shanghai）。
+
+    - 缺 created_at 或格式异常 → 保守保留，stderr 告警
+    - days=3 表示今天+昨天+前天（近3天）
+    """
+    try:
+        end_day = datetime.datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        sys.stderr.write(f"WARNING [filter_recent]: invalid date '{date}', skipping filter\n")
+        return tweets
+
+    start_day = end_day - datetime.timedelta(days=days - 1)
+    # Asia/Shanghai 时区边界
+    start_dt = datetime.datetime(
+        start_day.year, start_day.month, start_day.day, 0, 0, 0, tzinfo=_TZ_SH
+    )
+    end_dt = datetime.datetime(
+        end_day.year, end_day.month, end_day.day, 23, 59, 59, 999999, tzinfo=_TZ_SH
+    )
+
+    kept = []
+    for t in tweets:
+        raw_ts = t.get("created_at", "")
+        if not raw_ts:
+            sys.stderr.write(
+                f"WARNING [filter_recent]: tweet {t.get('id','?')} missing created_at, keeping\n"
+            )
+            kept.append(t)
+            continue
+        try:
+            dt = datetime.datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
+            dt_sh = dt.astimezone(_TZ_SH)
+            if start_dt <= dt_sh <= end_dt:
+                kept.append(t)
+        except (ValueError, TypeError):
+            sys.stderr.write(
+                f"WARNING [filter_recent]: tweet {t.get('id','?')} bad created_at '{raw_ts}', keeping\n"
+            )
+            kept.append(t)
+
+    if len(kept) < len(tweets):
+        sys.stderr.write(
+            f"INFO [filter_recent]: dropped {len(tweets)-len(kept)} out-of-window tweets, kept {len(kept)}\n"
+        )
+
+    return kept
+
 
 # ---------------------------------------------------------------------------
 # Stage 1: Intake
 # ---------------------------------------------------------------------------
 
-def run_intake(dry_run: bool, output_path: Path) -> dict:
-    """Call l0_collector via subprocess, return parsed JSON dict."""
+def run_intake(
+    dry_run: bool,
+    output_path: Path,
+    since_date: str | None = None,
+    until_date: str | None = None,
+) -> dict:
+    """Call the intake collector via subprocess, return parsed JSON dict.
+
+    Collector 由 env AKB2_INTAKE_COLLECTOR 选择：
+      - "account"（默认）：curator 逐账号抓取（account_collector），内容为策展 AI 账号
+      - "keyword"：旧泛关键词搜索（l0_collector），噪音高，作回退
+    两者 CLI 同构（--output/--dry-run/--since/--until），下游处理不变。
+    """
+    collector_mode = os.environ.get("AKB2_INTAKE_COLLECTOR", "account")
+    collector_module = (
+        "akb2.briefing.intake.l0_collector"
+        if collector_mode == "keyword"
+        else "akb2.briefing.intake.account_collector"
+    )
     cmd = [
-        sys.executable, "-m", "akb2.briefing.intake.l0_collector",
+        sys.executable, "-m", collector_module,
         "--output", str(output_path),
     ]
+    # P2-1: account collector 默认抓 en+zh 双 tier 合并（打 lang 标）；keyword 模式不支持 --merge
+    if collector_mode != "keyword" and os.environ.get("AKB2_FETCH_MERGE", "1") == "1":
+        cmd.append("--merge")
     if dry_run:
         cmd.append("--dry-run")
+    if since_date:
+        cmd += ["--since", since_date]
+    if until_date:
+        cmd += ["--until", until_date]
 
     env = os.environ.copy()
     env["PYTHONPATH"] = str(REPO_ROOT / "src") + (
@@ -151,18 +238,145 @@ def run_gate(akb_root: Path, input_file: Path, date: str) -> str:
 # Stage 5: Build markdown briefing
 # ---------------------------------------------------------------------------
 
-def build_briefing_markdown(synth: dict, gate_decision: str, date: str) -> str:
+_ORPHAN_TOP_K = int(os.environ.get("AKB2_ORPHAN_TOP_K", "5"))
+# 展示层质量过滤（2026-06-02 试跑发现的 3 个缺陷修复）
+_MIN_DISPLAY_SCORE = float(os.environ.get("AKB2_MIN_DISPLAY_SCORE", "0.35"))  # 低于此分不入正文（去低分噪音）
+_PER_AUTHOR_CAP = int(os.environ.get("AKB2_PER_AUTHOR_CAP", "2"))             # 单作者每主题/孤儿区上限（防霸屏）
+
+
+def _apply_display_filters(
+    tweets: list[dict],
+    *,
+    min_score: float = _MIN_DISPLAY_SCORE,
+    per_author_cap: int = _PER_AUTHOR_CAP,
+) -> list[dict]:
+    """简报展示过滤（保持入参顺序）：
+
+    1. 剔除近重复：`dimensions.novelty == 0`（语义/精确去重已判定为重复的后出现者）——
+       修复"novelty 软扣分 0.05 不足以剔重，重复内容仍进简报"（试跑发现 @lmsysorg 两条
+       cosine=0.8776>0.85 公告都入选）。
+    2. 最低分门槛：score < min_score 不入正文（去 0.27 这类低分噪音）。
+    3. per-author 上限：同作者超过 per_author_cap 条丢弃（防单作者霸占整个主题）。
+    """
+    out: list[dict] = []
+    author_count: dict[str, int] = {}
+    for t in tweets:
+        dims = t.get("dimensions") or {}
+        # 1) 剔重：novelty==0 表示已有近重复在前
+        if "novelty" in dims and dims.get("novelty") == 0:
+            continue
+        # 2) 最低分
+        if float(t.get("score", 0) or 0) < min_score:
+            continue
+        # 3) per-author 上限
+        author = (t.get("author") or "").lower().lstrip("@")
+        if author and author_count.get(author, 0) >= per_author_cap:
+            continue
+        author_count[author] = author_count.get(author, 0) + 1
+        out.append(t)
+    return out
+
+
+def _collect_display_tweets(
+    synth: dict,
+    orphan_top_k: int = _ORPHAN_TOP_K,
+) -> tuple[list[list[dict]], list[dict]]:
+    """将推文按主题分组，返回 (per_topic_tweets, orphan_tweets)。
+
+    per_topic_tweets[i] = focus_discussions[i] 对应的支撑推文列表（应用展示过滤：剔重/最低分/per-author）
+    orphan_tweets = 未被任何主题引用的高分推文，按 score 倒序取 top-k（同样过滤）
+    """
+    tweets = synth.get("tweets", [])
+    id_to_tweet: dict[str, dict] = {str(t.get("id", "")): t for t in tweets}
+
+    # 收集所有主题引用的推文 id（用于孤儿判定）；per-topic 各自应用过滤（per-author 上限按主题独立）
+    all_referenced: set[str] = set()
+    per_topic: list[list[dict]] = []
+    for fd in synth.get("focus_discussions", []):
+        topic_tweets = []
+        for tid in fd.get("supporting_tweet_ids", []):
+            sid = str(tid)
+            if sid in id_to_tweet:
+                topic_tweets.append(id_to_tweet[sid])
+                all_referenced.add(sid)
+        per_topic.append(_apply_display_filters(topic_tweets))
+
+    # 孤儿高分：未被任何主题引用，按 score 倒序，过滤后取 top-k
+    orphans_sorted = sorted(
+        [t for t in tweets if str(t.get("id", "")) not in all_referenced],
+        key=lambda t: t.get("score", 0),
+        reverse=True,
+    )
+    orphans = _apply_display_filters(orphans_sorted)[:orphan_top_k]
+
+    return per_topic, orphans
+
+
+_INLINE_LINK_RE = re.compile(r"https?://\S+")
+_PIC_TWITTER_RE = re.compile(r"\bpic\.twitter\.com/\S+")
+
+
+def _strip_inline_links(text: str) -> str:
+    """剥离正文内联链接（http(s) URL / pic.twitter 短链）。
+
+    用户决策：每条推文只保留底部唯一 [原文] 链接，正文不再出现内联短链
+    （避免与 [原文] 重复）。剥离后折叠多余空白。
+    """
+    if not text:
+        return text
+    cleaned = _INLINE_LINK_RE.sub("", text)
+    cleaned = _PIC_TWITTER_RE.sub("", cleaned)
+    # P0-2 SC-2：剥链接后清除孤立的 🔗 链接标记（推文里 🔗 只是"链接在此"标记，
+    # 链接已剥 + 底部已有唯一 [原文]，正文残留 🔗 是无意义噪音）
+    cleaned = cleaned.replace("🔗", "")
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r" +\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _render_tweet(t: dict) -> list[str]:
+    """渲染一条推文为 markdown 行列表（作者 + 评分 + 点题 + 中文正文 + 唯一 [原文] 链接）。
+
+    用户决策：简报不保留英文原文（移除英文折叠块）；正文内联链接剥离，
+    每条推文只在底部保留一个 [原文] 链接。长推优先展示中文核心段。
+    """
+    author = t.get("author", "")
+    text = _strip_inline_links(t.get("text", ""))
+    core_excerpt = _strip_inline_links(t.get("core_excerpt", ""))
+    zh_point = t.get("zh_point", "")
+    score = t.get("score", 0)
+    url = t.get("url", "")
+
+    parts: list[str] = [f"**{author}**（评分：{score:.3f}）"]
+    if zh_point:
+        parts += [f"*{zh_point}*", ""]
+
+    body = core_excerpt or text
+    parts += [f"> {body}", ""]
+
+    if url:
+        parts += [f"[原文]({url})", ""]
+
+    return parts
+
+
+def build_briefing_markdown(
+    synth: dict,
+    gate_decision: str,
+    date: str,
+    collector_name: str = "account_collector",
+) -> str:
     """Build the final markdown briefing content with YAML frontmatter.
 
     The frontmatter includes all AKB gate-compatible fields so that a re-run of
     the gate CLI on this file produces the same proposed_gate_decision.
+    collector_name: 实际 collector 名（SC-P3b-1）；dry-run 时传 "dry_run"。
     """
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
     tweets = synth.get("tweets", [])
     focus_discussions = synth.get("focus_discussions", [])
 
-    # Build frontmatter with full AKB gate-compatible fields
-    # These mirror the temp briefing frontmatter so gate produces the same decision.
     frontmatter_lines = [
         "---",
         f"date: {date}",
@@ -173,7 +387,7 @@ def build_briefing_markdown(synth: dict, gate_decision: str, date: str) -> str:
         f"source_type: news",
         f"template_type: synthesis",
         "evidence_paths:",
-        "  - social/l0_collector/dry_run",
+        f"  - social/{collector_name}",
         "future_questions:",
         "  - What are the top AI trends this week?",
         "  - Which models are gaining the most developer attention?",
@@ -183,15 +397,11 @@ def build_briefing_markdown(synth: dict, gate_decision: str, date: str) -> str:
     ]
     frontmatter = "\n".join(frontmatter_lines)
 
-    # Build body
-    delivery_date = (
-        datetime.date.fromisoformat(date) + datetime.timedelta(days=1)
-    ).isoformat()
-
+    # Build body — v2 结构：执行摘要 → 核心讨论(嵌套推文) → 其他高分推文 → 数据摘要
     body_parts = [
-        f"# {delivery_date} AI 社交趋势日报",
+        f"# {date} AI 社交趋势日报",
         "",
-        "## 导读",
+        "## 总览",  # P0-2 SC-14 修复：用 gate HC-08 白名单内的标题（导读→总览），消除恒 needs_repair
         "",
         f"基于 {date} 公开时间线抓取，对 AI/ML 领域社交信号的综合分析。",
         f"质量门控：**{gate_decision}**",
@@ -203,41 +413,22 @@ def build_briefing_markdown(synth: dict, gate_decision: str, date: str) -> str:
     if executive_summary:
         body_parts += ["## 执行摘要", "", executive_summary, ""]
 
+    # 核心讨论骨架：每主题 summary + 嵌套支撑推文
+    per_topic, orphans = _collect_display_tweets(synth, _ORPHAN_TOP_K)
     if focus_discussions:
         body_parts += ["## 核心讨论", ""]
-        for disc in focus_discussions:
+        for i, disc in enumerate(focus_discussions):
             topic = disc.get("topic", "")
             summary = disc.get("summary", "")
             body_parts += [f"### {topic}", "", summary, ""]
+            for t in per_topic[i]:
+                body_parts += _render_tweet(t)
 
-    # 关键引述（model 选出的最有信号推文，含 @author + url + context）
-    key_quotes = synth.get("key_quotes", []) or []
-    if key_quotes:
-        body_parts += ["## 关键引述", ""]
-        for q in key_quotes:
-            author = q.get("author", "")
-            quote = q.get("quote", "")
-            url = q.get("url", "")
-            context = q.get("context", "")
-            body_parts += [
-                f"**{author}**" + (f"（{context}）" if context else ""),
-                f"> {quote}",
-                f"[原文]({url})" if url else "",
-                "",
-            ]
-
-    body_parts += ["## 关键推文", ""]
-    for t in tweets[:10]:
-        author = t.get("author", "")
-        text = t.get("text", "")
-        score = t.get("score", 0)
-        url = t.get("url", "")
-        body_parts += [
-            f"**{author}**（评分：{score:.3f}）",
-            f"> {text}",
-            f"[原文]({url})" if url else "",
-            "",
-        ]
+    # 其他高分推文（孤儿：未被任何主题引用）
+    if orphans:
+        body_parts += ["## 其他高分推文", ""]
+        for t in orphans:
+            body_parts += _render_tweet(t)
 
     scoring_summary = synth.get("scoring_summary", {})
     total = scoring_summary.get("total_tweets", len(tweets))
@@ -256,8 +447,14 @@ def build_briefing_markdown(synth: dict, gate_decision: str, date: str) -> str:
     return frontmatter + "\n" + body
 
 
-def build_temp_briefing_markdown(synth: dict, date: str) -> str:
-    """Build briefing markdown WITHOUT gate decision in frontmatter (for initial gate check)."""
+def build_temp_briefing_markdown(
+    synth: dict,
+    date: str,
+    collector_name: str = "account_collector",
+) -> str:
+    """Build briefing markdown WITHOUT gate decision in frontmatter (for initial gate check).
+    collector_name: 实际 collector 名（SC-P3b-1）；dry-run 时传 "dry_run"。
+    """
     now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
     tweets = synth.get("tweets", [])
 
@@ -270,7 +467,7 @@ def build_temp_briefing_markdown(synth: dict, date: str) -> str:
         f"source: social_trends_v1_1",
         f"generated_at: {now_iso}",
         "evidence_paths:",
-        "  - social/l0_collector/dry_run",
+        f"  - social/{collector_name}",
         "future_questions:",
         "  - What are the top AI trends this week?",
         "  - Which models are gaining the most developer attention?",
@@ -280,33 +477,49 @@ def build_temp_briefing_markdown(synth: dict, date: str) -> str:
     ]
     frontmatter = "\n".join(frontmatter_lines)
 
-    delivery_date = (
-        datetime.date.fromisoformat(date) + datetime.timedelta(days=1)
-    ).isoformat()
-
+    # v2 骨架（与 build_briefing_markdown 保持一致，Step5）：
+    # 执行摘要 → 核心讨论(嵌套推文) → 其他高分推文 → 数据摘要。
+    # temp 在翻译前用 synth_en 跑 gate，推文为英文（无 zh_point/core_excerpt），
+    # _render_tweet 会自然降级为 `> text` + 原文链接。
     body_parts = [
-        f"# {delivery_date} AI 社交趋势日报",
+        f"# {date} AI 社交趋势日报",
         "",
-        "## 导读",
+        "## 总览",  # P0-2 SC-14 修复：用 gate HC-08 白名单内的标题（导读→总览），消除恒 needs_repair
         "",
         f"基于 {date} 公开时间线抓取，对 AI/ML 领域社交信号的综合分析。",
         "",
-        "## 关键发现",
+    ]
+
+    executive_summary = synth.get("executive_summary", "")
+    if executive_summary:
+        body_parts += ["## 执行摘要", "", executive_summary, ""]
+
+    focus_discussions = synth.get("focus_discussions", [])
+    per_topic, orphans = _collect_display_tweets(synth, _ORPHAN_TOP_K)
+    if focus_discussions:
+        body_parts += ["## 核心讨论", ""]
+        for i, disc in enumerate(focus_discussions):
+            body_parts += [f"### {disc.get('topic', '')}", "", disc.get("summary", ""), ""]
+            for t in per_topic[i]:
+                body_parts += _render_tweet(t)
+
+    if orphans:
+        body_parts += ["## 其他高分推文", ""]
+        for t in orphans:
+            body_parts += _render_tweet(t)
+
+    scoring_summary = synth.get("scoring_summary", {})
+    total = scoring_summary.get("total_tweets", len(tweets))
+    scored = scoring_summary.get("scored_tweets", len(tweets))
+    body_parts += [
+        "## 数据摘要",
         "",
-        "按相关性与权威性打分后的 top 推文。",
-        "",
-        "## 关键推文",
+        f"- 总推文数：{total}",
+        f"- 精选推文：{scored}",
+        f"- 生成时间：{now_iso}",
         "",
     ]
-    for t in tweets[:5]:
-        author = t.get("author", "")
-        text = t.get("text", "")
-        score = t.get("score", 0)
-        body_parts += [
-            f"**{author}**（评分：{score:.3f}）",
-            f"> {text}",
-            "",
-        ]
+
     body = "\n".join(body_parts)
     return frontmatter + "\n" + body
 
@@ -325,6 +538,7 @@ def main(argv: list[str] | None = None) -> int:
     date = args.date
     vault_root = Path(args.vault_root).resolve()
     dry_run_intake = args.dry_run_intake
+    window_days = int(os.environ.get("AKB2_INTAKE_WINDOW_DAYS", str(_INTAKE_WINDOW_DAYS_DEFAULT)))
 
     # Fail-closed: check vault_root before running any expensive stages.
     if not vault_root.is_dir():
@@ -334,65 +548,108 @@ def main(argv: list[str] | None = None) -> int:
         )
         sys.exit(1)
 
-    # Compute delivery date (date + 1 day)
-    delivery_date = (datetime.date.fromisoformat(date) + datetime.timedelta(days=1)).isoformat()
-    briefing_filename = f"{delivery_date} Daily Briefing.md"
+    # 文件名 = 抓取日（去掉旧的 +1 偏移）
+    briefing_filename = f"{date} Daily Briefing.md"
+
+    # 采集层时间窗（SC-6）
+    # twitter 的 --until 是排他上界（"早于该日"），要包含抓取当天必须 +1 天
+    date_dt = datetime.datetime.strptime(date, "%Y-%m-%d")
+    since_dt = date_dt - datetime.timedelta(days=window_days - 1)
+    since_date_str = since_dt.strftime("%Y-%m-%d")
+    until_date_str = (date_dt + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
 
     # Stage 1: Intake
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
         intake_tmp = Path(tf.name)
     try:
-        intake_data = run_intake(dry_run=dry_run_intake, output_path=intake_tmp)
+        intake_data = run_intake(
+            dry_run=dry_run_intake,
+            output_path=intake_tmp,
+            since_date=since_date_str if not dry_run_intake else None,
+            until_date=until_date_str if not dry_run_intake else None,
+        )
     finally:
         intake_tmp.unlink(missing_ok=True)
 
     # Stage 2: Scoring
     scored_data = run_scoring(intake_data)
 
-    # Stage 3: Synthesis
-    synth = run_synthesis(scored_data, date=date)
+    # 产出层日期兜底（SC-7）：去掉超出时间窗的旧推文
+    # 跳过条件：dry-run 模式（fixture 日期与今日不同）或 intake 标记了 fallback（降级到旧 fixture）
+    intake_is_fallback = bool(intake_data.get("_fallback_used", False))
+    if not dry_run_intake and not intake_is_fallback:
+        scored_data["tweets"] = _filter_recent(
+            scored_data.get("tweets", []), date, days=window_days
+        )
 
-    # Prepare paths — 落点对齐 master plan SC-7: vault-root/Praise Space/AKB2.0/AI TRENDS/Social/
-    # gate CLI 硬要求 input 在 <akb-root>/staging/candidate/,所以 akb2_root 作为 --akb-root 传给 gate,
-    # staging 放在 AKB2.0 内部(staging/candidate/),Social 也在 AKB2.0/AI TRENDS/Social/
+    # Stage 3: Synthesis（产出英文结构化分析，语言交翻译阶段负责）
+    synth_en = run_synthesis(scored_data, date=date)
+
+    # Prepare paths
     akb2_root = vault_root / "Praise Space" / "AKB2.0"
     staging_candidate_dir = akb2_root / "staging" / "candidate"
     staging_candidate_dir.mkdir(parents=True, exist_ok=True)
-
     social_dir = akb2_root / "AI TRENDS" / "Social"
     social_dir.mkdir(parents=True, exist_ok=True)
 
-
-
-    # Physical file location (under staging/candidate/ for gate compliance)
     real_briefing_path = staging_candidate_dir / briefing_filename
-    # Final output location in Social directory (physical file, no symlink)
     final_briefing_path = social_dir / briefing_filename
 
-    # Stage 4: Write temp briefing (with AKB gate-compatible frontmatter, no gate_decision yet)
-    temp_content = build_temp_briefing_markdown(synth, date)
+    # SC-P3b-1: collector_name 从实际模式推导，干 run 标 dry_run
+    collector_mode = os.environ.get("AKB2_INTAKE_COLLECTOR", "account")
+    effective_collector = (
+        "dry_run"
+        if dry_run_intake
+        else ("l0_collector" if collector_mode == "keyword" else "account_collector")
+    )
+
+    # Stage 4a: Write temp briefing → gate（自检①：schema/结构，语言无关）
+    temp_content = build_temp_briefing_markdown(synth_en, date, collector_name=effective_collector)
     real_briefing_path.write_text(temp_content, encoding="utf-8")
 
-    # Stage 4: Run gate on the staging/candidate file — akb-root 必须是 AKB2.0/(不是 vault-root)
-    # 因为 gate 校验 input rel path 必须以 "staging/candidate/" 开头,只有 akb-root=AKB2.0 时才匹配
     gate_decision = run_gate(akb_root=akb2_root, input_file=real_briefing_path, date=date)
 
-    # Stage 5: Write final content with gate_decision in frontmatter
-    final_content = build_briefing_markdown(synth, gate_decision, date)
-    real_briefing_path.write_text(final_content, encoding="utf-8")
-
-    # Reject gate decision: do not write to Social/active path
     if gate_decision == "reject":
-        sys.stderr.write("gate decision: reject — skipping Social/active write\n")
+        sys.stderr.write("gate decision: reject — skipping translate/audit/Social write\n")
+        print(f"proposed_gate_decision: {gate_decision}")
         sys.exit(1)
 
-    # Copy physical file to Social directory (no symlink — ensures Obsidian/iCloud compatibility)
-    # Unlink first in case a symlink from a previous run exists at this path
+    # Stage 4b: 翻译（全中文化）
+    synth_zh = translate_briefing(synth_en)
+
+    # Stage 4c: 译后审计（自检②：代码标准 + LLM 漂移/准确）
+    verdict = audit_briefing(synth_zh, synth_en)
+    audit_verdict = verdict["verdict"]  # pass | warn | fail
+
+    # Stage 5: 写最终内容（含 gate_decision + audit_verdict）
+    final_content = build_briefing_markdown(synth_zh, gate_decision, date,
+                                            collector_name=effective_collector)
+    # 将 audit_verdict 写入 frontmatter（在 proposed_gate_decision 行后追加）
+    final_content = final_content.replace(
+        f"proposed_gate_decision: {gate_decision}",
+        f"proposed_gate_decision: {gate_decision}\naudit_verdict: {audit_verdict}",
+        1,
+    )
+    real_briefing_path.write_text(final_content, encoding="utf-8")
+
+    # Provisional enforcement matrix:
+    #   fail  → 不入库（文件留 staging，不 copy 到 Social）
+    #   warn  → 入库但 frontmatter 已标 audit_verdict: warn
+    #   pass  → 正常入库
+    if audit_verdict == "fail":
+        sys.stderr.write(
+            f"audit verdict: fail — briefing留在 staging/candidate，不写入 Social。\n"
+            f"standard_issues: {verdict.get('standard_issues')}\n"
+        )
+        print(f"proposed_gate_decision: {gate_decision}")
+        print(f"audit_verdict: {audit_verdict}")
+        sys.exit(2)  # 2 = audit fail，不入库；调度器可据此区分成功(0)与审计拒绝(2)
+
+    # Copy to Social
     if final_briefing_path.exists() or final_briefing_path.is_symlink():
         final_briefing_path.unlink()
     shutil.copy2(real_briefing_path, final_briefing_path)
 
-    # Print to stdout (SC-6 greps for this)
     print(f"proposed_gate_decision: {gate_decision}")
     return 0
 

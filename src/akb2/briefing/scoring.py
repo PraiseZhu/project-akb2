@@ -41,8 +41,11 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
 from datetime import datetime, timezone
+
+from akb2.briefing.embeddings import cosine
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +53,7 @@ from datetime import datetime, timezone
 # ---------------------------------------------------------------------------
 
 NOVELTY_BAND = 6  # SHA1 前缀长度（十六进制字符数）
+NOVELTY_COS_THRESHOLD = float(os.environ.get("AKB2_NOVELTY_COS_THRESHOLD", "0.85"))  # P2-2 语义判重阈值
 SAFETY_FLOOR = 0.0  # safety 命中违禁词时的返回值
 
 AUTHORITY_WHITELIST = {
@@ -67,19 +71,37 @@ TOPIC_KEYWORDS = {
 }
 
 BANNED_KEYWORDS = {
-    "violence", "hack", "exploit", "malware", "ransomware",
+    "violence", "malware", "ransomware",
     "scam", "phishing", "spam", "nsfw", "illegal",
 }
+# P1-6 精确化：exploit/hack 移出（AI 安全/红队内容常用，子串匹配误杀率高）；
+# 其余违禁词改词边界精确匹配，避免 "scampi"→"scam" 之类子串误判。
+_BANNED_RE = re.compile(
+    r"\b(" + "|".join(re.escape(w) for w in sorted(BANNED_KEYWORDS)) + r")\b",
+    re.IGNORECASE,
+)
 
 DEFAULT_WEIGHTS = {
     "recency": 0.10,
-    "engagement": 0.15,
-    "author_authority": 0.30,
-    "topic_relevance": 0.30,
+    "engagement": 0.25,        # P1-5 升权：社区反响
+    "author_authority": 0.10,  # P1-5 降权 0.30→0.10：拆「看脸」窄门
+    "topic_relevance": 0.40,   # P1-4/5 升权：语义内核成为主信号
     "signal_density": 0.07,
     "novelty": 0.05,
     "safety": 0.03,
 }
+
+# P1-4 语义 topic_relevance：主题锚点 + 标定归一化区间（P1-2 真实嵌入标定）
+TOPIC_ANCHORS = [
+    "Artificial intelligence, machine learning, large language models and LLM research.",
+    "AI agents, autonomous agents, tool use, multi-agent systems and agent orchestration.",
+    "Model training, fine-tuning, inference, quantization, serving and ML infrastructure.",
+    "AI alignment, safety, reasoning, multimodal models, AGI and frontier model capability.",
+    "人工智能、大模型、机器学习、智能体、推理与对齐研究。",
+]
+# 标定来源：reports/scoring-semantic-offline-compare-2026-05-31.md（离题≤0.113，AI≥0.293）
+_RELEVANCE_COS_LOW = float(os.environ.get("AKB2_RELEVANCE_COS_LOW", "0.1132"))
+_RELEVANCE_COS_HIGH = float(os.environ.get("AKB2_RELEVANCE_COS_HIGH", "0.3444"))
 
 
 # ---------------------------------------------------------------------------
@@ -105,11 +127,32 @@ def recency(tweet: dict) -> float:
         return 0.5
 
 
+def _age_hours(tweet: dict):
+    """推文年龄（小时）；缺失/不可解析返回 None。"""
+    try:
+        created = datetime.fromisoformat(tweet["created_at"].replace("Z", "+00:00"))
+        h = (datetime.now(timezone.utc) - created).total_seconds() / 3600
+        return h if h > 0 else None
+    except Exception:
+        return None
+
+
 def engagement(tweet: dict) -> float:
-    """log(likes+retweets+replies+1)/log(10000) clamp[0,1]。"""
+    """累计量级 + velocity（赞/小时）复合（P2-3）：高速新帖 > 同总量老爆款。
+
+    缺 created_at 时回退纯累计值，不崩。
+    """
     m = tweet.get("metrics", {})
     total = m.get("likes", 0) + m.get("retweets", 0) + m.get("replies", 0)
-    return min(1.0, math.log(total + 1) / math.log(10000))
+    base = math.log(total + 1) / math.log(10000)
+    age_h = _age_hours(tweet)
+    if age_h is not None:
+        velocity = total / age_h
+        vel_score = math.log(velocity + 1) / math.log(10000)
+        eng = 0.6 * base + 0.4 * vel_score
+    else:
+        eng = base
+    return min(1.0, eng)
 
 
 def author_authority(tweet: dict) -> float:
@@ -118,11 +161,26 @@ def author_authority(tweet: dict) -> float:
     return 1.0 if author in AUTHORITY_WHITELIST else 0.3
 
 
-def topic_relevance(tweet: dict) -> float:
-    """AI 关键词命中比例，3 个关键词命中 = 满分。"""
+def _topic_relevance_keywords(tweet: dict) -> float:
+    """AI 关键词命中比例，3 个关键词命中 = 满分（语义不可用时的回退版）。"""
     text = tweet.get("text", "").lower()
     hits = sum(1 for kw in TOPIC_KEYWORDS if kw in text)
     return min(1.0, hits / 3)
+
+
+def topic_relevance(tweet: dict, embedding=None, anchor_vecs=None) -> float:
+    """语义 topic_relevance（P1-4）：有嵌入则用锚点 max cosine 归一化；否则回退关键词版。
+
+    relevance = clamp((max_cos - LOW) / (HIGH - LOW), 0, 1)
+    """
+    if embedding is not None and anchor_vecs:
+        max_cos = max(cosine(embedding, a) for a in anchor_vecs)
+        rng = _RELEVANCE_COS_HIGH - _RELEVANCE_COS_LOW
+        if rng <= 0:
+            return _topic_relevance_keywords(tweet)
+        rel = (max_cos - _RELEVANCE_COS_LOW) / rng
+        return max(0.0, min(1.0, rel))
+    return _topic_relevance_keywords(tweet)
 
 
 def signal_density(tweet: dict) -> float:
@@ -138,8 +196,15 @@ def signal_density(tweet: dict) -> float:
     return min(1.0, length_score * 0.6 + url_penalty * 0.3 + number_bonus * 0.1)
 
 
-def novelty(tweet: dict, seen_hashes: set) -> float:
-    """文本 SHA1 前缀去重：首次出现=1.0，重复=0.0。"""
+def novelty(tweet: dict, seen_hashes: set, embedding=None, seen_embeddings=None) -> float:
+    """新颖度（P2-2）：有嵌入则按 cosine>阈值判语义近似重复（捞改写/转发）；
+    否则回退 SHA1 前缀精确去重。首次=1.0，判重=0.0。"""
+    if embedding is not None and seen_embeddings is not None:
+        for prev in seen_embeddings:
+            if cosine(embedding, prev) > NOVELTY_COS_THRESHOLD:
+                return 0.0
+        seen_embeddings.append(embedding)
+        return 1.0
     text = tweet.get("text", "")
     h = hashlib.sha1(text.encode()).hexdigest()[:NOVELTY_BAND]
     if h in seen_hashes:
@@ -149,11 +214,13 @@ def novelty(tweet: dict, seen_hashes: set) -> float:
 
 
 def safety(tweet: dict) -> float:
-    """命中违禁词返回 SAFETY_FLOOR=0.0，否则 1.0。"""
-    text = tweet.get("text", "").lower()
-    for kw in BANNED_KEYWORDS:
-        if kw in text:
-            return SAFETY_FLOOR
+    """命中违禁词（词边界精确匹配）返回 SAFETY_FLOOR=0.0，否则 1.0。
+
+    P1-6：exploit/hack 不再硬禁（AI 安全/红队内容常用），词边界避免子串误杀。
+    """
+    text = tweet.get("text", "")
+    if _BANNED_RE.search(text):
+        return SAFETY_FLOOR
     return 1.0
 
 
@@ -162,18 +229,20 @@ def safety(tweet: dict) -> float:
 # ---------------------------------------------------------------------------
 
 class ScoreEngine:
-    def __init__(self, weights: dict | None = None) -> None:
+    def __init__(self, weights: dict | None = None, embed_client=None) -> None:
         self.weights = weights or DEFAULT_WEIGHTS.copy()
         self._seen_hashes: set = set()
+        self._seen_embeddings: list = []
+        self._embed_client = embed_client
 
-    def score_tweet(self, tweet: dict) -> dict:
+    def _score_one(self, tweet: dict, *, embedding=None, anchor_vecs=None) -> dict:
         dims = {
             "recency": recency(tweet),
             "engagement": engagement(tweet),
             "author_authority": author_authority(tweet),
-            "topic_relevance": topic_relevance(tweet),
+            "topic_relevance": topic_relevance(tweet, embedding=embedding, anchor_vecs=anchor_vecs),
             "signal_density": signal_density(tweet),
-            "novelty": novelty(tweet, self._seen_hashes),
+            "novelty": novelty(tweet, self._seen_hashes, embedding=embedding, seen_embeddings=self._seen_embeddings),
             "safety": safety(tweet),
         }
         score = sum(self.weights[k] * v for k, v in dims.items())
@@ -182,6 +251,28 @@ class ScoreEngine:
         result["score"] = round(score, 6)
         result["dimensions"] = {k: round(v, 6) for k, v in dims.items()}
         return result
+
+    def score_tweet(self, tweet: dict) -> dict:
+        """单条打分（关键词路径，向后兼容）。"""
+        return self._score_one(tweet)
+
+    def score_batch(self, tweets: list[dict]) -> list[dict]:
+        """批量打分（P1-3）：有 embed_client 则一次性预嵌入锚点 + 全部推文做语义 relevance；
+        嵌入失败自动回退关键词版（P1-4 / SC-6），不让 pipeline 崩。"""
+        anchor_vecs = None
+        embeddings = None
+        if self._embed_client is not None:
+            try:
+                anchor_vecs = self._embed_client.embed(list(TOPIC_ANCHORS))
+                embeddings = self._embed_client.embed([t.get("text", "") for t in tweets])
+            except Exception:
+                anchor_vecs = None
+                embeddings = None  # 降级关键词版
+        results = []
+        for i, t in enumerate(tweets):
+            emb = embeddings[i] if embeddings is not None else None
+            results.append(self._score_one(t, embedding=emb, anchor_vecs=anchor_vecs))
+        return results
 
 
 # ---------------------------------------------------------------------------
@@ -210,8 +301,15 @@ def main() -> None:
     with open(args.input) as f:
         data = json.load(f)
 
-    engine = ScoreEngine(weights=weights)
-    scored_tweets = [engine.score_tweet(t) for t in data.get("tweets", [])]
+    embed_client = None
+    if os.environ.get("AI_GATEWAY_API_KEY"):
+        try:
+            from akb2.briefing.embeddings import EmbeddingClient
+            embed_client = EmbeddingClient()
+        except Exception:
+            embed_client = None
+    engine = ScoreEngine(weights=weights, embed_client=embed_client)
+    scored_tweets = engine.score_batch(data.get("tweets", []))
 
     result = {"tweets": scored_tweets}
     with open(args.output, "w") as f:

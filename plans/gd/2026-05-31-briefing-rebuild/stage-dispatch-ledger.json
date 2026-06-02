@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.0",
+  "stage": "plan",
+  "parent_run_id": "akb2-briefing-rebuild-plan-2026-05-31",
+  "batch_id": "batch-001",
+  "recorded_at": "2026-05-30T17:09:43Z",
+  "child_agent_count": 2,
+  "max_parallel": 2,
+  "child_jobs": [
+    {
+      "job_id": "child-a-t-intake",
+      "result_path": "plans/gd/2026-05-31-briefing-rebuild/child-proposals/child-a-intake.md",
+      "result_hash": "4ec8e1f025a7885ceafb4fc218cb22bb847aa0eb4a77cf72e90a0a499194908e",
+      "status": "completed"
+    },
+    {
+      "job_id": "child-b-t-structure",
+      "result_path": "plans/gd/2026-05-31-briefing-rebuild/child-proposals/child-b-structure.md",
+      "result_hash": "62e0f1b645956d64a8dcdf2d2e7d8c75bafdab642ebc926d69fc938e68796047",
+      "status": "completed"
+    }
+  ],
+  "main_agent_merge": {
+    "merge_report_path": "plans/gd/2026-05-31-briefing-rebuild/master-plan.md",
+    "merge_report_hash": "faf856f91135042c70ddb37c952127b57c946748a095eac464ce4dced8bc9cab",
+    "final_decision": "APPROVED",
+    "blocking_buckets": []
+  }
+}

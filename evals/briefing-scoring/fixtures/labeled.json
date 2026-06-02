@@ -1,0 +1,55 @@
+{
+  "_doc": "P1-7 打分排序 eval 标注集。label=1 高质量 AI 内容（应排前）；label=0 离题/低质（应排后）。刻意混入中文 AI / 无 buzzword AI / 含 exploit-hack 的 AI 安全内容，压测关键词窄门。created_at 统一以隔离 recency，让排序差异主要来自 topic_relevance。",
+  "tweets": [
+    {"text": "GPT-5 reasoning improvements are real — 88% on ARC-AGI with chain-of-thought.", "author": "@sama", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 4000, "retweets": 1000, "replies": 300}, "label": 1},
+    {"text": "Claude 4 Opus hits 72% on SWE-bench verified; autonomous multi-agent loops shipping in prod.", "author": "@AnthropicAI", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 3000, "retweets": 900, "replies": 200}, "label": 1},
+    {"text": "LLMs as operating systems: the model orchestrates agents with memory, planning, tool access.", "author": "@karpathy", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 3900, "retweets": 1400, "replies": 400}, "label": 1},
+    {"text": "o3 scores 96.7 on MMLU-Pro and 84% on ARC-AGI-2. The 2024 to 2026 delta is staggering.", "author": "@ylecun", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 1800, "retweets": 560, "replies": 220}, "label": 1},
+    {"text": "Open-sourced Llama 4 Maverick: 400B MoE, Apache 2.0, runs on 8xH100.", "author": "@AIatMeta", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 5500, "retweets": 2100, "replies": 600}, "label": 1},
+    {"text": "Fine-tuning small models on synthetic self-critique data closes most of the gap to RLHF.", "author": "@research_dev", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 900, "retweets": 300, "replies": 80}, "label": 1},
+    {"text": "Multimodal inference at 2M context over hour-long video is now production-viable.", "author": "@ml_eng", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 700, "retweets": 200, "replies": 60}, "label": 1},
+    {"text": "Transformer attention variants keep getting cheaper; linear-time recall is closing in on quality.", "author": "@ai_phd", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 1100, "retweets": 350, "replies": 90}, "label": 1},
+    {"text": "Alignment update: top RLHF models now outperform base models on reasoning while safer.", "author": "@paulfchristiano", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 1400, "retweets": 480, "replies": 330}, "label": 1},
+    {"text": "DeepSeek V4 Pro: 96.4% HumanEval at $0.14/1M tokens. The price war is brutal for incumbents.", "author": "@deepseek_ai", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 3300, "retweets": 1180, "replies": 420}, "label": 1},
+
+    {"text": "国产大模型今天发布，推理能力大幅提升，中文理解明显超过上一代，价格还降了一半。", "author": "@cn_ai_lab", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 2200, "retweets": 700, "replies": 180}, "label": 1},
+    {"text": "我们团队用智能体重构了整个客服流程，现在自动处理率超过八成，人工只需复核异常。", "author": "@founder_zh", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 800, "retweets": 240, "replies": 70}, "label": 1},
+    {"text": "实测下来，新一代多模态模型在医学影像早筛上已经超过不少放射科住院医。", "author": "@doctor_ml", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 1500, "retweets": 520, "replies": 260}, "label": 1},
+    {"text": "把检索从「先分块再塞向量库」改成让模型自己决定何时取什么，准确率明显上来了。", "author": "@rag_zh", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 600, "retweets": 190, "replies": 50}, "label": 1},
+    {"text": "推理成本又降了一个数量级，端侧跑 70B 量化模型已经不是梦。", "author": "@edge_ai_zh", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 950, "retweets": 310, "replies": 80}, "label": 1},
+    {"text": "对齐研究的中文社区终于热起来了，红队测试和越狱防护的讨论越来越扎实。", "author": "@safety_zh", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 700, "retweets": 220, "replies": 110}, "label": 1},
+    {"text": "智能体编排框架现在能稳定跑多轮工具调用，长任务的成功率比半年前翻倍。", "author": "@agent_zh", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 880, "retweets": 270, "replies": 65}, "label": 1},
+    {"text": "微调一个小模型做垂直领域问答，效果出乎意料，关键是数据清洗而不是参数量。", "author": "@nlp_zh", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 540, "retweets": 160, "replies": 40}, "label": 1},
+
+    {"text": "Spent the weekend getting FP8 quantization working on our serving stack. Throughput up 2.3x, accuracy drop negligible.", "author": "@infra_dev", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 1200, "retweets": 380, "replies": 90}, "label": 1},
+    {"text": "Stop bolting a vector DB onto everything. Retrieval should be a decision the system makes, not a fixed pipeline.", "author": "@builder", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 1600, "retweets": 540, "replies": 210}, "label": 1},
+    {"text": "Speculative decoding plus paged KV cache cut our p50 latency by half. Serving is an engineering game now.", "author": "@perf_eng", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 980, "retweets": 300, "replies": 70}, "label": 1},
+    {"text": "Distillation from a frontier teacher into a 3B student keeps 90% of the eval score at 5% of the cost.", "author": "@distill_dev", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 760, "retweets": 240, "replies": 55}, "label": 1},
+    {"text": "Synthetic data flywheels are the real moat now — generate, filter, retrain, repeat.", "author": "@data_eng", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 1050, "retweets": 360, "replies": 120}, "label": 1},
+    {"text": "Mixture-of-experts routing finally stable at scale; sparse activation is the default going forward.", "author": "@arch_dev", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 870, "retweets": 280, "replies": 60}, "label": 1},
+
+    {"text": "New paper on prompt-injection exploits in tool-using agents, plus a defense that actually holds up.", "author": "@redteam_ai", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 1300, "retweets": 460, "replies": 180}, "label": 1},
+    {"text": "We hacked our own model in a red-team sprint to surface jailbreaks before the release. Findings in thread.", "author": "@sec_ml", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 1100, "retweets": 390, "replies": 150}, "label": 1},
+
+    {"text": "MCP now has 50k+ registered servers; every SaaS exposes context instead of building integrations.", "author": "@mckaywrigley", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 980, "retweets": 320, "replies": 87}, "label": 1},
+    {"text": "Coding agents cross 60% autonomous fix rate on real GitHub issues. Reviewing AI PRs is the new normal.", "author": "@github", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 2700, "retweets": 870, "replies": 210}, "label": 1},
+    {"text": "Vibe coding ships real production software now; retraining matters more than ever.", "author": "@swyx", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 2100, "retweets": 710, "replies": 390}, "label": 1},
+    {"text": "Constitutional AI at scale: steer 405B models toward helpful-harmless without RLHF, reproducible on 8B.", "author": "@AnthropicAI", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 1690, "retweets": 540, "replies": 145}, "label": 1},
+
+    {"text": "Just made the best homemade pizza with fresh basil and mozzarella. Recipe in the comments!", "author": "@foodie", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 500, "retweets": 30, "replies": 40}, "label": 0},
+    {"text": "The Lakers won last night in overtime, what a clutch buzzer-beater by the rookie.", "author": "@hoops", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 800, "retweets": 90, "replies": 120}, "label": 0},
+    {"text": "Stock market hit a new record high today after the central bank signaled rate cuts.", "author": "@markets", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 600, "retweets": 110, "replies": 70}, "label": 0},
+    {"text": "Morning run along the coast, 10k done before sunrise. Feeling great this week.", "author": "@runner", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 300, "retweets": 12, "replies": 25}, "label": 0},
+    {"text": "New season of the cooking show drops Friday, can't wait for the dessert rounds.", "author": "@tvfan", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 220, "retweets": 8, "replies": 18}, "label": 0},
+    {"text": "Traffic on the bridge is insane today, took me two hours to get downtown.", "author": "@commuter", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 90, "retweets": 3, "replies": 14}, "label": 0},
+    {"text": "今天天气真好，下午约了朋友去公园野餐，顺便拍了不少照片。", "author": "@daily_zh", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 150, "retweets": 6, "replies": 20}, "label": 0},
+    {"text": "周末追完了一部老电影，剧情真不错，推荐给喜欢悬疑的朋友。", "author": "@movie_zh", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 240, "retweets": 11, "replies": 33}, "label": 0},
+    {"text": "新买的咖啡机到了，手冲和意式都试了一遍，性价比挺高。", "author": "@coffee_zh", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 180, "retweets": 7, "replies": 22}, "label": 0},
+    {"text": "Big sale this weekend — 40% off all running shoes, link in bio.", "author": "@shopdeals", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 60, "retweets": 5, "replies": 9}, "label": 0},
+    {"text": "Free nsfw content here, click the link to claim your prize now.", "author": "@spambot", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 5, "retweets": 1, "replies": 0}, "label": 0},
+    {"text": "Buy cheap ransomware kits, DM for the phishing toolkit, totally untraceable.", "author": "@badactor", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 3, "retweets": 0, "replies": 1}, "label": 0},
+    {"text": "Best garlic scampi recipe — quick weeknight dinner the whole family loves.", "author": "@chef", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 410, "retweets": 22, "replies": 30}, "label": 0},
+    {"text": "Gardening tip: prune your tomato plants now for a bigger late-summer harvest.", "author": "@garden", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 130, "retweets": 9, "replies": 12}, "label": 0},
+    {"text": "Concert was unreal last night, the encore went on for twenty minutes.", "author": "@musicfan", "created_at": "2026-05-31T08:00:00+00:00", "metrics": {"likes": 270, "retweets": 14, "replies": 28}, "label": 0}
+  ]
+}

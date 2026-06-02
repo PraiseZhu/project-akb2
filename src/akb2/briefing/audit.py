@@ -1,0 +1,328 @@
+"""audit.py — 译后自检阶段：审标准（代码）+ 审漂移/准确（LLM）。
+
+返回结构化 verdict：
+  {
+    "standard": "pass" | "fail",
+    "standard_issues": [...],        # 代码检查发现的具体问题
+    "llm_audit": "pass" | "warn" | "fail" | "skipped",
+    "drift_score": 0.0-1.0,          # 0=无漂移, 1=严重漂移（LLM 不可用时为 null）
+    "accuracy_issues": [...],         # LLM 找出的数字/工具名丢失或译错
+    "verdict": "pass" | "warn" | "fail",
+    "ts": "<ISO8601>",
+  }
+
+verdict 聚合规则（provisional enforcement matrix）：
+  - standard=fail → verdict=fail（不入库）
+  - standard=pass + llm_audit=fail → verdict=warn（入库但标记）
+  - standard=pass + llm_audit=pass/warn/skipped → verdict=pass
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+from datetime import datetime, timezone
+from typing import Any
+
+# 审计专用模型（默认中文母语模型）
+_AUDIT_MODEL = os.environ.get("AKB2_AUDIT_MODEL", "qwen/qwen3.6-plus")
+
+_AUDIT_SYSTEM = (
+    "你是严格的 AI 趋势简报质量审计员。\n"
+    "对比英文原版和中文译版，检查：\n"
+    "1. 数字是否准确（GitHub stars、百分比、版本号等）\n"
+    "2. 工具名/模型名是否保留或正确处理（如 LangGraph → LangGraph，不应被翻译）\n"
+    "3. 主要事实是否漂移（无中生有、意义反转、重要事实删减）\n"
+    "输出 JSON，不添加额外说明。"
+)
+
+
+# ---------------------------------------------------------------------------
+# 代码标准检查（不依赖 LLM）
+# ---------------------------------------------------------------------------
+
+def _has_chinese(text: str) -> bool:
+    return bool(re.search(r"[一-鿿]", text))
+
+
+def _requires_chinese(text: str) -> bool:
+    """分析字段（非空时）必须含中文，否则视为未翻译。"""
+    if not text or len(text.strip()) == 0:
+        return False  # 空字段不判
+    return not _has_chinese(text)
+
+
+_MIN_SUMMARY_SENTENCES = 3
+
+
+_MIN_COMMA_CLAUSE_LEN = 50   # 逗号连缀判达标的最小字数
+_MIN_COMMA_CLAUSES = 3       # 逗号分段数达到此值视为"≥3 句"
+
+
+def _count_sentences(text: str) -> int:
+    """计算句数，兼容两种写法：
+
+    1. 句末标点分句（。？！；…）—— 标准写法
+    2. 逗号连缀长句 —— DeepSeek 实际产出；当标点分句 < _MIN_SUMMARY_SENTENCES 且
+       文本够长（≥_MIN_COMMA_CLAUSE_LEN 字）且逗号分段数 ≥_MIN_COMMA_CLAUSES 时，
+       返回逗号分段数，避免误判"句数不足"
+    """
+    if not text or not text.strip():
+        return 0
+    stripped = text.strip()
+    # 按句末标点切分
+    parts = re.split(r'[。？！；…]+|(?<=[.!?])\s', stripped)
+    punct_count = len([p for p in parts if p.strip()])
+    if punct_count >= _MIN_SUMMARY_SENTENCES:
+        return punct_count
+    # 兜底：逗号连缀长句
+    if len(stripped) >= _MIN_COMMA_CLAUSE_LEN:
+        comma_parts = [c for c in re.split(r'[，,]+', stripped) if c.strip()]
+        if len(comma_parts) >= _MIN_COMMA_CLAUSES:
+            return len(comma_parts)
+    return punct_count
+
+
+def _get_referenced_tweet_ids(synth: dict) -> set[str]:
+    """返回被任何主题 supporting_tweet_ids 引用的推文 id 集合。"""
+    ids: set[str] = set()
+    for fd in synth.get("focus_discussions", []):
+        for tid in fd.get("supporting_tweet_ids", []):
+            ids.add(str(tid))
+    return ids
+
+
+def _check_standard(synth_zh: dict) -> list[str]:
+    """代码规则检查，返回 issues 列表（空 = pass）。"""
+    issues: list[str] = []
+
+    # executive_summary 必须非空且含中文
+    summary = (synth_zh.get("executive_summary") or "").strip()
+    if not summary:
+        issues.append("executive_summary 为空（必填字段）")
+    elif _requires_chinese(summary):
+        issues.append(f"executive_summary 无中文（未翻译）: {summary[:80]!r}")
+
+    # 构建 tweet_id 集合用于支撑推文校验
+    tweet_ids_in_payload = {str(t.get("id", "")) for t in synth_zh.get("tweets", [])}
+
+    for i, fd in enumerate(synth_zh.get("focus_discussions", [])):
+        topic = (fd.get("topic") or "").strip()
+        sm = (fd.get("summary") or "").strip()
+        if topic and not _has_chinese(topic):
+            issues.append(f"focus_discussions[{i}].topic 无中文: {topic!r}")
+
+        # SC-3: summary 必须非空且含中文，且 ≥3 句
+        if not sm:
+            issues.append(f"focus_discussions[{i}].summary 为空（必填字段）")
+        elif _requires_chinese(sm):
+            issues.append(f"focus_discussions[{i}].summary 无中文（未翻译）: {sm[:80]!r}")
+        else:
+            sent_count = _count_sentences(sm)
+            if sent_count < _MIN_SUMMARY_SENTENCES:
+                issues.append(
+                    f"focus_discussions[{i}].summary 句数不足（{sent_count} 句 < {_MIN_SUMMARY_SENTENCES} 句）: {sm[:80]!r}"
+                )
+
+        # SC-1: supporting_tweet_ids 至少 2 个，且引用的推文必须存在于 tweets 列表
+        sup_ids = fd.get("supporting_tweet_ids", [])
+        if len(sup_ids) < 2:
+            issues.append(
+                f"focus_discussions[{i}].supporting_tweet_ids 少于 2 个（当前 {len(sup_ids)} 个）"
+            )
+        for tid in sup_ids:
+            if str(tid) not in tweet_ids_in_payload:
+                issues.append(
+                    f"focus_discussions[{i}].supporting_tweet_ids 引用了不存在的 tweet_id: {tid!r}"
+                )
+
+    # topic 非占位符
+    for i, fd in enumerate(synth_zh.get("focus_discussions", [])):
+        topic = (fd.get("topic") or "").strip()
+        if re.match(r"^AI\s*趋势观察\s*#\d+$", topic):
+            issues.append(f"focus_discussions[{i}].topic 仍是占位符: {topic!r}")
+
+    # tweets text 与 core_excerpt：仅检查展示集合（与 translate 对齐，非展示推文无翻译）
+    from akb2.briefing.translate import _display_tweet_indices, _ORPHAN_TOP_K
+    display_idxs = _display_tweet_indices(synth_zh, _ORPHAN_TOP_K)
+    for i, tw in enumerate(synth_zh.get("tweets", [])):
+        if i not in display_idxs:
+            continue  # 非展示推文不参与中文检查（未被翻译）
+        text = (tw.get("text") or "").strip()
+        if _requires_chinese(text):
+            issues.append(f"tweets[{i}].text 无中文（未翻译）: {text[:60]!r}")
+        core = (tw.get("core_excerpt") or "").strip()
+        if _requires_chinese(core):
+            issues.append(f"tweets[{i}].core_excerpt 无中文（未翻译）: {core[:60]!r}")
+
+    # SC-1: top-3 高分推文至少要出现在某个主题的 supporting_tweet_ids 里
+    # （位置 4-10 的推文可作为孤儿单列于「其他高分推文」）
+    referenced_ids = _get_referenced_tweet_ids(synth_zh)
+    all_tweets_sorted = sorted(
+        synth_zh.get("tweets", []),
+        key=lambda t: t.get("score", 0),
+        reverse=True,
+    )
+    for rank, tw in enumerate(all_tweets_sorted[:3], start=1):
+        tid = str(tw.get("id", ""))
+        if tid and tid not in referenced_ids:
+            issues.append(
+                f"tweets[rank={rank}] id={tid!r} score={tw.get('score',0):.3f}"
+                f" 未出现在任何主题的 supporting_tweet_ids（top-3 必须有主题支撑）"
+            )
+
+    # SC-8: 所有展示推文（被引用 + 孤儿）的 zh_point 必须存在且含中文
+    tweets_list = synth_zh.get("tweets", [])
+    for i in display_idxs:
+        if i >= len(tweets_list):
+            continue
+        tw = tweets_list[i]
+        zh_point = (tw.get("zh_point") or "").strip()
+        if not zh_point:
+            issues.append(f"tweets[{i}].zh_point 缺失（展示推文必须有中文点题）")
+        elif not _has_chinese(zh_point):
+            issues.append(f"tweets[{i}].zh_point 无中文: {zh_point!r}")
+
+    return issues
+
+
+# ---------------------------------------------------------------------------
+# LLM 审计（漂移 + 准确性）
+# ---------------------------------------------------------------------------
+
+def _build_audit_prompt(synth_zh: dict, synth_en: dict) -> str:
+    en_topics = [fd.get("topic", "") for fd in synth_en.get("focus_discussions", [])]
+    zh_topics = [fd.get("topic", "") for fd in synth_zh.get("focus_discussions", [])]
+    en_summary = synth_en.get("executive_summary", "")
+    zh_summary = synth_zh.get("executive_summary", "")
+
+    en_tweets_sample = [
+        {"idx": i, "text": tw.get("text", "")[:300]}
+        for i, tw in enumerate(synth_en.get("tweets", [])[:5])
+    ]
+    zh_tweets_sample = [
+        {"idx": i, "text": tw.get("text", "")[:300]}
+        for i, tw in enumerate(synth_zh.get("tweets", [])[:5])
+    ]
+
+    payload = {
+        "en": {
+            "executive_summary": en_summary,
+            "topics": en_topics,
+            "tweets_sample": en_tweets_sample,
+        },
+        "zh": {
+            "executive_summary": zh_summary,
+            "topics": zh_topics,
+            "tweets_sample": zh_tweets_sample,
+        },
+    }
+
+    return (
+        "对比以下英文原版与中文译版，审查翻译质量。\n\n"
+        f"```json\n{json.dumps(payload, ensure_ascii=False, indent=2)}\n```\n\n"
+        "请输出 JSON：\n"
+        "```json\n"
+        "{\n"
+        '  "drift_score": 0.0~1.0,  // 0=忠实无漂移, 1=严重漂移/意义反转\n'
+        '  "accuracy_issues": [      // 数字/工具名丢失或译错的列表，无则空数组\n'
+        '    "issue description"\n'
+        "  ],\n"
+        '  "llm_verdict": "pass" | "warn" | "fail"  // pass=高质量, warn=轻微问题, fail=严重漂移\n'
+        "}\n"
+        "```"
+    )
+
+
+def _run_llm_audit(synth_zh: dict, synth_en: dict, model: str) -> dict:
+    from akb2.briefing.synthesis import _call_llm
+
+    prompt = _build_audit_prompt(synth_zh, synth_en)
+    messages = [
+        {"role": "system", "content": _AUDIT_SYSTEM},
+        {"role": "user", "content": prompt},
+    ]
+    raw = _call_llm(messages, model=model, json_mode=True, timeout=120)
+    return json.loads(raw)
+
+
+# ---------------------------------------------------------------------------
+# 主入口
+# ---------------------------------------------------------------------------
+
+def audit_briefing(
+    synth_zh: dict,
+    synth_en: dict,
+    *,
+    model: str | None = None,
+) -> dict:
+    """执行译后自检，返回 verdict dict。LLM 不可用时仅运行代码检查。"""
+    ts = datetime.now(timezone.utc).isoformat()
+    used_model = model or _AUDIT_MODEL
+
+    # 1. 代码标准检查
+    standard_issues = _check_standard(synth_zh)
+    standard = "fail" if standard_issues else "pass"
+
+    # 2. LLM 漂移/准确审计
+    llm_audit = "skipped"
+    drift_score: float | None = None
+    accuracy_issues: list[str] = []
+
+    try:
+        llm_result = _run_llm_audit(synth_zh, synth_en, model=used_model)
+        drift_score = float(llm_result.get("drift_score", 0.0))
+        accuracy_issues = llm_result.get("accuracy_issues") or []
+        raw_verdict = llm_result.get("llm_verdict", "warn")
+        # 白名单校验：未知值降级为 warn（fail-closed）
+        _VALID_LLM_VERDICTS = {"pass", "warn", "fail"}
+        if raw_verdict not in _VALID_LLM_VERDICTS:
+            sys.stderr.write(
+                f"WARNING [audit]: unexpected llm_verdict={raw_verdict!r}, "
+                "treating as 'warn' (fail-closed).\n"
+            )
+            llm_audit = "warn"
+        else:
+            llm_audit = raw_verdict
+    except Exception as e:
+        sys.stderr.write(
+            f"WARNING [audit]: LLM audit failed ({e}), skipping LLM checks.\n"
+        )
+        llm_audit = "skipped"
+
+    # 3. 聚合 verdict（provisional enforcement matrix）
+    if standard == "fail":
+        verdict = "fail"
+    elif llm_audit == "fail":
+        verdict = "warn"
+    else:
+        verdict = "pass"
+
+    result = {
+        "standard": standard,
+        "standard_issues": standard_issues,
+        "llm_audit": llm_audit,
+        "drift_score": drift_score,
+        "accuracy_issues": accuracy_issues,
+        "verdict": verdict,
+        "ts": ts,
+    }
+
+    _log_audit(result)
+    return result
+
+
+def _log_audit(verdict: dict) -> None:
+    """追加审计裁决到日志文件。"""
+    import json
+    from pathlib import Path
+
+    log_dir = Path(os.environ.get("AKB2_LOG_DIR", "/tmp/akb2-logs"))
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        with open(log_dir / "audit.jsonl", "a") as f:
+            f.write(json.dumps(verdict, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
