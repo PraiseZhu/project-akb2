@@ -1,0 +1,1 @@
+{"include": {"core": ["AI", "LLM"]}, "exclude": {"non_ai": ["cooking"]}}

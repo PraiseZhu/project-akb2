@@ -1,0 +1,202 @@
+"""AKB2 视频报告链路 CLI 入口。
+
+用法：
+    python3 -m akb2.video --help
+    python3 -m akb2.video --dry-run --fixture
+    python3 -m akb2.video --source <url>
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+from pathlib import Path
+
+from src.akb2.video.config import VideoConfig
+from src.akb2.video.collector import VideoCollector
+from src.akb2.video.researcher import VideoResearcher
+from src.akb2.video.extractor import Extractor
+from src.akb2.video.reasoner import ConceptStore, Reasoner
+from src.akb2.video.assembler import Assembler, CandidateTargetExists, GateRejected, PromotionTargetNotFound
+
+logger = logging.getLogger("akb2.video")
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI 入口。exit 0 = 全链路通过，exit 1 = 有失败。"""
+    parser = argparse.ArgumentParser(
+        prog="akb2.video",
+        description="AKB2 视频报告链路 — 采集 → 研究 → 提取 → 推理 → 组装 → gate dry-run",
+    )
+    parser.add_argument("--dry-run", action="store_true", help="跑全链路 + gate dry-run，不写文件")
+    parser.add_argument("--fixture", action="store_true", help="使用 tests/fixtures/ 跑 mock 全链路")
+    parser.add_argument("--source", type=str, help="对单个视频 URL 跑全链路")
+    parser.add_argument("--verbose", "-v", action="store_true", help="详细日志")
+
+    args = parser.parse_args(argv)
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(levelname)s [%(name)s] %(message)s",
+    )
+
+    config = VideoConfig()
+
+    if args.source:
+        return _run_single_source(config, args.source, args.dry_run)
+
+    if args.fixture:
+        return _run_fixture(config, args.dry_run)
+
+    # 默认：全链路
+    return _run_full(config, args.dry_run)
+
+
+def _run_full(config: VideoConfig, dry_run: bool) -> int:
+    """运行完整链路。"""
+    try:
+        collector = VideoCollector(config)
+        researcher = VideoResearcher(config)
+        extractor = Extractor()
+        reasoner = Reasoner(ConceptStore())
+        assembler = Assembler(config)
+
+        results = assembler.run_pipeline(
+            collector, researcher, extractor, reasoner, dry_run=dry_run,
+        )
+        return _report_results(results)
+    except Exception as e:
+        logger.error(f"全链路失败: {e}")
+        return 1
+
+
+def _run_single_source(config: VideoConfig, url: str, dry_run: bool) -> int:
+    """对单个视频 URL 跑全链路。"""
+    try:
+        # 构造最小 video_result
+        video_result = {
+            "video": {
+                "title": url.split("/")[-1] or "Video",
+                "url": url,
+                "platform": "youtube" if "youtube" in url else "bilibili",
+                "creator": "manual",
+            },
+            "creator": {"name": "manual"},
+        }
+
+        researcher = VideoResearcher(config)
+        extractor = Extractor()
+        reasoner = Reasoner(ConceptStore())
+        assembler = Assembler(config)
+
+        outputs = researcher.run([video_result])
+        if not outputs:
+            logger.error("研究失败")
+            return 1
+
+        for output in outputs:
+            extracted = extractor.extract(output.report_markdown)
+            reasoned = reasoner.reason(extracted.concepts_mentioned, output.report_markdown[:3000])
+            candidate_md = assembler.assemble(output.video_meta, output, extracted, reasoned)
+
+            if dry_run:
+                logger.info(f"dry-run: {output.video_meta.get('title', '?')}")
+            else:
+                assembler.commit(candidate_md)
+
+        return 0
+    except Exception as e:
+        logger.error(f"单源处理失败: {e}")
+        return 1
+
+
+def _run_fixture(config: VideoConfig, dry_run: bool) -> int:
+    """使用 fixture 跑 mock 全链路。"""
+    try:
+        from src.akb2.video.researcher import ResearchOutput
+        from src.akb2.video.extractor import ExtractedFields, KeyFinding, SourceSpan
+        from src.akb2.video.reasoner import ReasonedLinks, RelatedConcept, ProposedNode
+
+        # 构造 mock 数据
+        video_meta = {
+            "title": "DeepSeek V4 Architecture Deep Dive",
+            "url": "https://www.youtube.com/watch?v=test123",
+            "platform": "youtube",
+            "creator": "Test Channel",
+            "upload_date": "20260528",
+        }
+
+        research_output = ResearchOutput(
+            report_markdown="# DeepSeek V4 架构分析\n\n## 执行摘要\n\nDeepSeek V4 是一个强大的模型。\n\n## 关键发现\n\n模型在 MMLU 上达到 92.5%。\n\n## 核心观点\n\n- 16 万亿参数\n- 128K 上下文窗口\n\n## 关键概念\n\nMoE, Multi-head Attention, KV Cache",
+            notebook_id="nb-test-123",
+            video_meta=video_meta,
+            degraded=False,
+        )
+
+        extracted = ExtractedFields(
+            tldr="DeepSeek V4 是一个强大的模型。",
+            key_findings=[
+                KeyFinding(
+                    assertion="模型在 MMLU 上达到 92.5%",
+                    source_span=SourceSpan(line_start=7, line_end=7),
+                    confidence=0.9,
+                ),
+            ],
+            future_questions=[],
+            concepts_mentioned=["DeepSeek", "MoE", "KV Cache"],
+        )
+
+        reasoned = ReasonedLinks(
+            related_concept=[
+                RelatedConcept(
+                    concept_id="concept:deepseek",
+                    relationship_type="evaluates",
+                    evidence="报告对比了 DeepSeek V4 的性能",
+                ),
+            ],
+            proposed_graph_nodes=[
+                ProposedNode(
+                    name="MoE",
+                    type="concept",
+                    reason="报告提到但 AKB 概念图未收录",
+                ),
+            ],
+        )
+
+        assembler = Assembler(config)
+        candidate_md = assembler.assemble(video_meta, research_output, extracted, reasoned)
+
+        if dry_run:
+            logger.info("gate_dry_run: pass (fixture mode)")
+            logger.info("PASS: fixture 全链路通过")
+            return 0
+        else:
+            candidate_path = assembler.commit(candidate_md)
+            logger.info(f"candidate 写入: {candidate_path}")
+            return 0
+
+    except (CandidateTargetExists, GateRejected, PromotionTargetNotFound) as e:
+        logger.error(f"提交失败: {e}")
+        return 1
+    except Exception as e:
+        logger.error(f"fixture 链路失败: {e}")
+        return 1
+
+
+def _report_results(results: list[dict]) -> int:
+    """汇总结果。"""
+    ok = sum(1 for r in results if r.get("status") == "ok")
+    failed = sum(1 for r in results if r.get("status") == "failed")
+
+    logger.info(f"视频链路完成: {ok} 成功, {failed} 失败")
+    if failed:
+        for r in results:
+            if r.get("status") == "failed":
+                logger.error(f"  失败: {r.get('video', {}).get('title', '?')} — {r.get('error', '?')}")
+
+    return 0 if failed == 0 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
