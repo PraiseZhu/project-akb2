@@ -52,6 +52,7 @@ precondition: 首步先真跑复验 fetch_tier.zh 11 账号产量非空（即 SC
 owned_paths:
   - src/akb2/briefing/intake/account_collector.py
   - src/akb2/briefing/pipeline.py
+  - src/akb2/briefing/synthesis.py  # 执行中发现的隐藏硬依赖：synthesis 的 _merge_with_input/_fallback_synthesis 用字段白名单重建 tweet，会丢弃 collector 打的 lang 标 → translate 读不到 → P3a per-tweet 分流失效（静默失败）。lang 透传是 P2-1 端到端目标的必需部分，故正式纳入 owned_paths（2026-06-02 L3 review finding 1 修订）
 forbidden_paths:
   - "/Users/praise/.claude/**"
   - 调度 plist / cron / LaunchAgent

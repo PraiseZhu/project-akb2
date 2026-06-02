@@ -28,7 +28,7 @@ GOAL_SOURCE: Project AKB2 — 社交日报系统
 ## 路径权限合规
 
 - P1-7/P1-8 owned: `evals/`、`tests/`、`reports/` ✓
-- P2-1 owned: `account_collector.py`、`pipeline.py` ✓；**`synthesis.py` 越 owned_paths**（[NOTICE]：lang 透传硬依赖，否则 collector 打标被 synthesis 白名单悄丢，属静默失败；synthesis.py 不属任何其他 step 的 owned_paths）
+- P2-1 owned: `account_collector.py`、`pipeline.py`、`synthesis.py` ✓（`synthesis.py` 经 2026-06-02 L3 review finding 1 已正式纳入 P2-1 task packet owned_paths：执行中发现 synthesis 白名单丢弃 collector 打的 lang 标 → translate 读不到 → P3a 分流静默失效，故 lang 透传是 P2-1 端到端目标的必需部分，非越界）
 - P0-2 owned: `pipeline.py`、`reports/` ✓；未碰 gate 算法本体（NON_GOAL 遵守）
 
 ---
