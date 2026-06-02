@@ -41,8 +41,11 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
 from datetime import datetime, timezone
+
+from akb2.briefing.embeddings import cosine
 
 
 # ---------------------------------------------------------------------------
@@ -73,13 +76,25 @@ BANNED_KEYWORDS = {
 
 DEFAULT_WEIGHTS = {
     "recency": 0.10,
-    "engagement": 0.15,
-    "author_authority": 0.30,
-    "topic_relevance": 0.30,
+    "engagement": 0.25,        # P1-5 升权：社区反响
+    "author_authority": 0.10,  # P1-5 降权 0.30→0.10：拆「看脸」窄门
+    "topic_relevance": 0.40,   # P1-4/5 升权：语义内核成为主信号
     "signal_density": 0.07,
     "novelty": 0.05,
     "safety": 0.03,
 }
+
+# P1-4 语义 topic_relevance：主题锚点 + 标定归一化区间（P1-2 真实嵌入标定）
+TOPIC_ANCHORS = [
+    "Artificial intelligence, machine learning, large language models and LLM research.",
+    "AI agents, autonomous agents, tool use, multi-agent systems and agent orchestration.",
+    "Model training, fine-tuning, inference, quantization, serving and ML infrastructure.",
+    "AI alignment, safety, reasoning, multimodal models, AGI and frontier model capability.",
+    "人工智能、大模型、机器学习、智能体、推理与对齐研究。",
+]
+# 标定来源：reports/scoring-semantic-offline-compare-2026-05-31.md（离题≤0.113，AI≥0.293）
+_RELEVANCE_COS_LOW = float(os.environ.get("AKB2_RELEVANCE_COS_LOW", "0.1132"))
+_RELEVANCE_COS_HIGH = float(os.environ.get("AKB2_RELEVANCE_COS_HIGH", "0.3444"))
 
 
 # ---------------------------------------------------------------------------
@@ -118,11 +133,26 @@ def author_authority(tweet: dict) -> float:
     return 1.0 if author in AUTHORITY_WHITELIST else 0.3
 
 
-def topic_relevance(tweet: dict) -> float:
-    """AI 关键词命中比例，3 个关键词命中 = 满分。"""
+def _topic_relevance_keywords(tweet: dict) -> float:
+    """AI 关键词命中比例，3 个关键词命中 = 满分（语义不可用时的回退版）。"""
     text = tweet.get("text", "").lower()
     hits = sum(1 for kw in TOPIC_KEYWORDS if kw in text)
     return min(1.0, hits / 3)
+
+
+def topic_relevance(tweet: dict, embedding=None, anchor_vecs=None) -> float:
+    """语义 topic_relevance（P1-4）：有嵌入则用锚点 max cosine 归一化；否则回退关键词版。
+
+    relevance = clamp((max_cos - LOW) / (HIGH - LOW), 0, 1)
+    """
+    if embedding is not None and anchor_vecs:
+        max_cos = max(cosine(embedding, a) for a in anchor_vecs)
+        rng = _RELEVANCE_COS_HIGH - _RELEVANCE_COS_LOW
+        if rng <= 0:
+            return _topic_relevance_keywords(tweet)
+        rel = (max_cos - _RELEVANCE_COS_LOW) / rng
+        return max(0.0, min(1.0, rel))
+    return _topic_relevance_keywords(tweet)
 
 
 def signal_density(tweet: dict) -> float:
@@ -162,16 +192,17 @@ def safety(tweet: dict) -> float:
 # ---------------------------------------------------------------------------
 
 class ScoreEngine:
-    def __init__(self, weights: dict | None = None) -> None:
+    def __init__(self, weights: dict | None = None, embed_client=None) -> None:
         self.weights = weights or DEFAULT_WEIGHTS.copy()
         self._seen_hashes: set = set()
+        self._embed_client = embed_client
 
-    def score_tweet(self, tweet: dict) -> dict:
+    def _score_one(self, tweet: dict, *, embedding=None, anchor_vecs=None) -> dict:
         dims = {
             "recency": recency(tweet),
             "engagement": engagement(tweet),
             "author_authority": author_authority(tweet),
-            "topic_relevance": topic_relevance(tweet),
+            "topic_relevance": topic_relevance(tweet, embedding=embedding, anchor_vecs=anchor_vecs),
             "signal_density": signal_density(tweet),
             "novelty": novelty(tweet, self._seen_hashes),
             "safety": safety(tweet),
@@ -182,6 +213,28 @@ class ScoreEngine:
         result["score"] = round(score, 6)
         result["dimensions"] = {k: round(v, 6) for k, v in dims.items()}
         return result
+
+    def score_tweet(self, tweet: dict) -> dict:
+        """单条打分（关键词路径，向后兼容）。"""
+        return self._score_one(tweet)
+
+    def score_batch(self, tweets: list[dict]) -> list[dict]:
+        """批量打分（P1-3）：有 embed_client 则一次性预嵌入锚点 + 全部推文做语义 relevance；
+        嵌入失败自动回退关键词版（P1-4 / SC-6），不让 pipeline 崩。"""
+        anchor_vecs = None
+        embeddings = None
+        if self._embed_client is not None:
+            try:
+                anchor_vecs = self._embed_client.embed(list(TOPIC_ANCHORS))
+                embeddings = self._embed_client.embed([t.get("text", "") for t in tweets])
+            except Exception:
+                anchor_vecs = None
+                embeddings = None  # 降级关键词版
+        results = []
+        for i, t in enumerate(tweets):
+            emb = embeddings[i] if embeddings is not None else None
+            results.append(self._score_one(t, embedding=emb, anchor_vecs=anchor_vecs))
+        return results
 
 
 # ---------------------------------------------------------------------------
@@ -210,8 +263,15 @@ def main() -> None:
     with open(args.input) as f:
         data = json.load(f)
 
-    engine = ScoreEngine(weights=weights)
-    scored_tweets = [engine.score_tweet(t) for t in data.get("tweets", [])]
+    embed_client = None
+    if os.environ.get("AI_GATEWAY_API_KEY"):
+        try:
+            from akb2.briefing.embeddings import EmbeddingClient
+            embed_client = EmbeddingClient()
+        except Exception:
+            embed_client = None
+    engine = ScoreEngine(weights=weights, embed_client=embed_client)
+    scored_tweets = engine.score_batch(data.get("tweets", []))
 
     result = {"tweets": scored_tweets}
     with open(args.output, "w") as f:
