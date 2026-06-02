@@ -183,6 +183,40 @@ def test_tweet_body_strips_inline_links():
     assert "pic.twitter.com" not in body_before_link, "pic.twitter 应被剥离"
 
 
+def test_strip_links_removes_orphan_link_emoji():
+    """P0-2 SC-2：剥内联链接后，正文不残留孤立的 🔗 链接标记。"""
+    from akb2.briefing.pipeline import _strip_inline_links
+
+    # 🔗 + 空格 + URL → 链接和 🔗 都清，不留孤立 🔗
+    assert _strip_inline_links("看这个 🔗 https://x.com/a/status/1") == "看这个"
+    # 🔗 紧贴 URL
+    assert _strip_inline_links("正文 🔗https://t.co/abc 结束") == "正文 结束"
+    # 🔗 + pic.twitter
+    assert _strip_inline_links("GPT-5 发布 🔗 pic.twitter.com/xy") == "GPT-5 发布"
+    # 无链接的纯文字不受影响
+    assert _strip_inline_links("纯文字无链接") == "纯文字无链接"
+    # 任何情况下结果都不含 🔗
+    for s in ["a 🔗 https://t.co/x", "🔗https://x.com/1", "b 🔗 pic.twitter.com/z"]:
+        assert "🔗" not in _strip_inline_links(s)
+
+
+def test_rendered_tweet_body_has_no_orphan_link_emoji():
+    """渲染整条推文后正文区不含孤立 🔗（SC-2 端到端）。"""
+    from akb2.briefing.pipeline import _render_tweet
+
+    t = {
+        "author": "@z",
+        "text": "新模型发布 🔗 https://t.co/abc 细节见 🔗 pic.twitter.com/xy",
+        "zh_point": "新模型发布。",
+        "score": 0.8,
+        "url": "https://x.com/555",
+    }
+    body = "\n".join(_render_tweet(t))
+    body_before_link = body.split("[原文]")[0]
+    assert "🔗" not in body_before_link, "正文不应残留孤立 🔗"
+    assert "新模型发布" in body_before_link, "正文文字应保留"
+
+
 def test_tweet_has_single_original_link():
     """渲染后整条推文只有 1 个 markdown 链接（底部 [原文]）；正文裸链接清零。"""
     import re

@@ -289,6 +289,9 @@ def _strip_inline_links(text: str) -> str:
         return text
     cleaned = _INLINE_LINK_RE.sub("", text)
     cleaned = _PIC_TWITTER_RE.sub("", cleaned)
+    # P0-2 SC-2：剥链接后清除孤立的 🔗 链接标记（推文里 🔗 只是"链接在此"标记，
+    # 链接已剥 + 底部已有唯一 [原文]，正文残留 🔗 是无意义噪音）
+    cleaned = cleaned.replace("🔗", "")
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
     cleaned = re.sub(r" +\n", "\n", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
