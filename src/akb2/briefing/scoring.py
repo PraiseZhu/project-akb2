@@ -53,6 +53,7 @@ from akb2.briefing.embeddings import cosine
 # ---------------------------------------------------------------------------
 
 NOVELTY_BAND = 6  # SHA1 前缀长度（十六进制字符数）
+NOVELTY_COS_THRESHOLD = float(os.environ.get("AKB2_NOVELTY_COS_THRESHOLD", "0.85"))  # P2-2 语义判重阈值
 SAFETY_FLOOR = 0.0  # safety 命中违禁词时的返回值
 
 AUTHORITY_WHITELIST = {
@@ -126,11 +127,32 @@ def recency(tweet: dict) -> float:
         return 0.5
 
 
+def _age_hours(tweet: dict):
+    """推文年龄（小时）；缺失/不可解析返回 None。"""
+    try:
+        created = datetime.fromisoformat(tweet["created_at"].replace("Z", "+00:00"))
+        h = (datetime.now(timezone.utc) - created).total_seconds() / 3600
+        return h if h > 0 else None
+    except Exception:
+        return None
+
+
 def engagement(tweet: dict) -> float:
-    """log(likes+retweets+replies+1)/log(10000) clamp[0,1]。"""
+    """累计量级 + velocity（赞/小时）复合（P2-3）：高速新帖 > 同总量老爆款。
+
+    缺 created_at 时回退纯累计值，不崩。
+    """
     m = tweet.get("metrics", {})
     total = m.get("likes", 0) + m.get("retweets", 0) + m.get("replies", 0)
-    return min(1.0, math.log(total + 1) / math.log(10000))
+    base = math.log(total + 1) / math.log(10000)
+    age_h = _age_hours(tweet)
+    if age_h is not None:
+        velocity = total / age_h
+        vel_score = math.log(velocity + 1) / math.log(10000)
+        eng = 0.6 * base + 0.4 * vel_score
+    else:
+        eng = base
+    return min(1.0, eng)
 
 
 def author_authority(tweet: dict) -> float:
@@ -174,8 +196,15 @@ def signal_density(tweet: dict) -> float:
     return min(1.0, length_score * 0.6 + url_penalty * 0.3 + number_bonus * 0.1)
 
 
-def novelty(tweet: dict, seen_hashes: set) -> float:
-    """文本 SHA1 前缀去重：首次出现=1.0，重复=0.0。"""
+def novelty(tweet: dict, seen_hashes: set, embedding=None, seen_embeddings=None) -> float:
+    """新颖度（P2-2）：有嵌入则按 cosine>阈值判语义近似重复（捞改写/转发）；
+    否则回退 SHA1 前缀精确去重。首次=1.0，判重=0.0。"""
+    if embedding is not None and seen_embeddings is not None:
+        for prev in seen_embeddings:
+            if cosine(embedding, prev) > NOVELTY_COS_THRESHOLD:
+                return 0.0
+        seen_embeddings.append(embedding)
+        return 1.0
     text = tweet.get("text", "")
     h = hashlib.sha1(text.encode()).hexdigest()[:NOVELTY_BAND]
     if h in seen_hashes:
@@ -203,6 +232,7 @@ class ScoreEngine:
     def __init__(self, weights: dict | None = None, embed_client=None) -> None:
         self.weights = weights or DEFAULT_WEIGHTS.copy()
         self._seen_hashes: set = set()
+        self._seen_embeddings: list = []
         self._embed_client = embed_client
 
     def _score_one(self, tweet: dict, *, embedding=None, anchor_vecs=None) -> dict:
@@ -212,7 +242,7 @@ class ScoreEngine:
             "author_authority": author_authority(tweet),
             "topic_relevance": topic_relevance(tweet, embedding=embedding, anchor_vecs=anchor_vecs),
             "signal_density": signal_density(tweet),
-            "novelty": novelty(tweet, self._seen_hashes),
+            "novelty": novelty(tweet, self._seen_hashes, embedding=embedding, seen_embeddings=self._seen_embeddings),
             "safety": safety(tweet),
         }
         score = sum(self.weights[k] * v for k, v in dims.items())
