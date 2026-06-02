@@ -45,6 +45,71 @@ def test_fetch_tier_zh_count():
     assert len(ac._load_fetch_tier("zh")) == 11
 
 
+# ---------------------------------------------------------------------------
+# P2-1：en+zh 双 tier 合并 + lang 打标（-k zh）
+# ---------------------------------------------------------------------------
+
+def test_zh_collect_merged_tags_lang_and_dedups():
+    """SC-1/SC-2: collect_merged 抓 en+zh 两 tier，按 tier 打 lang，跨 tier 按 id 去重。"""
+    col = ac.AccountCollector(pacing_sec=0, supplement_threshold=0)  # 关 reserve 补抓
+    tier_map = {"en": ["en_a"], "zh": ["zh_a"]}
+
+    def fake_run(cmd, **kw):
+        h = cmd[cmd.index("--from") + 1]
+        if h == "en_a":
+            return _fake_proc(payload={"ok": True, "data": [_tw("1", "en_a", "English AI tweet")]})
+        return _fake_proc(payload={"ok": True, "data": [_tw("2", "zh_a", "国产大模型推理提升")]})
+
+    with patch.object(ac, "_load_fetch_tier", side_effect=lambda tier: tier_map.get(tier, [])), \
+         patch.object(ac.subprocess, "run", side_effect=fake_run), \
+         patch.object(ac.time, "sleep"), \
+         patch("pathlib.Path.exists", return_value=True):
+        tweets = col.collect_merged()
+
+    by_id = {t["id"]: t for t in tweets}
+    assert by_id["1"]["lang"] == "en"
+    assert by_id["2"]["lang"] == "zh"            # SC-2 grep '"lang": "zh"' 命中点
+    assert col.used_fallback is False
+    assert sum(1 for t in tweets if t.get("lang") == "zh") == 1
+
+
+def test_zh_empty_does_not_inject_fixture():
+    """precondition：zh 产量为 0 时不注入 fixture，仅 en 上线（不污染、不阻塞）。"""
+    col = ac.AccountCollector(pacing_sec=0, supplement_threshold=0)
+    tier_map = {"en": ["en_a"], "zh": ["zh_dead"]}
+
+    def fake_run(cmd, **kw):
+        h = cmd[cmd.index("--from") + 1]
+        if h == "en_a":
+            return _fake_proc(payload={"ok": True, "data": [_tw("1", "en_a")]})
+        return _fake_proc(payload={"ok": True, "data": []})  # zh 账号 0 产量
+
+    with patch.object(ac, "_load_fetch_tier", side_effect=lambda tier: tier_map.get(tier, [])), \
+         patch.object(ac.subprocess, "run", side_effect=fake_run), \
+         patch.object(ac.time, "sleep"), \
+         patch("pathlib.Path.exists", return_value=True):
+        tweets = col.collect_merged()
+
+    assert [t["id"] for t in tweets] == ["1"]      # 仅 en，无 fixture 注入
+    assert all(t.get("lang") == "en" for t in tweets)
+    assert col.used_fallback is False
+
+
+def test_both_tiers_empty_falls_back_to_fixture():
+    """en+zh 双 tier 均空 → 降级 fixture（保 pipeline 不崩）。"""
+    col = ac.AccountCollector(pacing_sec=0, supplement_threshold=0)
+
+    with patch.object(ac, "_load_fetch_tier", side_effect=lambda tier: ["dead"]), \
+         patch.object(ac.subprocess, "run",
+                      return_value=_fake_proc(payload={"ok": True, "data": []})), \
+         patch.object(ac.time, "sleep"), \
+         patch("pathlib.Path.exists", return_value=True):
+        tweets = col.collect_merged()
+
+    assert col.used_fallback is True
+    assert isinstance(tweets, list)
+
+
 def test_fetch_tier_reserve_loads_from_top_level():
     """P3c 集成回归：reserve_tier 是顶层 key（非 fetch_tier.reserve）。
 

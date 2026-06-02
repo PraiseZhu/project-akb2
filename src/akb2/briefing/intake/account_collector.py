@@ -13,8 +13,9 @@ CLI: python -m akb2.briefing.intake.account_collector [--output <path>]
   - 全部账号 0 条 → 降级 fixture，标 _fallback_used
   - 账号间 pacing（默认 3s）规避限流（实测 ~34 账号触 429，en 层 19 个安全）
 
-v1 默认 tier=en（19 账号）。pipeline 是「英文合成→翻译中文」链路，仅干净支持英文输入；
-zh 层需 per-tweet lang 处理（en 翻译/zh 跳翻），属后续工作。
+默认单 tier=en（19 账号，向后兼容）。P2-1：`--merge`（或 env AKB2_FETCH_MERGE=1）
+抓 en+zh 双 tier 合并，并按 tier 给每条打 `lang` 标（en/zh），跨 tier 按 id 去重；
+配合 translate 的 per-tweet 分流（P3a：lang=zh 跳过 en→zh 翻译，保留中文原文）。
 """
 import argparse
 import json
@@ -62,6 +63,16 @@ def _load_fetch_tier(tier: str = _DEFAULT_TIER) -> list[str]:
     raw = raw or []
     # yaml 已剥注释；再防御性 strip + 去空
     return [str(h).strip() for h in raw if str(h).strip()]
+
+
+def _tag_lang(tweets: list[dict], lang: str) -> list[dict]:
+    """给每条 tweet 打 lang 标（en tier→en, zh tier→zh）。
+
+    供 translate 阶段 per-tweet 分流（P3a：lang=zh 跳过 en→zh 翻译，保留中文原文）。
+    """
+    for t in tweets:
+        t["lang"] = lang
+    return tweets
 
 
 class AccountCollector:
@@ -141,25 +152,27 @@ class AccountCollector:
             return []
         return _twitter_cli_to_akb2(payload.get("data") or [])
 
-    def _fetch_real(
+    def _fetch_tier_raw(
         self,
+        tier: str,
         since_date: str | None = None,
         until_date: str | None = None,
+        *,
+        allow_reserve: bool = False,
     ) -> list[dict]:
-        if not Path(TWITTER_BIN).exists():
-            sys.stderr.write(
-                f"WARNING: twitter-cli not found at {TWITTER_BIN} — fallback to fixture\n"
-            )
-            self.used_fallback = True
-            return self._read_fixture()
+        """抓单 tier 真实推文；twitter-cli 缺失 / 无账号 / 全空 → 返回 []（不降级 fixture）。
 
-        handles = _load_fetch_tier(self.tier)
+        降级 fixture 的决策交给调用方：单 tier 的 _fetch_real 仍兜底 fixture；
+        collect_merged 不让单个空 tier 注入 fixture（precondition：zh 为 0 应修配置）。
+        """
+        if not Path(TWITTER_BIN).exists():
+            sys.stderr.write(f"WARNING: twitter-cli not found at {TWITTER_BIN}\n")
+            return []
+
+        handles = _load_fetch_tier(tier)
         if not handles:
-            sys.stderr.write(
-                f"WARNING: fetch_tier.{self.tier} empty in curator config — fallback to fixture\n"
-            )
-            self.used_fallback = True
-            return self._read_fixture()
+            sys.stderr.write(f"WARNING: fetch_tier.{tier} empty in curator config\n")
+            return []
 
         seen: set[str] = set()
         aggregated: list[dict] = []
@@ -176,21 +189,14 @@ class AccountCollector:
                     seen.add(tid)
                     aggregated.append(t)
 
-        if not aggregated:
+        if aggregated:
             sys.stderr.write(
-                f"WARNING: curator fetch_tier.{self.tier} returned 0 tweets across "
-                f"{len(handles)} accounts — fallback to fixture\n"
+                f"INFO [account_collector]: tier={tier} {ok_accounts}/{len(handles)} accounts "
+                f"yielded {len(aggregated)} unique tweets\n"
             )
-            self.used_fallback = True
-            return self._read_fixture()
 
-        sys.stderr.write(
-            f"INFO [account_collector]: tier={self.tier} {ok_accounts}/{len(handles)} accounts "
-            f"yielded {len(aggregated)} unique tweets\n"
-        )
-
-        # SC-P3c-1: reserve 补抓 — en 层不足时从 reserve_tier 顺序补
-        if len(aggregated) < self.supplement_threshold:
+        # SC-P3c-1: reserve 补抓 — 主 tier 不足时从 reserve_tier 顺序补（zh 不补，避免英文 reserve 污染中文）
+        if allow_reserve and len(aggregated) < self.supplement_threshold:
             reserve_handles = _load_fetch_tier("reserve")
             if reserve_handles:
                 sys.stderr.write(
@@ -219,6 +225,71 @@ class AccountCollector:
 
         return aggregated
 
+    def _fetch_real(
+        self,
+        since_date: str | None = None,
+        until_date: str | None = None,
+    ) -> list[dict]:
+        """单 tier 抓取（向后兼容）；全空降级 fixture。"""
+        aggregated = self._fetch_tier_raw(
+            self.tier, since_date, until_date, allow_reserve=True
+        )
+        if not aggregated:
+            sys.stderr.write(
+                f"WARNING: curator fetch_tier.{self.tier} returned 0 tweets — fallback to fixture\n"
+            )
+            self.used_fallback = True
+            return self._read_fixture()
+        return aggregated
+
+    def collect_merged(
+        self,
+        dry_run: bool = False,
+        since_date: str | None = None,
+        until_date: str | None = None,
+    ) -> list[dict]:
+        """P2-1: 抓 en+zh 双 tier，按 tier 打 lang 标，跨 tier 按 id 去重。
+
+        - zh 产量为 0 时**不**注入 fixture（precondition：为 0 应先修 curator-accounts.yaml），
+          仅 warn，本次仅 en 上线，不阻塞 pipeline。
+        - en+zh 双 tier 均空才降级 fixture（保 pipeline 不崩）。
+        """
+        if dry_run:
+            self.used_fallback = True
+            return self._read_fixture()
+
+        en = _tag_lang(
+            self._fetch_tier_raw("en", since_date, until_date, allow_reserve=True), "en"
+        )
+        zh = _tag_lang(
+            self._fetch_tier_raw("zh", since_date, until_date, allow_reserve=False), "zh"
+        )
+        if not zh:
+            sys.stderr.write(
+                "WARNING: fetch_tier.zh 产量为 0 —— 本次仅 en 上线；"
+                "precondition 提示先复核 config/curator-accounts.yaml 的 zh 账号\n"
+            )
+
+        seen: set[str] = set()
+        merged: list[dict] = []
+        for t in en + zh:  # en 优先（同 id 跨 tier 取先到）
+            tid = str(t.get("id", ""))
+            if tid and tid not in seen:
+                seen.add(tid)
+                merged.append(t)
+
+        if not merged:
+            sys.stderr.write(
+                "WARNING: en+zh 双 tier 均 0 tweets — fallback to fixture\n"
+            )
+            self.used_fallback = True
+            return self._read_fixture()
+
+        sys.stderr.write(
+            f"INFO [account_collector]: merged en={len(en)} + zh={len(zh)} → {len(merged)} unique\n"
+        )
+        return merged
+
 
 def main():
     parser = argparse.ArgumentParser(description="Curator account collector (per-account twitter fetch)")
@@ -227,17 +298,30 @@ def main():
     parser.add_argument("--since", default=None, help="Collect tweets since YYYY-MM-DD")
     parser.add_argument("--until", default=None, help="Collect tweets until YYYY-MM-DD")
     parser.add_argument("--tier", default=os.environ.get("AKB2_FETCH_TIER", _DEFAULT_TIER), help="curator fetch_tier (en|zh)")
+    parser.add_argument(
+        "--merge",
+        action="store_true",
+        default=os.environ.get("AKB2_FETCH_MERGE") == "1",
+        help="P2-1: 抓 en+zh 双 tier 合并并按 tier 打 lang 标（覆盖 --tier）",
+    )
     args = parser.parse_args()
 
     cap = int(os.environ.get("AKB2_ACCOUNT_CAP", _DEFAULT_CAP))
     pacing = float(os.environ.get("AKB2_ACCOUNT_PACING_SEC", _DEFAULT_PACING_SEC))
 
     collector = AccountCollector(tier=args.tier, per_account_cap=cap, pacing_sec=pacing)
-    tweets = collector.collect(
-        dry_run=args.dry_run,
-        since_date=args.since,
-        until_date=args.until,
-    )
+    if args.merge:
+        tweets = collector.collect_merged(
+            dry_run=args.dry_run,
+            since_date=args.since,
+            until_date=args.until,
+        )
+    else:
+        tweets = collector.collect(
+            dry_run=args.dry_run,
+            since_date=args.since,
+            until_date=args.until,
+        )
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)

@@ -168,6 +168,7 @@ def _fallback_synthesis(scored_input: dict, date: str | None = None) -> dict:
                 "score": t.get("score"),
                 "dimensions": t.get("dimensions", {}),
                 "url": t.get("url", ""),
+                "lang": t.get("lang", ""),  # P2-1: 透传 lang，供 translate per-tweet 分流
             }
             for t in top
         ],
@@ -357,6 +358,7 @@ def _merge_with_input(
                 "score": t.get("score"),
                 "dimensions": t.get("dimensions", {}),
                 "url": t.get("url", ""),
+                "lang": t.get("lang", ""),  # P2-1: 透传 lang，供 translate per-tweet 分流
             }
             for t in top_for_display
         ],

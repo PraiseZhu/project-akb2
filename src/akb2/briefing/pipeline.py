@@ -138,6 +138,9 @@ def run_intake(
         sys.executable, "-m", collector_module,
         "--output", str(output_path),
     ]
+    # P2-1: account collector 默认抓 en+zh 双 tier 合并（打 lang 标）；keyword 模式不支持 --merge
+    if collector_mode != "keyword" and os.environ.get("AKB2_FETCH_MERGE", "1") == "1":
+        cmd.append("--merge")
     if dry_run:
         cmd.append("--dry-run")
     if since_date:
