@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  feishu-briefing-sync 每日 9:30 调度（prod：发 XD WEB 群）。
+  占位符 __AKB2_REPO_ROOT__ / __AKB2_VAULT_ROOT__ 在安装时替换为绝对路径。
+  注意：本 plist 仅在 merge 部署后才 launchctl load；dev 期手动跑 wrapper（默认 --target dm）。
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.akb2.feishu-sync</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__AKB2_REPO_ROOT__/scripts/feishu_sync.sh</string>
+        <string>--vault-root</string>
+        <string>__AKB2_VAULT_ROOT__</string>
+        <string>--target</string>
+        <string>group</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>__AKB2_REPO_ROOT__/</string>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>9</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>__AKB2_REPO_ROOT__/logs/feishu-sync-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>__AKB2_REPO_ROOT__/logs/feishu-sync-stderr.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONPATH</key>
+        <string>__AKB2_REPO_ROOT__/src</string>
+        <key>PATH</key>
+        <string>/Users/praise/.pyenv/shims:/Users/praise/.pyenv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>
