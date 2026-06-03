@@ -23,6 +23,7 @@ from .scoring import score_batch, mention_threshold
 from .star_history import StarHistory
 from .synthesis import synthesize
 from .validator import validate
+from .dedup_sqlite import DedupStore
 
 _PROJECT_ROOT = Path(os.environ.get("PROJECT_ROOT", "")) if os.environ.get("PROJECT_ROOT") else Path(__file__).resolve().parents[4]  # src/akb2/briefing/github/pipeline.py → project root (parents[4]=<root>; 旧值 [5] 越到 <root> 上一级，导致 POOL_CONFIG/skip 文件落错目录)
 POOL_CONFIG = _PROJECT_ROOT / "config" / "github_curator_pool.yaml"
@@ -58,8 +59,30 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
         _write_skipped("no_candidates_after_intake", len(candidates), fallback_layer)
         return 0
 
-    # Step 2-3: Aggregate (dedup by repo_url)
+    # Step 2-3: Aggregate by repo_url（mention_count 在此正确累加：collector 现按
+    # per-handle 去重，跨博主同 repo 会保留多条 candidate）。
     aggregated = _aggregate(candidates)
+
+    # 跨天 novelty 去重：过滤最近 3 天已推过的 repo（避免重复推荐）。这是真正该做
+    # 去重的地方——在聚合算完热度之后，而非抓取时（抓取去重会抹掉 mention 信号）。
+    # novelty db 路径：AKB2_NOVELTY_DB 显式覆盖（测试/特殊部署用）> mock 一次性临时 db
+    # （hermetic/可重复）> 真实模式持久 db。
+    _novelty_override = os.environ.get("AKB2_NOVELTY_DB")
+    if _novelty_override:
+        _novelty_db = Path(_novelty_override)
+        _novelty_db.parent.mkdir(parents=True, exist_ok=True)
+    elif mock:
+        import tempfile
+        _novelty_db = Path(tempfile.mkdtemp(prefix="akb2-novelty-")) / "novelty.sqlite"
+    else:
+        _novelty_db = _PROJECT_ROOT / "data" / "github_recommended.sqlite"
+        _novelty_db.parent.mkdir(parents=True, exist_ok=True)
+    _novelty = DedupStore(_novelty_db)
+    try:
+        aggregated = {u: d for u, d in aggregated.items() if not _novelty.is_duplicate(u)}
+    finally:
+        _novelty.close()
+
     if len(aggregated) < 10:
         _write_skipped("too_few_aggregated_repos", len(aggregated), fallback_layer)
         return 0
@@ -184,6 +207,16 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
 
     md_path.write_text(_render_markdown(briefing))
     json_path.write_text(json.dumps(briefing, ensure_ascii=False, indent=2))
+
+    # 仅在简报真正写盘后，把这 10 个 repo 标记为"已推荐"（3 天内不再重复推）。
+    # 标记发生在写成功之后，避免被 skip 的候选误占用 novelty 名额。
+    _novelty = DedupStore(_novelty_db)
+    try:
+        for r in briefing["top_repos"]:
+            _novelty.mark_seen(r["repo_url"])
+        _novelty.prune()
+    finally:
+        _novelty.close()
 
     print(f"briefing: WROTE {md_path}")
     return 0

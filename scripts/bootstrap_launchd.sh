@@ -31,8 +31,8 @@ rm -f "$PLIST_TMP"
 # Verify
 echo ""
 echo "=== Verification ==="
-launchctl print "gui/$(id -u)/$PLIST_LABEL" | grep -E 'launchd_wrapper\.sh|hour = 14' || {
-    echo "ERROR: Verification failed — plist does not reference wrapper or hour != 14" >&2
+launchctl print "gui/$(id -u)/$PLIST_LABEL" | grep -E 'launchd_wrapper\.sh|hour = 5' || {
+    echo "ERROR: Verification failed — plist does not reference wrapper or hour != 5" >&2
     exit 2
 }
-echo "  OK: wrapper script detected + hour = 14"
+echo "  OK: wrapper script detected + hour = 5 (本地 5:30，与社媒 7:30/8:30 错峰)"

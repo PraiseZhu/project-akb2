@@ -133,6 +133,45 @@ class TestTwitterCollector:
         assert len(result.failed_handles) == 2  # Both handles failed
         assert not result.ok  # fail rate = 1.0 >= 0.5
 
+    def test_collect_keeps_cross_handle_mentions(self, tmp_path):
+        """跨博主提同一 repo 必须各保留一条 candidate（否则 mention_count 永远=1）。
+        per-handle 去重只压同一博主内的重复，不跨博主。真实链路验收回归锁。"""
+        from akb2.briefing.github.intake.twitter_collector import TwitterCollector
+
+        pool_yaml = tmp_path / "pool.yaml"
+        pool_yaml.write_text(SAMPLE_POOL_YAML)  # 2 个 handle
+
+        collector = TwitterCollector(twitter_bin="fake-twitter", db_path=tmp_path / "dedup.db")
+        with mock.patch.object(collector, "_health_check", return_value=True):
+            # 两个 handle 都返回同样 tweets → microsoft/qlib 被两个博主提到
+            with mock.patch.object(collector, "_fetch_user_posts", return_value=SAMPLE_TWEETS):
+                with mock.patch("time.sleep", return_value=None):
+                    result = collector.collect(pool_yaml)
+
+        qlib = [c for c in result.candidates if "microsoft/qlib" in c.repo_url]
+        assert len(qlib) == 2  # 两个博主各保留一条
+        assert {c.mentioner for c in qlib} == {"@testuser1", "@testuser2"}
+
+    def test_collect_dedups_within_handle(self, tmp_path):
+        """同一博主多条推文提同一 repo 只算一次提及。"""
+        from akb2.briefing.github.intake.twitter_collector import TwitterCollector
+
+        dup_tweets = [
+            {"id": "1", "full_text": "https://github.com/microsoft/qlib", "isRetweet": False},
+            {"id": "2", "full_text": "again https://github.com/microsoft/qlib", "isRetweet": False},
+        ]
+        pool_yaml = tmp_path / "pool.yaml"
+        pool_yaml.write_text('pool:\n  - handle: "@solo"\n    topics: [AI]\n')
+
+        collector = TwitterCollector(twitter_bin="fake-twitter", db_path=tmp_path / "dedup.db")
+        with mock.patch.object(collector, "_health_check", return_value=True):
+            with mock.patch.object(collector, "_fetch_user_posts", return_value=dup_tweets):
+                with mock.patch("time.sleep", return_value=None):
+                    result = collector.collect(pool_yaml)
+
+        qlib = [c for c in result.candidates if "microsoft/qlib" in c.repo_url]
+        assert len(qlib) == 1  # 同博主去重
+
 
 # --- Layer 2: TrendingHTMLCollector ---
 

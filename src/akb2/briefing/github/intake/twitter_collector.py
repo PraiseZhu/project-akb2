@@ -8,7 +8,6 @@ from pathlib import Path
 
 import yaml
 
-from ..dedup_sqlite import DedupStore
 from ..url_normalizer import normalize
 from . import Candidate, CollectorResult
 
@@ -38,48 +37,46 @@ class TwitterCollector:
             return CollectorResult("layer1", [], handles, time.monotonic() - t0, False,
                                    "twitter-cli health check failed (not authenticated)")
 
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        dedup = DedupStore(self._db_path)
-
         candidates: list[Candidate] = []
         failed_handles: list[str] = []
 
-        try:
-            for handle in handles:
-                tweets = self._fetch_user_posts(handle)
-                if tweets is None:
-                    failed_handles.append(handle)
+        # 去重策略：仅 per-handle 本地去重（同一博主同 repo 多条推文只算 1 次提及），
+        # 跨博主同 repo 必须保留 —— 否则 mention_count 永远 = 1，"几个博主提了"
+        # 这个核心热度信号会被抹掉（真实链路验收发现）。跨天 novelty 去重移到
+        # pipeline 聚合后统一做（见 pipeline._aggregate 后的 DedupStore 过滤）。
+        for handle in handles:
+            tweets = self._fetch_user_posts(handle)
+            if tweets is None:
+                failed_handles.append(handle)
+                continue
+            seen_in_handle: set[str] = set()
+            for tweet in tweets:
+                if tweet.get("isRetweet", False):
                     continue
-                for tweet in tweets:
-                    if tweet.get("isRetweet", False):
+                text = tweet.get("full_text") or tweet.get("text") or ""
+                # GitHub 链接主要在展开的 urls 字段（list[str]），text 多为 t.co 短链；
+                # 两处都提，normalize() 会拒非 github 并剥尾巴。
+                raw_urls = [u for u in (tweet.get("urls") or []) if isinstance(u, str)]
+                raw_urls += _GITHUB_URL_PATTERN.findall(text)
+                mentioned_at = (
+                    tweet.get("createdAtISO") or tweet.get("createdAt")
+                    or tweet.get("created_at") or datetime.now(timezone.utc).isoformat()
+                )
+                for url in raw_urls:
+                    normalized = normalize(url)
+                    if normalized is None:
                         continue
-                    text = tweet.get("full_text") or tweet.get("text") or ""
-                    # GitHub 链接主要在展开的 urls 字段（list[str]），text 多为 t.co 短链；
-                    # 两处都提，normalize() 会拒非 github 并剥尾巴。
-                    raw_urls = [u for u in (tweet.get("urls") or []) if isinstance(u, str)]
-                    raw_urls += _GITHUB_URL_PATTERN.findall(text)
-                    mentioned_at = (
-                        tweet.get("createdAtISO") or tweet.get("createdAt")
-                        or tweet.get("created_at") or datetime.now(timezone.utc).isoformat()
-                    )
-                    for url in raw_urls:
-                        normalized = normalize(url)
-                        if normalized is None:
-                            continue
-                        if dedup.is_duplicate(normalized):
-                            continue
-                        dedup.mark_seen(normalized)
-                        candidates.append(Candidate(
-                            repo_url=normalized,
-                            mentioner=handle,
-                            tweet_id=str(tweet.get("id", "")),
-                            mentioned_at=mentioned_at,
-                            tweet_text=text[:500],
-                        ))
-                time.sleep(BASE_SLEEP_BETWEEN_HANDLES)
-        finally:
-            dedup.prune()
-            dedup.close()
+                    if normalized in seen_in_handle:
+                        continue
+                    seen_in_handle.add(normalized)
+                    candidates.append(Candidate(
+                        repo_url=normalized,
+                        mentioner=handle,
+                        tweet_id=str(tweet.get("id", "")),
+                        mentioned_at=mentioned_at,
+                        tweet_text=text[:500],
+                    ))
+            time.sleep(BASE_SLEEP_BETWEEN_HANDLES)
 
         duration = time.monotonic() - t0
         fail_rate = len(failed_handles) / len(handles) if handles else 1.0

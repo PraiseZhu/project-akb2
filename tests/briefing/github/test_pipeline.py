@@ -153,3 +153,24 @@ class TestSC8Launchd:
     def test_vault_stub_dir_exists(self):
         stub = PROJECT_ROOT / "tests" / "fixtures" / "vault-stub" / "AKB2.0" / "AI TRENDS" / "GitHub"
         assert stub.exists()
+
+class TestNoveltyDedup:
+    """跨天 novelty 去重：已推过的 repo 3 天内不重复推（真实链路验收 A2）。"""
+
+    def test_second_run_skips_already_recommended(self, tmp_path):
+        # 同一 novelty db 跑两次：第一次写简报并标记 10 个 repo；
+        # 第二次这 10 个被过滤 → mock 仅 12 个候选 → 剩 2 个 < 10 → skip。
+        vault = tmp_path / "vault"
+        novelty_db = tmp_path / "novelty.sqlite"
+        env = {
+            "VAULT_ROOT": str(vault),
+            "AKB2_NOVELTY_DB": str(novelty_db),
+            "PROJECT_ROOT": str(tmp_path),
+        }
+        r1 = _run_pipeline(env)
+        assert "briefing: WROTE" in r1.stdout, f"run1 应出简报: {r1.stdout}\n{r1.stderr}"
+
+        r2 = _run_pipeline(env)
+        assert "briefing: WROTE" not in r2.stdout, f"run2 不应重复推: {r2.stdout}"
+        assert "SKIPPED" in r2.stdout, f"run2 应 skip: {r2.stdout}\n{r2.stderr}"
+        assert "too_few_aggregated_repos" in r2.stdout, f"run2 skip 原因应为候选不足: {r2.stdout}"

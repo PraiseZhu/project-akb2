@@ -67,3 +67,7 @@ data/star_history.sqlite
 
 # === PWF working memory (planning state, not project source) ===
 .planning/
+
+# vault-stub 测试生成的简报(非 fixture，保留 .gitkeep)
+tests/fixtures/vault-stub/AKB2.0/AI TRENDS/GitHub/*.md
+tests/fixtures/vault-stub/AKB2.0/AI TRENDS/GitHub/*.json
