@@ -1,0 +1,194 @@
+# GitHub Curator 候选池 — 从 data/curator_check_v2/result2.txt 转录
+# 筛选条件：OK 状态 + age ≤ 14d
+# 总数：60 handles
+# 最后更新：2026-05-28
+#
+# tier 分级 (v2 2026-05-29):
+#   1 = 核心 AI/工程博主（业界知名、推文质量高）
+#   2 = 活跃博主（多数，默认）
+#   3 = 聚合号/工具号/低信号
+
+pool:
+  - handle: "@idoubicc"
+    topics: [AI/Agent, UI/Design, Building]
+    tier: 2
+  - handle: "@GitHub_Daily"
+    topics: [AI/Agent]
+    tier: 3
+  - handle: "@virattt"
+    topics: [AI/Agent]
+    tier: 2
+  - handle: "@cassidoo"
+    topics: [AI/Agent, UI/Design]
+    tier: 2
+  - handle: "@mrdoob"
+    topics: [AI/Agent, Effects]
+    tier: 1
+  - handle: "@rasbt"
+    topics: [AI/Agent, UI/Design]
+    tier: 1
+  - handle: "@emilkowalski"
+    topics: [UI/Design, Animation]
+    tier: 2
+  - handle: "@framer"
+    topics: [Brand, Animation, Effects]
+    tier: 3
+  - handle: "@jh3yy"
+    topics: [AI/Agent, UI/Design, Animation]
+    tier: 2
+  - handle: "@GreenSock"
+    topics: [AI/Agent, UI/Design, Animation, Effects, Building]
+    tier: 3
+  - handle: "@NickADobos"
+    topics: [AI/Agent, Brand]
+    tier: 2
+  - handle: "@rauchg"
+    topics: [Brand, Building]
+    tier: 1
+  - handle: "@midudev"
+    topics: []
+    tier: 2
+  - handle: "@codrops"
+    topics: [Animation, Effects]
+    tier: 3
+  - handle: "@cramforce"
+    topics: [AI/Agent, Building]
+    tier: 2
+  - handle: "@github"
+    topics: [UI/Design, Animation]
+    tier: 3
+  - handle: "@raunofreiberg"
+    topics: [AI/Agent, UI/Design, Building]
+    tier: 2
+  - handle: "@OfficialLoganK"
+    topics: [AI/Agent]
+    tier: 2
+  - handle: "@ProfTomYeh"
+    topics: [AI/Agent]
+    tier: 2
+  - handle: "@lencx_"
+    topics: [AI/Agent]
+    tier: 2
+  - handle: "@mathemagic1an"
+    topics: [AI/Agent]
+    tier: 2
+  - handle: "@matthewberman"
+    topics: [AI/Agent]
+    tier: 1
+  - handle: "@op7418"
+    topics: [AI/Agent]
+    tier: 2
+  - handle: "@oran_ge"
+    topics: [AI/Agent]
+    tier: 2
+  - handle: "@rammcodes"
+    topics: [AI/Agent]
+    tier: 2
+  - handle: "@wesbos"
+    topics: [AI/Agent]
+    tier: 2
+  - handle: "@karpathy"
+    topics: [AI/Agent, UI/Design]
+    tier: 1
+  - handle: "@addyosmani"
+    topics: [AI/Agent]
+    tier: 1
+  - handle: "@argyleink"
+    topics: [UI/Design]
+    tier: 2
+  - handle: "@brian_lovin"
+    topics: [AI/Agent]
+    tier: 2
+  - handle: "@dotey"
+    topics: [AI/Agent]
+    tier: 2
+  - handle: "@omarsar0"
+    topics: [AI/Agent]
+    tier: 2
+  - handle: "@theo"
+    topics: [AI/Agent]
+    tier: 2
+  - handle: "@lukyvj"
+    topics: [AI/Agent, UI/Design]
+    tier: 2
+  - handle: "@mds"
+    topics: [AI/Agent]
+    tier: 2
+  - handle: "@N8Programs"
+    topics: [AI/Agent]
+    tier: 2
+  - handle: "@simonw"
+    topics: [AI/Agent]
+    tier: 1
+  - handle: "@peduarte"
+    topics: []
+    tier: 2
+  - handle: "@jeremyphoward"
+    topics: [AI/Agent]
+    tier: 1
+  - handle: "@jerryjliu0"
+    topics: [AI/Agent]
+    tier: 1
+  - handle: "@GithubProjects"
+    topics: []
+    tier: 3
+  - handle: "@kentcdodds"
+    topics: []
+    tier: 2
+  - handle: "@steveruizok"
+    topics: []
+    tier: 2
+  - handle: "@vista8"
+    topics: []
+    tier: 2
+  - handle: "@alexalbert__"
+    topics: [AI/Agent]
+    tier: 2
+  - handle: "@hwchase17"
+    topics: [AI/Agent]
+    tier: 1
+  - handle: "@mxstbr"
+    topics: [AI/Agent]
+    tier: 2
+  - handle: "@swyx"
+    topics: [AI/Agent]
+    tier: 1
+  - handle: "@alxfazio"
+    topics: []
+    tier: 2
+  - handle: "@goldengrape"
+    topics: []
+    tier: 2
+  - handle: "@jaredpalmer"
+    topics: []
+    tier: 2
+  - handle: "@shadcn"
+    topics: []
+    tier: 2
+  - handle: "@0xca0a"
+    topics: [AI/Agent]
+    tier: 2
+  - handle: "@levelsio"
+    topics: []
+    tier: 2
+  - handle: "@svpino"
+    topics: []
+    tier: 2
+  - handle: "@hrishioa"
+    topics: []
+    tier: 2
+  - handle: "@taylorotwell"
+    topics: []
+    tier: 2
+  - handle: "@sarah_edo"
+    topics: []
+    tier: 2
+  - handle: "@erondu"
+    topics: []
+    tier: 2
+  - handle: "@samselikoff"
+    topics: []
+    tier: 2
+  - handle: "@thespite"
+    topics: []
+    tier: 2

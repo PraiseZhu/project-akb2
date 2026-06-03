@@ -1,0 +1,21 @@
+{
+  "schema_version": "v1",
+  "briefing_type": "github-curator",
+  "generated_at": "2026-05-28T06:00:00+00:00",
+  "date": "2026-05-28",
+  "candidate_pool_size": 100,
+  "active_curators_today": ["@simonw"],
+  "fallback_layer_used": "layer1",
+  "top_repos": [
+    {"repo_url": "https://github.com/test/repo1", "stars": 100, "language": "Python", "topic_tags": ["test"], "mention_count": 1, "mentioners": ["@simonw"], "first_mention_at": "2026-05-28T06:00:00+00:00", "score": 0.5, "use_case": "正向场景：需要测试时使用。反向场景：生产环境不需要。"},
+    {"repo_url": "https://github.com/test/repo2", "stars": 200, "language": "Go", "topic_tags": ["test2"], "mention_count": 1, "mentioners": ["@simonw"], "first_mention_at": "2026-05-28T06:00:00+00:00", "score": 0.6, "use_case": "正向场景：需要测试时使用。反向场景：生产环境不需要。"},
+    {"repo_url": "https://github.com/test/repo3", "stars": 300, "language": "Rust", "topic_tags": ["test3"], "mention_count": 1, "mentioners": ["@simonw"], "first_mention_at": "2026-05-28T06:00:00+00:00", "score": 0.7, "use_case": "正向场景：需要测试时使用。反向场景：生产环境不需要。"},
+    {"repo_url": "https://github.com/test/repo4", "stars": 400, "language": "TypeScript", "topic_tags": ["test4"], "mention_count": 1, "mentioners": ["@simonw"], "first_mention_at": "2026-05-28T06:00:00+00:00", "score": 0.8, "use_case": "正向场景：需要测试时使用。反向场景：生产环境不需要。"},
+    {"repo_url": "https://github.com/test/repo5", "stars": 500, "language": "Java", "topic_tags": ["test5"], "mention_count": 1, "mentioners": ["@simonw"], "first_mention_at": "2026-05-28T06:00:00+00:00", "score": 0.9, "use_case": "正向场景：需要测试时使用。反向场景：生产环境不需要。"},
+    {"repo_url": "https://github.com/test/repo6", "stars": 600, "language": "C++", "topic_tags": ["test6"], "mention_count": 1, "mentioners": ["@simonw"], "first_mention_at": "2026-05-28T06:00:00+00:00", "score": 0.5, "use_case": "正向场景：需要测试时使用。反向场景：生产环境不需要。"},
+    {"repo_url": "https://github.com/test/repo7", "stars": 700, "language": "Ruby", "topic_tags": ["test7"], "mention_count": 1, "mentioners": ["@simonw"], "first_mention_at": "2026-05-28T06:00:00+00:00", "score": 0.6, "use_case": "正向场景：需要测试时使用。反向场景：生产环境不需要。"},
+    {"repo_url": "https://github.com/test/repo8", "stars": 800, "language": "Swift", "topic_tags": ["test8"], "mention_count": 1, "mentioners": ["@simonw"], "first_mention_at": "2026-05-28T06:00:00+00:00", "score": 0.7, "use_case": "正向场景：需要测试时使用。反向场景：生产环境不需要。"},
+    {"repo_url": "https://github.com/test/repo9", "stars": 900, "language": "Kotlin", "topic_tags": ["test9"], "mention_count": 1, "mentioners": ["@simonw"], "first_mention_at": "2026-05-28T06:00:00+00:00", "score": 0.8, "use_case": "正向场景：需要测试时使用。反向场景：生产环境不需要。"},
+    {"repo_url": "https://github.com/test/repo10", "stars": 1000, "language": "Zig", "topic_tags": [], "mention_count": 1, "mentioners": ["@simonw"], "first_mention_at": "2026-05-28T06:00:00+00:00", "score": 0.9}
+  ]
+}
