@@ -438,11 +438,12 @@ def test_core_excerpt_uses_selected_core_segment():
 # ---------------------------------------------------------------------------
 
 def test_translate_model_chain_and_timeout():
-    """SC-P2b-1: 翻译主力=gemini，备用链=[deepseek, glm]，默认 timeout=120。
+    """SC-P2b-1: 翻译主力=gemini，备用链=[deepseek, glm]，默认 timeout=300（可经 AKB2_TRANSLATE_TIMEOUT 覆盖）。
 
     根因实测：翻译慢是模型每次调用的固定开销（~30s 思考期+TTFT），不是 prompt/接口问题。
-    gemini 固定开销最低（实测整批 ~24s），deepseek/glm ~42-47s。主力选 gemini，
-    备用按不同厂商排 deepseek→glm；timeout 120s 给备用留 2.6 倍余量。
+    gemini 固定开销最低，但真实批量延迟 45-59s 且随网关负载波动；原 120s 在晨间网关变慢时
+    无余量（合成同模型有 300s 故能扛住）。故默认对齐合成的 300s，并接 AKB2_TRANSLATE_TIMEOUT
+    env 使 plist 可覆盖。瞬时变慢由 300s 余量 + 8:00 补跑 agent 双层兜底。
     """
     from akb2.briefing import translate as tr
     import inspect
@@ -453,8 +454,8 @@ def test_translate_model_chain_and_timeout():
         f"备用链应为 [deepseek, glm]，实际 {tr._TRANSLATE_FALLBACK_MODELS}"
 
     sig = inspect.signature(tr.translate_briefing)
-    assert sig.parameters["timeout"].default == 120, \
-        f"默认 timeout 应为 120s，实际 {sig.parameters['timeout'].default}s"
+    assert sig.parameters["timeout"].default == 300, \
+        f"默认 timeout 应为 300s，实际 {sig.parameters['timeout'].default}s"
 
 
 def test_translate_falls_through_chain_to_second_fallback():

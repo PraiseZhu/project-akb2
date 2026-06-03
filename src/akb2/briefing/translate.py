@@ -166,7 +166,7 @@ def _first_segment(text: str, max_chars: int = 400) -> str:
     return text[:max_chars].strip()
 
 
-_DEFAULT_TRANSLATE_TIMEOUT = 120   # 秒；可用 AKB2_TRANSLATE_TIMEOUT env 覆盖
+_DEFAULT_TRANSLATE_TIMEOUT = int(os.environ.get("AKB2_TRANSLATE_TIMEOUT", "300"))   # 秒；plist/env 可覆盖（默认 300，给瞬时变慢留余量）
 
 
 def translate_briefing(
