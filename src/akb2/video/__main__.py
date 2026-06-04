@@ -19,8 +19,24 @@ from src.akb2.video.researcher import VideoResearcher
 from src.akb2.video.extractor import Extractor
 from src.akb2.video.reasoner import ConceptStore, Reasoner
 from src.akb2.video.assembler import Assembler, CandidateTargetExists, GateRejected, PromotionTargetNotFound
+from src.akb2.video.llm_adapter import DeepSeekAdapter
 
 logger = logging.getLogger("akb2.video")
+
+
+def _build_llm_adapter(config: VideoConfig) -> DeepSeekAdapter | None:
+    """从 config 构造 LLM adapter；无 key 时返回 None（规则法降级）。"""
+    if not config.llm_api_key:
+        logger.warning(
+            "LLM API key 未配置（keychain claude-ai-gateway / env AKB2_LLM_API_KEY 均未设置）"
+            "—— Extractor 仅用规则法，future_questions 可能 <2 → candidate needs_repair"
+        )
+        return None
+    return DeepSeekAdapter(
+        api_key=config.llm_api_key,
+        base_url=config.llm_base_url,
+        model=config.llm_model,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -56,9 +72,10 @@ def main(argv: list[str] | None = None) -> int:
 def _run_full(config: VideoConfig, dry_run: bool) -> int:
     """运行完整链路。"""
     try:
+        llm_adapter = _build_llm_adapter(config)
         collector = VideoCollector(config)
-        researcher = VideoResearcher(config)
-        extractor = Extractor()
+        researcher = VideoResearcher(config, llm_adapter=llm_adapter)
+        extractor = Extractor(llm_adapter=llm_adapter)
         reasoner = Reasoner(ConceptStore())
         assembler = Assembler(config)
 
@@ -85,8 +102,9 @@ def _run_single_source(config: VideoConfig, url: str, dry_run: bool) -> int:
             "creator": {"name": "manual"},
         }
 
-        researcher = VideoResearcher(config)
-        extractor = Extractor()
+        llm_adapter = _build_llm_adapter(config)
+        researcher = VideoResearcher(config, llm_adapter=llm_adapter)
+        extractor = Extractor(llm_adapter=llm_adapter)
         reasoner = Reasoner(ConceptStore())
         assembler = Assembler(config)
 
@@ -103,7 +121,12 @@ def _run_single_source(config: VideoConfig, url: str, dry_run: bool) -> int:
             if dry_run:
                 logger.info(f"dry-run: {output.video_meta.get('title', '?')}")
             else:
-                assembler.commit(candidate_md)
+                try:
+                    formal_path = assembler.commit(candidate_md)
+                    logger.info(f"已发布到 AI TRENDS/Video: {formal_path}")
+                except GateRejected as e:
+                    logger.warning(f"gate 拒绝，报告已丢弃: {e}")
+                    return 1
 
         return 0
     except Exception as e:

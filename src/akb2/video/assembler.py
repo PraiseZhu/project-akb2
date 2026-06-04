@@ -13,6 +13,7 @@ import hashlib
 import logging
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 from datetime import datetime, timezone
@@ -91,8 +92,10 @@ class Assembler:
             degraded=research_output.degraded,
         )
 
-        # 构建正文
-        body = research_output.report_markdown
+        # 构建正文（注入 gate 要求的结构化章节）
+        gate_sections = self._build_gate_sections(extracted_fields)
+        report_h1 = self._extract_h1(research_output.report_markdown) or report_title
+        body = f"# {report_h1}\n\n{gate_sections}{research_output.report_markdown}"
 
         # 完整的 candidate markdown
         candidate_md = frontmatter + "\n" + body
@@ -106,15 +109,15 @@ class Assembler:
         date_str: str | None = None,
         staging_dir: Path | None = None,
     ) -> Path:
-        """写入 candidate 文件 + gate dry-run 验证。
+        """写 staging 中转 → gate 决策 → active 发布到 AI TRENDS/Video，非 active 丢弃。
 
-        写入流程：
-        1. 计算 content_hash
-        2. 检查 candidate 是否已存在 → fail-closed
-        3. 写 staging/candidate/video-{slug}-{date}.md
-        4. gate dry-run 验证
-        5. gate rejected → 回滚删除（不删除预先存在的同名文件）
-        6. promotion 目标路径预检
+        发布流程：
+        1. 写 staging/candidate/video-{slug}-{date}.md（中转）
+        2. _gate_decision → proposed_gate_decision
+        3. active：copy 到 promotion_target_path，删 staging 中转，返回正式路径
+        4. 非 active：删 staging 中转 + warning 日志 + raise GateRejected
+        5. promotion 目录不存在 → raise PromotionTargetNotFound（删中转）
+        6. 正式路径同名已存在 → raise CandidateTargetExists（fail-closed，删中转）
 
         Args:
             candidate_md: 完整的 candidate markdown。
@@ -123,59 +126,62 @@ class Assembler:
             staging_dir: staging 目录（默认从 config）。
 
         Returns:
-            写入的 candidate 文件路径。
+            正式发布路径（AI TRENDS/Video/video-{slug}-{date}.md）。
 
         Raises:
-            CandidateTargetExists: candidate 已存在。
-            GateRejected: gate dry-run 拒绝。
+            CandidateTargetExists: staging 或正式路径同名已存在。
+            GateRejected: gate 判非 active（含 parse_error）。
             PromotionTargetNotFound: promotion 目标路径不存在。
         """
         date = date_str or datetime.now().strftime("%Y-%m-%d")
         slug = slug or self._make_slug(candidate_md)
         staging = staging_dir or self.config.staging_dir
 
-        # 确保 staging/candidate/ 目录存在
         staging.mkdir(parents=True, exist_ok=True)
 
         filename = f"video-{slug}-{date}.md"
         candidate_path = staging / filename
 
-        # 计算 content_hash
-        content_hash = self._compute_hash(candidate_md)
-
-        # 2. 检查 candidate 是否已存在
-        candidate_existed_before = candidate_path.exists()
-        if candidate_existed_before:
+        if candidate_path.exists():
             raise CandidateTargetExists(
                 f"candidate 已存在: {candidate_path}（slug/date 冲突）"
             )
 
-        # 3. 写入 candidate
-        try:
-            candidate_path.write_text(candidate_md, encoding="utf-8")
-            logger.info(f"candidate 写入: {candidate_path}")
-        except Exception:
-            raise
+        candidate_path.write_text(candidate_md, encoding="utf-8")
+        logger.info(f"staging 中转写入: {candidate_path}")
 
-        # 4. gate dry-run 验证
-        try:
-            self._gate_dry_run(candidate_path, staging)
-        except GateRejected:
-            # 5. 回滚：只删除本次新建的 candidate
-            if not candidate_existed_before and candidate_path.exists():
-                candidate_path.unlink()
-                logger.info(f"gate rejected，回滚删除: {candidate_path}")
-            raise
+        decision = self._gate_decision(candidate_path, staging)
 
-        # 6. promotion 目标路径预检
-        if not self.config.promotion_target_path.is_dir():
-            if not candidate_existed_before and candidate_path.exists():
-                candidate_path.unlink()
+        if decision != "active":
+            candidate_path.unlink(missing_ok=True)
+            logger.warning(f"gate 拒绝发布 (decision={decision}): {filename}")
+            raise GateRejected(decision)
+
+        promotion_dir = self.config.promotion_target_path
+        if not promotion_dir.is_dir():
+            candidate_path.unlink(missing_ok=True)
             raise PromotionTargetNotFound(
-                f"L4 promotion 目标路径不存在: {self.config.promotion_target_path}"
+                f"promotion 目标路径不存在: {promotion_dir}"
             )
 
-        return candidate_path
+        promotion_path = promotion_dir / filename
+        if promotion_path.exists():
+            candidate_path.unlink(missing_ok=True)
+            raise CandidateTargetExists(
+                f"promotion 目标已存在: {promotion_path}（fail-closed，不覆盖）"
+            )
+
+        shutil.copy2(str(candidate_path), str(promotion_path))
+        candidate_path.unlink(missing_ok=True)
+
+        # 正式文件标记已发布：gate_decision null → active
+        formal_md = promotion_path.read_text(encoding="utf-8")
+        formal_md = formal_md.replace("gate_decision: null", "gate_decision: active", 1)
+        promotion_path.write_text(formal_md, encoding="utf-8")
+
+        logger.info(f"已发布到 AI TRENDS/Video: {promotion_path}")
+
+        return promotion_path
 
     # ------------------------------------------------------------------
     # Frontmatter 构建
@@ -320,9 +326,78 @@ class Assembler:
 
             logger.info(f"gate dry-run 通过: {candidate_path.name}")
 
+    def _gate_decision(self, candidate_path: Path, staging_dir: Path) -> str:
+        """在隔离临时目录中运行 gate check，解析 proposed_gate_decision。
+
+        Returns:
+            proposed_gate_decision 值（如 "active"/"needs_repair"/"reject"），
+            解析失败时返回 "parse_error"。
+        """
+        gate_script = Path("src/akb2/gate/akb2_gate_check.py")
+        if not gate_script.exists():
+            logger.warning("gate check CLI 不可用，跳过决策验证 (返回 parse_error)")
+            return "parse_error"
+
+        with tempfile.TemporaryDirectory() as tmp_root:
+            tmp_root_path = Path(tmp_root)
+            tmp_staging = tmp_root_path / "staging" / "candidate"
+            tmp_staging.mkdir(parents=True, exist_ok=True)
+
+            tmp_candidate = tmp_staging / candidate_path.name
+            tmp_candidate.write_text(candidate_path.read_text(encoding="utf-8"))
+
+            try:
+                result = subprocess.run(
+                    [
+                        "python3", str(gate_script), "check",
+                        "--akb-root", str(tmp_root_path),
+                        "--input", "staging/candidate",
+                        "--dry-run",
+                    ],
+                    capture_output=True, text=True, timeout=60,
+                )
+            except subprocess.TimeoutExpired:
+                logger.error("gate dry-run 超时")
+                return "parse_error"
+
+            output = result.stdout + result.stderr
+            match = re.search(r"proposed_gate_decision:\s*(\S+)", output)
+            if match:
+                return match.group(1)
+
+            logger.warning(
+                f"gate output 未含 proposed_gate_decision (exit {result.returncode})"
+            )
+            return "parse_error"
+
     # ------------------------------------------------------------------
     # 工具方法
     # ------------------------------------------------------------------
+
+    def _build_gate_sections(self, extracted_fields: ExtractedFields) -> str:
+        """渲染 ## TLDR + ## 关键发现 两个 H2 章节（gate HC-08 要求）。"""
+        lines: list[str] = []
+
+        lines.append("## TLDR")
+        if extracted_fields.tldr:
+            lines.append("")
+            lines.append(extracted_fields.tldr)
+        else:
+            logger.warning("tldr 为空，## TLDR 章节无内容（extractor 质量问题）")
+        lines.append("")
+
+        lines.append("## 关键发现")
+        if extracted_fields.key_findings:
+            lines.append("")
+            for kf in extracted_fields.key_findings:
+                cat = f"（{kf.category}）" if kf.category else ""
+                conf = f" [置信度:{kf.confidence:.1f}]" if kf.confidence else ""
+                lines.append(f"- {kf.assertion}{cat}{conf}")
+        else:
+            logger.warning("key_findings 为空，## 关键发现 章节无内容（extractor 质量问题）")
+        lines.append("")
+
+        return "\n".join(lines) + "\n"
 
     def _extract_h1(self, content: str) -> str | None:
         """从报告正文提取第一个 H1 标题。"""

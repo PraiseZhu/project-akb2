@@ -41,6 +41,24 @@ def _resolve_ytdlp(default_bin: str = "yt-dlp") -> str:
     return default_bin
 
 
+def _resolve_llm_api_key() -> str | None:
+    """读取 LLM API key：env AKB2_LLM_API_KEY → keychain claude-ai-gateway → None。"""
+    env_key = os.environ.get("AKB2_LLM_API_KEY")
+    if env_key:
+        return env_key
+    try:
+        import subprocess as _sp
+        result = _sp.run(
+            ["security", "find-generic-password", "-s", "claude-ai-gateway", "-w"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
 def _resolve_nlm() -> str:
     """定位 NLM CLI 可执行路径。"""
     env_bin = os.environ.get("NLM_BIN")
@@ -53,24 +71,6 @@ def _resolve_nlm() -> str:
     return str(default) if default.exists() else "nlm"
 
 
-def _resolve_notebooklm() -> str:
-    """定位 notebooklm CLI 可执行路径。"""
-    env_bin = os.environ.get("NOTEBOOKLM_BIN")
-    if env_bin and Path(env_bin).exists():
-        return env_bin
-    found = shutil.which("notebooklm")
-    if found:
-        return found
-    candidates = [
-        Path.home() / ".pyenv/versions/3.13.12/bin/notebooklm",
-        Path("/opt/homebrew/bin/notebooklm"),
-        Path.home() / ".local/bin/notebooklm",
-    ]
-    for p in candidates:
-        if p.exists():
-            return str(p)
-    return "notebooklm"
-
 
 @dataclass
 class VideoConfig:
@@ -79,7 +79,6 @@ class VideoConfig:
     # -- 二进制路径 --
     ytdlp_bin: str = field(default_factory=_resolve_ytdlp)
     nlm_bin: str = field(default_factory=_resolve_nlm)
-    notebooklm_bin: str = field(default_factory=_resolve_notebooklm)
 
     # -- 配置文件路径 --
     video_sources_path: Path = field(default_factory=lambda: Path("config/video_sources.json"))
@@ -108,6 +107,16 @@ class VideoConfig:
 
     # -- LLM router 键（用于 L5 话题去重和降级摘要）--
     llm_router_key: str = "default"
+
+    # -- LLM adapter 配置（gateway + deepseek v4pro）--
+    # key 优先级：env AKB2_LLM_API_KEY → keychain claude-ai-gateway → None（无 key 降级）
+    llm_api_key: Optional[str] = field(default_factory=_resolve_llm_api_key)
+    llm_base_url: str = field(default_factory=lambda: os.environ.get(
+        "AKB2_LLM_BASE_URL", "https://llm-proxy.tapsvc.com/v1"
+    ))
+    llm_model: str = field(default_factory=lambda: os.environ.get(
+        "AKB2_LLM_MODEL", "deepseek/deepseek-v4-pro"
+    ))
 
     # -- L4 promotion 目标路径（必须指向已有目录，不新建）--
     @property

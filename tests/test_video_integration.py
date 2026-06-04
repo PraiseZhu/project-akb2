@@ -57,7 +57,6 @@ def integration_config() -> VideoConfig:
             staging_dir=tmp_path / "staging" / "candidate",
             akb2_root=tmp_path,
             nlm_bin="/usr/bin/true",
-            notebooklm_bin="/usr/bin/true",
             ytdlp_bin="/usr/bin/true",
         )
         yield config
@@ -117,32 +116,36 @@ def test_full_pipeline_mock_nlm(integration_config):
         # Mock researcher: health check fail → fallback
         with mock.patch.object(researcher, "_health_check", return_value=False):
             with mock.patch.object(researcher, "_get_transcript", return_value="Test transcript " * 100):
-                # Mock gate dry-run
-                with mock.patch.object(assembler, "_gate_dry_run", return_value=None):
-                    # Mock promotion target
-                    with mock.patch.object(Path, "is_dir", return_value=True):
-                        video_results = collector.collect()
-                        assert len(video_results) > 0, "Collector should return videos"
+                # 创建 promotion_target_path 目录
+                config.promotion_target_path.mkdir(parents=True, exist_ok=True)
+                # Mock gate decision → active
+                with mock.patch.object(assembler, "_gate_decision", return_value="active"):
+                    video_results = collector.collect()
+                    assert len(video_results) > 0, "Collector should return videos"
 
-                        outputs = researcher.run(video_results)
-                        assert len(outputs) > 0, "Researcher should return outputs"
+                    outputs = researcher.run(video_results)
+                    assert len(outputs) > 0, "Researcher should return outputs"
 
-                        for output in outputs:
-                            extracted = extractor.extract(output.report_markdown)
-                            assert isinstance(extracted, ExtractedFields)
+                    for output in outputs:
+                        extracted = extractor.extract(output.report_markdown)
+                        assert isinstance(extracted, ExtractedFields)
 
-                            reasoned = reasoner.reason(extracted.concepts_mentioned)
-                            assert isinstance(reasoned, ReasonedLinks)
+                        reasoned = reasoner.reason(extracted.concepts_mentioned)
+                        assert isinstance(reasoned, ReasonedLinks)
 
-                            candidate_md = assembler.assemble(
-                                output.video_meta, output, extracted, reasoned
-                            )
-                            assert "page_status: candidate" in candidate_md
+                        candidate_md = assembler.assemble(
+                            output.video_meta, output, extracted, reasoned
+                        )
+                        assert "page_status: candidate" in candidate_md
 
-                            candidate_path = assembler.commit(candidate_md, slug="integration-test", date_str="2026-06-01")
-                            assert candidate_path.exists()
-                            # Cleanup
-                            candidate_path.unlink()
+                        formal_path = assembler.commit(candidate_md, slug="integration-test", date_str="2026-06-01")
+                        assert formal_path.exists(), f"正式路径不存在: {formal_path}"
+                        assert formal_path.parent == config.promotion_target_path
+                        # staging 中转已删除
+                        staging_copy = config.staging_dir / "video-integration-test-2026-06-01.md"
+                        assert not staging_copy.exists()
+                        # Cleanup
+                        formal_path.unlink()
 
 
 # ---------------------------------------------------------------------------

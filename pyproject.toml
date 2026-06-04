@@ -8,6 +8,7 @@ dependencies = [
     "pyyaml>=6.0",
     "httpx>=0.24",
     "langgraph>=0.2",
+    "openai>=1.0",
 ]
 
 [project.optional-dependencies]
@@ -36,3 +37,7 @@ select = ["E", "F", "W", "I", "B", "UP"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "src/akb2/toolbox_scan"]
+markers = [
+    "integration: 真机集成测试（需 NLM 登录态 + gateway），默认不跑",
+]
+addopts = "-m 'not integration'"

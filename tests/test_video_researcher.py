@@ -31,7 +31,6 @@ def temp_config() -> VideoConfig:
     with tempfile.TemporaryDirectory() as tmp:
         config = VideoConfig(
             nlm_bin="/usr/bin/true",
-            notebooklm_bin="/usr/bin/true",
             ytdlp_bin="/usr/bin/true",
         )
         yield config
@@ -236,11 +235,13 @@ def test_nlm_timeout_orphan_cleanup(temp_config):
 
 
 def test_config_external_path_injection():
-    """验证 NLM_BIN、NOTEBOOKLM_BIN、OBSIDIAN_RESEARCH_DIR 通过 config 注入。"""
+    """验证 NLM_BIN、OBSIDIAN_RESEARCH_DIR 通过 config 注入（notebooklm_bin 已移除）。"""
     src = Path(__file__).parent.parent / "src" / "akb2" / "video" / "researcher.py"
     content = src.read_text()
     # 不应有 Path.home() 直接调用
     assert "Path.home()" not in content, "researcher.py 不应硬编码 Path.home()"
+    # 不应再有 notebooklm 引用
+    assert "notebooklm" not in content, "researcher.py 不应再引用 notebooklm"
 
 
 # ---------------------------------------------------------------------------

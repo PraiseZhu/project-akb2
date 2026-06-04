@@ -1,7 +1,7 @@
 """视频 Deep Research 自动化 — VideoResearcher。
 
 从旧 AKB scripts/pipeline/video_researcher.py 迁移，关键改动：
-- 路径外部化：NLM_BIN/NOTEBOOKLM_BIN/OBSIDIAN_RESEARCH_DIR → config 注入
+- 路径外部化：NLM_BIN/OBSIDIAN_RESEARCH_DIR → config 注入
 - 子进程孤儿防护：Popen(start_new_session=True) + killpg(SIGKILL)
 - 健康检查降级：逐视频检查，非整批放弃
 - ResearchOutput dataclass 产出，不写 staging/Obsidian/DB（所有 durable write 归 Assembler）
@@ -21,6 +21,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -407,10 +408,14 @@ class VideoResearcher:
     # ------------------------------------------------------------------
 
     def _nlm(self, *args: str, profile: str = "alt",
-             timeout: int = 60) -> str | None:
-        """执行 NLM CLI 命令。使用 start_new_session + killpg 防护孤儿进程。"""
+             timeout: int = 60, with_profile: bool = True) -> str | None:
+        """执行 NLM CLI 命令。使用 start_new_session + killpg 防护孤儿进程。
+
+        with_profile=False：跳过 --profile flag（`download report` 子命令不支持
+        --profile，必须用 active default profile）。
+        """
         cmd = [str(self.config.nlm_bin)] + list(args)
-        if profile != "alt":
+        if with_profile and profile != "alt":
             cmd.extend(["--profile", profile])
 
         proc = subprocess.Popen(
@@ -529,53 +534,90 @@ class VideoResearcher:
         return output is not None
 
     # ------------------------------------------------------------------
-    # notebooklm-py 报告生成
+    # NLM 报告生成（三步：report create → 轮询 list artifacts → download）
     # ------------------------------------------------------------------
 
     def _generate_and_download_report(self, nb_id: str, title: str) -> str | None:
-        """通过 notebooklm-py 生成并下载报告。"""
+        """通过 nlm 三步生成并下载报告：report create → 轮询 list artifacts → download report。"""
         logger.info(f"[DIAG-GEN-REPORT] nb_id={nb_id}, title={title[:60]!r}")
 
         slug = re.sub(r"[^\w-]", "", title.lower().replace(" ", "-"))[:40]
         report_path = f"/tmp/research-video-{slug}.md"
 
-        # 生成报告
-        try:
-            gen_result = subprocess.run(
-                [str(self.config.notebooklm_bin), "generate", "report",
-                 "--notebook", nb_id,
-                 "--format", "briefing-doc",
-                 "--language", "zh_Hans",
-                 "--append", f"生成关于视频「{title}」的全面技术分析报告",
-                 "--wait"],
-                capture_output=True, text=True, timeout=300,
-            )
-            if gen_result.returncode != 0:
-                logger.error(
-                    f"报告生成失败 (exit {gen_result.returncode}): "
-                    f"{gen_result.stderr[-500:]}"
-                )
-                return None
-        except subprocess.TimeoutExpired as e:
-            logger.error(f"报告生成超时 (300s): {e}")
+        # Step 1: 异步创建报告，获取 Artifact ID
+        create_output = self._nlm(
+            "report", "create", nb_id,
+            "--format", "Briefing Doc",
+            "--language", "zh-Hans",
+            "--confirm",
+            profile=self.config.nlm_profile,
+            timeout=60,
+        )
+        if not create_output:
+            logger.error("report create 失败或返回空")
             return None
 
-        # 下载报告
-        dl_result = subprocess.run(
-            [str(self.config.notebooklm_bin), "download", "report",
-             "--notebook", nb_id, report_path],
-            capture_output=True, text=True, timeout=60,
-        )
-        if dl_result.returncode != 0:
-            logger.info(f"报告下载失败，重试一次: {dl_result.stderr[-200:]}")
-            dl_result = subprocess.run(
-                [str(self.config.notebooklm_bin), "download", "report",
-                 "--notebook", nb_id, report_path],
-                capture_output=True, text=True, timeout=60,
+        artifact_id: str | None = None
+        for line in create_output.split("\n"):
+            m = re.search(r"Artifact\s+ID[:\s]+([0-9a-f-]{8,})", line, re.IGNORECASE)
+            if m:
+                artifact_id = m.group(1).strip()
+                break
+        if not artifact_id:
+            uuid_m = re.search(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                create_output, re.IGNORECASE,
             )
-            if dl_result.returncode != 0:
-                logger.error(f"报告下载重试失败: {dl_result.stderr[-500:]}")
-                return None
+            if uuid_m:
+                artifact_id = uuid_m.group(0)
+        if not artifact_id:
+            logger.error(f"无法从 report create 输出中提取 Artifact ID: {create_output[:300]}")
+            return None
+
+        logger.info(f"[DIAG-GEN-REPORT] artifact_id={artifact_id}")
+
+        # Step 2: 轮询 list artifacts 等待 status=completed
+        poll_interval = 15
+        deadline = VIDEO_NLM_MAX_WAIT
+        elapsed = 0
+        completed = False
+        while elapsed < deadline:
+            list_output = self._nlm(
+                "list", "artifacts", nb_id, "--json",
+                profile=self.config.nlm_profile,
+                timeout=60,
+            )
+            if list_output:
+                try:
+                    artifacts = json.loads(list_output)
+                    for art in artifacts:
+                        if art.get("id") == artifact_id and art.get("status") == "completed":
+                            completed = True
+                            break
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning(f"list artifacts 解析失败: {list_output[:200]}")
+            if completed:
+                break
+            time.sleep(poll_interval)
+            elapsed += poll_interval
+
+        if not completed:
+            logger.error(f"report 轮询超时 ({deadline}s)，artifact_id={artifact_id}")
+            return None
+
+        logger.info("[DIAG-GEN-REPORT] artifact completed, downloading")
+
+        # Step 3: 下载报告（download report 不支持 --profile，用 active default profile）
+        dl_output = self._nlm(
+            "download", "report", nb_id,
+            "--id", artifact_id,
+            "-o", report_path,
+            with_profile=False,
+            timeout=120,
+        )
+        if dl_output is None:
+            logger.error(f"download report 失败，artifact_id={artifact_id}")
+            return None
 
         report_file = Path(report_path)
         if not report_file.exists():

@@ -31,9 +31,15 @@ class LLMAdapter(Protocol):
 class DeepSeekAdapter:
     """DeepSeek API 适配器（AKB2 当前 LLM 后端）。"""
 
-    def __init__(self, api_key: str | None = None, base_url: str | None = None):
+    def __init__(
+        self,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        model: str = "deepseek-chat",
+    ):
         self._api_key = api_key
         self._base_url = base_url
+        self._model = model
 
     def chat(
         self,
@@ -55,7 +61,7 @@ class DeepSeekAdapter:
             base_url=self._base_url or "https://api.deepseek.com",
         )
         response = client.chat.completions.create(
-            model="deepseek-chat",
+            model=self._model,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},

@@ -1,7 +1,8 @@
-"""Assembler 测试 — candidate 组装 + 写入 + gate dry-run + 回滚 + CLI 入口。
+"""Assembler 测试 — candidate 组装 + 发布 + gate 决策 + 丢弃 + CLI 入口。
 
-覆盖：frontmatter 完整性、gate dry-run pass/rejected、回滚、candidate 预存在 fail-closed、
-promotion 目标路径预检、CLI 入口 smoke、dry-run 无副作用。
+覆盖：frontmatter 完整性、gate active 发布到 AI TRENDS/Video、gate 非 active 丢弃、
+staging 中转清理、candidate 预存在 fail-closed、promotion 目标路径预检、
+CLI 入口 smoke、dry-run 无副作用。
 """
 
 from __future__ import annotations
@@ -126,58 +127,96 @@ def test_assemble_candidate_frontmatter(
     assert "tags:" in candidate_md
 
 
-# ---------------------------------------------------------------------------
-# Test: gate dry-run pass
-# ---------------------------------------------------------------------------
-
-
-def test_gate_dry_run_pass(
+def test_assemble_body_gate_sections(
     temp_config, sample_video_meta, sample_research_output,
     sample_extracted_fields, sample_reasoned_links,
 ):
-    """验证 gate dry-run 通过（mock gate check）。"""
+    """验证 body 含 ## TLDR + ## 关键发现（HC-08）。"""
     assembler = Assembler(temp_config)
     candidate_md = assembler.assemble(
         sample_video_meta, sample_research_output,
         sample_extracted_fields, sample_reasoned_links,
     )
 
-    # Mock gate dry-run to pass
-    with mock.patch.object(assembler, "_gate_dry_run", return_value=None):
-        # Mock promotion target path exists
-        with mock.patch.object(Path, "is_dir", return_value=True):
-            candidate_path = assembler.commit(candidate_md, slug="test-video", date_str="2026-05-28")
+    # frontmatter 结束后的 body 部分
+    body_start = candidate_md.find("---\n", candidate_md.find("---\n") + 1)
+    body = candidate_md[body_start:] if body_start != -1 else candidate_md
 
-    assert candidate_path.exists()
-    # Cleanup
-    candidate_path.unlink()
+    assert "## TLDR" in body, "body 必须包含 ## TLDR 章节（HC-08）"
+    assert "## 关键发现" in body, "body 必须包含 ## 关键发现 章节（HC-08）"
+    assert sample_extracted_fields.tldr in body, "body 必须包含 tldr 文本"
+    assert sample_extracted_fields.key_findings[0].assertion in body, "body 必须包含 key_finding assertion"
 
 
 # ---------------------------------------------------------------------------
-# Test: gate dry-run rejected
+# Test: gate active → 发布到 promotion_target_path，staging 中转删除
 # ---------------------------------------------------------------------------
 
 
-def test_gate_dry_run_rejected(
+def test_commit_active_publishes_to_promotion_path(
     temp_config, sample_video_meta, sample_research_output,
     sample_extracted_fields, sample_reasoned_links,
 ):
-    """验证 gate 失败 → candidate 被回滚删除。"""
+    """gate=active → 报告写到 AI TRENDS/Video，staging 中转被删除，返回正式路径。"""
     assembler = Assembler(temp_config)
     candidate_md = assembler.assemble(
         sample_video_meta, sample_research_output,
         sample_extracted_fields, sample_reasoned_links,
     )
 
-    # Mock gate dry-run to reject
-    with mock.patch.object(assembler, "_gate_dry_run", side_effect=GateRejected("test rejection")):
+    # 创建 promotion_target_path 目录
+    temp_config.promotion_target_path.mkdir(parents=True, exist_ok=True)
+
+    with mock.patch.object(assembler, "_gate_decision", return_value="active"):
+        formal_path = assembler.commit(candidate_md, slug="test-video", date_str="2026-05-28")
+
+    # 正式路径存在
+    assert formal_path.exists(), f"正式路径不存在: {formal_path}"
+    assert formal_path.parent == temp_config.promotion_target_path
+
+    # staging 中转副本已删除
+    staging_copy = temp_config.staging_dir / "video-test-video-2026-05-28.md"
+    assert not staging_copy.exists(), f"staging 中转未删除: {staging_copy}"
+
+    # 返回路径在 promotion_target_path 下（SC-1）
+    assert formal_path == temp_config.promotion_target_path / "video-test-video-2026-05-28.md"
+
+    # 正式文件已标记发布态：gate_decision: active（非 null）；page_status 保持 candidate（SC-4）
+    formal_content = formal_path.read_text()
+    assert "gate_decision: active" in formal_content, "正式文件应含 gate_decision: active"
+    assert "gate_decision: null" not in formal_content, "正式文件不应含 gate_decision: null"
+    assert "page_status: candidate" in formal_content, "page_status 应保持 candidate（SC-4）"
+
+
+# ---------------------------------------------------------------------------
+# Test: gate 非 active → 丢弃，staging 中转删除
+# ---------------------------------------------------------------------------
+
+
+def test_gate_rejected_discard(
+    temp_config, sample_video_meta, sample_research_output,
+    sample_extracted_fields, sample_reasoned_links,
+):
+    """gate=needs_repair → raise GateRejected，staging 中转删除，不写 AI TRENDS/Video（SC-2/SC-3）。"""
+    assembler = Assembler(temp_config)
+    candidate_md = assembler.assemble(
+        sample_video_meta, sample_research_output,
+        sample_extracted_fields, sample_reasoned_links,
+    )
+
+    with mock.patch.object(assembler, "_gate_decision", return_value="needs_repair"):
         with pytest.raises(GateRejected):
             assembler.commit(candidate_md, slug="test-rejected", date_str="2026-05-28")
 
-    # Verify candidate was deleted
+    # staging 中转已删除（SC-2）
     staging = temp_config.staging_dir
     candidates = list(staging.glob("video-test-rejected-*.md"))
-    assert len(candidates) == 0, f"candidate should be rolled back: {candidates}"
+    assert len(candidates) == 0, f"staging 中转未删除: {candidates}"
+
+    # promotion_target_path 无文件（SC-2）
+    if temp_config.promotion_target_path.exists():
+        promo_files = list(temp_config.promotion_target_path.glob("*.md"))
+        assert len(promo_files) == 0, f"非 active 不应写 AI TRENDS/Video: {promo_files}"
 
 
 # ---------------------------------------------------------------------------
@@ -223,17 +262,54 @@ def test_promotion_target_not_found(
     temp_config, sample_video_meta, sample_research_output,
     sample_extracted_fields, sample_reasoned_links,
 ):
-    """验证 promotion_target_path 不存在 → raise PromotionTargetNotFound。"""
+    """gate=active 但 promotion_target_path 不存在 → raise PromotionTargetNotFound，staging 中转删除。"""
     assembler = Assembler(temp_config)
     candidate_md = assembler.assemble(
         sample_video_meta, sample_research_output,
         sample_extracted_fields, sample_reasoned_links,
     )
 
-    # Mock gate pass, but promotion target doesn't exist
-    with mock.patch.object(assembler, "_gate_dry_run", return_value=None):
+    # gate=active，但 promotion_target_path 未创建（temp_config 不自动创建）
+    with mock.patch.object(assembler, "_gate_decision", return_value="active"):
         with pytest.raises(PromotionTargetNotFound):
             assembler.commit(candidate_md, slug="test-promo", date_str="2026-05-28")
+
+    # staging 中转已删除（不残留）
+    staging_copy = temp_config.staging_dir / "video-test-promo-2026-05-28.md"
+    assert not staging_copy.exists(), f"staging 中转应已删除: {staging_copy}"
+
+
+# ---------------------------------------------------------------------------
+# Test: promotion 目标同名 fail-closed
+# ---------------------------------------------------------------------------
+
+
+def test_promotion_file_exists_fail_closed(
+    temp_config, sample_video_meta, sample_research_output,
+    sample_extracted_fields, sample_reasoned_links,
+):
+    """gate=active 但正式路径同名已存在 → raise CandidateTargetExists，staging 中转删除（fail-closed）。"""
+    assembler = Assembler(temp_config)
+    candidate_md = assembler.assemble(
+        sample_video_meta, sample_research_output,
+        sample_extracted_fields, sample_reasoned_links,
+    )
+
+    # 创建 promotion 目录 + 预置同名文件
+    temp_config.promotion_target_path.mkdir(parents=True, exist_ok=True)
+    existing_promo = temp_config.promotion_target_path / "video-test-promo2-2026-05-28.md"
+    existing_promo.write_text("pre-existing promotion content")
+
+    with mock.patch.object(assembler, "_gate_decision", return_value="active"):
+        with pytest.raises(CandidateTargetExists):
+            assembler.commit(candidate_md, slug="test-promo2", date_str="2026-05-28")
+
+    # 旧文件内容不变
+    assert existing_promo.read_text() == "pre-existing promotion content"
+
+    # staging 中转已删除
+    staging_copy = temp_config.staging_dir / "video-test-promo2-2026-05-28.md"
+    assert not staging_copy.exists(), f"staging 中转应已删除: {staging_copy}"
 
 
 # ---------------------------------------------------------------------------
