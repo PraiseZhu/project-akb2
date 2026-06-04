@@ -272,3 +272,147 @@ def test_researcher_runs_basic(temp_config, sample_video_result):
 
     assert len(outputs) == 1
     assert isinstance(outputs[0], ResearchOutput)
+
+
+# ---------------------------------------------------------------------------
+# Test: _nlm 区分真配额(exit 8) vs 其它失败
+# ---------------------------------------------------------------------------
+
+
+def _fake_proc(stdout: str, stderr: str, returncode: int):
+    """构造 subprocess.Popen 替身：communicate 返回 (stdout, stderr)，带 returncode。"""
+    proc = mock.Mock()
+    proc.communicate.return_value = (stdout, stderr)
+    proc.returncode = returncode
+    return proc
+
+
+def test_nlm_raises_quota_on_exit_8(temp_config):
+    """exit 8 = 真配额耗尽 → _nlm 抛 NLMQuotaExhausted（停批信号）。"""
+    from src.akb2.video.researcher import NLMQuotaExhausted
+
+    r = VideoResearcher(temp_config)
+    with mock.patch(
+        "src.akb2.video.researcher.subprocess.Popen",
+        return_value=_fake_proc("", "", 8),
+    ):
+        with pytest.raises(NLMQuotaExhausted):
+            r._nlm("notebook", "list", profile="default")
+
+
+def test_nlm_returns_none_on_other_nonzero(temp_config):
+    """非配额非零码（如 source add --wait 处理失败 exit 1）→ _nlm 返回 None（可降级）。"""
+    r = VideoResearcher(temp_config)
+    with mock.patch(
+        "src.akb2.video.researcher.subprocess.Popen",
+        return_value=_fake_proc("real error on stdout", "", 1),
+    ):
+        result = r._nlm(
+            "source", "add", "nb", "--youtube", "u", "--wait", profile="default"
+        )
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Test: 单视频 NLM 处理失败（非配额）→ 转字幕降级，不误判配额、不中断整批
+# ---------------------------------------------------------------------------
+
+
+def test_source_failure_triggers_transcript_fallback(temp_config, sample_video_result):
+    """NLM 源处理失败（非配额，两 profile 均失败）→ 该视频走 yt-dlp 字幕降级。"""
+    mock_llm = MockLLMAdapter("# Fallback Report\n\nDegraded content")
+    r = VideoResearcher(temp_config, llm_adapter=mock_llm)
+
+    with mock.patch.object(r, "_health_check", return_value=True):
+        with mock.patch.object(r, "_nlm_create_notebook", return_value="nb-001"):
+            # 源添加在两个 profile 都失败（非配额）
+            with mock.patch.object(r, "_nlm_add_youtube", return_value=False):
+                with mock.patch.object(
+                    r, "_get_transcript", return_value="Transcript content. " * 100
+                ):
+                    outputs = r.run([sample_video_result])
+
+    assert len(outputs) == 1
+    assert outputs[0].degraded is True  # 走了降级，而非标 pending
+    assert "Fallback Report" in outputs[0].report_markdown
+    assert mock_llm.calls[0]["task"] == "summarize"
+
+
+def test_source_failure_does_not_abort_batch(temp_config, sample_video_result):
+    """关键回归：一个视频 NLM 失败不再中断整批——其它视频照常处理。"""
+    mock_llm = MockLLMAdapter("# Degraded V1\n\nx")
+    r = VideoResearcher(temp_config, llm_adapter=mock_llm)
+    video2 = {
+        "video": {
+            "title": "V2 正常视频",
+            "url": "https://www.youtube.com/watch?v=v2ok",
+            "platform": "youtube",
+        },
+        "creator": {"name": "C2", "platform": "youtube"},
+    }
+
+    with mock.patch.object(r, "_health_check", return_value=True):
+        with mock.patch.object(r, "_nlm_create_notebook", return_value="nb"):
+            # side_effect 顺序映射当前 profile 轮替实现：
+            #   视频1 主 profile add → False（第1次）
+            #   视频1 备用 profile add → False（第2次）→ _nlm_research_path 返回 None → 降级
+            #   视频2 主 profile add → True（第3次）→ 正常 NLM 路径
+            with mock.patch.object(
+                r, "_nlm_add_youtube", side_effect=[False, False, True]
+            ) as mock_add:
+                with mock.patch.object(r, "_nlm_research", return_value=True):
+                    with mock.patch.object(r, "_nlm_wait_research", return_value=True):
+                        with mock.patch.object(r, "_nlm_import", return_value=True):
+                            with mock.patch.object(
+                                r,
+                                "_generate_and_download_report",
+                                return_value="# V2 正常报告\n\nfull",
+                            ):
+                                with mock.patch.object(
+                                    r,
+                                    "_get_transcript",
+                                    return_value="transcript " * 100,
+                                ):
+                                    outputs = r.run([sample_video_result, video2])
+
+    assert len(outputs) == 2, "单视频失败不应中断整批"
+    # 一个降级(视频1)、一个正常(视频2)
+    assert sorted(o.degraded for o in outputs) == [False, True]
+    # 锚定轮替次数：视频1 两 profile(2) + 视频2 一次(1) = 3，防 side_effect 顺序静默失配
+    assert mock_add.call_count == 3
+
+
+def test_real_quota_aborts_batch_and_marks_pending(temp_config, sample_video_result):
+    """真配额(exit 8 → NLMQuotaExhausted)→ 停批，剩余视频全标 pending(increment_retry=False)。"""
+    from src.akb2.video.researcher import NLMQuotaExhausted
+
+    r = VideoResearcher(temp_config, llm_adapter=MockLLMAdapter("x"))
+    video2 = {
+        "video": {
+            "title": "V2",
+            "url": "https://www.youtube.com/watch?v=v2",
+            "platform": "youtube",
+        },
+        "creator": {"name": "C2", "platform": "youtube"},
+    }
+
+    with mock.patch.object(r, "_health_check", return_value=True):
+        with mock.patch.object(r, "_nlm_create_notebook", return_value="nb"):
+            # source add 触发真配额异常（模拟 _nlm 在 exit 8 时抛出）
+            with mock.patch.object(
+                r, "_nlm_add_youtube", side_effect=NLMQuotaExhausted("exit 8")
+            ):
+                with mock.patch.object(r, "_save_pending") as mock_save:
+                    outputs = r.run([sample_video_result, video2])
+
+    assert outputs == []
+    # 仅 quota_skipped 路径被保存一次（若误入 failed 路径会多调一次 → assert_called_once 失败）
+    mock_save.assert_called_once()
+    args, kwargs = mock_save.call_args
+    assert len(args[0]) == 2, "配额耗尽时剩余视频全部标 pending"
+    saved_urls = {v["video"]["url"] for v in args[0]}
+    assert saved_urls == {
+        sample_video_result["video"]["url"],
+        video2["video"]["url"],
+    }, "两个视频(含触发配额的当前视频 + 剩余视频)都应进 quota_skipped"
+    assert kwargs.get("increment_retry") is False

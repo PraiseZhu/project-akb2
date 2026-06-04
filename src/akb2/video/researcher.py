@@ -213,12 +213,19 @@ class VideoResearcher:
         """完整的 NLM Deep Research 流程。
 
         Returns:
-            (report_content, notebook_id, profile_used) 或 raise NLMQuotaExhausted。
+            (report_content, notebook_id, profile_used)。
+            - report_content 非 None：NLM 研究成功。
+            - report_content 为 None：本视频 NLM 处理失败（非配额），调用方应转
+              字幕降级路径，且不影响其它视频。
+        Raises:
+            NLMQuotaExhausted: 仅当 _nlm 探测到 exit 8（真·全局配额耗尽）时由底层
+              抛出并向上传播；此时调用方应停批并标 pending（等配额重置）。
         """
         nb_title = f"[Video] {title} - {datetime.now().strftime('%Y-%m-%d')}"
         nb_id = self._nlm_create_notebook(nb_title, profile)
         if not nb_id:
-            raise NLMQuotaExhausted(f"Notebook 创建失败: {title}")
+            logger.warning(f"NLM notebook 创建失败（非配额），转降级: {title}")
+            return None, None, profile
 
         # 添加源
         if platform == "youtube":
@@ -232,13 +239,17 @@ class VideoResearcher:
             profile = self.config.nlm_alt_profile
             nb_id = self._nlm_create_notebook(nb_title, profile)
             if not nb_id:
-                raise NLMQuotaExhausted("备用 profile 也失败")
+                logger.warning(f"备用 profile notebook 创建失败（非配额），转降级: {title}")
+                return None, None, profile
             if platform == "youtube":
                 source_ok = self._nlm_add_youtube(nb_id, url, profile)
             else:
                 source_ok = self._nlm_add_url(nb_id, url, profile)
             if not source_ok:
-                raise NLMQuotaExhausted("备用 profile 源添加失败")
+                logger.warning(
+                    f"NLM 源处理失败（非配额，两 profile 均失败），转字幕降级: {title}"
+                )
+                return None, nb_id, profile
 
         # 启动 Deep Research
         research_query = f"深入分析这个技术视频的核心内容、关键概念和实践要点: {title}"
@@ -250,16 +261,21 @@ class VideoResearcher:
             profile = self.config.nlm_alt_profile
             nb_id = self._nlm_create_notebook(nb_title, profile)
             if not nb_id:
-                raise NLMQuotaExhausted("备用 profile 也失败")
+                logger.warning(f"备用 profile notebook 创建失败（非配额），转降级: {title}")
+                return None, None, profile
             if platform == "youtube":
                 source_ok = self._nlm_add_youtube(nb_id, url, profile)
             else:
                 source_ok = self._nlm_add_url(nb_id, url, profile)
             if not source_ok:
-                raise NLMQuotaExhausted("备用 profile 源添加失败")
+                logger.warning(f"备用 profile 源处理失败（非配额），转字幕降级: {title}")
+                return None, nb_id, profile
             research_ok = self._nlm_research(nb_id, research_query, profile)
             if not research_ok:
-                raise NLMQuotaExhausted("两个 profile 配额都用完")
+                logger.warning(
+                    f"NLM Deep Research 启动失败（非配额，两 profile 均失败），转降级: {title}"
+                )
+                return None, nb_id, profile
 
         # 等待研究完成
         nlm_success = self._nlm_wait_research(nb_id, profile)
@@ -281,7 +297,12 @@ class VideoResearcher:
 
         逐视频检查（非整批），失败时记录结构化日志（不弹 macOS 通知）。
         """
-        output = self._nlm("notebook", "list", profile=profile, timeout=30)
+        try:
+            output = self._nlm("notebook", "list", profile=profile, timeout=30)
+        except NLMQuotaExhausted:
+            # 配额耗尽不代表 auth 失效：视为可用。后续首个视频进 NLM 路径会立刻再次
+            # 抛配额异常，由 run() 的 break 分支停批标 pending——不会无限循环。
+            return True
         if output is None:
             logger.error(
                 f"健康检查失败: nlm CLI 或 profile {profile} 凭据已过期 — "
@@ -428,12 +449,16 @@ class VideoResearcher:
         try:
             stdout, stderr = proc.communicate(timeout=timeout)
             if proc.returncode == 8:
+                # exit 8 = 真·配额耗尽（全局），需停批等配额重置；抛异常以与
+                # 单视频处理失败（其它非零码）区分，后者应触发字幕降级而非停批。
                 logger.warning(f"NLM 配额耗尽 (exit 8): {' '.join(args)}")
-                return None
+                raise NLMQuotaExhausted(f"NLM 配额耗尽 (exit 8): {' '.join(args)}")
             if proc.returncode != 0:
+                # 非配额失败（含 source add --wait 处理失败的 exit 1）：返回 None，
+                # 由 _nlm_research_path 转该视频降级路径，不中断整批。
                 logger.warning(
                     f"nlm {' '.join(args)} failed (exit {proc.returncode}): "
-                    f"{stderr[-500:]}"
+                    f"stdout={stdout[-300:]!r} stderr={stderr[-300:]!r}"
                 )
                 return None
             return _strip_ansi(stdout.strip())
