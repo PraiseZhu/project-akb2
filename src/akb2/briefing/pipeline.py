@@ -649,6 +649,8 @@ def main(argv: list[str] | None = None) -> int:
     if final_briefing_path.exists() or final_briefing_path.is_symlink():
         final_briefing_path.unlink()
     shutil.copy2(real_briefing_path, final_briefing_path)
+    real_briefing_path.unlink(missing_ok=True)
+    sys.stderr.write("staging 中转已清除\n")
 
     print(f"proposed_gate_decision: {gate_decision}")
     return 0
