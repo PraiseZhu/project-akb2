@@ -2,40 +2,66 @@
 
 import pytest
 
+from akb2.briefing.github import scoring
 from akb2.briefing.github.scoring import (
+    MULTI_MENTION_BONUS,
+    activity_score,
+    engagement_raw,
+    engagement_score,
+    mention_threshold,
+    mentioner_authority_score,
+    readme_quality_score,
+    safety_check,
     score,
     score_batch,
-    mention_threshold,
-    safety_check,
-    mention_count_score,
-    mentioner_authority_score,
     stars_score,
-    activity_score,
-    readme_quality_score,
     topic_relevance_score,
 )
 
 
 class TestDimensionScores:
-    # --- mention_count (v2: denominator 12) ---
-    def test_mention_count_normalized(self):
-        assert mention_count_score(0) == 0.0
-        assert mention_count_score(12) == 1.0
-        assert mention_count_score(20) == 1.0  # capped at 1.0
+    # --- engagement (v3: tweet metrics, replaces mention_count in weighted sum) ---
+    def test_engagement_none_is_zero(self):
+        """Layer2/3 或缺失 metrics → 0（不崩、不中性）。"""
+        assert engagement_score(None) == 0.0
+        assert engagement_score({}) == 0.0
+        assert engagement_raw(None) == 0
 
-    def test_mention_count_not_saturated_at_5(self):
-        """SC-2: mention=5 should NOT be 1.0 (was 1.0 with /5, now /12)."""
-        assert mention_count_score(5) == pytest.approx(5 / 12)  # ~0.417
+    def test_engagement_raw_weights_bookmarks_highest(self):
+        """raw = likes + 2*retweets + 3*bookmarks；views 不算。"""
+        m = {"likes": 10, "retweets": 5, "bookmarks": 2, "views": 999999}
+        assert engagement_raw(m) == 10 + 2 * 5 + 3 * 2  # 26, views ignored
 
-    def test_mention_count_strictly_monotonic(self):
-        """SC-2: mention=2/5/8/12 strictly increasing, no early saturation."""
-        s2 = mention_count_score(2)
-        s5 = mention_count_score(5)
-        s8 = mention_count_score(8)
-        s12 = mention_count_score(12)
-        assert s2 < s5 < s8 < s12
-        assert s2 > 0.0
-        assert s5 > 0.0
+    def test_engagement_views_excluded(self):
+        """views 高但其余为 0 → raw=0 → score=0（views 不该单独拉分）。"""
+        assert engagement_raw({"views": 1_000_000}) == 0
+        assert engagement_score({"views": 1_000_000}) == 0.0
+
+    def test_engagement_log_normalized_monotonic(self):
+        """log10 归一：raw 越大分越高，且不早饱和。"""
+        s_low = engagement_score({"likes": 5})        # raw=5
+        s_mid = engagement_score({"likes": 100})      # raw=100
+        s_high = engagement_score({"likes": 1000})    # raw=1000
+        s_max = engagement_score({"likes": 100000})   # raw=100000 → capped
+        assert 0.0 < s_low < s_mid < s_high <= s_max == 1.0
+
+    def test_engagement_bookmarks_beat_likes(self):
+        """同样的原始数，收藏比点赞更值钱。"""
+        s_likes = engagement_score({"likes": 30})
+        s_bookmarks = engagement_score({"bookmarks": 30})
+        assert s_bookmarks > s_likes
+
+    def test_engagement_dirty_values_do_not_crash(self):
+        """Codex P2: 上游 metrics 字段不稳(None/字符串/负数)时 coerce 为 0，
+        不 raise TypeError 崩打分。脏值 = 0 而非中断（fail-safe）。"""
+        assert engagement_raw({"likes": None, "retweets": None, "bookmarks": None}) == 0
+        assert engagement_raw({"likes": "abc", "retweets": "x"}) == 0
+        assert engagement_raw({"likes": -50}) == 0  # 负数 clamp 到 0
+        # 数字字符串可被 int() 解析 → 正常计入
+        assert engagement_raw({"likes": "30"}) == 30
+        # 混合：脏的归 0，干净的正常
+        assert engagement_raw({"likes": None, "bookmarks": 10}) == 30  # 3*10
+        assert engagement_score({"likes": None}) == 0.0
 
     # --- mentioner_authority (v2: tier-based, decoupled from count) ---
     def test_mentioner_authority_with_tier(self):
@@ -186,25 +212,63 @@ class TestScore:
         # Active repo should score higher than dead one (all else equal)
         assert s_active > s_dead
 
-    def test_mention_saturation_fix_affects_score(self):
-        """SC-2: with denominator 12, mention=5 no longer saturates to 1.0
-        → overall score lower than mention=12."""
+    def test_weights_sum_to_one(self):
+        """v3: 6 个加权维之和必须 = 1.0（bonus 不算在内）。"""
+        total = (
+            scoring.W_MENTIONER_AUTHORITY
+            + scoring.W_TOPIC_RELEVANCE
+            + scoring.W_ENGAGEMENT
+            + scoring.W_ACTIVITY
+            + scoring.W_STARS
+            + scoring.W_README_QUALITY
+        )
+        assert total == pytest.approx(1.0)
+
+    def test_engagement_affects_score(self):
+        """v3: engagement 维真正进入 total —— 高互动 repo 分更高（其余相同）。"""
         base = {
-            "mentioners": ["@a", "@b"],
+            "mention_count": 1,
+            "mentioners": ["@a"],
             "stars": 10000,
             "commits_7d": 15,
             "velocity_7d": None,
+            "readme_excerpt": "x" * 501,
+            "topic_tags": ["python"],
+        }
+        hot = dict(base, engagement={"likes": 5000, "retweets": 800, "bookmarks": 1200})
+        cold = dict(base, engagement=None)
+        assert score(hot) > score(cold)
+
+    def test_multi_mention_bonus_applied(self):
+        """v3: mention_count>=2（独立共识）加 +0.08 bonus；==1 不加。"""
+        base = {
+            "mentioners": ["@a", "@b"],
+            "stars": 5000,
+            "commits_7d": 10,
+            "velocity_7d": None,
+            "readme_excerpt": "x" * 100,
+            "topic_tags": ["python"],
+            "engagement": None,
+        }
+        single = dict(base, mention_count=1)
+        consensus = dict(base, mention_count=2)
+        # 同样的维度分，consensus 因 bonus 高出约 MULTI_MENTION_BONUS
+        assert score(consensus) - score(single) == pytest.approx(MULTI_MENTION_BONUS, abs=1e-4)
+
+    def test_multi_mention_bonus_does_not_overflow(self):
+        """bonus 后仍封顶 1.0。"""
+        maxed = {
+            "mention_count": 5,
+            "mentioners": ["@a", "@b", "@c"],
+            "stars": 100000,
+            "commits_7d": 30,
+            "velocity_7d": None,
             "readme_excerpt": "x" * 1001 + "\n```py\nx\n```",
             "topic_tags": ["ai", "agent", "llm", "python", "rust", "cli"],
+            "engagement": {"likes": 50000, "retweets": 9000, "bookmarks": 9000},
+            "_tier_map": {"a": 1, "b": 1, "c": 1},
         }
-        low = dict(base, mention_count=2)
-        mid = dict(base, mention_count=5)
-        high = dict(base, mention_count=12)
-
-        s_low = score(low)
-        s_mid = score(mid)
-        s_high = score(high)
-        assert s_low < s_mid < s_high
+        assert score(maxed) <= 1.0
 
     def test_tier_affects_score(self):
         """SC-3: same mention count, different tiers → different total score."""
@@ -279,9 +343,10 @@ class TestDistributionFixture:
 
 
 class TestMentionThreshold:
-    def test_fixed_two(self):
-        # 用户决策：门槛固定为 2（不再随活跃博主数自适应放大）
-        assert mention_threshold(1) == 2
-        assert mention_threshold(15) == 2
-        assert mention_threshold(57) == 2   # 旧公式会算出 4
-        assert mention_threshold(150) == 2  # 旧公式会算出 10
+    def test_fixed_one(self):
+        # v3 用户决策（方案 A）：门槛降到 1（任何 1 个博主提及即够格进候选），
+        # 共识改为 score 内 +0.08 bonus，不再当门槛。
+        assert mention_threshold(1) == 1
+        assert mention_threshold(15) == 1
+        assert mention_threshold(57) == 1
+        assert mention_threshold(150) == 1

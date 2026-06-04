@@ -3,7 +3,7 @@
 import re
 import subprocess
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
@@ -60,7 +60,7 @@ class TwitterCollector:
                 raw_urls += _GITHUB_URL_PATTERN.findall(text)
                 mentioned_at = (
                     tweet.get("createdAtISO") or tweet.get("createdAt")
-                    or tweet.get("created_at") or datetime.now(timezone.utc).isoformat()
+                    or tweet.get("created_at") or datetime.now(UTC).isoformat()
                 )
                 for url in raw_urls:
                     normalized = normalize(url)
@@ -75,6 +75,7 @@ class TwitterCollector:
                         tweet_id=str(tweet.get("id", "")),
                         mentioned_at=mentioned_at,
                         tweet_text=text[:500],
+                        metrics=tweet.get("metrics"),  # 推文热度信号（engagement 打分维）
                     ))
             time.sleep(BASE_SLEEP_BETWEEN_HANDLES)
 

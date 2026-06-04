@@ -9,21 +9,18 @@ Pipeline output contract (§step-4 PIPELINE_OUTPUT_CONTRACT):
 import json
 import os
 import sys
-import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any
 
-from .intake import CollectorResult
+from .dedup_sqlite import DedupStore
+from .enricher import enrich
 from .intake.fallback_judge import decide
 from .intake.trending_html_collector import TrendingHTMLCollector
 from .intake.twitter_collector import TwitterCollector
-from .enricher import enrich
-from .scoring import score_batch, mention_threshold
+from .scoring import engagement_raw, mention_threshold, score_batch
 from .star_history import StarHistory
 from .synthesis import synthesize
 from .validator import validate
-from .dedup_sqlite import DedupStore
 
 _PROJECT_ROOT = Path(os.environ.get("PROJECT_ROOT", "")) if os.environ.get("PROJECT_ROOT") else Path(__file__).resolve().parents[4]  # src/akb2/briefing/github/pipeline.py → project root (parents[4]=<root>; 旧值 [5] 越到 <root> 上一级，导致 POOL_CONFIG/skip 文件落错目录)
 POOL_CONFIG = _PROJECT_ROOT / "config" / "github_curator_pool.yaml"
@@ -113,6 +110,7 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
         data["mention_count"] = agg["mention_count"]
         data["mentioners"] = agg["mentioners"]
         data["first_mention_at"] = agg["first_mention_at"]
+        data["engagement"] = agg.get("engagement")  # MAX tweet metrics（engagement 打分维）
 
         # Record star snapshot (for future velocity computation)
         if data.get("stars", 0) > 0:
@@ -167,7 +165,7 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
 
     # Step 8: Render + validate + write vault
     next_day = (date.today() + timedelta(days=1)).isoformat()
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
 
     briefing = {
         "schema_version": "v1",
@@ -232,6 +230,7 @@ def _aggregate(candidates: list) -> dict[str, dict]:
                 "mention_count": 0,
                 "mentioners": [],
                 "first_mention_at": c.mentioned_at,
+                "engagement": None,
             }
         entry = result[c.repo_url]
         entry["mention_count"] += 1
@@ -239,6 +238,11 @@ def _aggregate(candidates: list) -> dict[str, dict]:
             entry["mentioners"].append(c.mentioner)
         if c.mentioned_at < entry["first_mention_at"]:
             entry["first_mention_at"] = c.mentioned_at
+        # engagement 取 MAX（最火一次背书），不取 sum：sum 会随被提次数累加 →
+        # 重新引入 mention_count 偏置，与 v3 去共识主轴的目标相悖。
+        # 严格 > ：并列保留首见（含 None 起步，0 > 0 为 False → 后续真 metrics 正确接管）。
+        if engagement_raw(c.metrics) > engagement_raw(entry["engagement"]):
+            entry["engagement"] = c.metrics
     return result
 
 
@@ -261,7 +265,7 @@ def _mock_enrich(repo_url: str) -> dict:
 def _mock_intake(force_layer: int | None = None) -> tuple[list, str]:
     """Generate mock candidates for testing."""
     from .intake import Candidate
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
 
     mock_repos = [
         ("microsoft/qlib", ["@simonw", "@karpathy", "@GitTrend0x"]),
@@ -297,6 +301,14 @@ def _mock_intake(force_layer: int | None = None) -> tuple[list, str]:
 
     candidates = []
     for repo, mentioners in mock_repos:
+        # 确定性 mock metrics（按 repo hash 派生），让 mock 链路也走 engagement 维
+        h = sum(ord(ch) for ch in repo)
+        metrics = {
+            "likes": 100 + (h % 5000),
+            "retweets": 10 + (h % 500),
+            "bookmarks": 20 + (h % 800),
+            "views": 10000 + (h % 90000),
+        }
         for m in mentioners:
             candidates.append(Candidate(
                 repo_url=f"https://github.com/{repo}",
@@ -304,6 +316,7 @@ def _mock_intake(force_layer: int | None = None) -> tuple[list, str]:
                 tweet_id="mock",
                 mentioned_at=now,
                 tweet_text="mock tweet",
+                metrics=metrics,
             ))
 
     layer = "layer1" if force_layer is None else f"layer{force_layer}"
@@ -365,7 +378,7 @@ def _write_skipped(reason: str, candidates_count: int, fallback_layer: str) -> N
         "reason": reason,
         "candidates_count": candidates_count,
         "fallback_layer_used": fallback_layer,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
     }
     (_PROJECT_ROOT / "briefing-skipped.json").write_text(json.dumps(skipped, indent=2))
     print(f"briefing: SKIPPED ({reason})")
@@ -376,7 +389,7 @@ def _write_failed(reason: str, fallback_layer: str = "skip") -> None:
         "status": "failed",
         "reason": reason,
         "fallback_layer_used": fallback_layer,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
     }
     (_PROJECT_ROOT / "briefing-failed.json").write_text(json.dumps(failed, indent=2))
     print(f"briefing: FAILED ({reason})")

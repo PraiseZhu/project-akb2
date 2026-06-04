@@ -9,6 +9,7 @@ class Candidate(NamedTuple):
     tweet_id: str | None  # Layer 2/3 可能为 None
     mentioned_at: str  # ISO datetime
     tweet_text: str | None  # Layer 2/3 可能为 None
+    metrics: dict | None = None  # 推文互动 {likes,retweets,bookmarks,...}；Layer 2/3 为 None
 
 
 class CollectorResult(NamedTuple):

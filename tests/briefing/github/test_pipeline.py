@@ -5,9 +5,6 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from unittest import mock
-
-import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
@@ -174,3 +171,68 @@ class TestNoveltyDedup:
         assert "briefing: WROTE" not in r2.stdout, f"run2 不应重复推: {r2.stdout}"
         assert "SKIPPED" in r2.stdout, f"run2 应 skip: {r2.stdout}\n{r2.stderr}"
         assert "too_few_aggregated_repos" in r2.stdout, f"run2 skip 原因应为候选不足: {r2.stdout}"
+
+
+class TestAggregateEngagement:
+    """v3: _aggregate 跨提及取 MAX engagement（不 sum，避免重新引入 mention 偏置）。"""
+
+    def test_aggregate_takes_max_engagement(self):
+        from akb2.briefing.github.intake import Candidate
+        from akb2.briefing.github.pipeline import _aggregate
+
+        url = "https://github.com/a/b"
+        ts = "2026-06-01T00:00:00Z"
+        cands = [
+            Candidate(url, "@x", "1", ts, "t", {"likes": 10}),
+            Candidate(url, "@y", "2", ts, "t", {"likes": 5000, "bookmarks": 2000}),  # 最火
+            Candidate(url, "@z", "3", ts, "t", None),
+        ]
+        agg = _aggregate(cands)
+        assert agg[url]["mention_count"] == 3
+        assert agg[url]["engagement"] == {"likes": 5000, "bookmarks": 2000}
+
+    def test_aggregate_engagement_none_when_no_metrics(self):
+        from akb2.briefing.github.intake import Candidate
+        from akb2.briefing.github.pipeline import _aggregate
+
+        url = "https://github.com/a/b"
+        cands = [Candidate(url, "@x", "1", "2026-06-01T00:00:00Z", "t", None)]
+        agg = _aggregate(cands)
+        assert agg[url]["engagement"] is None
+
+    def test_aggregate_none_first_then_real_metrics_wins(self):
+        """None 起步的 entry，后续真 metrics 必须接管（锁住严格 > 的初始化契约：
+        防 None-first 静默回归）。"""
+        from akb2.briefing.github.intake import Candidate
+        from akb2.briefing.github.pipeline import _aggregate
+
+        url = "https://github.com/a/b"
+        ts = "2026-06-01T00:00:00Z"
+        cands = [
+            Candidate(url, "@x", "1", ts, "t", None),            # None 起步
+            Candidate(url, "@y", "2", ts, "t", {"likes": 100}),  # 真 metrics 应接管
+        ]
+        agg = _aggregate(cands)
+        assert agg[url]["engagement"] == {"likes": 100}
+
+    def test_aggregate_does_not_sum_engagement(self):
+        """Codex P3: 锁 do-not-sum 不变式。两条低互动之和 > 单条最热，若误改成 sum
+        会选错；断言聚合结果就是那个最热的单条 metrics 对象，且未被累加。"""
+        from akb2.briefing.github.intake import Candidate
+        from akb2.briefing.github.pipeline import _aggregate
+        from akb2.briefing.github.scoring import engagement_raw
+
+        url = "https://github.com/a/b"
+        ts = "2026-06-01T00:00:00Z"
+        low_a = {"likes": 300}   # raw 300
+        low_b = {"likes": 300}   # raw 300（两条之和 600 > 最热单条 500）
+        hot = {"likes": 500}     # raw 500，最热单条
+        cands = [
+            Candidate(url, "@x", "1", ts, "t", low_a),
+            Candidate(url, "@y", "2", ts, "t", hot),
+            Candidate(url, "@z", "3", ts, "t", low_b),
+        ]
+        agg = _aggregate(cands)
+        # 必须是最热单条本身（不是累加出来的 dict）
+        assert agg[url]["engagement"] == hot
+        assert engagement_raw(agg[url]["engagement"]) == 500  # 非 1100(sum)

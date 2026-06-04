@@ -204,19 +204,35 @@ DAILY_RUN_BUDGET_MIN = 12       # 含失败重试，总时长上限
 HEALTH_CHECK_CMD = ["twitter", "status"]  # 入口先验 cookie 有效
 ```
 
-### 6.4 scoring 6 维权重（v3 冷启动版）
+### 6.4 scoring 权重（v3：信任 + 推文热度，2026-06-04 真实链路验收后改）
+
+**机制变更背景**：原设计以"多人共识热度"为主轴（mention_count 0.30~0.35）。真实链路
+全量验收（61 博主单日跑）发现 curator pool 内**多人撞车极罕见**——全天仅 1 个 repo 被
+≥2 个博主提到。mention 频次 ≈ 常数 1 → 该维变死权重，top10 实质随机；门槛=2 时 filter
+后候选 <10 → 每天 skip 无简报。用户决策（方案 A）：mention 共识退出主轴，改为
+**mentioner_authority（谁推荐的）为主信号 + engagement（推文热度）为次要信号**。
 
 | 维度 | 权重 | 计算公式 |
 |------|------|---------|
-| mention_count | 0.35 | `min(1.0, mentions / 5)` 归一化到 0-1 |
-| mentioner_authority | 0.15 | `sum(mentioner.weight)` / max_possible，其中 weight = `verified ? 1.0 : 0.5` |
-| stars (proxy) | 0.10 | `log10(max(stars, 1)) / 5`（冷启动期；启用 velocity 后归 0）|
-| recency_of_creation | 0.10 | `exp(-days_since_created / 365)` |
-| readme_quality | 0.10 | `0.5 * (chars > 1000) + 0.5 * has_code_block` |
+| mentioner_authority | 0.35 | tier 加权 `sum(tier_weight)/3`，tier 1/2/3 = 1.0/0.6/0.3（主信号：谁推荐的）|
 | topic_relevance | 0.20 | `len(matched_topics) / 6` |
-| safety | 强降权 | crypto/NSFW/dotfiles 关键词命中 → score = 0 |
+| engagement | 0.15 | `min(1.0, log10(raw+1)/4.0)`，`raw = likes + 2*retweets + 3*bookmarks`（views 不算）|
+| activity | 0.15 | `velocity_7d/50`（启用后）→ fallback `commits_7d/30`；None=0.5 中性，0=死库 |
+| stars | 0.10 | `log10(max(stars,1)) / 5` |
+| readme_quality | 0.05 | `0.5 * (chars > 1000) + 0.5 * has_code_block` |
+| safety | 强降权 | crypto/NSFW/赌博等关键词命中 → score = 0 |
 
-**mention_count 阈值**（用于 filter 阶段，scoring 之前过滤）：`max(2, ceil(active_curators_today / 15))` 自适应。
+6 个加权维之和 = 1.0。
+
+**独立共识 bonus**：`mention_count >= 2`（2+ 博主独立提到同一 repo = 所有信号里最强、
+罕见但高价值）→ 最终分 **+0.08**（不进加权和，封顶 1.0）。共识从"门槛/主轴"降级为"加成"。
+
+**engagement 聚合**：多博主提同一 repo 时取 **MAX**（最火一次背书），不取 sum——sum 会
+随被提次数累加，重新引入 mention_count 偏置，与去共识主轴的目标相悖。Layer2/3（无真实
+推文）engagement = 0，其余维度承载。
+
+**mention 门槛**（filter 阶段）：固定 **1**（任何 1 个博主提及即够格进候选）。历史：
+`max(2, ceil(active/15))` → 固定 2 → 真实数据下候选 <10 全 skip → 降到 1。排序交给 scoring。
 
 ### 6.5 简报内容 schema（github_briefing_v1）
 
@@ -484,7 +500,7 @@ score 0.87 · 推荐于 2026-05-28T13:22
 | 落 vault `AKB2.0/AI TRENDS/GitHub/<下一日> GitHub Briefing.{md,json}` 同对儿 | `pipeline.py` | 与 social-trends 的 Social/ 子目录平行；JSON 给 SC / validator，MD 给人读 |
 | launchd 本地 5:30（mac mini 北京时区）| `launchd/com.akb2.github_briefing.plist` 设 `StartCalendarInterval.Hour=5 Minute=30` | launchd 按本地时区解释 Hour 字段；github 排社媒（7:30/8:30）之前先跑，独占干净 X 账号 ~1h 后留 60min 限速恢复缓冲，避免两链路抢同一账号限速额度 |
 | URL 归一化强制小写 + 剥尾巴 | `url_normalizer.py` | 避免 dedup 把同 repo 算成多个 |
-| mention 阈值自适应 `max(2, ceil(active/15))` | `pipeline.py` filter 阶段 | 低活跃日避免全 1 弱信号 |
+| mention 门槛固定 1 + 共识降级为 +0.08 bonus（v3） | `scoring.py` `mention_threshold`/`score` | 真实链路验收：撞车极罕见，门槛=2 致每日 skip；改 authority+engagement 主导（见 §6.4）|
 
 ## 7 风险表
 
@@ -497,7 +513,7 @@ score 0.87 · 推荐于 2026-05-28T13:22
 | R-5 | GitHub Trending HTML 改版 selector 失效 | P2 | 月度回归 + selector 失败时降级 Layer 3 |
 | R-6 | mac mini 合盖睡眠 → launchd 跳过 | P1 | 部署设 `pmset -a sleep 0`；launchd `RunAtLoad=true` 补偿 |
 | R-7 | 同 repo 多种 URL 写法 dedup 失效 | P3 | `url_normalizer.py` 强制 lowercase + 剥尾巴 |
-| R-8 | mention_count 阈值在低活跃日全 = 1 | P3 | 自适应阈值 `max(2, ceil(active/15))` |
+| R-8 | mention 频次在此 pool 内 ≈ 常数 1（多人撞车极罕见，真实验收证实）| P2 | v3：mention 退出主轴，authority+engagement 主导排序；门槛降 1，共识改 +0.08 bonus（§6.4）|
 | R-9 | 与 social-trends merge 冲突 | P2 | 子包隔离 + §6.1 owned_paths 表 + 跟那边 PR 注脚 |
 | R-10 | DeepSeek API 故障 → synthesis 失败 | P2 | retry 3 次 + 失败写 `briefing-failed.json` 不写空文件 |
 | R-11 | GitHub PAT 速率限制（5000/h 几乎不可能触发）| P3 | enricher 触达 4500/h 时 abort + 通知 |

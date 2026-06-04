@@ -4,22 +4,35 @@ v2 changes (2026-05-29):
 - mention_count denominator 5→12 (de-saturate)
 - mentioner_authority accepts curator tier (decoupled from mention_count)
 - activity_score replaces recency_score (commits_7d + star velocity)
-- Weights rearranged: mention 0.30 / authority 0.15 / stars 0.10 /
-  activity 0.15 / readme 0.10 / topic 0.20 (sum = 1.0)
+
+v3 changes (2026-06-04): mention_count 退出加权和。真实链路验收发现 curator pool 内
+多人撞车极罕见（全天 61 博主仅 1 个 repo 被 ≥2 人提到）→ mention 频次 ≈ 常数 1，
+旧 0.30 权重变死权重，top10 实质随机。改为：
+- engagement（推文热度，likes+2rt+3bm log 归一）入维，curator 质量的次要信号
+- mentioner_authority 升为主信号 0.35（"谁推荐的" = curator pool 真正买到的东西）
+- mention 共识改为罕见 bonus（2+ 独立博主 = 最强信号，+0.08 不进加权和）
+- 权重：authority 0.35 / topic 0.20 / engagement 0.15 / activity 0.15 /
+  stars 0.10 / readme 0.05 (sum = 1.0)
 """
 
 import math
 import re
-from datetime import datetime, timezone
 from typing import Any
 
-# 6-dimension weights (sum = 1.0)
-W_MENTION_COUNT = 0.30
-W_MENTIONER_AUTHORITY = 0.15
-W_STARS = 0.10
-W_ACTIVITY = 0.15
-W_README_QUALITY = 0.10
+# 6 weighted dims (sum = 1.0) — v3
+W_MENTIONER_AUTHORITY = 0.35
 W_TOPIC_RELEVANCE = 0.20
+W_ENGAGEMENT = 0.15
+W_ACTIVITY = 0.15
+W_STARS = 0.10
+W_README_QUALITY = 0.05
+
+# 独立共识 bonus：2+ 个博主独立提到同一 repo = 所有信号里最强（罕见但高价值）。
+# 不进加权和，直接给最终分加成（封顶 1.0）。
+MULTI_MENTION_BONUS = 0.08
+
+# engagement log 归一化分母：min(1.0, log10(raw+1)/NORM)。raw=1k→0.75, 1万→1.0。
+_ENGAGEMENT_NORM = 4.0
 
 # Authority tier weights
 _TIER_WEIGHT = {1: 1.0, 2: 0.6, 3: 0.3}
@@ -45,13 +58,40 @@ _RELEVANT_TOPICS = {
 }
 
 
-def mention_count_score(mentions: int) -> float:
-    """Score by mention frequency. Denominator 12 avoids saturation
-    at the filter threshold (5), giving headroom for differentiation.
+def engagement_raw(metrics: dict | None) -> int:
+    """Weighted raw tweet engagement.
 
-    mention=2→0.167, 5→0.417, 8→0.667, 12→1.0 (strictly monotonic).
+    bookmarks×3（"存下来以后用" = 真实使用意图，最强 repo 质量代理）
+    > retweets×2（放大/背书）> likes×1（廉价随手）。
+    views 不算（≈粉丝数噪声，已被 authority 维捕获）。
+    Layer2/3 或缺失 metrics → 0。
+
+    脏值防御：metrics 值若为 None / 字符串 / 负数（上游 twitter-cli 字段不稳时可能出现），
+    coerce 为 0，不让脏数据 raise TypeError 崩掉整条打分（fail-safe，非 fail-silent —
+    脏值本就该计 0 而非中断）。
     """
-    return min(1.0, mentions / 12)
+    if not metrics:
+        return 0
+
+    def _n(key: str) -> int:
+        try:
+            return max(0, int(metrics.get(key) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    return _n("likes") + 2 * _n("retweets") + 3 * _n("bookmarks")
+
+
+def engagement_score(metrics: dict | None) -> float:
+    """Tweet engagement score, log10-normalized.
+
+    raw=5→0.19, 100→0.5, 1k→0.75, 1万→1.0。多博主聚合时上游取 MAX（最火一次背书），
+    不取 sum（sum 会重新引入 mention_count 偏置）。
+    """
+    raw = engagement_raw(metrics)
+    if raw <= 0:
+        return 0.0
+    return min(1.0, math.log10(raw + 1) / _ENGAGEMENT_NORM)
 
 
 def mentioner_authority_score(
@@ -147,27 +187,31 @@ def safety_check(repo_data: dict[str, Any]) -> bool:
 
 
 def score(repo_data: dict[str, Any]) -> float:
-    """Compute 6-dimension weighted score for a repository."""
+    """Compute weighted score (6 dims) + 独立共识 bonus for a repository."""
     if not safety_check(repo_data):
         return 0.0
 
-    mention_count = repo_data.get("mention_count", 0)
     mentioners = repo_data.get("mentioners", [])
+    mention_count = repo_data.get("mention_count", 0)
     stars = repo_data.get("stars", 0)
     commits_7d = repo_data.get("commits_7d")  # int|None
     velocity_7d = repo_data.get("velocity_7d")  # int|None
     readme_excerpt = repo_data.get("readme_excerpt")
     topic_tags = repo_data.get("topic_tags", [])
+    engagement = repo_data.get("engagement")  # dict|None: aggregated tweet metrics (MAX)
     tier_map = repo_data.get("_tier_map")  # injected by pipeline
 
-    s1 = W_MENTION_COUNT * mention_count_score(mention_count)
-    s2 = W_MENTIONER_AUTHORITY * mentioner_authority_score(mentioners, tier_map)
-    s3 = W_STARS * stars_score(stars)
-    s4 = W_ACTIVITY * activity_score(commits_7d=commits_7d, velocity_7d=velocity_7d)
-    s5 = W_README_QUALITY * readme_quality_score(readme_excerpt)
-    s6 = W_TOPIC_RELEVANCE * topic_relevance_score(topic_tags)
+    s_auth = W_MENTIONER_AUTHORITY * mentioner_authority_score(mentioners, tier_map)
+    s_topic = W_TOPIC_RELEVANCE * topic_relevance_score(topic_tags)
+    s_eng = W_ENGAGEMENT * engagement_score(engagement)
+    s_act = W_ACTIVITY * activity_score(commits_7d=commits_7d, velocity_7d=velocity_7d)
+    s_stars = W_STARS * stars_score(stars)
+    s_readme = W_README_QUALITY * readme_quality_score(readme_excerpt)
 
-    total = s1 + s2 + s3 + s4 + s5 + s6
+    total = s_auth + s_topic + s_eng + s_act + s_stars + s_readme
+    # 独立共识 bonus：2+ 个博主独立提到 = 最强信号（罕见但高价值），不进加权和
+    if mention_count >= 2:
+        total += MULTI_MENTION_BONUS
     return round(min(1.0, total), 4)
 
 
@@ -179,11 +223,13 @@ def score_batch(repos: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def mention_threshold(active_curators_today: int) -> int:
-    """Mention threshold = 2（固定）。
+    """Mention threshold = 1（v3）。
 
-    历史：曾用 max(2, ceil(active/15))，57 个活跃博主算出 4，对真实单日数据过严
-    （多数 repo 当天仅被 1 个博主提到）→ filter 后 <10 → 当天 skip 无简报。
-    用户决策：固定为 2（被 ≥2 个博主提到即够格进候选，排序再靠 stars/活跃度等维度）。
+    历史：曾用 max(2, ceil(active/15))→ 固定 2。真实链路验收发现 curator pool 内多人
+    撞车极罕见（全天 61 博主仅 1 个 repo 被 ≥2 人提到）→ 门槛=2 时 filter 后候选 <10
+    → 每天 skip 无简报，博主腿出不了活。
+    用户决策（方案 A）：降到 1（任何 1 个博主提及即够格进候选），排序交给
+    authority/engagement/质量维；共识不再当门槛，改为 score 内 +0.08 bonus。
     保留 active_curators_today 参数以兼容调用方签名。
     """
-    return 2
+    return 1

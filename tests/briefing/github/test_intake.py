@@ -1,17 +1,11 @@
 """Tests for intake collectors (Layer 1, 2, 3)."""
 
 import json
-import subprocess
-from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest import mock
 
-import pytest
-import yaml
-
-from akb2.briefing.github.intake import Candidate, CollectorResult
-from akb2.briefing.github.intake.trending_html_collector import TrendingHTMLCollector
 from akb2.briefing.github.intake.manual_json_collector import ManualJSONCollector
+from akb2.briefing.github.intake.trending_html_collector import TrendingHTMLCollector
 
 # --- Sample data ---
 
@@ -171,6 +165,44 @@ class TestTwitterCollector:
 
         qlib = [c for c in result.candidates if "microsoft/qlib" in c.repo_url]
         assert len(qlib) == 1  # 同博主去重
+
+    def test_collect_captures_tweet_metrics(self, tmp_path):
+        """v3: collector 把 tweet.metrics 带进 Candidate（engagement 打分维的数据源）。"""
+        from akb2.briefing.github.intake.twitter_collector import TwitterCollector
+
+        tweets = [{
+            "id": "9", "isRetweet": False,
+            "full_text": "great https://github.com/microsoft/qlib",
+            "metrics": {"likes": 100, "retweets": 20, "bookmarks": 50, "views": 9999},
+        }]
+        pool_yaml = tmp_path / "pool.yaml"
+        pool_yaml.write_text('pool:\n  - handle: "@solo"\n    topics: [AI]\n')
+
+        collector = TwitterCollector(twitter_bin="fake-twitter", db_path=tmp_path / "dedup.db")
+        with mock.patch.object(collector, "_health_check", return_value=True):
+            with mock.patch.object(collector, "_fetch_user_posts", return_value=tweets):
+                with mock.patch("time.sleep", return_value=None):
+                    result = collector.collect(pool_yaml)
+
+        qlib = [c for c in result.candidates if "microsoft/qlib" in c.repo_url]
+        assert len(qlib) == 1
+        assert qlib[0].metrics == {"likes": 100, "retweets": 20, "bookmarks": 50, "views": 9999}
+
+    def test_collect_missing_metrics_is_none(self, tmp_path):
+        """无 metrics 字段的 tweet → Candidate.metrics 为 None（不崩）。"""
+        from akb2.briefing.github.intake.twitter_collector import TwitterCollector
+
+        tweets = [{"id": "1", "isRetweet": False, "full_text": "https://github.com/a/b"}]
+        pool_yaml = tmp_path / "pool.yaml"
+        pool_yaml.write_text('pool:\n  - handle: "@solo"\n    topics: [AI]\n')
+
+        collector = TwitterCollector(twitter_bin="fake-twitter", db_path=tmp_path / "dedup.db")
+        with mock.patch.object(collector, "_health_check", return_value=True):
+            with mock.patch.object(collector, "_fetch_user_posts", return_value=tweets):
+                with mock.patch("time.sleep", return_value=None):
+                    result = collector.collect(pool_yaml)
+
+        assert result.candidates[0].metrics is None
 
 
 # --- Layer 2: TrendingHTMLCollector ---
