@@ -1,0 +1,279 @@
+{
+  "creators": [
+    {
+      "id": "yt-cole-medin",
+      "platform": "youtube",
+      "channel_url": "https://www.youtube.com/@ColeMedin",
+      "name": "Cole Medin",
+      "enabled": true,
+      "max_per_day": 1,
+      "keywords": [],
+      "tier": "active"
+    },
+    {
+      "id": "yt-indydevdan",
+      "platform": "youtube",
+      "channel_url": "https://www.youtube.com/@indydevdan",
+      "name": "IndyDevDan",
+      "enabled": true,
+      "max_per_day": 1,
+      "keywords": [],
+      "tier": "active"
+    },
+    {
+      "id": "yt-nate-herk",
+      "platform": "youtube",
+      "channel_url": "https://www.youtube.com/@nateherk",
+      "name": "Nate Herk",
+      "enabled": true,
+      "max_per_day": 1,
+      "keywords": [],
+      "tier": "active"
+    },
+    {
+      "id": "yt-fireship",
+      "platform": "youtube",
+      "channel_url": "https://www.youtube.com/@fireship",
+      "name": "Fireship",
+      "enabled": true,
+      "max_per_day": 1,
+      "keywords": [
+        "AI",
+        "agent",
+        "Claude",
+        "LLM",
+        "GPT",
+        "MCP",
+        "Cursor",
+        "coding"
+      ],
+      "tier": "active"
+    },
+    {
+      "id": "yt-dave-ebbelaar",
+      "platform": "youtube",
+      "channel_url": "https://www.youtube.com/@daveebbelaar",
+      "name": "Dave Ebbelaar",
+      "enabled": true,
+      "max_per_day": 1,
+      "keywords": [],
+      "tier": "active"
+    },
+    {
+      "id": "yt-ai-jason",
+      "platform": "youtube",
+      "channel_url": "https://www.youtube.com/@AIJasonZ",
+      "name": "AI Jason",
+      "enabled": true,
+      "max_per_day": 1,
+      "keywords": [],
+      "tier": "active"
+    },
+    {
+      "id": "bili-mark-tech",
+      "platform": "bilibili",
+      "uid": "1815948385",
+      "name": "马克的技术工作坊",
+      "enabled": true,
+      "max_per_day": 1,
+      "keywords": [],
+      "tier": "active"
+    },
+    {
+      "id": "bili-tommy-tang",
+      "platform": "bilibili",
+      "uid": "474347248",
+      "name": "唐国梁Tommy",
+      "enabled": true,
+      "max_per_day": 1,
+      "keywords": [],
+      "tier": "active"
+    },
+    {
+      "id": "bili-akinokoe",
+      "platform": "bilibili",
+      "uid": "103118875",
+      "name": "Akinokoe",
+      "enabled": true,
+      "max_per_day": 1,
+      "keywords": [
+        "AI",
+        "大模型",
+        "Agent",
+        "Claude"
+      ],
+      "tier": "active"
+    },
+    {
+      "id": "bili-qiuzhi2046",
+      "platform": "bilibili",
+      "uid": "385670211",
+      "name": "秋芝2046",
+      "enabled": true,
+      "max_per_day": 1,
+      "keywords": [],
+      "tier": "active"
+    },
+    {
+      "id": "yt-andrej-karpathy",
+      "platform": "youtube",
+      "channel_url": "https://www.youtube.com/@AndrejKarpathy",
+      "name": "Andrej Karpathy",
+      "enabled": true,
+      "max_per_day": 1,
+      "keywords": [],
+      "tier": "quality"
+    },
+    {
+      "id": "yt-yannic-kilcher",
+      "platform": "youtube",
+      "channel_url": "https://www.youtube.com/@YannicKilcher",
+      "name": "Yannic Kilcher",
+      "enabled": true,
+      "max_per_day": 1,
+      "keywords": [
+        "AI",
+        "agent",
+        "LLM",
+        "transformer",
+        "Claude",
+        "GPT"
+      ],
+      "tier": "quality"
+    },
+    {
+      "id": "yt-sam-witteveen",
+      "platform": "youtube",
+      "channel_url": "https://www.youtube.com/@samwitteveen",
+      "name": "Sam Witteveen",
+      "enabled": true,
+      "max_per_day": 1,
+      "keywords": [],
+      "tier": "quality"
+    },
+    {
+      "id": "yt-two-minute-papers",
+      "platform": "youtube",
+      "channel_url": "https://www.youtube.com/@TwoMinutePapers",
+      "name": "Two Minute Papers",
+      "enabled": true,
+      "max_per_day": 1,
+      "keywords": [
+        "AI",
+        "agent",
+        "LLM",
+        "neural",
+        "GPT",
+        "language model"
+      ],
+      "tier": "quality"
+    },
+    {
+      "id": "yt-sentdex",
+      "platform": "youtube",
+      "channel_url": "https://www.youtube.com/@sentdex",
+      "name": "Sentdex",
+      "enabled": true,
+      "max_per_day": 1,
+      "keywords": [
+        "AI",
+        "agent",
+        "LLM",
+        "GPT",
+        "Claude",
+        "machine learning"
+      ],
+      "tier": "quality"
+    },
+    {
+      "id": "yt-all-about-ai",
+      "platform": "youtube",
+      "channel_url": "https://www.youtube.com/@AllAboutAI",
+      "name": "All About AI",
+      "enabled": true,
+      "max_per_day": 1,
+      "keywords": [],
+      "tier": "quality"
+    },
+    {
+      "id": "yt-matthew-berman",
+      "platform": "youtube",
+      "channel_url": "https://www.youtube.com/@MatthewBerman",
+      "name": "Matthew Berman",
+      "enabled": true,
+      "max_per_day": 1,
+      "keywords": [
+        "AI",
+        "agent",
+        "Claude",
+        "LLM",
+        "startup",
+        "founder"
+      ],
+      "tier": "quality"
+    },
+    {
+      "id": "yt-worldofai",
+      "platform": "youtube",
+      "channel_url": "https://www.youtube.com/@intheworldofai",
+      "name": "WorldofAI",
+      "enabled": true,
+      "max_per_day": 1,
+      "keywords": [],
+      "tier": "quality"
+    },
+    {
+      "id": "bili-limu-ai",
+      "platform": "bilibili",
+      "uid": "1567748478",
+      "name": "跟李沐学AI",
+      "enabled": true,
+      "max_per_day": 1,
+      "keywords": [],
+      "tier": "quality"
+    },
+    {
+      "id": "bili-genji",
+      "platform": "bilibili",
+      "uid": "49746395",
+      "name": "GenJi是真想教会你",
+      "enabled": true,
+      "max_per_day": 1,
+      "keywords": [
+        "AI",
+        "Claude",
+        "Agent",
+        "大模型",
+        "GPT"
+      ],
+      "tier": "quality"
+    },
+    {
+      "id": "bili-blink-ai",
+      "platform": "bilibili",
+      "uid": "383485601",
+      "name": "Blink的AI笔记",
+      "enabled": true,
+      "max_per_day": 1,
+      "keywords": [],
+      "tier": "active"
+    }
+  ],
+  "settings": {
+    "max_video_duration_minutes": 0,
+    "min_video_duration_minutes": 3,
+    "days_lookback": 14,
+    "start_date": "2026-04-01",
+    "dedup_strategy": "llm_cluster",
+    "coldstart": true,
+    "coldstart_max_per_day": 2,
+    "process_order": "quality_first",
+    "nlm_profile": "default",
+    "nlm_fallback_profile": "default",
+    "nlm_daily_quota": 15,
+    "skip_relevance_filter": false,
+    "skip_keyword_filter": true,
+    "ytdlp_cookies_browser": "chrome",
+    "ytdlp_cookies_file": "yt-cookies.txt"
+  }
+}
