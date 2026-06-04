@@ -22,7 +22,12 @@ from src.akb2.video.assembler import (
     PromotionTargetNotFound,
 )
 from src.akb2.video.config import VideoConfig
-from src.akb2.video.extractor import ExtractedFields, KeyFinding, SourceSpan
+from src.akb2.video.extractor import (
+    ExtractedFields,
+    FutureQuestion,
+    KeyFinding,
+    SourceSpan,
+)
 from src.akb2.video.reasoner import ReasonedLinks, RelatedConcept, ProposedNode
 from src.akb2.video.researcher import ResearchOutput
 
@@ -392,3 +397,241 @@ def test_assembler_import():
     assert Assembler is not None
     assert CandidateTargetExists is not None
     assert GateRejected is not None
+
+
+# ---------------------------------------------------------------------------
+# Test: _gate_decision 容错分支
+# ---------------------------------------------------------------------------
+
+
+def test_gate_decision_cli_missing_returns_parse_error(temp_config):
+    """gate CLI 不存在 → _gate_decision 返回 'parse_error'，不抛异常。"""
+    assembler = Assembler(temp_config)
+    candidate = temp_config.staging_dir / "test.md"
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    candidate.write_text("# test")
+
+    with mock.patch("pathlib.Path.exists", return_value=False):
+        result = assembler._gate_decision(candidate, temp_config.staging_dir)
+    assert result == "parse_error"
+
+
+def test_gate_decision_timeout_returns_parse_error(temp_config):
+    """gate CLI subprocess timeout → _gate_decision 返回 'parse_error'。"""
+    import subprocess as sp
+
+    assembler = Assembler(temp_config)
+    candidate = temp_config.staging_dir / "test.md"
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    candidate.write_text("# test")
+
+    with mock.patch.object(sp, "run", side_effect=sp.TimeoutExpired(cmd=["python3"], timeout=60)):
+        result = assembler._gate_decision(candidate, temp_config.staging_dir)
+    assert result == "parse_error"
+
+
+def test_gate_decision_no_proposed_decision_returns_parse_error(temp_config):
+    """gate CLI stdout 无 proposed_gate_decision → _gate_decision 返回 'parse_error'。"""
+    import subprocess as sp
+
+    assembler = Assembler(temp_config)
+    candidate = temp_config.staging_dir / "test.md"
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    candidate.write_text("# test")
+
+    completed = sp.CompletedProcess(args=["python3"], returncode=0, stdout="no decision here\n", stderr="")
+    with mock.patch.object(sp, "run", return_value=completed):
+        result = assembler._gate_decision(candidate, temp_config.staging_dir)
+    assert result == "parse_error"
+
+
+# ---------------------------------------------------------------------------
+# Test: run_pipeline 全链路编排（采集/研究/逐视频容错）
+# ---------------------------------------------------------------------------
+
+
+def _pipeline_stages(sample_research_output, *, extract_fields=None):
+    """构造 run_pipeline 所需的 collector/researcher/extractor/reasoner mock。"""
+    collector = mock.Mock()
+    collector.collect.return_value = [{"id": "v1"}]
+    researcher = mock.Mock()
+    researcher.run.return_value = [sample_research_output]
+    extractor = mock.Mock()
+    extractor.extract.return_value = extract_fields or ExtractedFields(
+        tldr="t", key_findings=[], future_questions=[], concepts_mentioned=["DeepSeek"]
+    )
+    reasoner = mock.Mock()
+    reasoner.reason.return_value = ReasonedLinks()
+    return collector, researcher, extractor, reasoner
+
+
+def test_run_pipeline_dry_run_no_commit(temp_config, sample_research_output):
+    """dry_run=True → 组装但不写文件，status=ok 且 candidate_path=None。"""
+    assembler = Assembler(temp_config)
+    collector, researcher, extractor, reasoner = _pipeline_stages(sample_research_output)
+
+    results = assembler.run_pipeline(
+        collector, researcher, extractor, reasoner, dry_run=True
+    )
+
+    assert len(results) == 1
+    assert results[0]["status"] == "ok"
+    assert results[0]["dry_run"] is True
+    assert results[0]["candidate_path"] is None
+
+
+def test_run_pipeline_commit_publishes(temp_config, sample_research_output):
+    """dry_run=False + gate=active → 实际发布，candidate_path 非空。"""
+    temp_config.promotion_target_path.mkdir(parents=True, exist_ok=True)
+    assembler = Assembler(temp_config)
+    collector, researcher, extractor, reasoner = _pipeline_stages(sample_research_output)
+
+    with mock.patch.object(assembler, "_gate_decision", return_value="active"):
+        results = assembler.run_pipeline(
+            collector, researcher, extractor, reasoner, dry_run=False
+        )
+
+    assert results[0]["status"] == "ok"
+    assert results[0]["candidate_path"] is not None
+    published = Path(results[0]["candidate_path"])
+    assert published.exists()
+    # 绑定真实产出：发布文件落在 promotion_target_path，且已标记 gate_decision: active
+    assert published.parent == temp_config.promotion_target_path
+    content = published.read_text(encoding="utf-8")
+    assert "gate_decision: active" in content
+    assert "page_status: candidate" in content
+
+
+def test_run_pipeline_collect_failure_short_circuits(temp_config):
+    """collector.collect 抛异常 → 整链路返回 collect 阶段失败。"""
+    assembler = Assembler(temp_config)
+    collector = mock.Mock()
+    collector.collect.side_effect = RuntimeError("collect boom")
+
+    results = assembler.run_pipeline(
+        collector, mock.Mock(), mock.Mock(), mock.Mock()
+    )
+
+    assert results == [{"status": "failed", "stage": "collect", "error": "collect boom"}]
+
+
+def test_run_pipeline_no_videos_returns_empty(temp_config):
+    """collect 返回空 → 直接返回 []，不进研究阶段。"""
+    assembler = Assembler(temp_config)
+    collector = mock.Mock()
+    collector.collect.return_value = []
+    researcher = mock.Mock()
+
+    results = assembler.run_pipeline(collector, researcher, mock.Mock(), mock.Mock())
+
+    assert results == []
+    researcher.run.assert_not_called()
+
+
+def test_run_pipeline_research_failure_short_circuits(temp_config):
+    """researcher.run 抛异常 → 返回 research 阶段失败。"""
+    assembler = Assembler(temp_config)
+    collector = mock.Mock()
+    collector.collect.return_value = [{"id": "v1"}]
+    researcher = mock.Mock()
+    researcher.run.side_effect = RuntimeError("research boom")
+
+    results = assembler.run_pipeline(collector, researcher, mock.Mock(), mock.Mock())
+
+    assert results[0]["status"] == "failed"
+    assert results[0]["stage"] == "research"
+
+
+def test_run_pipeline_per_video_gate_rejected_isolated(temp_config, sample_research_output):
+    """单视频 gate 拒绝 → 该视频 failed，不抛出整链路。"""
+    assembler = Assembler(temp_config)
+    collector, researcher, extractor, reasoner = _pipeline_stages(sample_research_output)
+
+    with mock.patch.object(assembler, "_gate_decision", return_value="needs_repair"):
+        results = assembler.run_pipeline(
+            collector, researcher, extractor, reasoner, dry_run=False
+        )
+
+    assert results[0]["status"] == "failed"
+    assert "needs_repair" in results[0]["error"]
+
+
+def test_run_pipeline_per_video_generic_error_isolated(temp_config, sample_research_output):
+    """单视频 extract 抛非预期异常 → 捕获为 failed，链路继续。"""
+    assembler = Assembler(temp_config)
+    collector, researcher, _extractor, reasoner = _pipeline_stages(sample_research_output)
+    extractor = mock.Mock()
+    extractor.extract.side_effect = ValueError("extract boom")
+
+    results = assembler.run_pipeline(
+        collector, researcher, extractor, reasoner, dry_run=False
+    )
+
+    assert results[0]["status"] == "failed"
+    assert "extract boom" in results[0]["error"]
+
+
+# ---------------------------------------------------------------------------
+# Test: 工具方法 _extract_h1 / _make_slug / _compute_hash
+# ---------------------------------------------------------------------------
+
+
+def test_extract_h1_variants(temp_config):
+    """_extract_h1：空内容→None、无 H1→None、跳过 frontmatter 取首个 H1。"""
+    assembler = Assembler(temp_config)
+    assert assembler._extract_h1("") is None
+    assert assembler._extract_h1("no heading here\njust text") is None
+    md = "---\ntitle: x\n---\n# Real Title\n\nbody"
+    assert assembler._extract_h1(md) == "Real Title"
+
+
+def test_make_slug(temp_config):
+    """_make_slug：去特殊字符；无 H1 → untitled。"""
+    assembler = Assembler(temp_config)
+    slug = assembler._make_slug("# Hello World Special@#$")
+    assert slug
+    assert " " not in slug
+    assert assembler._make_slug("plain text no h1") == "untitled"
+
+
+def test_compute_hash(temp_config):
+    """_compute_hash 返回 64 位 sha256 hex，且对内容敏感。"""
+    assembler = Assembler(temp_config)
+    h1 = assembler._compute_hash("content-a")
+    h2 = assembler._compute_hash("content-b")
+    assert len(h1) == 64
+    assert h1 != h2
+
+
+# ---------------------------------------------------------------------------
+# Test: frontmatter future_questions + 空 TLDR/关键发现 warning 分支
+# ---------------------------------------------------------------------------
+
+
+def test_assemble_future_questions_and_empty_sections(
+    temp_config, sample_video_meta, sample_research_output, sample_reasoned_links
+):
+    """future_questions 注入 frontmatter；tldr/key_findings 为空时正文章节为空壳。"""
+    extracted = ExtractedFields(
+        tldr="",  # 触发 ## TLDR 空分支
+        key_findings=[],  # 触发 ## 关键发现 空分支
+        future_questions=[
+            FutureQuestion(
+                question="模型在长上下文下的稳定性如何？",
+                gap_anchor_span=SourceSpan(line_start=1, line_end=1),
+                gap_type="unexplored_concept",
+            ),
+        ],
+        concepts_mentioned=[],
+    )
+    assembler = Assembler(temp_config)
+    candidate_md = assembler.assemble(
+        sample_video_meta, sample_research_output, extracted, sample_reasoned_links
+    )
+
+    # future_questions 写入 frontmatter
+    assert "future_questions:" in candidate_md
+    assert "模型在长上下文下的稳定性如何？" in candidate_md
+    # 空 tldr/key_findings 仍渲染 H2 标题（gate 结构要求）
+    assert "## TLDR" in candidate_md
+    assert "## 关键发现" in candidate_md

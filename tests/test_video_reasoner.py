@@ -157,3 +157,143 @@ def test_evidence_non_empty(concept_store):
 
     for rc in result.related_concept:
         assert rc.evidence, f"evidence 不应为空: {rc.concept_id}"
+
+
+# ---------------------------------------------------------------------------
+# Test: _determine_relationship 规则分支
+# ---------------------------------------------------------------------------
+
+
+def test_relationship_extends(concept_store):
+    """上下文含 '基于/扩展' + 概念名 → extends。"""
+    reasoner = Reasoner(concept_store=concept_store)
+    result = reasoner.reason(["DeepSeek"], "DeepSeek 基于 Transformer 架构扩展而来")
+    assert result.related_concept[0].relationship_type == "extends"
+
+
+def test_relationship_implements(concept_store):
+    """上下文含 '实现' → implements。"""
+    reasoner = Reasoner(concept_store=concept_store)
+    result = reasoner.reason(["LangGraph"], "本文用 LangGraph 实现了一个 agent 编排系统")
+    assert result.related_concept[0].relationship_type == "implements"
+
+
+def test_relationship_alternatives(concept_store):
+    """上下文含 '替代' → alternatives_to。"""
+    reasoner = Reasoner(concept_store=concept_store)
+    result = reasoner.reason(["GPT-4"], "新模型旨在替代 GPT-4 的市场地位")
+    assert result.related_concept[0].relationship_type == "alternatives_to"
+
+
+# ---------------------------------------------------------------------------
+# Test: LLM 辅助分类路径（规则未命中时）
+# ---------------------------------------------------------------------------
+
+# 规则关键词全不命中的中性上下文，确保走到 LLM 分类分支
+_NEUTRAL_CTX = "这份报告聚焦 DeepSeek 的整体设计哲学与社区生态"
+
+
+def test_llm_classify_used_when_rules_miss(concept_store):
+    """规则未命中 → 调 LLM 分类，返回合法类型被采用。"""
+    llm = MockLLMAdapter(relationship_type="integrates_with")
+    reasoner = Reasoner(concept_store=concept_store, llm_adapter=llm)
+    result = reasoner.reason(["DeepSeek"], _NEUTRAL_CTX)
+
+    assert result.related_concept[0].relationship_type == "integrates_with"
+    assert len(llm.calls) == 1
+    assert llm.calls[0]["task"] == "classify"
+    assert llm.calls[0]["temperature"] == 0.1
+
+
+def test_llm_classify_invalid_json_falls_back_references(concept_store):
+    """LLM 返回非 JSON → extract 失败 → 回落 references。"""
+
+    class BadJSONLLM:
+        def chat(self, task, system, user, temperature=0.3):
+            return "not json at all"
+
+    reasoner = Reasoner(concept_store=concept_store, llm_adapter=BadJSONLLM())
+    result = reasoner.reason(["DeepSeek"], _NEUTRAL_CTX)
+    assert result.related_concept[0].relationship_type == "references"
+
+
+def test_llm_classify_illegal_type_falls_back_references(concept_store):
+    """LLM 返回非法 relationship_type → 回落 references。"""
+    llm = MockLLMAdapter(relationship_type="totally_invalid_type")
+    reasoner = Reasoner(concept_store=concept_store, llm_adapter=llm)
+    result = reasoner.reason(["DeepSeek"], _NEUTRAL_CTX)
+    assert result.related_concept[0].relationship_type == "references"
+
+
+def test_llm_classify_exception_caught(concept_store):
+    """LLM.chat 抛异常 → _determine_relationship 捕获 → references。"""
+
+    class RaisingLLM:
+        def chat(self, task, system, user, temperature=0.3):
+            raise RuntimeError("llm down")
+
+    reasoner = Reasoner(concept_store=concept_store, llm_adapter=RaisingLLM())
+    result = reasoner.reason(["DeepSeek"], _NEUTRAL_CTX)
+    assert result.related_concept[0].relationship_type == "references"
+
+
+# ---------------------------------------------------------------------------
+# Test: _infer_node_type 推断分支
+# ---------------------------------------------------------------------------
+
+
+def test_infer_node_type_tool():
+    """含工具关键词（cli）→ tool。"""
+    reasoner = Reasoner(concept_store=ConceptStore())
+    result = reasoner.reason(["SomeCLI"])
+    assert result.proposed_graph_nodes[0].type == "tool"
+
+
+def test_infer_node_type_entity():
+    """含实体关键词（inc）→ entity。"""
+    reasoner = Reasoner(concept_store=ConceptStore())
+    result = reasoner.reason(["OpenAI Inc"])
+    assert result.proposed_graph_nodes[0].type == "entity"
+
+
+def test_infer_node_type_pattern():
+    """含模式关键词（pattern）→ pattern。"""
+    reasoner = Reasoner(concept_store=ConceptStore())
+    result = reasoner.reason(["Pipeline Pattern"])
+    assert result.proposed_graph_nodes[0].type == "pattern"
+
+
+def test_infer_node_type_default_concept():
+    """无任何关键词 → 默认 concept。"""
+    reasoner = Reasoner(concept_store=ConceptStore())
+    result = reasoner.reason(["Quantum"])
+    assert result.proposed_graph_nodes[0].type == "concept"
+
+
+# ---------------------------------------------------------------------------
+# Test: ConceptStore 模糊匹配 + reason 边界
+# ---------------------------------------------------------------------------
+
+
+def test_concept_store_fuzzy_match():
+    """查询字符串包含已存概念名 → 模糊命中。"""
+    store = ConceptStore()
+    store.add_concept("DeepSeek", "concept")
+    match = store.lookup("DeepSeek V4 Pro")
+    assert match is not None
+    assert match["id"] == "concept:deepseek"
+
+
+def test_reason_skips_empty_concepts(concept_store):
+    """空白概念名被跳过，只处理有效概念。"""
+    reasoner = Reasoner(concept_store=concept_store)
+    result = reasoner.reason(["", "   ", "DeepSeek"], "报告聚焦 DeepSeek")
+    total = len(result.related_concept) + len(result.proposed_graph_nodes)
+    assert total == 1
+
+
+def test_build_evidence_fallback_when_concept_absent(concept_store):
+    """概念命中但上下文无含该名的行 → evidence 走兜底文案。"""
+    reasoner = Reasoner(concept_store=concept_store)
+    result = reasoner.reason(["DeepSeek"], "一段与概念名完全无关的上下文文本")
+    assert result.related_concept[0].evidence.startswith("报告中将")
