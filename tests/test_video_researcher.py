@@ -6,10 +6,6 @@ pending 文件锁、无 durable write、孤儿进程清理。
 
 from __future__ import annotations
 
-import json
-import os
-import signal
-import subprocess
 import tempfile
 from pathlib import Path
 from unittest import mock
@@ -19,7 +15,6 @@ import pytest
 from src.akb2.video.config import VideoConfig
 from src.akb2.video.researcher import ResearchOutput, VideoResearcher
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -28,7 +23,7 @@ from src.akb2.video.researcher import ResearchOutput, VideoResearcher
 @pytest.fixture
 def temp_config() -> VideoConfig:
     """使用临时目录的 VideoConfig，避免污染真实路径。"""
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory():
         config = VideoConfig(
             nlm_bin="/usr/bin/true",
             ytdlp_bin="/usr/bin/true",
@@ -380,6 +375,35 @@ def test_source_failure_does_not_abort_batch(temp_config, sample_video_result):
     assert sorted(o.degraded for o in outputs) == [False, True]
     # 锚定轮替次数：视频1 两 profile(2) + 视频2 一次(1) = 3，防 side_effect 顺序静默失配
     assert mock_add.call_count == 3
+
+
+# ---------------------------------------------------------------------------
+# Test: _nlm_delete_notebook — best-effort，失败不抛异常
+# ---------------------------------------------------------------------------
+
+
+def test_nlm_delete_notebook_called_on_source_failure(temp_config, sample_video_result):
+    """源处理失败轮替时，弃用的原 notebook 被 best-effort 删除。"""
+    r = VideoResearcher(temp_config, llm_adapter=MockLLMAdapter("x"))
+
+    with mock.patch.object(r, "_health_check", return_value=True):
+        with mock.patch.object(r, "_nlm_create_notebook", side_effect=["nb-primary", "nb-alt"]):
+            with mock.patch.object(r, "_nlm_add_youtube", return_value=False):
+                with mock.patch.object(r, "_nlm_delete_notebook") as mock_delete:
+                    with mock.patch.object(r, "_get_transcript", return_value="T " * 100):
+                        r.run([sample_video_result])
+
+    # 轮替删旧 nb-primary + 两 profile 都失败后删 nb-alt
+    called_ids = [call.args[0] for call in mock_delete.call_args_list]
+    assert "nb-primary" in called_ids, "轮替前应删除原 notebook"
+    assert "nb-alt" in called_ids, "两 profile 源处理均失败应删备用 notebook"
+
+
+def test_nlm_delete_notebook_swallows_exception(temp_config):
+    """_nlm_delete_notebook 自身失败不抛异常，不影响主流程。"""
+    r = VideoResearcher(temp_config)
+    with mock.patch.object(r, "_nlm", side_effect=Exception("delete failed")):
+        r._nlm_delete_notebook("nb-xyz", "default")  # 不应抛出
 
 
 def test_real_quota_aborts_batch_and_marks_pending(temp_config, sample_video_result):

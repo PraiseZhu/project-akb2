@@ -19,9 +19,8 @@ from src.akb2.video.assembler import Assembler, GateRejected
 from src.akb2.video.collector import VideoCollector
 from src.akb2.video.config import VideoConfig
 from src.akb2.video.extractor import ExtractedFields, Extractor
-from src.akb2.video.reasoner import ConceptStore, Reasoner, ReasonedLinks
-from src.akb2.video.researcher import ResearchOutput, VideoResearcher
-
+from src.akb2.video.reasoner import ConceptStore, ReasonedLinks, Reasoner
+from src.akb2.video.researcher import VideoResearcher
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -192,7 +191,7 @@ def test_gate_rejection_rollback(integration_config):
     # 构造最简 candidate
     candidate_md = "---\npage_status: candidate\nsource_type: video\ntemplate_type: source\ntitle: Test\ngate_decision: null\n---\n\n# Test"
 
-    with mock.patch.object(assembler, "_gate_dry_run", side_effect=GateRejected("test")):
+    with mock.patch.object(assembler, "_gate_decision", return_value="needs_repair"):
         with pytest.raises(GateRejected):
             assembler.commit(candidate_md, slug="gate-reject-test", date_str="2026-06-01")
 
@@ -252,7 +251,7 @@ def test_cli_dry_run_no_durable_side_effects(integration_config):
 
     env = os.environ.copy()
     env["PYTHONPATH"] = "src"
-    result = subprocess.run(
+    subprocess.run(
         ["python3", "-m", "akb2.video", "--dry-run", "--fixture"],
         capture_output=True, text=True, timeout=10,
         env=env,

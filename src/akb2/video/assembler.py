@@ -11,19 +11,17 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import re
 import shutil
 import subprocess
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 from src.akb2.video.config import VideoConfig
-from src.akb2.video.researcher import ResearchOutput
 from src.akb2.video.extractor import ExtractedFields
 from src.akb2.video.reasoner import ReasonedLinks
+from src.akb2.video.researcher import ResearchOutput
 
 logger = logging.getLogger("akb2.video.assembler")
 
@@ -73,7 +71,7 @@ class Assembler:
         platform = video_meta.get("platform", "youtube")
         creator = video_meta.get("creator", "")
         upload_date = video_meta.get("upload_date", "")
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         # 从报告提取 H1 标题
         report_title = self._extract_h1(research_output.report_markdown) or title
@@ -259,7 +257,7 @@ class Assembler:
         if extracted_fields.tldr:
             # 单行化（替换换行为空格），避免多段文字破坏 YAML 缩进
             tldr_single = " ".join(extracted_fields.tldr[:500].split())
-            lines.append(f"tldr: >-")
+            lines.append("tldr: >-")
             lines.append(f"  {tldr_single}")
 
         # tags
@@ -276,55 +274,6 @@ class Assembler:
     # ------------------------------------------------------------------
     # Gate dry-run
     # ------------------------------------------------------------------
-
-    def _gate_dry_run(self, candidate_path: Path, staging_dir: Path) -> None:
-        """在隔离临时目录中运行 gate dry-run 验证。
-
-        构造临时 AKB root 目录结构，将 candidate 复制进去，
-        调用 akb2_gate_check.py --dry-run 验证。
-        """
-        # 检查 gate CLI 可用性
-        gate_script = Path("src/akb2/gate/akb2_gate_check.py")
-        if not gate_script.exists():
-            logger.warning("gate check CLI 不可用，跳过 dry-run 验证")
-            return
-
-        with tempfile.TemporaryDirectory() as tmp_root:
-            tmp_root_path = Path(tmp_root)
-            tmp_staging = tmp_root_path / "staging" / "candidate"
-            tmp_staging.mkdir(parents=True, exist_ok=True)
-
-            # 复制 candidate 到临时目录
-            tmp_candidate = tmp_staging / candidate_path.name
-            tmp_candidate.write_text(candidate_path.read_text(encoding="utf-8"))
-
-            try:
-                result = subprocess.run(
-                    [
-                        "python3", str(gate_script), "check",
-                        "--akb-root", str(tmp_root_path),
-                        "--input", "staging/candidate",
-                        "--dry-run",
-                    ],
-                    capture_output=True, text=True, timeout=60,
-                )
-            except subprocess.TimeoutExpired:
-                logger.error("gate dry-run 超时")
-                raise GateRejected("gate dry-run 超时")
-
-            if result.returncode != 0:
-                logger.error(f"gate dry-run 失败 (exit {result.returncode}): {result.stderr[:500]}")
-                raise GateRejected(f"gate dry-run exit {result.returncode}")
-
-            # 解析输出：检查 candidate 是否通过
-            output = result.stdout + result.stderr
-            if "parse_errors" in output:
-                # 尝试找 parse_errors 数量
-                errors_match = re.search(r"parse_errors[:\s]*(\d+)", output)
-                if errors_match and int(errors_match.group(1)) > 0:
-                    raise GateRejected(f"gate parse_errors: {errors_match.group(1)}")
-
-            logger.info(f"gate dry-run 通过: {candidate_path.name}")
 
     def _gate_decision(self, candidate_path: Path, staging_dir: Path) -> str:
         """在隔离临时目录中运行 gate check，解析 proposed_gate_decision。

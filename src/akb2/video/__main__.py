@@ -76,7 +76,7 @@ def _run_full(config: VideoConfig, dry_run: bool) -> int:
         collector = VideoCollector(config, llm_adapter=llm_adapter)
         researcher = VideoResearcher(config, llm_adapter=llm_adapter)
         extractor = Extractor(llm_adapter=llm_adapter)
-        reasoner = Reasoner(ConceptStore())
+        reasoner = Reasoner(ConceptStore(), llm_adapter=llm_adapter)
         assembler = Assembler(config)
 
         results = assembler.run_pipeline(
@@ -105,7 +105,7 @@ def _run_single_source(config: VideoConfig, url: str, dry_run: bool) -> int:
         llm_adapter = _build_llm_adapter(config)
         researcher = VideoResearcher(config, llm_adapter=llm_adapter)
         extractor = Extractor(llm_adapter=llm_adapter)
-        reasoner = Reasoner(ConceptStore())
+        reasoner = Reasoner(ConceptStore(), llm_adapter=llm_adapter)
         assembler = Assembler(config)
 
         outputs = researcher.run([video_result])

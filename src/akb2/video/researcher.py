@@ -22,15 +22,13 @@ import signal
 import subprocess
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from src.akb2.video.config import VideoConfig
 from src.akb2.video.constants import (
     VIDEO_NLM_MAX_WAIT,
-    VIDEO_PERMANENT_FAILURE_THRESHOLD,
 )
 from src.akb2.video.llm_adapter import LLMAdapter
 
@@ -234,10 +232,12 @@ class VideoResearcher:
             source_ok = self._nlm_add_url(nb_id, url, profile)
 
         if not source_ok:
-            # 尝试 profile 轮替
+            # 尝试 profile 轮替；弃用原 notebook（GC：防 orphan）
             logger.info(f"尝试切换 profile: {profile} → {self.config.nlm_alt_profile}")
+            old_nb_id = nb_id
             profile = self.config.nlm_alt_profile
             nb_id = self._nlm_create_notebook(nb_title, profile)
+            self._nlm_delete_notebook(old_nb_id, profile)
             if not nb_id:
                 logger.warning(f"备用 profile notebook 创建失败（非配额），转降级: {title}")
                 return None, None, profile
@@ -249,17 +249,20 @@ class VideoResearcher:
                 logger.warning(
                     f"NLM 源处理失败（非配额，两 profile 均失败），转字幕降级: {title}"
                 )
-                return None, nb_id, profile
+                self._nlm_delete_notebook(nb_id, profile)
+                return None, None, profile
 
         # 启动 Deep Research
         research_query = f"深入分析这个技术视频的核心内容、关键概念和实践要点: {title}"
         research_ok = self._nlm_research(nb_id, research_query, profile)
 
         if not research_ok:
-            # 尝试 profile 轮替
+            # 尝试 profile 轮替；弃用原 notebook（GC：防 orphan）
             logger.info(f"尝试切换 profile: {profile} → {self.config.nlm_alt_profile}")
+            old_nb_id = nb_id
             profile = self.config.nlm_alt_profile
             nb_id = self._nlm_create_notebook(nb_title, profile)
+            self._nlm_delete_notebook(old_nb_id, profile)
             if not nb_id:
                 logger.warning(f"备用 profile notebook 创建失败（非配额），转降级: {title}")
                 return None, None, profile
@@ -269,13 +272,15 @@ class VideoResearcher:
                 source_ok = self._nlm_add_url(nb_id, url, profile)
             if not source_ok:
                 logger.warning(f"备用 profile 源处理失败（非配额），转字幕降级: {title}")
-                return None, nb_id, profile
+                self._nlm_delete_notebook(nb_id, profile)
+                return None, None, profile
             research_ok = self._nlm_research(nb_id, research_query, profile)
             if not research_ok:
                 logger.warning(
                     f"NLM Deep Research 启动失败（非配额，两 profile 均失败），转降级: {title}"
                 )
-                return None, nb_id, profile
+                self._nlm_delete_notebook(nb_id, profile)
+                return None, None, profile
 
         # 等待研究完成
         nlm_success = self._nlm_wait_research(nb_id, profile)
@@ -286,6 +291,7 @@ class VideoResearcher:
             report_content = self._generate_and_download_report(nb_id, title)
             return report_content, nb_id, profile
         else:
+            self._nlm_delete_notebook(nb_id, profile)
             return None, nb_id, profile
 
     # ------------------------------------------------------------------
@@ -530,6 +536,19 @@ class VideoResearcher:
             profile=profile, timeout=180,
         )
         return output is not None
+
+    def _nlm_delete_notebook(self, nb_id: str | None, profile: str) -> None:
+        """Best-effort 删除 notebook，防止失败/轮替路径产生 orphan。
+
+        短 timeout + 吞异常：delete 失败绝不阻断主流程。
+        """
+        if not nb_id:
+            return
+        try:
+            self._nlm("notebook", "delete", nb_id, "--confirm", profile=profile, timeout=15)
+            logger.info(f"[GC] orphan notebook 已删除: {nb_id}")
+        except Exception:
+            logger.warning(f"[GC] notebook 删除失败（已忽略）: {nb_id}")
 
     def _nlm_research(self, nb_id: str, query: str, profile: str) -> bool:
         output = self._nlm(
