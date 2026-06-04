@@ -73,7 +73,7 @@ def _run_full(config: VideoConfig, dry_run: bool) -> int:
     """运行完整链路。"""
     try:
         llm_adapter = _build_llm_adapter(config)
-        collector = VideoCollector(config)
+        collector = VideoCollector(config, llm_adapter=llm_adapter)
         researcher = VideoResearcher(config, llm_adapter=llm_adapter)
         extractor = Extractor(llm_adapter=llm_adapter)
         reasoner = Reasoner(ConceptStore())
