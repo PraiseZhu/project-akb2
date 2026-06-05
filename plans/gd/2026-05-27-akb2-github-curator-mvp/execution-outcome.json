@@ -1,0 +1,257 @@
+{
+  "outcome_id": "akb2-github-curator-mvp-2026-05-28",
+  "outcome_version": "1.0",
+  "plan_ref": "plans/gd/2026-05-27-akb2-github-curator-mvp/master-plan.md",
+  "plan_hash": "366fdbc079c9",
+  "generated_at": "2026-05-28T12:00:00Z",
+  "summary": "GitHub Curator MVP: 5 waves, 7/10 PASS, 3 not_run (need credentials)",
+  "task_outcomes": [
+    {
+      "task_id": "wave-0-infrastructure",
+      "exec_status": "completed",
+      "sc_acceptance": [
+        {
+          "sc_ref": "SC-0",
+          "status": "pass",
+          "evidence": "5/5 pytest passed: valid fixture OK, invalid ERR, empty JSON reject, schema loads, missing summary detected. validator.py passes bidirectional test."
+        },
+        {
+          "sc_ref": "SC-1",
+          "status": "pass",
+          "evidence": "51/51 pytest passed: 35 url_normalizer (32 valid+10 invalid+idempotent), 8 dedup (first-see/dup/diff/count/timestamp/prune/persistence/case-sens)"
+        }
+      ],
+      "deliverables": [
+        {
+          "path": "src/akb2/briefing/github/validator.py",
+          "must_exist": true
+        },
+        {
+          "path": "src/akb2/briefing/github/url_normalizer.py",
+          "must_exist": true
+        },
+        {
+          "path": "src/akb2/briefing/github/dedup_sqlite.py",
+          "must_exist": true
+        }
+      ],
+      "verify_rerun": {
+        "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -c 'import sys; sys.path.insert(0,\"src\"); import pytest; sys.exit(pytest.main([\"-v\", \"tests/briefing/github/test_validator.py\", \"tests/briefing/github/test_url_normalizer.py\", \"tests/briefing/github/test_dedup.py\"]))'",
+        "expected_exit": 0,
+        "actual_exit": 0,
+        "verified_at": "2026-05-29",
+        "verified_env": "akb2-worktree-native",
+        "note": "Codex sandbox lacks writable TMPDIR; confirmed exit=0 in native env (56 passed)",
+        "log_path": "verify_logs/wave-0.log",
+        "log_hash": "2caba57c37c40236459ac1c61f4be859166a17c915ff8dd707552e5ea2808cab",
+        "stdout_summary": "56 passed"
+      }
+    },
+    {
+      "task_id": "wave-1-intake",
+      "exec_status": "completed",
+      "sc_acceptance": [
+        {
+          "sc_ref": "SC-2",
+          "status": "not_run",
+          "not_run_reason": "需要 twitter-cli 认证 @PraiseZhu00 + 真实网络。collector 源码和测试已就绪（14 intake tests pass），但无法在本会话真实跑 Layer 1"
+        },
+        {
+          "sc_ref": "SC-3",
+          "status": "not_run",
+          "not_run_reason": "需要 curl github.com/trending + DeepSeek API key 跑完整合成链路。TrendingHTMLCollector 源码和测试已就绪（5 tests pass）"
+        },
+        {
+          "sc_ref": "SC-4",
+          "status": "pass",
+          "evidence": "21/21 pytest passed: 7 fallback_judge (L1_OK/L1_fail_to_L2/L1+L2_fail_to_L3/all_skip/L2_too_few_repos_to_L3/decision_namedtuple) + 14 intake tests"
+        }
+      ],
+      "deliverables": [
+        {
+          "path": "src/akb2/briefing/github/intake/__init__.py",
+          "must_exist": true
+        },
+        {
+          "path": "src/akb2/briefing/github/intake/twitter_collector.py",
+          "must_exist": true
+        },
+        {
+          "path": "src/akb2/briefing/github/intake/trending_html_collector.py",
+          "must_exist": true
+        },
+        {
+          "path": "src/akb2/briefing/github/intake/manual_json_collector.py",
+          "must_exist": true
+        },
+        {
+          "path": "src/akb2/briefing/github/intake/fallback_judge.py",
+          "must_exist": true
+        }
+      ],
+      "verify_rerun": {
+        "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -c 'import sys; sys.path.insert(0,\"src\"); import pytest; sys.exit(pytest.main([\"-v\", \"tests/briefing/github/test_intake.py\", \"tests/briefing/github/test_fallback_judge.py\"]))'",
+        "expected_exit": 0,
+        "actual_exit": 0,
+        "verified_at": "2026-05-29",
+        "verified_env": "akb2-worktree-native",
+        "note": "Codex sandbox lacks writable TMPDIR; confirmed exit=0 in native env (21 passed)",
+        "log_path": "verify_logs/wave-1.log",
+        "log_hash": "896cafd36c768a3192de52f91fe18161990a48c2e09cf828c2789b5e33ed80ed",
+        "stdout_summary": "21 passed"
+      }
+    },
+    {
+      "task_id": "wave-2-enrich-score",
+      "exec_status": "completed",
+      "sc_acceptance": [
+        {
+          "sc_ref": "SC-5",
+          "status": "pass",
+          "evidence": "22/22 pytest passed: 4 enricher (parse_url/api_fail/batch/no_pat) + 18 scoring (6 dims: mention_count 0.35, mentioner_authority 0.15, stars 0.10, recency 0.10, readme 0.10, topic 0.20; 4 safety checks: crypto/nsfw/dotfiles block, clean pass; batch sort desc; cold_start no velocity; mention_threshold min=2 adaptive)"
+        }
+      ],
+      "deliverables": [
+        {
+          "path": "src/akb2/briefing/github/enricher.py",
+          "must_exist": true
+        },
+        {
+          "path": "src/akb2/briefing/github/scoring.py",
+          "must_exist": true
+        }
+      ],
+      "verify_rerun": {
+        "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -c 'import sys; sys.path.insert(0,\"src\"); import pytest; sys.exit(pytest.main([\"-v\", \"tests/briefing/github/test_enricher.py\", \"tests/briefing/github/test_scoring.py\"]))'",
+        "expected_exit": 0,
+        "actual_exit": 0,
+        "verified_at": "2026-05-29",
+        "verified_env": "akb2-worktree-native",
+        "note": "Codex sandbox lacks writable TMPDIR; confirmed exit=0 in native env (22 passed)",
+        "log_path": "verify_logs/wave-2.log",
+        "log_hash": "dff578fd58a4d196bbac980beb945ebb15e11e3a0cb00e641857c21eff1d36be",
+        "stdout_summary": "22 passed"
+      }
+    },
+    {
+      "task_id": "wave-3-synthesis",
+      "exec_status": "completed",
+      "sc_acceptance": [
+        {
+          "sc_ref": "SC-6",
+          "status": "pass",
+          "evidence": "8/8 pytest passed: build_prompt <12K tokens, estimate_tokens rough, extract_json plain/fence/whitespace, render_repo_xml escapes <>&, synthesize mock no api key 10 repos, synthesize too_many_tokens raises. XML escape 已加固 language/topics/mentioners (post-review fix). _build_prompt 已修复读文件而非 fallback."
+        }
+      ],
+      "deliverables": [
+        {
+          "path": "src/akb2/briefing/github/synthesis.py",
+          "must_exist": true
+        }
+      ],
+      "verify_rerun": {
+        "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -c 'import sys; sys.path.insert(0,\"src\"); import pytest; sys.exit(pytest.main([\"-v\", \"tests/briefing/github/test_synthesis.py\"]))'",
+        "expected_exit": 0,
+        "actual_exit": 0,
+        "verified_at": "2026-05-29",
+        "verified_env": "akb2-worktree-native",
+        "note": "Codex sandbox lacks writable TMPDIR; confirmed exit=0 in native env (8 passed)",
+        "log_path": "verify_logs/wave-3.log",
+        "log_hash": "6dab9cf0ddfe32d36ccd8f56f383116b1b3f62c68a0131aef152301b7b32e376",
+        "stdout_summary": "8 passed"
+      }
+    },
+    {
+      "task_id": "wave-4-pipeline-launchd",
+      "exec_status": "completed",
+      "sc_acceptance": [
+        {
+          "sc_ref": "SC-7",
+          "status": "pass",
+          "evidence": "15/15 pytest passed: mock E2E briefing:WROTE .md+.json, top_repos==10, validator PASS, frontmatter+content correct, VAULT_ROOT empty skips, relative skips, absolute proceeds. post-review: PROJECT_ROOT 绝对路径化, tempfile try/finally, bootstrap_launchd.sh 动态路径替换"
+        },
+        {
+          "sc_ref": "SC-8",
+          "status": "pass",
+          "evidence": "7/7 checks: scripts +x (3 scripts), plist no EnvironmentVariables, plist points wrapper, hour=14, token scan 0 hits (ghp_/sk-/gho_ in src/scripts/launchd), env.example has placeholders, vault-stub exists. post-review: RunAtLoad=true, bootstrap_launchd.sh sed 动态替换 wrapper 路径"
+        },
+        {
+          "sc_ref": "SC-9",
+          "status": "not_run",
+          "not_run_reason": "需要 @PraiseZhu00 twitter-cli 认证 + GitHub PAT + DeepSeek API key + VAULT_ROOT 绝对路径。目标：Mac mini 部署后首次真跑即验收。pipeline.py ready, scripts/daily_github_briefing.sh ready, config/github-briefing.env.example ready"
+        }
+      ],
+      "deliverables": [
+        {
+          "path": "src/akb2/briefing/github/pipeline.py",
+          "must_exist": true
+        },
+        {
+          "path": "config/github_curator_pool.yaml",
+          "must_exist": true
+        },
+        {
+          "path": "config/github-briefing.env.example",
+          "must_exist": true
+        },
+        {
+          "path": "scripts/daily_github_briefing.sh",
+          "must_exist": true
+        },
+        {
+          "path": "scripts/dry_run_github_e2e.sh",
+          "must_exist": true
+        },
+        {
+          "path": "scripts/launchd_wrapper.sh",
+          "must_exist": true
+        },
+        {
+          "path": "scripts/bootstrap_launchd.sh",
+          "must_exist": true
+        },
+        {
+          "path": "launchd/com.akb2.github_briefing.plist",
+          "must_exist": true
+        },
+        {
+          "path": "tests/briefing/github/test_pipeline.py",
+          "must_exist": true
+        }
+      ],
+      "verify_rerun": {
+        "command": "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -c 'import sys; sys.path.insert(0,\"src\"); import pytest; sys.exit(pytest.main([\"-v\", \"tests/briefing/github/test_pipeline.py\"]))'",
+        "expected_exit": 0,
+        "actual_exit": 0,
+        "verified_at": "2026-05-29",
+        "verified_env": "akb2-worktree-native",
+        "note": "Codex sandbox lacks writable TMPDIR; confirmed exit=0 in native env (15 passed)",
+        "log_path": "verify_logs/wave-4.log",
+        "log_hash": "d64b86a6224db55bbdd585b2e40b32c2813b10e7f60467ed18765cb17feb71ba",
+        "stdout_summary": "15 passed"
+      }
+    }
+  ],
+  "test_summary": {
+    "total": 122,
+    "passed": 122,
+    "failed": 0,
+    "error": 0
+  },
+  "owned_paths_post_audit": {
+    "writes_outside_owned": [],
+    "owned_paths_match": true
+  },
+  "forbidden_paths_touched": [],
+  "residual_risks": [
+    "SC-2/SC-3/SC-9 not_run: 需要生产凭据 + Mac mini 部署",
+    "DeepSeek API 格式漂移（已缓解: JSON 解析重试 + repo_url 校验）",
+    "GitHub Trending HTML 改版（已缓解: regex fallback）",
+    "R-1: 新号限流 — Mac mini 部署后首周观察，必要时轮换 @PraiseZhu52",
+    "R-2: Cookie 过期 — twitter-cli 维护者更新频率低，过期时需手动重认证",
+    "R-6: Mac mini 合盖睡眠 — RunAtLoad=true 补偿（已修复），但长期睡眠期间多日积压时单次执行可能不够",
+    "R-9: Merge 冲突 — 当前 worktree 未冲突，main 合入时需检查 github/ 子包路径",
+    "R-10: DeepSeek API 故障 — synthesis mock mode 兜底（无 API key 时产 mock summary），但真生产需 API 可用",
+    "R-11: GitHub PAT 速率限制 — enricher cap 30 repos + 0.3s delay，但高频环境可能仍触发"
+  ]
+}

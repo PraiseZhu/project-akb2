@@ -55,3 +55,19 @@ data/
 src/akb2/automation_gate/outputs/
 src/akb2/matrix/v0/outputs/current/
 src/akb2/closure/*/regression/*-test.json
+
+# === Review tooling outputs (ephemeral; per-run capsules + final-status mappings) ===
+results/review-route-split/
+_review_outputs/
+
+# === GitHub Curator runtime artifacts (pipeline outputs, not source) ===
+briefing-skipped.json
+briefing-failed.json
+data/star_history.sqlite
+
+# === PWF working memory (planning state, not project source) ===
+.planning/
+
+# vault-stub 测试生成的简报(非 fixture，保留 .gitkeep)
+tests/fixtures/vault-stub/AKB2.0/AI TRENDS/GitHub/*.md
+tests/fixtures/vault-stub/AKB2.0/AI TRENDS/GitHub/*.json
