@@ -281,3 +281,44 @@ def test_cli_dry_run_no_durable_side_effects(integration_config):
     after = set(staging.glob("*")) if staging.exists() else set()
     new_files = after - before
     assert len(new_files) == 0, f"dry-run 不应创建文件: {new_files}"
+
+
+# ---------------------------------------------------------------------------
+# Test: _report_results exit codes（SC-7 fail-visibly）
+# ---------------------------------------------------------------------------
+
+
+def test_report_results_partial_failure_returns_1():
+    """验证 部分失败 + 部分成功 → exit 1（非 exit 0）。"""
+    from src.akb2.video.__main__ import _report_results
+
+    results = [
+        {"status": "ok", "video": {"title": "Good"}},
+        {"status": "failed", "video": {"title": "Bad"}, "error": "boom"},
+    ]
+    exit_code = _report_results(results)
+    assert exit_code == 1, f"部分失败应返回 1，实际返回 {exit_code}"
+
+
+def test_report_results_all_ok_returns_0():
+    """验证 全成功 → exit 0。"""
+    from src.akb2.video.__main__ import _report_results
+
+    results = [
+        {"status": "ok", "video": {"title": "A"}},
+        {"status": "ok", "video": {"title": "B"}},
+    ]
+    exit_code = _report_results(results)
+    assert exit_code == 0
+
+
+def test_report_results_all_failed_returns_1():
+    """验证 全失败 → exit 1。"""
+    from src.akb2.video.__main__ import _report_results
+
+    results = [
+        {"status": "failed", "video": {"title": "X"}, "error": "e1"},
+        {"status": "failed", "video": {"title": "Y"}, "error": "e2"},
+    ]
+    exit_code = _report_results(results)
+    assert exit_code == 1

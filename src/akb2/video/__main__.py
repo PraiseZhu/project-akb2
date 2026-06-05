@@ -315,8 +315,8 @@ def _report_results(results: list[dict]) -> int:
                 title = r.get("video", {}).get("title", "?")
                 logger.error("  失败: %s — %s", title, r.get("error", "?"))
 
-    # exit 2 = 部分失败（有 pending）；exit 1 = 全部失败；exit 0 = 全成功
-    if failed > 0 and ok == 0:
+    # exit 1 = 有失败（即使部分成功）；exit 0 = 全成功
+    if failed > 0:
         return 1
     return 0
 
