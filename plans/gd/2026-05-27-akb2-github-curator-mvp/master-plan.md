@@ -220,7 +220,7 @@ HEALTH_CHECK_CMD = ["twitter", "status"]  # 入口先验 cookie 有效
 | activity | 0.15 | `velocity_7d/50`（启用后）→ fallback `commits_7d/30`；None=0.5 中性，0=死库 |
 | stars | 0.10 | `log10(max(stars,1)) / 5` |
 | readme_quality | 0.05 | `0.5 * (chars > 1000) + 0.5 * has_code_block` |
-| safety | 强降权 | crypto/NSFW/赌博等关键词命中 → score = 0 |
+| safety | 强降权 | crypto/NSFW/赌博/**faceswap/deepfake/nudify** 等关键词命中 → score = 0 |
 
 6 个加权维之和 = 1.0。
 
@@ -233,6 +233,17 @@ HEALTH_CHECK_CMD = ["twitter", "status"]  # 入口先验 cookie 有效
 
 **mention 门槛**（filter 阶段）：固定 **1**（任何 1 个博主提及即够格进候选）。历史：
 `max(2, ceil(active/15))` → 固定 2 → 真实数据下候选 <10 全 skip → 降到 1。排序交给 scoring。
+
+**Layer1 时间窗（2026-06-04 新增）**：twitter collector 对每条推文做 **3 天 recency 过滤**：
+`mentioned_at < cutoff`（`cutoff = now - 3 days`）→ 跳过。边界：等于 cutoff 保留。
+时间戳缺失/解析失败的推文按新鲜保留（不因解析 bug 静默清空，SC-2）。时间解析函数
+`_parse_tweet_time` 统一归一化为 UTC-aware datetime（防 naive/aware 比较 raise）。
+
+**safety 扩词（2026-06-04 新增）**：正则 `face[\s_-]?swap|deep[\s_-]?fake|nudify|deepfake`
+覆盖 faceswap/face swap/face_swap/deepfake/deep fake 等变体。
+
+**SC-7 运行摘要（2026-06-04 新增）**：每次 pipeline 跑输出一行 `SC7_METRICS: {json}`，
+含 8 键：5 recency 计数 + candidates_after_safety + fallback_triggered + top10_all_layer1。
 
 ### 6.5 简报内容 schema（github_briefing_v1）
 
@@ -270,13 +281,21 @@ HEALTH_CHECK_CMD = ["twitter", "status"]  # 入口先验 cookie 有效
           "first_mention_at": {"type": "string", "format": "date-time"},
           "score": {"type": "number", "minimum": 0, "maximum": 1},
           "summary": {"type": "string", "minLength": 50, "maxLength": 500, "description": "项目做什么 — 200 字以内中文，客观陈述功能/技术栈/解决的问题"},
-          "use_case": {"type": "string", "minLength": 30, "maxLength": 300, "description": "什么情况下该装 + 什么情况下别装 — 中文，含 1-2 条正向场景 + 1 条反向场景"}
+          "use_case": {"type": "string", "minLength": 30, "maxLength": 300, "description": "什么情况下该装 + 什么情况下别装 — 中文，含 1-2 条正向场景 + 1 条反向场景"},
+          "engagement_raw": {"type": "integer", "minimum": 0, "description": "该 repo 最热单条提及的加权推文热度（=0 表示 Layer2/3 或无 metrics）；不进 required，旧产物不回填"}
         }
       }
     }
   }
 }
 ```
+
+**engagement_raw 字段说明**（2026-06-04 新增）：
+- 类型：integer, minimum 0，**可选字段**（不进 required）
+- 语义：`likes + 2*retweets + 3*bookmarks`（views 不算），取该 repo 最热单条提及
+- Layer2/3 或无 metrics 时 = 0
+- 在 MD 渲染时仅 `> 0` 显示 `· 🔥 N` 热度标记
+- 旧产物兼容：validator 只校验新写入，不回填历史文件
 
 ### 6.6 抓取账号策略
 

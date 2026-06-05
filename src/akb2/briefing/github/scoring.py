@@ -41,7 +41,8 @@ _AUTHORITY_NORM = 3.0  # ~3 core curators = full score
 # Safety keywords that force score = 0
 _SAFETY_BLOCK_RE = re.compile(
     r"\b(crypto|nft|token\s*sale|airdrop|nsfw|porn|xxx|adult|escort"
-    r"|casino|gambling|slot|betting|drug|marijuana|cannabis)\b",
+    r"|casino|gambling|slot|betting|drug|marijuana|cannabis"
+    r"|face[\s_-]?swap|deep[\s_-]?fake|nudify|deepfake)\b",
     re.IGNORECASE,
 )
 

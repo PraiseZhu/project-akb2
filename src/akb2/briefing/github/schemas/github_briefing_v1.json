@@ -121,6 +121,11 @@
             "minLength": 30,
             "maxLength": 300,
             "description": "什么情况下该装 + 什么情况下别装 — 中文，含 1-2 条正向场景 + 1 条反向场景，由 DeepSeek V4 Pro 生成"
+          },
+          "engagement_raw": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "该 repo 最热单条提及的加权推文热度；layer2/3 或无 metrics = 0"
           }
         }
       }

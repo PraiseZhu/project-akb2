@@ -350,3 +350,68 @@ class TestMentionThreshold:
         assert mention_threshold(15) == 1
         assert mention_threshold(57) == 1
         assert mention_threshold(150) == 1
+
+
+class TestSafetyBlockExpanded:
+    """SC-4: safety 扩词覆盖 faceswap/deepfake/nudify 变体。"""
+
+    def test_safety_blocks_faceswap_variants(self):
+        """faceswap/face swap/face_swap 各变体→False，topic_tags 与 readme_excerpt 各覆盖。"""
+        # topic_tags 命中
+        assert not safety_check({"topic_tags": ["faceswap", "ai"], "repo_url": "https://github.com/a/b"})
+        assert not safety_check({"topic_tags": ["face swap", "ai"], "repo_url": "https://github.com/a/b"})
+        assert not safety_check({"topic_tags": ["face_swap", "ai"], "repo_url": "https://github.com/a/b"})
+        assert not safety_check({"topic_tags": ["face-swap", "ai"], "repo_url": "https://github.com/a/b"})
+        # readme_excerpt 命中
+        assert not safety_check({"readme_excerpt": "this is a faceswap tool", "repo_url": "https://github.com/a/b"})
+        assert not safety_check({"readme_excerpt": "deep fake detection", "repo_url": "https://github.com/a/b"})
+
+    def test_safety_blocks_deepfake_variants(self):
+        """deepfake/deep fake/deep_fake/nudify 各变体→False。"""
+        assert not safety_check({"topic_tags": ["deepfake", "ai"], "repo_url": "https://github.com/a/b"})
+        assert not safety_check({"topic_tags": ["deep fake", "ai"], "repo_url": "https://github.com/a/b"})
+        assert not safety_check({"topic_tags": ["deep_fake", "ai"], "repo_url": "https://github.com/a/b"})
+        assert not safety_check({"topic_tags": ["deep-fake", "ai"], "repo_url": "https://github.com/a/b"})
+        assert not safety_check({"topic_tags": ["nudify", "ai"], "repo_url": "https://github.com/a/b"})
+
+    def test_safety_blocks_real_visomaster(self):
+        """真实 visomaster-fusion 泄漏回归：topic_tags 含 faceswap→score=0（Codex P2）。"""
+        repo = {
+            "repo_url": "https://github.com/visomaster/visomaster-fusion",
+            "topic_tags": [
+                "ai", "computer-vision", "face-editor", "faceswap", "live-portrait"
+            ],
+            "stars": 5000,
+            "language": "Python",
+            "mention_count": 1,
+            "mentioners": ["@test"],
+            "first_mention_at": "2026-06-04T10:00:00Z",
+            "_tier_map": {"test": 1},
+        }
+        assert not safety_check(repo)
+        assert score(repo) == 0.0
+
+    def test_safety_allows_normal_repo(self):
+        """正常 AI repo 不受 safety 扩词影响（无假阳性）。"""
+        assert safety_check({
+            "topic_tags": ["ai", "machine-learning", "computer-vision", "deep-learning"],
+            "repo_url": "https://github.com/test/normal-ai",
+        })
+        assert safety_check({
+            "readme_excerpt": "A deep learning framework for face recognition",
+            "repo_url": "https://github.com/test/normal-ai",
+        })
+
+    def test_safety_deepfake_topic_tag_scores_zero(self):
+        """deepfake 命中 topic_tags → score() 返回 0（SC-4 完整链路）。"""
+        repo = {
+            "repo_url": "https://github.com/evil/deepfake-tool",
+            "topic_tags": ["deepfake", "ai"],
+            "stars": 10000,
+            "language": "Python",
+            "mention_count": 3,
+            "mentioners": ["@a", "@b", "@c"],
+            "first_mention_at": "2026-06-04T10:00:00Z",
+            "_tier_map": {"a": 1, "b": 1, "c": 1},
+        }
+        assert score(repo) == 0.0

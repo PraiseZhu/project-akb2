@@ -30,6 +30,7 @@ OUTPUT_DIR_TEMPLATE = "AKB2.0/AI TRENDS/GitHub"
 _SCHEMA_REPO_FIELDS = {
     "repo_url", "stars", "language", "topic_tags", "mention_count",
     "mentioners", "first_mention_at", "score", "summary", "use_case",
+    "engagement_raw",
 }
 
 def _clean_repo(repo: dict) -> dict:
@@ -49,10 +50,12 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
     # Step 1: Intake via three-layer fallback
     if mock:
         candidates, fallback_layer = _mock_intake(force_layer)
+        l1_recency_stats = {}  # mock 无真实 L1
     else:
-        candidates, fallback_layer = _real_intake(force_layer)
+        candidates, fallback_layer, l1_recency_stats = _real_intake(force_layer)
 
     if not candidates:
+        _emit_sc7_metrics(_make_zero_sc7_metrics())
         _write_skipped("no_candidates_after_intake", len(candidates), fallback_layer)
         return 0
 
@@ -81,6 +84,7 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
         _novelty.close()
 
     if len(aggregated) < 10:
+        _emit_sc7_metrics(_make_zero_sc7_metrics())
         _write_skipped("too_few_aggregated_repos", len(aggregated), fallback_layer)
         return 0
 
@@ -126,8 +130,10 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
     # GitHub API 限流或网络故障会让 enrich 返回 stars=0/lang=None，若放行会产出
     # schema 合法但内容全空的简报；这里 fail-visibly 而非 fail-silently。
     if enrich_attempted > 0 and enrich_failed * 2 > enrich_attempted:
+        _emit_sc7_metrics(_make_zero_sc7_metrics())
         _write_skipped(
-            f"enrich_degraded: {enrich_failed}/{enrich_attempted} enrich calls failed (rate-limit/network)",
+            f"enrich_degraded: {enrich_failed}/{enrich_attempted} "
+            "enrich calls failed (rate-limit/network)",
             enrich_attempted, fallback_layer,
         )
         return 0
@@ -151,7 +157,23 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
     scored = score_batch(filtered)
     top10 = scored[:10]
 
+    # --- SC-7 metrics (computed once, emitted on all exit paths) ---
+    candidates_after_safety = sum(1 for r in scored if r.get("score", 0) > 0)
+    fallback_triggered = (fallback_layer != "layer1")
+    top10_all_layer1 = (fallback_layer == "layer1" and len(top10) >= 10)
+    _sc7_metrics = {
+        "candidates_before_recency": l1_recency_stats.get("candidates_before_recency", 0),
+        "candidates_after_recency": l1_recency_stats.get("candidates_after_recency", 0),
+        "recency_dropped": l1_recency_stats.get("recency_dropped", 0),
+        "timestamp_missing": l1_recency_stats.get("timestamp_missing", 0),
+        "timestamp_parse_failed": l1_recency_stats.get("timestamp_parse_failed", 0),
+        "candidates_after_safety": candidates_after_safety,
+        "fallback_triggered": fallback_triggered,
+        "top10_all_layer1": top10_all_layer1,
+    }
+
     if len(top10) < 10:
+        _emit_sc7_metrics(_sc7_metrics)
         _write_skipped("too_few_after_filter", len(top10), fallback_layer)
         return 0
 
@@ -160,12 +182,17 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
         synthesis_result = synthesize(top10)
         top10_with_summaries = synthesis_result["top_repos"]
     except Exception as e:
+        _emit_sc7_metrics(_sc7_metrics)
         _write_failed(f"synthesis_failed: {e}", fallback_layer=fallback_layer)
         return 0
 
     # Step 8: Render + validate + write vault
     next_day = (date.today() + timedelta(days=1)).isoformat()
     now_iso = datetime.now(UTC).isoformat()
+
+    # Inject engagement_raw before _clean_repo（必须在 clean 前，否则 engagement 字段被剥）
+    for r in top10_with_summaries:
+        r["engagement_raw"] = engagement_raw(r.get("engagement"))
 
     briefing = {
         "schema_version": "v1",
@@ -189,10 +216,15 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
         Path(tf_path).unlink(missing_ok=True)
 
     if errors:
-        _write_skipped(f"schema_validation_failed: {errors}", len(top10_with_summaries), fallback_layer)
+        _emit_sc7_metrics(_sc7_metrics)
+        _write_skipped(
+            f"schema_validation_failed: {errors}",
+            len(top10_with_summaries), fallback_layer,
+        )
         return 0
 
     if len(briefing["top_repos"]) != 10:
+        _emit_sc7_metrics(_sc7_metrics)
         _write_skipped("top_repos_not_10", len(briefing["top_repos"]), fallback_layer)
         return 0
 
@@ -216,6 +248,7 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
     finally:
         _novelty.close()
 
+    _emit_sc7_metrics(_sc7_metrics)
     print(f"briefing: WROTE {md_path}")
     return 0
 
@@ -323,26 +356,29 @@ def _mock_intake(force_layer: int | None = None) -> tuple[list, str]:
     return candidates, layer
 
 
-def _real_intake(force_layer: int | None = None) -> tuple[list, str]:
-    """Run real three-layer intake."""
+def _real_intake(force_layer: int | None = None) -> tuple[list, str, dict]:
+    """Run real three-layer intake. Returns (candidates, selected_layer, l1_recency_stats)."""
+    from .intake import _ZERO_RECENCY_STATS
+
     if force_layer == 1:
         l1 = TwitterCollector().collect(POOL_CONFIG)
-        return l1.candidates, "layer1"
+        return l1.candidates, "layer1", l1.recency_stats
     if force_layer == 2:
         l2 = TrendingHTMLCollector().collect()
-        return l2.candidates, "layer2"
+        return l2.candidates, "layer2", _ZERO_RECENCY_STATS
     if force_layer == 3:
         # 强制 layer3：与 mock 模式对称（_mock_intake 也处理 force_layer 3）。
         # 无 manual JSON 时返回空 → pipeline 走 too_few/skip，行为可判定。
         from .intake.manual_json_collector import ManualJSONCollector
         l3 = ManualJSONCollector().collect()
-        return l3.candidates, "layer3"
+        return l3.candidates, "layer3", _ZERO_RECENCY_STATS
 
     # 无强制：完整三层 fallback judge（decide 内部含 l1→l2→l3 链）。
     l1 = TwitterCollector().collect(POOL_CONFIG)
     l2_runner = lambda: TrendingHTMLCollector().collect()
     decision = decide(l1, l2_runner)
-    return decision.candidates, decision.selected_layer
+    # 即使 decide 选了 L2，也带 L1 的 recency_stats（SC-7 验收需要）
+    return decision.candidates, decision.selected_layer, l1.recency_stats
 
 
 def _pool_size() -> int:
@@ -421,11 +457,12 @@ def _render_markdown(briefing: dict) -> str:
         "",
     ]
 
-    # 正常链路不输出诊断行；仅兜底链路给读者一句人话警告
-    # （layer 编号 + 活跃博主数留在 frontmatter / 日志里给运维诊断）
+    # 正常 layer1 博主精选日不输出此行；仅兜底链路(layer2/3)给读者一句中性提示，
+    # 让读者从正文就能区分"博主精选" vs "兜底产出"（layer 编号/活跃博主数留 frontmatter
+    # 与日志给运维）。措辞保持中性事实陈述，不用"数据不足"等可能误导的因果归因。
     layer_warnings = {
-        "layer2": "> ⚠️ 今日博主数据不足，推荐来自 GitHub 热榜，质量需人工核查。",
-        "layer3": "> ⚠️ 今日自动抓取失败，为手动补充列表。",
+        "layer2": "> ℹ️ 本期为 GitHub 热榜兜底产出(非博主精选)。",
+        "layer3": "> ℹ️ 本期为手动补充列表(自动链路未产出)。",
     }
     warning = layer_warnings.get(layer)
     if warning:
@@ -445,11 +482,16 @@ def _render_markdown(briefing: dict) -> str:
         first_mention = repo.get("first_mention_at", "")[:16]
         summary = repo.get("summary", "")
         use_case = repo.get("use_case", "")
+        eng_raw = repo.get("engagement_raw", 0)
+
+        mention_line = f"{tags} · **{mention_count} mentions**（{mentioners}）"
+        if eng_raw > 0:
+            mention_line += f" · 🔥 {eng_raw}"
 
         lines.extend([
             f"## {i}. [{name}]({url}) :star: {stars_str} · {language}",
             "",
-            f"{tags} · **{mention_count} mentions**（{mentioners}）",
+            mention_line,
             f"score {score:.2f} · 推荐于 {first_mention}",
             "",
             f"**做什么**: {summary}",
@@ -461,6 +503,25 @@ def _render_markdown(briefing: dict) -> str:
         ])
 
     return "\n".join(lines)
+
+
+def _emit_sc7_metrics(metrics: dict) -> None:
+    """Emit deterministic SC7_METRICS line to stdout (SC-7 contract)."""
+    print(f"SC7_METRICS: {json.dumps(metrics, ensure_ascii=False)}")
+
+
+def _make_zero_sc7_metrics() -> dict:
+    """Zero-placeholder SC7 metrics for paths without L1 recency data."""
+    return {
+        "candidates_before_recency": 0,
+        "candidates_after_recency": 0,
+        "recency_dropped": 0,
+        "timestamp_missing": 0,
+        "timestamp_parse_failed": 0,
+        "candidates_after_safety": 0,
+        "fallback_triggered": False,
+        "top10_all_layer1": False,
+    }
 
 
 if __name__ == "__main__":

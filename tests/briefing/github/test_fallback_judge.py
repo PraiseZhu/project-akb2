@@ -7,7 +7,7 @@ from unittest import mock
 
 import pytest
 
-from akb2.briefing.github.intake import Candidate, CollectorResult
+from akb2.briefing.github.intake import Candidate, CollectorResult, _ZERO_RECENCY_STATS
 from akb2.briefing.github.intake.fallback_judge import decide, FallbackDecision
 
 
@@ -19,7 +19,8 @@ def _make_l1_result(ok=True, num_candidates=10, num_failed=5):
     ]
     failed = [f"@fail{i}" for i in range(num_failed)]
     return CollectorResult("layer1", candidates, failed, 60.0, ok,
-                           None if ok else "health check failed")
+                           None if ok else "health check failed",
+                           _ZERO_RECENCY_STATS)
 
 
 def _make_l2_result(ok=True, num_candidates=12):
@@ -29,7 +30,8 @@ def _make_l2_result(ok=True, num_candidates=12):
         for i in range(num_candidates)
     ]
     return CollectorResult("layer2", candidates, [], 5.0, ok,
-                           None if ok else "HTTP error")
+                           None if ok else "HTTP error",
+                           _ZERO_RECENCY_STATS)
 
 
 class TestFallbackJudge:

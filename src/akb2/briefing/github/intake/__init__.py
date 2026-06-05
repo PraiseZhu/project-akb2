@@ -19,3 +19,14 @@ class CollectorResult(NamedTuple):
     duration_sec: float
     ok: bool
     error: str | None
+    recency_stats: dict  # SC-7 计数器载体；layer2/3 填 0 占位保证键恒在
+
+
+# layer2/3 collector 无 recency 过滤，填 0 占位保证键恒在
+_ZERO_RECENCY_STATS: dict = {
+    "candidates_before_recency": 0,
+    "candidates_after_recency": 0,
+    "recency_dropped": 0,
+    "timestamp_missing": 0,
+    "timestamp_parse_failed": 0,
+}

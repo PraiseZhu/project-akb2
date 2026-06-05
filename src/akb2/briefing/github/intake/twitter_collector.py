@@ -3,13 +3,13 @@
 import re
 import subprocess
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import yaml
 
 from ..url_normalizer import normalize
-from . import Candidate, CollectorResult
+from . import _ZERO_RECENCY_STATS, Candidate, CollectorResult
 
 BASE_SLEEP_BETWEEN_HANDLES = 5
 BACKOFF_429 = [60, 120, 300]
@@ -20,6 +20,32 @@ HEALTH_CHECK_CMD = ["twitter", "status"]
 
 _GITHUB_URL_PATTERN = re.compile(r"https?://(?:www\.)?github\.com/[\w.-]+/[\w.-]+", re.IGNORECASE)
 _POOL_DB_PATH = Path.home() / ".local" / "share" / "akb2" / "github_dedup.db"
+
+RECENCY_WINDOW_DAYS = 3
+
+
+def _parse_tweet_time(raw: str | None) -> datetime | None:
+    """Parse tweet timestamp, normalizing to UTC-aware datetime.
+
+    Rules:
+      - None / empty → None
+      - fromisoformat (Z→+00:00 first for RFC 3339 compat)
+      - naive datetime → assume UTC
+      - any exception → None
+    """
+    if not raw:
+        return None
+    if not isinstance(raw, str):
+        return None
+    try:
+        # RFC 3339 "Z" suffix not standard ISO; replace with explicit offset
+        s = raw.strip().replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt
+    except (ValueError, TypeError):
+        return None
 
 
 class TwitterCollector:
@@ -35,10 +61,19 @@ class TwitterCollector:
         # Health check
         if not self._health_check():
             return CollectorResult("layer1", [], handles, time.monotonic() - t0, False,
-                                   "twitter-cli health check failed (not authenticated)")
+                                   "twitter-cli health check failed (not authenticated)",
+                                   _ZERO_RECENCY_STATS)
 
         candidates: list[Candidate] = []
         failed_handles: list[str] = []
+        cutoff = datetime.now(UTC) - timedelta(days=RECENCY_WINDOW_DAYS)
+
+        # SC-7 计数器
+        candidates_before = 0
+        candidates_after = 0
+        recency_dropped = 0
+        timestamp_missing = 0
+        timestamp_parse_failed = 0
 
         # 去重策略：仅 per-handle 本地去重（同一博主同 repo 多条推文只算 1 次提及），
         # 跨博主同 repo 必须保留 —— 否则 mention_count 永远 = 1，"几个博主提了"
@@ -58,10 +93,26 @@ class TwitterCollector:
                 # 两处都提，normalize() 会拒非 github 并剥尾巴。
                 raw_urls = [u for u in (tweet.get("urls") or []) if isinstance(u, str)]
                 raw_urls += _GITHUB_URL_PATTERN.findall(text)
-                mentioned_at = (
+
+                # --- 时间戳提取与 recency 判窗 ---
+                raw_ts = (
                     tweet.get("createdAtISO") or tweet.get("createdAt")
-                    or tweet.get("created_at") or datetime.now(UTC).isoformat()
+                    or tweet.get("created_at")
                 )
+                parsed_time = _parse_tweet_time(raw_ts)
+                if raw_ts is None:
+                    timestamp_missing += 1
+                elif parsed_time is None:
+                    timestamp_parse_failed += 1
+
+                mentioned_at = raw_ts if raw_ts else datetime.now(UTC).isoformat()
+
+                # 判窗：解析成功且 < cutoff → 跳过整条 tweet
+                candidates_before += len(raw_urls)
+                if parsed_time is not None and parsed_time < cutoff:
+                    recency_dropped += len(raw_urls)  # 该 tweet 中所有 URL 都算丢弃
+                    continue
+
                 for url in raw_urls:
                     normalized = normalize(url)
                     if normalized is None:
@@ -69,6 +120,7 @@ class TwitterCollector:
                     if normalized in seen_in_handle:
                         continue
                     seen_in_handle.add(normalized)
+                    candidates_after += 1
                     candidates.append(Candidate(
                         repo_url=normalized,
                         mentioner=handle,
@@ -85,7 +137,16 @@ class TwitterCollector:
         ok = fail_rate < FALLBACK_FAILURE_RATE_THRESHOLD and len(candidates) >= 5
         error = None if ok else f"fail_rate={fail_rate:.2f}, candidates={len(candidates)}"
 
-        return CollectorResult("layer1", candidates, failed_handles, duration, ok, error)
+        recency_stats = {
+            "candidates_before_recency": candidates_before,
+            "candidates_after_recency": candidates_after,
+            "recency_dropped": recency_dropped,
+            "timestamp_missing": timestamp_missing,
+            "timestamp_parse_failed": timestamp_parse_failed,
+        }
+
+        return CollectorResult("layer1", candidates, failed_handles, duration, ok, error,
+                               recency_stats)
 
     def _load_pool(self, path: Path) -> list[dict]:
         with open(path) as f:

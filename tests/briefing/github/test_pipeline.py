@@ -236,3 +236,124 @@ class TestAggregateEngagement:
         # 必须是最热单条本身（不是累加出来的 dict）
         assert agg[url]["engagement"] == hot
         assert engagement_raw(agg[url]["engagement"]) == 500  # 非 1100(sum)
+
+
+class TestEngagementRawOutput:
+    """SC-3: engagement_raw 进 JSON 产物 + MD 渲染。"""
+
+    def test_engagement_raw_in_output(self, tmp_path, monkeypatch):
+        """mock 跑后 JSON top_repos[*] 含 engagement_raw≥0 且过 validator。"""
+        import json
+        from akb2.briefing.github.pipeline import run_pipeline
+        from akb2.briefing.github.validator import validate
+
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        monkeypatch.setenv("VAULT_ROOT", str(vault))
+        monkeypatch.setenv("AKB2_NOVELTY_DB", str(tmp_path / "novelty.sqlite"))
+        monkeypatch.setenv("AKB2_TRANSLATE_TIMEOUT", "30")
+
+        exit_code = run_pipeline(mock=True)
+        assert exit_code == 0
+
+        # Find JSON output
+        json_files = list(vault.rglob("*.json"))
+        assert len(json_files) >= 1, "expected JSON output"
+        json_path = json_files[0]
+        with open(json_path) as f:
+            data = json.load(f)
+
+        # Validate
+        errors = validate(str(json_path))
+        assert not errors, f"schema validation failed: {errors}"
+
+        # All top_repos must have engagement_raw
+        for repo in data["top_repos"]:
+            assert "engagement_raw" in repo
+            assert isinstance(repo["engagement_raw"], int)
+            assert repo["engagement_raw"] >= 0
+
+    def test_render_shows_engagement_when_positive(self):
+        """engagement_raw>0 → MD 中显示 · 🔥 N。"""
+        from akb2.briefing.github.pipeline import _render_markdown
+
+        briefing = {
+            "schema_version": "v1", "briefing_type": "github-curator",
+            "generated_at": "2026-06-04T10:00:00Z", "date": "2026-06-05",
+            "candidate_pool_size": 10, "active_curators_today": ["@test"],
+            "fallback_layer_used": "layer1",
+            "top_repos": [{
+                "repo_url": "https://github.com/test/repo",
+                "stars": 1000, "language": "Python", "topic_tags": ["ai"],
+                "mention_count": 3, "mentioners": ["@a", "@b", "@c"],
+                "first_mention_at": "2026-06-04T10:00:00Z",
+                "score": 0.85, "summary": "A test repo for AI stuff" + "x" * 22,
+                "use_case": "Use when you need AI" + "y" * 18,
+                "engagement_raw": 150,
+            }] * 10,
+        }
+        md = _render_markdown(briefing)
+        assert "🔥 150" in md
+
+    def test_render_hides_engagement_when_zero(self):
+        """engagement_raw=0 → MD 中不显示热度标记。"""
+        from akb2.briefing.github.pipeline import _render_markdown
+
+        briefing = {
+            "schema_version": "v1", "briefing_type": "github-curator",
+            "generated_at": "2026-06-04T10:00:00Z", "date": "2026-06-05",
+            "candidate_pool_size": 10, "active_curators_today": ["@test"],
+            "fallback_layer_used": "layer1",
+            "top_repos": [{
+                "repo_url": "https://github.com/test/repo",
+                "stars": 1000, "language": "Python", "topic_tags": ["ai"],
+                "mention_count": 1, "mentioners": ["@a"],
+                "first_mention_at": "2026-06-04T10:00:00Z",
+                "score": 0.85, "summary": "A test repo" + "x" * 38,
+                "use_case": "Use when needed" + "y" * 24,
+                "engagement_raw": 0,
+            }] * 10,
+        }
+        md = _render_markdown(briefing)
+        assert "🔥" not in md
+
+
+class TestSC7Metrics:
+    """SC-7: stdout SC7_METRICS 行。"""
+
+    def test_sc7_metrics_line_emitted(self, tmp_path, monkeypatch, capsys):
+        """mock 跑 stdout 含 SC7_METRICS: 行，JSON 8 键齐全且类型正确。"""
+        import json
+        from akb2.briefing.github.pipeline import run_pipeline
+
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        monkeypatch.setenv("VAULT_ROOT", str(vault))
+        monkeypatch.setenv("AKB2_NOVELTY_DB", str(tmp_path / "novelty.sqlite"))
+        monkeypatch.setenv("AKB2_TRANSLATE_TIMEOUT", "30")
+
+        exit_code = run_pipeline(mock=True)
+        assert exit_code == 0
+
+        captured = capsys.readouterr()
+        sc7_line = None
+        for line in captured.out.splitlines():
+            if line.startswith("SC7_METRICS:"):
+                sc7_line = line
+                break
+        assert sc7_line is not None, "SC7_METRICS line not found in stdout"
+
+        metrics = json.loads(sc7_line[len("SC7_METRICS:"):].strip())
+        required_keys = [
+            "candidates_before_recency", "candidates_after_recency",
+            "recency_dropped", "timestamp_missing", "timestamp_parse_failed",
+            "candidates_after_safety", "fallback_triggered", "top10_all_layer1",
+        ]
+        for key in required_keys:
+            assert key in metrics, f"missing key: {key}"
+        # Type checks
+        for k in required_keys[:5]:
+            assert isinstance(metrics[k], int), f"{k} should be int"
+        assert isinstance(metrics["candidates_after_safety"], int)
+        assert isinstance(metrics["fallback_triggered"], bool)
+        assert isinstance(metrics["top10_all_layer1"], bool)

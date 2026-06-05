@@ -3,11 +3,9 @@
 import re
 import subprocess
 import time
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import UTC, datetime
 
-from ..url_normalizer import normalize
-from . import Candidate, CollectorResult
+from . import _ZERO_RECENCY_STATS, Candidate, CollectorResult
 
 TRENDING_URL = "https://github.com/trending"
 CHROME_UA = (
@@ -25,14 +23,16 @@ class TrendingHTMLCollector:
         html = self._fetch_trending()
         if html is None:
             return CollectorResult("layer2", [], [], time.monotonic() - t0, False,
-                                   "HTTP request to GitHub Trending failed")
+                                   "HTTP request to GitHub Trending failed",
+                                   _ZERO_RECENCY_STATS)
 
         repos = self._parse_repos(html)
         if len(repos) < 10:
             return CollectorResult("layer2", [], [], time.monotonic() - t0, False,
-                                   f"parsed only {len(repos)} repos, need >= 10")
+                                   f"parsed only {len(repos)} repos, need >= 10",
+                                   _ZERO_RECENCY_STATS)
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         candidates = [
             Candidate(
                 repo_url=f"https://github.com/{owner}/{repo}",
@@ -44,7 +44,8 @@ class TrendingHTMLCollector:
             for owner, repo in repos
         ]
 
-        return CollectorResult("layer2", candidates, [], time.monotonic() - t0, True, None)
+        return CollectorResult("layer2", candidates, [], time.monotonic() - t0, True, None,
+                               _ZERO_RECENCY_STATS)
 
     def _fetch_trending(self) -> str | None:
         try:
