@@ -1,21 +1,26 @@
 #!/usr/bin/env bash
 # bootstrap_launchd.sh — idempotent launchd bootstrap
 # Removes old registration then bootstraps new one.
-# Dynamically replaces plist wrapper path with current PROJECT_ROOT.
+# Dynamically replaces plist placeholders with current PROJECT_ROOT.
 set -euo pipefail
 
-PLIST_LABEL="com.akb2.github_briefing"
+PLIST_LABEL="com.akb2.briefing"
 
 echo "=== Bootstrapping $PLIST_LABEL ==="
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-PLIST_SRC="$SCRIPT_DIR/../launchd/com.akb2.github_briefing.plist"
+VAULT_ROOT="${VAULT_ROOT:-$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents}"
+PLIST_SRC="$SCRIPT_DIR/../launchd/com.akb2.briefing.plist"
 
-# Generate temp plist with dynamic wrapper path (avoid hardcoded path)
-PLIST_TMP="$(mktemp -t com.akb2.github_briefing.XXXXXX.plist)"
-sed "s|/Users/praise/AI-Agent/Claude/projects/Project AKB2/scripts/launchd_wrapper.sh|$PROJECT_ROOT/scripts/launchd_wrapper.sh|g" "$PLIST_SRC" > "$PLIST_TMP"
-echo "  Generated plist with wrapper path: $PROJECT_ROOT/scripts/launchd_wrapper.sh"
+# Generate temp plist with dynamic paths (avoid hardcoded paths)
+PLIST_TMP="$(mktemp -t com.akb2.briefing.XXXXXX.plist)"
+sed \
+  -e "s|__AKB2_REPO_ROOT__|$PROJECT_ROOT|g" \
+  -e "s|__AKB2_VAULT_ROOT__|$VAULT_ROOT|g" \
+  "$PLIST_SRC" > "$PLIST_TMP"
+echo "  Generated plist with repo root: $PROJECT_ROOT"
+echo "  Vault root: $VAULT_ROOT"
 
 # Idempotent: remove old registration (ignore errors)
 launchctl bootout "gui/$(id -u)/$PLIST_LABEL" 2>/dev/null || true
@@ -31,11 +36,11 @@ rm -f "$PLIST_TMP"
 # Verify
 echo ""
 echo "=== Verification ==="
-launchctl print "gui/$(id -u)/$PLIST_LABEL" | grep -E 'launchd_wrapper\.sh|hour = 5' || {
-    echo "ERROR: Verification failed — plist does not reference wrapper or hour != 5" >&2
+launchctl print "gui/$(id -u)/$PLIST_LABEL" | grep -E 'daily_briefing\.sh|hour = 7' || {
+    echo "ERROR: Verification failed — plist does not reference daily_briefing.sh or hour != 7" >&2
     exit 2
 }
-echo "  OK: wrapper script detected + hour = 5 (本地 5:30，与社媒 7:30/8:30 错峰)"
+echo "  OK: daily_briefing.sh detected + hour = 7 (本地 7:30，与社媒 7:30/8:30 错峰)"
 
 # Env 完整性检查
 echo ""
