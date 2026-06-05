@@ -10,6 +10,7 @@ Assembler 是本链路唯一 durable write 所有者（Researcher 不写 staging
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 import shutil
@@ -107,15 +108,17 @@ class Assembler:
         date_str: str | None = None,
         staging_dir: Path | None = None,
     ) -> Path:
-        """写 staging 中转 → gate 决策 → active 发布到 AI TRENDS/Video，非 active 丢弃。
+        """写 staging 中转 → gate 决策 → active 发布或按决策分流处理。
 
         发布流程：
         1. 写 staging/candidate/video-{slug}-{date}.md（中转）
         2. _gate_decision → proposed_gate_decision
         3. active：copy 到 promotion_target_path，删 staging 中转，返回正式路径
-        4. 非 active：删 staging 中转 + warning 日志 + raise GateRejected
-        5. promotion 目录不存在 → raise PromotionTargetNotFound（删中转）
-        6. 正式路径同名已存在 → raise CandidateTargetExists（fail-closed，删中转）
+        4. needs_repair：保留 staging 中转 + 写入 pending 等待重试
+        5. reject：删 staging 中转 + warning 日志 + raise GateRejected
+        6. parse_error：删 staging 中转 + warning 日志 + raise GateRejected
+        7. promotion 目录不存在 → raise PromotionTargetNotFound（删中转）
+        8. 正式路径同名已存在 → raise CandidateTargetExists（fail-closed，删中转）
 
         Args:
             candidate_md: 完整的 candidate markdown。
@@ -128,7 +131,7 @@ class Assembler:
 
         Raises:
             CandidateTargetExists: staging 或正式路径同名已存在。
-            GateRejected: gate 判非 active（含 parse_error）。
+            GateRejected: gate 判 reject 或 parse_error（永久拒绝）。
             PromotionTargetNotFound: promotion 目标路径不存在。
         """
         date = date_str or datetime.now().strftime("%Y-%m-%d")
@@ -150,7 +153,19 @@ class Assembler:
 
         decision = self._gate_decision(candidate_path, staging)
 
-        if decision != "active":
+        if decision == "active":
+            pass  # 继续发布流程
+        elif decision == "needs_repair":
+            # 可重试：保留 staging 文件，写入 pending 等待下次重试
+            logger.warning(
+                "gate 判 needs_repair（内容质量不足，可重试）: %s — "
+                "staging 文件保留，写入 pending 等待 NLM 可用时重新研究",
+                filename,
+            )
+            self._save_repair_pending(candidate_md, filename)
+            return candidate_path  # 保留 staging，不删除
+        else:
+            # reject / parse_error → 永久丢弃
             candidate_path.unlink(missing_ok=True)
             logger.warning(f"gate 拒绝发布 (decision={decision}): {filename}")
             raise GateRejected(decision)
@@ -377,8 +392,41 @@ class Assembler:
         return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
     # ------------------------------------------------------------------
-    # 全链路编排
+    # Gate needs_repair 持久化
     # ------------------------------------------------------------------
+
+    def _save_repair_pending(self, candidate_md: str, filename: str) -> None:
+        """gate 判 needs_repair 时持久化待重试记录。
+
+        写入 assembler_repair_pending.jsonl（每行一条 JSON），与 researcher 的
+        pending_research.json 分属不同阶段，互不干扰。
+        """
+        repair_path = self.config.staging_dir.parent / "assembler_repair_pending.jsonl"
+        repair_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # 从 candidate markdown 提取 frontmatter 中的关键字段
+        source_url = ""
+        title = ""
+        m = re.search(r"^source_url:\s*(.+)$", candidate_md, re.MULTILINE)
+        if m:
+            source_url = m.group(1).strip()
+        m = re.search(r'^title:\s*"(.+)"$', candidate_md, re.MULTILINE)
+        if m:
+            title = m.group(1).strip()
+
+        record = {
+            "filename": filename,
+            "source_url": source_url,
+            "title": title,
+            "gate_decision": "needs_repair",
+            "added_at": datetime.now(UTC).isoformat(),
+        }
+        with open(repair_path, "a") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        logger.info(
+            "needs_repair 已记录到 %s: %s",
+            repair_path.name, title or filename,
+        )
 
     def run_pipeline(
         self,
@@ -450,10 +498,12 @@ class Assembler:
                 else:
                     # 6. 提交
                     candidate_path = self.commit(candidate_md)
+                    # 判断 gate 决策：staging 路径 = needs_repair，promotion 路径 = active
+                    is_staging = str(self.config.staging_dir.resolve()) in str(candidate_path)
                     results.append({
                         "video": video_meta,
                         "candidate_path": str(candidate_path),
-                        "status": "ok",
+                        "status": "needs_repair" if is_staging else "ok",
                     })
             except (CandidateTargetExists, GateRejected, PromotionTargetNotFound) as e:
                 logger.warning(f"视频 {video_meta.get('title', '?')} 提交失败: {e}")

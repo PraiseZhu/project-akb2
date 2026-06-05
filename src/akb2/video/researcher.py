@@ -44,6 +44,38 @@ class NLMQuotaExhausted(Exception):
     """两个 NLM profile 配额都用完。"""
 
 
+class NLMNetworkError(Exception):
+    """NLM CLI 网络不可达（ConnectError/DNS/timeout）— 可重试，不应触发降级。"""
+
+
+# ---------------------------------------------------------------------------
+# 网络错误检测（nlm CLI 在未捕获异常时可能返回 exit 0，需检查 stderr）
+# ---------------------------------------------------------------------------
+
+_NETWORK_ERROR_PATTERNS: list[str] = [
+    "ConnectError",
+    "Connection refused",
+    "Connection reset",
+    "Name or service not known",
+    "nodename nor servname provided",
+    "Temporary failure in name resolution",
+    "Network is unreachable",
+    "Connection timed out",
+    "Traceback (most recent call last)",
+]
+
+
+def _is_network_error_stderr(stderr: str) -> bool:
+    """检查 stderr 是否包含网络/连接错误特征。
+
+    nlm CLI bug: 网络不可达时 httpx 抛未捕获异常 → Python traceback 输出到
+    stderr 但进程 exit code 为 0。此函数通过 stderr 文本特征识别此类假成功。
+    """
+    if not stderr:
+        return False
+    return any(p in stderr for p in _NETWORK_ERROR_PATTERNS)
+
+
 # ---------------------------------------------------------------------------
 # 数据类
 # ---------------------------------------------------------------------------
@@ -165,10 +197,10 @@ class VideoResearcher:
         used_fallback = False
         notebook_id: str | None = None
 
-        # 逐视频健康检查：auth 可用？
-        auth_ok = self._health_check(profile)
+        # 逐视频健康检查：区分 auth 状态与网络状态
+        health = self._health_check(profile)
 
-        if auth_ok:
+        if health == "ok":
             # 正常 NLM 路径
             try:
                 report_content, notebook_id, profile = self._nlm_research_path(
@@ -183,9 +215,14 @@ class VideoResearcher:
                 logger.warning(f"NLM 研究失败，降级到转录摘要: {title}")
                 report_content = self._fallback_transcript_research(video)
                 used_fallback = True
+        elif health == "network_error":
+            # 网络不可达（transient）→ 转 pending 重试，不降级
+            # yt-dlp 同样需要网络，走降级也是注定失败的空跑
+            logger.warning(f"网络不可达，视频转 pending 等待重试: {title}")
+            return None
         else:
-            # auth 不可用 → 直接降级
-            logger.warning(f"NLM auth 不可用，降级到转录摘要: {title}")
+            # auth_expired 或其它未知状态 → 降级路径
+            logger.warning(f"NLM auth 不可用 (health={health})，降级到转录摘要: {title}")
             report_content = self._fallback_transcript_research(video)
             used_fallback = True
 
@@ -298,24 +335,84 @@ class VideoResearcher:
     # 健康检查
     # ------------------------------------------------------------------
 
-    def _health_check(self, profile: str) -> bool:
-        """前置健康检查：nlm CLI 可用 + 当前 profile auth 未过期。
+    def _health_check(self, profile: str) -> str:
+        """前置健康检查：区分 auth 状态与网络状态（逐视频，非整批）。
 
-        逐视频检查（非整批），失败时记录结构化日志（不弹 macOS 通知）。
+        直接调用 subprocess 以获取 stderr 文本，避免 _nlm 的抽象层丢失
+        网络错误信号（nlm CLI bug: 网络不可达时 exit 0）。
+
+        Returns:
+            "ok":             auth 正常 — 可走 NLM 路径
+            "network_error":  网络/CLI 不可达（transient）— 应转 pending 重试
+            "auth_expired":   auth 过期/不可用 — 应走 yt-dlp 降级路径
         """
+        cmd = [str(self.config.nlm_bin), "notebook", "list"]
+        if profile != "alt":
+            cmd.extend(["--profile", profile])
+
         try:
-            output = self._nlm("notebook", "list", profile=profile, timeout=30)
-        except NLMQuotaExhausted:
-            # 配额耗尽不代表 auth 失效：视为可用。后续首个视频进 NLM 路径会立刻再次
-            # 抛配额异常，由 run() 的 break 分支停批标 pending——不会无限循环。
-            return True
-        if output is None:
-            logger.error(
-                f"健康检查失败: nlm CLI 或 profile {profile} 凭据已过期 — "
-                f"终端运行: nlm login"
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
             )
-            return False
-        return True
+            stdout, stderr = proc.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            logger.error("健康检查超时（网络不可达）")
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (OSError, UnboundLocalError):
+                pass
+            return "network_error"
+        except FileNotFoundError:
+            logger.error("健康检查: nlm CLI 不可执行（%s）", self.config.nlm_bin)
+            return "network_error"
+        except OSError as e:
+            logger.error("健康检查: nlm CLI 启动失败: %s", e)
+            return "network_error"
+
+        if proc.returncode == 8:
+            # 配额耗尽不代表 auth 失效：视为可用。后续首个视频进 NLM 路径会立刻
+            # 再次抛配额异常，由 run() 的 break 分支停批标 pending。
+            return "ok"
+
+        if proc.returncode == 0:
+            stdout_text = stdout.strip()
+            if stdout_text and not _is_network_error_stderr(stderr):
+                return "ok"
+            # exit 0 但 stdout 为空或 stderr 含网络错误特征
+            if _is_network_error_stderr(stderr):
+                logger.warning(
+                    "健康检查: 网络不可达（nlm CLI 返回 exit 0 但 stderr 含网络错误特征）"
+                )
+                return "network_error"
+            # stdout 为空且无网络错误特征 → 保守视为 auth 问题
+            logger.warning("健康检查: nlm 返回空响应，疑似 auth 过期")
+            return "auth_expired"
+
+        # exit != 0（且 != 8）
+        stderr_text = stderr.strip()
+        if _is_network_error_stderr(stderr_text):
+            logger.warning("健康检查: 网络不可达（exit %d + 网络错误特征）", proc.returncode)
+            return "network_error"
+
+        # 检查 auth 相关特征
+        if ("Profile" in stderr_text
+                and ("not found" in stderr_text or "login" in stderr_text)):
+            logger.error(
+                "健康检查: auth 过期 — profile '%s' 不可用，终端运行: nlm login",
+                profile,
+            )
+            return "auth_expired"
+
+        # 其余非零码 → 保守视为 auth 问题（避免在未知错误时继续走 NLM）
+        logger.error(
+            "健康检查失败 (exit %d): stderr=%s",
+            proc.returncode, stderr_text[:200],
+        )
+        return "auth_expired"
 
     # ------------------------------------------------------------------
     # 降级路径：yt-dlp 字幕 → LLM 摘要
@@ -467,7 +564,16 @@ class VideoResearcher:
                     f"stdout={stdout[-300:]!r} stderr={stderr[-300:]!r}"
                 )
                 return None
-            return _strip_ansi(stdout.strip())
+            # exit 0 — 但 nlm CLI 在网络不可达时可能返回 exit 0 且 stderr 含
+            # Python traceback（httpx 未捕获异常）。检查 stderr 防假成功。
+            stdout_text = _strip_ansi(stdout.strip())
+            if not stdout_text and _is_network_error_stderr(stderr):
+                logger.warning(
+                    f"nlm 网络不可达（exit 0 但 stderr 含网络错误）: {' '.join(args)} "
+                    f"stderr={stderr[-300:]!r}"
+                )
+                return None
+            return stdout_text
         except subprocess.TimeoutExpired:
             logger.error(f"nlm {' '.join(args)} timed out ({timeout}s)")
             # 清理进程组（包括孙进程）

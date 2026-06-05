@@ -112,8 +112,8 @@ def test_health_check_degraded(temp_config, sample_video_result):
     """验证 auth 失败时走降级路径（yt-dlp 字幕 + LLM），不整批丢弃。"""
     r = VideoResearcher(temp_config, llm_adapter=MockLLMAdapter("Fallback summary"))
 
-    # Mock health check fails
-    with mock.patch.object(r, "_health_check", return_value=False):
+    # Mock health check: auth 过期
+    with mock.patch.object(r, "_health_check", return_value="auth_expired"):
         # Mock fallback transcript
         with mock.patch.object(r, "_get_transcript", return_value="This is a test transcript with enough content for analysis. " * 50):
             outputs = r.run([sample_video_result])
@@ -134,7 +134,7 @@ def test_nlm_quota_exhausted_failover(temp_config, sample_video_result):
     r = VideoResearcher(temp_config, llm_adapter=MockLLMAdapter("Summary"))
 
     # Mock health check OK
-    with mock.patch.object(r, "_health_check", return_value=True):
+    with mock.patch.object(r, "_health_check", return_value="ok"):
         # Mock nlm_create_notebook: first succeeds, but research fails
         with mock.patch.object(r, "_nlm_create_notebook", side_effect=[
             "nb-default-001",  # default profile creates notebook
@@ -318,7 +318,7 @@ def test_source_failure_triggers_transcript_fallback(temp_config, sample_video_r
     mock_llm = MockLLMAdapter("# Fallback Report\n\nDegraded content")
     r = VideoResearcher(temp_config, llm_adapter=mock_llm)
 
-    with mock.patch.object(r, "_health_check", return_value=True):
+    with mock.patch.object(r, "_health_check", return_value="ok"):
         with mock.patch.object(r, "_nlm_create_notebook", return_value="nb-001"):
             # 源添加在两个 profile 都失败（非配额）
             with mock.patch.object(r, "_nlm_add_youtube", return_value=False):
@@ -346,7 +346,7 @@ def test_source_failure_does_not_abort_batch(temp_config, sample_video_result):
         "creator": {"name": "C2", "platform": "youtube"},
     }
 
-    with mock.patch.object(r, "_health_check", return_value=True):
+    with mock.patch.object(r, "_health_check", return_value="ok"):
         with mock.patch.object(r, "_nlm_create_notebook", return_value="nb"):
             # side_effect 顺序映射当前 profile 轮替实现：
             #   视频1 主 profile add → False（第1次）
@@ -386,7 +386,7 @@ def test_nlm_delete_notebook_called_on_source_failure(temp_config, sample_video_
     """源处理失败轮替时，弃用的原 notebook 被 best-effort 删除。"""
     r = VideoResearcher(temp_config, llm_adapter=MockLLMAdapter("x"))
 
-    with mock.patch.object(r, "_health_check", return_value=True):
+    with mock.patch.object(r, "_health_check", return_value="ok"):
         with mock.patch.object(r, "_nlm_create_notebook", side_effect=["nb-primary", "nb-alt"]):
             with mock.patch.object(r, "_nlm_add_youtube", return_value=False):
                 with mock.patch.object(r, "_nlm_delete_notebook") as mock_delete:
@@ -420,7 +420,7 @@ def test_real_quota_aborts_batch_and_marks_pending(temp_config, sample_video_res
         "creator": {"name": "C2", "platform": "youtube"},
     }
 
-    with mock.patch.object(r, "_health_check", return_value=True):
+    with mock.patch.object(r, "_health_check", return_value="ok"):
         with mock.patch.object(r, "_nlm_create_notebook", return_value="nb"):
             # source add 触发真配额异常（模拟 _nlm 在 exit 8 时抛出）
             with mock.patch.object(
@@ -440,3 +440,164 @@ def test_real_quota_aborts_batch_and_marks_pending(temp_config, sample_video_res
         video2["video"]["url"],
     }, "两个视频(含触发配额的当前视频 + 剩余视频)都应进 quota_skipped"
     assert kwargs.get("increment_retry") is False
+
+
+# ---------------------------------------------------------------------------
+# SC-1: _nlm 检测 stderr 中的网络错误（nlm CLI bug: exit 0 但 stderr 含
+#       Python traceback）
+# ---------------------------------------------------------------------------
+
+
+def test_nlm_detects_network_error_in_stderr(temp_config):
+    """exit 0 + stdout 空 + stderr 含 ConnectError → _nlm 返回 None（非空字符串）。"""
+    r = VideoResearcher(temp_config)
+    with mock.patch(
+        "src.akb2.video.researcher.subprocess.Popen",
+        return_value=_fake_proc(
+            stdout="",
+            stderr="Traceback (most recent call last):\nConnectError: Connection refused",
+            returncode=0,
+        ),
+    ):
+        result = r._nlm("notebook", "list", profile="default")
+    assert result is None, (
+        "网络故障时 _nlm 应返回 None（而非空字符串），"
+        "防止调用方误判为成功"
+    )
+
+
+def test_nlm_normal_exit_zero_returns_stdout(temp_config):
+    """exit 0 + stdout 有内容 + stderr 无网络错误 → _nlm 正常返回 stdout。"""
+    r = VideoResearcher(temp_config)
+    with mock.patch(
+        "src.akb2.video.researcher.subprocess.Popen",
+        return_value=_fake_proc(
+            stdout='[{"id": "test-nb"}]',
+            stderr="",
+            returncode=0,
+        ),
+    ):
+        result = r._nlm("notebook", "list", profile="default")
+    assert result is not None
+    assert "test-nb" in result
+
+
+def test_nlm_nonzero_exit_with_network_stderr_returns_none(temp_config):
+    """exit 1 + stderr 含网络错误 → _nlm 返回 None（非 traceback 假成功路径）。"""
+    r = VideoResearcher(temp_config)
+    with mock.patch(
+        "src.akb2.video.researcher.subprocess.Popen",
+        return_value=_fake_proc(
+            stdout="",
+            stderr="Connection timed out",
+            returncode=1,
+        ),
+    ):
+        result = r._nlm("notebook", "list", profile="default")
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# SC-2: 网络 transient 失败 → 视频转 pending 重试，不强制降级
+# ---------------------------------------------------------------------------
+
+
+def test_network_error_goes_to_pending_not_fallback(
+    temp_config, sample_video_result,
+):
+    """health_check 返回 network_error → 视频不进降级，直接返回 None（转 pending）。"""
+    r = VideoResearcher(temp_config, llm_adapter=MockLLMAdapter("x"))
+    with mock.patch.object(r, "_health_check", return_value="network_error"):
+        with mock.patch.object(r, "_fallback_transcript_research") as mock_fallback:
+            with mock.patch.object(r, "_save_pending") as mock_pending:
+                outputs = r.run([sample_video_result])
+
+    assert outputs == [], "network_error 时不应产出 ResearchOutput"
+    mock_fallback.assert_not_called(), (
+        "网络故障时不应走 yt-dlp 降级（同样连不上 youtube）"
+    )
+    # run() 会将 _research_single 返回 None 的视频放入 failed 列表，
+    # 然后调用 _save_pending(failed, increment_retry=True)
+    assert mock_pending.call_count >= 1, "视频应被写入 pending"
+
+
+def test_auth_expired_still_triggers_fallback(
+    temp_config, sample_video_result,
+):
+    """auth_expired 时降级路径行为不变（回归保护）。"""
+    mock_llm = MockLLMAdapter("# Fallback")
+    r = VideoResearcher(temp_config, llm_adapter=mock_llm)
+    with mock.patch.object(r, "_health_check", return_value="auth_expired"):
+        with mock.patch.object(
+            r, "_get_transcript", return_value="Transcript. " * 100
+        ):
+            outputs = r.run([sample_video_result])
+
+    assert len(outputs) == 1
+    assert outputs[0].degraded is True, "auth 过期必须走降级路径"
+    assert "降级研究" in outputs[0].report_markdown
+
+
+# ---------------------------------------------------------------------------
+# SC-1 补充: _health_check 返回正确的状态字符串
+# ---------------------------------------------------------------------------
+
+
+def test_health_check_returns_network_error_on_connect_refused(temp_config):
+    """nlm CLI 返回 exit 0 + ConnectError stderr → _health_check 返回 network_error。"""
+    r = VideoResearcher(temp_config)
+    with mock.patch(
+        "src.akb2.video.researcher.subprocess.Popen",
+        return_value=_fake_proc(
+            stdout="",
+            stderr="Traceback (most recent call last):\nConnectError: [Errno 61] Connection refused",
+            returncode=0,
+        ),
+    ):
+        result = r._health_check("default")
+    assert result == "network_error"
+
+
+def test_health_check_returns_auth_expired_on_profile_not_found(temp_config):
+    """nlm CLI 返回 exit 1 + 'Profile not found' → _health_check 返回 auth_expired。"""
+    r = VideoResearcher(temp_config)
+    with mock.patch(
+        "src.akb2.video.researcher.subprocess.Popen",
+        return_value=_fake_proc(
+            stdout="",
+            stderr="Error: Profile 'expired' not found. Run 'nlm login' first.",
+            returncode=1,
+        ),
+    ):
+        result = r._health_check("expired")
+    assert result == "auth_expired"
+
+
+def test_health_check_returns_ok_on_valid_output(temp_config):
+    """nlm CLI 返回正常 JSON → _health_check 返回 ok。"""
+    r = VideoResearcher(temp_config)
+    with mock.patch(
+        "src.akb2.video.researcher.subprocess.Popen",
+        return_value=_fake_proc(
+            stdout='[{"id": "nb-123", "title": "Test"}]',
+            stderr="",
+            returncode=0,
+        ),
+    ):
+        result = r._health_check("default")
+    assert result == "ok"
+
+
+def test_health_check_returns_ok_on_quota_exhausted(temp_config):
+    """nlm CLI 返回 exit 8（配额耗尽）→ _health_check 返回 ok（auth 仍有效）。"""
+    r = VideoResearcher(temp_config)
+    with mock.patch(
+        "src.akb2.video.researcher.subprocess.Popen",
+        return_value=_fake_proc(
+            stdout="",
+            stderr="Quota exhausted",
+            returncode=8,
+        ),
+    ):
+        result = r._health_check("default")
+    assert result == "ok", "配额耗尽不代表 auth 失效"

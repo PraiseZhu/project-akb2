@@ -202,23 +202,23 @@ def test_gate_rejected_discard(
     temp_config, sample_video_meta, sample_research_output,
     sample_extracted_fields, sample_reasoned_links,
 ):
-    """gate=needs_repair → raise GateRejected，staging 中转删除，不写 AI TRENDS/Video（SC-2/SC-3）。"""
+    """gate=reject → raise GateRejected，staging 中转删除，不写 AI TRENDS/Video。"""
     assembler = Assembler(temp_config)
     candidate_md = assembler.assemble(
         sample_video_meta, sample_research_output,
         sample_extracted_fields, sample_reasoned_links,
     )
 
-    with mock.patch.object(assembler, "_gate_decision", return_value="needs_repair"):
+    with mock.patch.object(assembler, "_gate_decision", return_value="reject"):
         with pytest.raises(GateRejected):
             assembler.commit(candidate_md, slug="test-rejected", date_str="2026-05-28")
 
-    # staging 中转已删除（SC-2）
+    # staging 中转已删除
     staging = temp_config.staging_dir
     candidates = list(staging.glob("video-test-rejected-*.md"))
     assert len(candidates) == 0, f"staging 中转未删除: {candidates}"
 
-    # promotion_target_path 无文件（SC-2）
+    # promotion_target_path 无文件
     if temp_config.promotion_target_path.exists():
         promo_files = list(temp_config.promotion_target_path.glob("*.md"))
         assert len(promo_files) == 0, f"非 active 不应写 AI TRENDS/Video: {promo_files}"
@@ -547,13 +547,13 @@ def test_run_pipeline_per_video_gate_rejected_isolated(temp_config, sample_resea
     assembler = Assembler(temp_config)
     collector, researcher, extractor, reasoner = _pipeline_stages(sample_research_output)
 
-    with mock.patch.object(assembler, "_gate_decision", return_value="needs_repair"):
+    with mock.patch.object(assembler, "_gate_decision", return_value="reject"):
         results = assembler.run_pipeline(
             collector, researcher, extractor, reasoner, dry_run=False
         )
 
     assert results[0]["status"] == "failed"
-    assert "needs_repair" in results[0]["error"]
+    assert "reject" in results[0]["error"]
 
 
 def test_run_pipeline_per_video_generic_error_isolated(temp_config, sample_research_output):
@@ -635,3 +635,60 @@ def test_assemble_future_questions_and_empty_sections(
     # 空 tldr/key_findings 仍渲染 H2 标题（gate 结构要求）
     assert "## TLDR" in candidate_md
     assert "## 关键发现" in candidate_md
+
+
+# ---------------------------------------------------------------------------
+# SC-4: needs_repair 保留 staging + 写入 pending；reject 丢弃
+# ---------------------------------------------------------------------------
+
+
+def test_needs_repair_preserves_staging_and_writes_pending(
+    temp_config, sample_video_meta, sample_research_output,
+    sample_extracted_fields, sample_reasoned_links,
+):
+    """gate=needs_repair → 保留 staging 文件 + 写入 pending，不抛 GateRejected。"""
+    assembler = Assembler(temp_config)
+    candidate_md = assembler.assemble(
+        sample_video_meta, sample_research_output,
+        sample_extracted_fields, sample_reasoned_links,
+    )
+
+    slug = "test-needs-repair"
+    date = "2026-06-05"
+
+    with mock.patch.object(assembler, "_gate_decision", return_value="needs_repair"):
+        # 不应抛 GateRejected
+        result_path = assembler.commit(candidate_md, slug=slug, date_str=date)
+
+    # staging 文件保留
+    assert result_path.exists(), f"needs_repair 应保留 staging 文件: {result_path}"
+
+    # pending 文件已写入
+    pending_path = temp_config.staging_dir.parent / "assembler_repair_pending.jsonl"
+    assert pending_path.exists(), "needs_repair 应写入 pending 文件"
+    pending_lines = pending_path.read_text().strip().split("\n")
+    assert len(pending_lines) >= 1
+    import json
+    record = json.loads(pending_lines[-1])
+    assert record["gate_decision"] == "needs_repair"
+
+
+def test_reject_deletes_staging_and_raises(
+    temp_config, sample_video_meta, sample_research_output,
+    sample_extracted_fields, sample_reasoned_links,
+):
+    """gate=reject → 删除 staging + raise GateRejected（永久丢弃，行为不变）。"""
+    assembler = Assembler(temp_config)
+    candidate_md = assembler.assemble(
+        sample_video_meta, sample_research_output,
+        sample_extracted_fields, sample_reasoned_links,
+    )
+
+    with mock.patch.object(assembler, "_gate_decision", return_value="reject"):
+        with pytest.raises(GateRejected):
+            assembler.commit(candidate_md, slug="test-reject", date_str="2026-06-05")
+
+    # staging 文件已删除
+    staging = temp_config.staging_dir
+    remaining = list(staging.glob("video-test-reject-*.md"))
+    assert len(remaining) == 0, f"reject 应删除 staging: {remaining}"

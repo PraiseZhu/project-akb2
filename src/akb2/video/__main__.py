@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import argparse
 import logging
+import socket
 import sys
+import time
 from pathlib import Path
 
 from src.akb2.video.config import VideoConfig
@@ -22,6 +24,72 @@ from src.akb2.video.assembler import Assembler, CandidateTargetExists, GateRejec
 from src.akb2.video.llm_adapter import DeepSeekAdapter
 
 logger = logging.getLogger("akb2.video")
+
+# ---------------------------------------------------------------------------
+# 网络就绪预检（SC-6）
+# ---------------------------------------------------------------------------
+
+_PREFLIGHT_HOSTS: list[tuple[str, int, str]] = [
+    ("llm-proxy.tapsvc.com", 443, "LLM Proxy"),
+    ("youtube.com", 443, "YouTube"),
+    ("notebooklm.google.com", 443, "NotebookLM"),
+]
+
+_PREFLIGHT_MAX_RETRIES: int = 5
+_PREFLIGHT_INITIAL_BACKOFF: float = 30.0  # 秒
+_PREFLIGHT_BACKOFF_FACTOR: float = 2.0
+
+
+def network_preflight(
+    hosts: list[tuple[str, int, str]] | None = None,
+    max_retries: int = _PREFLIGHT_MAX_RETRIES,
+    initial_backoff: float = _PREFLIGHT_INITIAL_BACKOFF,
+) -> bool:
+    """启动前网络就绪探测：逐个 TCP connect 关键依赖。
+
+    全部可达 → True；任一不可达 → 退避重试 N 次。全部耗尽仍不可达 → False。
+
+    Args:
+        hosts: [(host, port, label), ...]
+        max_retries: 最大重试次数（含首次探测）
+        initial_backoff: 首次退避秒数
+
+    Returns:
+        True 全部关键依赖可达，False 耗尽重试仍不可达。
+    """
+    targets = hosts or _PREFLIGHT_HOSTS
+    backoff = initial_backoff
+
+    for attempt in range(1, max_retries + 1):
+        unreachable: list[str] = []
+        for host, port, label in targets:
+            try:
+                sock = socket.create_connection((host, port), timeout=10)
+                sock.close()
+            except OSError as e:
+                unreachable.append(f"{label}({host}:{port}): {e}")
+
+        if not unreachable:
+            logger.info(
+                "网络就绪预检通过 (attempt=%d/%d): 所有关键依赖可达",
+                attempt, max_retries,
+            )
+            return True
+
+        if attempt < max_retries:
+            logger.warning(
+                "网络就绪预检不可达 (attempt=%d/%d, backoff=%.0fs): %s",
+                attempt, max_retries, backoff, "; ".join(unreachable),
+            )
+            time.sleep(backoff)
+            backoff *= _PREFLIGHT_BACKOFF_FACTOR
+        else:
+            logger.error(
+                "网络就绪预检失败 (attempt=%d/%d, 耗尽重试): %s",
+                attempt, max_retries, "; ".join(unreachable),
+            )
+
+    return False
 
 
 def _build_llm_adapter(config: VideoConfig) -> DeepSeekAdapter | None:
@@ -40,7 +108,7 @@ def _build_llm_adapter(config: VideoConfig) -> DeepSeekAdapter | None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI 入口。exit 0 = 全链路通过，exit 1 = 有失败。"""
+    """CLI 入口。exit 0 = 全链路通过，exit 1 = 有失败，exit 2 = 网络不可达。"""
     parser = argparse.ArgumentParser(
         prog="akb2.video",
         description="AKB2 视频报告链路 — 采集 → 研究 → 提取 → 推理 → 组装 → gate dry-run",
@@ -49,6 +117,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--fixture", action="store_true", help="使用 tests/fixtures/ 跑 mock 全链路")
     parser.add_argument("--source", type=str, help="对单个视频 URL 跑全链路")
     parser.add_argument("--verbose", "-v", action="store_true", help="详细日志")
+    parser.add_argument("--skip-preflight", action="store_true", help="跳过网络就绪预检（调试用）")
 
     args = parser.parse_args(argv)
 
@@ -56,6 +125,12 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(levelname)s [%(name)s] %(message)s",
     )
+
+    # 网络就绪预检（fixture 模式 + skip-preflight 跳过）
+    if not args.fixture and not args.skip_preflight:
+        if not network_preflight():
+            logger.critical("网络不可达，放弃本次运行（下次 LaunchAgent 触发时会自动重试）")
+            return 2
 
     config = VideoConfig()
 
@@ -208,17 +283,42 @@ def _run_fixture(config: VideoConfig, dry_run: bool) -> int:
 
 
 def _report_results(results: list[dict]) -> int:
-    """汇总结果。"""
+    """汇总结果（SC-7: fail-visibly — 结构化分层计数）。"""
     ok = sum(1 for r in results if r.get("status") == "ok")
+    needs_repair = sum(1 for r in results if r.get("status") == "needs_repair")
     failed = sum(1 for r in results if r.get("status") == "failed")
+    total = len(results)
+    dry = sum(1 for r in results if r.get("dry_run"))
 
-    logger.info(f"视频链路完成: {ok} 成功, {failed} 失败")
+    parts = [f"{ok} 已发布"]
+    if needs_repair:
+        parts.append(f"{needs_repair} 待修复(needs_repair)")
     if failed:
+        parts.append(f"{failed} 失败")
+    if dry:
+        parts.append(f"{dry} dry-run")
+
+    logger.info(f"视频链路完成 ({total} 个视频): {', '.join(parts)}")
+
+    if needs_repair:
+        logger.warning("needs_repair 视频详情:")
+        for r in results:
+            if r.get("status") == "needs_repair":
+                title = r.get("video", {}).get("title", "?")
+                path = r.get("candidate_path", "?")
+                logger.warning("  needs_repair: %s — staging=%s", title, path)
+
+    if failed:
+        logger.error("失败视频详情:")
         for r in results:
             if r.get("status") == "failed":
-                logger.error(f"  失败: {r.get('video', {}).get('title', '?')} — {r.get('error', '?')}")
+                title = r.get("video", {}).get("title", "?")
+                logger.error("  失败: %s — %s", title, r.get("error", "?"))
 
-    return 0 if failed == 0 else 1
+    # exit 2 = 部分失败（有 pending）；exit 1 = 全部失败；exit 0 = 全成功
+    if failed > 0 and ok == 0:
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

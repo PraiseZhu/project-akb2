@@ -57,6 +57,8 @@ def integration_config() -> VideoConfig:
             akb2_root=tmp_path,
             nlm_bin="/usr/bin/true",
             ytdlp_bin="/usr/bin/true",
+            video_sources_path=tmp_path / "config" / "video_sources.json",
+            keywords_path=tmp_path / "config" / "keywords.json",
         )
         yield config
 
@@ -184,14 +186,14 @@ def test_degraded_path_integration(integration_config):
 
 
 def test_gate_rejection_rollback(integration_config):
-    """验证 mock gate 拒绝 → candidate 被回滚删除。"""
+    """验证 mock gate 拒绝(reject) → candidate 被回滚删除。"""
     config = integration_config
     assembler = Assembler(config)
 
     # 构造最简 candidate
     candidate_md = "---\npage_status: candidate\nsource_type: video\ntemplate_type: source\ntitle: Test\ngate_decision: null\n---\n\n# Test"
 
-    with mock.patch.object(assembler, "_gate_decision", return_value="needs_repair"):
+    with mock.patch.object(assembler, "_gate_decision", return_value="reject"):
         with pytest.raises(GateRejected):
             assembler.commit(candidate_md, slug="gate-reject-test", date_str="2026-06-01")
 
@@ -199,6 +201,25 @@ def test_gate_rejection_rollback(integration_config):
     staging = config.staging_dir
     candidates = list(staging.glob("video-gate-reject-test-*.md"))
     assert len(candidates) == 0
+
+
+def test_gate_needs_repair_preserves_staging(integration_config):
+    """验证 mock gate needs_repair → staging 保留，pending 写入。"""
+    config = integration_config
+    assembler = Assembler(config)
+
+    candidate_md = "---\npage_status: candidate\nsource_type: video\ntemplate_type: source\ntitle: Test Repairable\ngate_decision: null\n---\n\n# Test Repairable"
+
+    with mock.patch.object(assembler, "_gate_decision", return_value="needs_repair"):
+        # needs_repair 不应抛异常
+        result_path = assembler.commit(candidate_md, slug="gate-repair-test", date_str="2026-06-01")
+
+    # staging 文件保留
+    assert result_path.exists(), "needs_repair 应保留 staging"
+
+    # pending 已写入
+    pending_path = config.staging_dir.parent / "assembler_repair_pending.jsonl"
+    assert pending_path.exists(), "needs_repair 应写入 pending"
 
 
 # ---------------------------------------------------------------------------

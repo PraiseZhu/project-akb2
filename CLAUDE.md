@@ -10,8 +10,6 @@ AKB2.0 工程根：lint/gate/intake CLI + MCP wrapper + tests + eval harness + e
 ## 技术栈
 
 - **主语言**：python
-- **框架/库**：（待补充）
-- **运行环境**：（待补充）
 
 ## 目录约定
 
@@ -52,22 +50,9 @@ Project AKB2/
 
 `.gitignore` 已配置基础排除。新增敏感文件类型时同步更新。
 
-## 测试与守卫
-
-（按项目实际填写）
-
-- 运行测试：`（待定）`
-- Lint：`（待定）`
-- 类型检查：`（待定）`
-
 ## 版本管理
 
 详见 `VERSIONING.md`。
-
-**核心约定**：
-- 提交触发：手动喊"提交代码"/"commit" → `commit-projects` skill
-- 分支策略：`main` 为主分支
-- Push 策略：本地优先，push 到远端是独立决策
 
 ---
 
