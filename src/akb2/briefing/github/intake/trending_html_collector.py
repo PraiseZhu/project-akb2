@@ -27,9 +27,9 @@ class TrendingHTMLCollector:
                                    _ZERO_RECENCY_STATS)
 
         repos = self._parse_repos(html)
-        if len(repos) < 10:
+        if len(repos) < 5:
             return CollectorResult("layer2", [], [], time.monotonic() - t0, False,
-                                   f"parsed only {len(repos)} repos, need >= 10",
+                                   f"parsed only {len(repos)} repos, need >= 5",
                                    _ZERO_RECENCY_STATS)
 
         now = datetime.now(UTC).isoformat()

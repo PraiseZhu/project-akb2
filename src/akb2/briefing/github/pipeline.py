@@ -142,7 +142,7 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
     # mention 共识过滤只对 twitter 源(layer1)有意义；layer2(trending)/layer3(manual)
     # 已是预排序源，每个 repo 仅 @github_trending 单次 mention(count=1)，会被 min=2
     # 阈值全杀 → 兜底永远 skip。故 fallback 层旁路 mention 过滤。
-    if fallback_layer in ("layer2", "layer3"):
+    if fallback_layer in ("layer2", "layer3", "layer1+2"):
         filtered = list(enriched)
     else:
         active_curators = len(set(c.mentioner for c in candidates))
@@ -377,6 +377,20 @@ def _real_intake(force_layer: int | None = None) -> tuple[list, str, dict]:
     l1 = TwitterCollector().collect(POOL_CONFIG)
     l2_runner = lambda: TrendingHTMLCollector().collect()
     decision = decide(l1, l2_runner)
+
+    # 死区修复：L1 可用但不够 10 个时，合并 L2 结果补充
+    if decision.selected_layer == "layer1" and len(decision.candidates) < 10:
+        l2 = l2_runner()
+        if l2.ok and l2.candidates:
+            l1_urls = {c.repo_url for c in decision.candidates}
+            l2_new = [c for c in l2.candidates if c.repo_url not in l1_urls]
+            merged = decision.candidates + l2_new
+            # 仅当合并后 ≥10 时使用 layer1+2，否则回退到原始 L1（由 downstream gate skip）
+            if len(merged) >= 10:
+                return merged, "layer1+2", l1.recency_stats
+        # L2 不可用或合并仍不足 10 → 返回原始 L1 candidates（downstream 会 skip）
+        # 不静默丢弃，pipeline 的 <10 gate 会写 briefing-skipped.json 并 emit SC7_METRICS
+
     # 即使 decide 选了 L2，也带 L1 的 recency_stats（SC-7 验收需要）
     return decision.candidates, decision.selected_layer, l1.recency_stats
 
@@ -463,6 +477,7 @@ def _render_markdown(briefing: dict) -> str:
     layer_warnings = {
         "layer2": "> ℹ️ 本期为 GitHub 热榜兜底产出(非博主精选)。",
         "layer3": "> ℹ️ 本期为手动补充列表(自动链路未产出)。",
+        "layer1+2": "> ℹ️ 本期为博主精选 + GitHub 热榜混合产出。",
     }
     warning = layer_warnings.get(layer)
     if warning:
