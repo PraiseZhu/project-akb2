@@ -156,6 +156,8 @@ def test_L2_start_date_filter(temp_config, mock_ytdlp_output):
     temp_config.video_sources_path.parent.mkdir(parents=True, exist_ok=True)
     sources = json.loads(temp_config.video_sources_path.read_text())
     sources["settings"]["start_date"] = "2026-05-28"
+    sources["settings"]["coldstart"] = True  # 禁用 backfill，避免读取真实 pending
+    sources["settings"]["coldstart_max_per_day"] = 5
     temp_config.video_sources_path.write_text(json.dumps(sources))
 
     collector = VideoCollector(temp_config)
@@ -185,6 +187,12 @@ def test_L2_start_date_filter(temp_config, mock_ytdlp_output):
 
 def test_L3_duration_filter(temp_config):
     """L3: 时长过滤 — 小于 VIDEO_MIN_DURATION_MIN (3min) 的视频应被排除。"""
+    temp_config.video_sources_path.parent.mkdir(parents=True, exist_ok=True)
+    sources = json.loads(temp_config.video_sources_path.read_text())
+    sources["settings"]["coldstart"] = True  # 禁用 backfill，避免读取真实 pending
+    sources["settings"]["coldstart_max_per_day"] = 5
+    temp_config.video_sources_path.write_text(json.dumps(sources))
+
     collector = VideoCollector(temp_config)
 
     with mock.patch.object(collector, "_detect_yt_videos", return_value=[
@@ -254,6 +262,8 @@ def test_L4_5_ai_relevance(temp_config):
     temp_config.video_sources_path.parent.mkdir(parents=True, exist_ok=True)
     sources = json.loads(temp_config.video_sources_path.read_text())
     sources["settings"]["skip_relevance_filter"] = False
+    sources["settings"]["coldstart"] = True  # 禁用 backfill，避免读取真实 pending
+    sources["settings"]["coldstart_max_per_day"] = 5
     temp_config.video_sources_path.write_text(json.dumps(sources))
 
     collector = VideoCollector(temp_config)
