@@ -31,7 +31,7 @@ class TestPipelineMockE2E:
         """After mock run, .md and .json sidecar files exist."""
         from datetime import date, timedelta
         next_day = (date.today() + timedelta(days=1)).isoformat()
-        base = VAULT_STUB / "AKB2.0/AI TRENDS/GitHub" / f"{next_day} GitHub Briefing"
+        base = VAULT_STUB / "Praise Space/AKB2.0/AI TRENDS/GitHub" / f"{next_day} GitHub Briefing"
         md_path = base.with_suffix(".md")
         json_path = base.with_suffix(".json")
 
@@ -42,7 +42,7 @@ class TestPipelineMockE2E:
         """JSON output has exactly 10 top_repos."""
         from datetime import date, timedelta
         next_day = (date.today() + timedelta(days=1)).isoformat()
-        json_path = VAULT_STUB / "AKB2.0/AI TRENDS/GitHub" / f"{next_day} GitHub Briefing.json"
+        json_path = VAULT_STUB / "Praise Space/AKB2.0/AI TRENDS/GitHub" / f"{next_day} GitHub Briefing.json"
 
         with open(json_path) as f:
             data = json.load(f)
@@ -52,7 +52,7 @@ class TestPipelineMockE2E:
         """JSON output passes schema validator."""
         from datetime import date, timedelta
         next_day = (date.today() + timedelta(days=1)).isoformat()
-        json_path = VAULT_STUB / "AKB2.0/AI TRENDS/GitHub" / f"{next_day} GitHub Briefing.json"
+        json_path = VAULT_STUB / "Praise Space/AKB2.0/AI TRENDS/GitHub" / f"{next_day} GitHub Briefing.json"
 
         from akb2.briefing.github.validator import validate
         errors = validate(str(json_path))
@@ -62,7 +62,7 @@ class TestPipelineMockE2E:
         """Markdown output has frontmatter and repo entries."""
         from datetime import date, timedelta
         next_day = (date.today() + timedelta(days=1)).isoformat()
-        md_path = VAULT_STUB / "AKB2.0/AI TRENDS/GitHub" / f"{next_day} GitHub Briefing.md"
+        md_path = VAULT_STUB / "Praise Space/AKB2.0/AI TRENDS/GitHub" / f"{next_day} GitHub Briefing.md"
 
         content = md_path.read_text()
         assert content.startswith("---")

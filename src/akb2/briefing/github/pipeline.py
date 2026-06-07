@@ -24,7 +24,7 @@ from .validator import validate
 
 _PROJECT_ROOT = Path(os.environ.get("PROJECT_ROOT", "")) if os.environ.get("PROJECT_ROOT") else Path(__file__).resolve().parents[4]  # src/akb2/briefing/github/pipeline.py → project root (parents[4]=<root>; 旧值 [5] 越到 <root> 上一级，导致 POOL_CONFIG/skip 文件落错目录)
 POOL_CONFIG = _PROJECT_ROOT / "config" / "github_curator_pool.yaml"
-OUTPUT_DIR_TEMPLATE = "AKB2.0/AI TRENDS/GitHub"
+OUTPUT_DIR_TEMPLATE = "Praise Space/AKB2.0/AI TRENDS/GitHub"
 
 # Schema-approved repo fields (strip enrichment internals before vault write)
 _SCHEMA_REPO_FIELDS = {
