@@ -19,8 +19,8 @@
     <key>RunAtLoad</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/tmp/com.akb2.github_briefing.out.log</string>
+    <string>/Users/praise/AI-Agent/Claude/projects/Project AKB2/logs/github-briefing-stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/com.akb2.github_briefing.err.log</string>
+    <string>/Users/praise/AI-Agent/Claude/projects/Project AKB2/logs/github-briefing-stderr.log</string>
 </dict>
 </plist>

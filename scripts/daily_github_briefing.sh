@@ -28,4 +28,5 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
-PYTHONPATH=src python -m akb2.briefing.github.pipeline $MOCK_FLAG $FORCE_LAYER
+PYTHON_BIN="$(bash "$SCRIPT_DIR/find-python311.sh")"
+PYTHONPATH=src "$PYTHON_BIN" -m akb2.briefing.github.pipeline $MOCK_FLAG $FORCE_LAYER

@@ -41,10 +41,22 @@ log() { echo "$(ts) [backstop] $*" | tee -a "$LOG" >&2; }
 # 发布落点（与 pipeline.py: briefing_filename = "<date> Daily Briefing.md" 对齐）
 SOCIAL_FILE="$VAULT_ROOT/Praise Space/AKB2.0/AI TRENDS/Social/$DATE Daily Briefing.md"
 
-# 幂等守卫 ①：今日已发布 → 跳过
+# 幂等守卫 ①：从 Social 文件 frontmatter 读 audit_verdict 判定是否需要重跑
+# - pass: 已发布且质量通过 → 跳过
+# - warn / fail: 已发布但质量有问题 → 触发重跑（覆盖）
+# - 文件不存在或无法解析 → 触发重跑
 if [[ -f "$SOCIAL_FILE" ]]; then
-  log "skip — 今日已发布，无需补跑 ($DATE)"
-  exit 0
+  audit_verdict=$(sed -n '/^---$/,/^---$/p' "$SOCIAL_FILE" 2>/dev/null | grep -oP 'audit_verdict:\s*\K\w+' 2>/dev/null || true)
+  if [[ "$audit_verdict" == "pass" ]]; then
+    log "skip — 今日已发布且 audit_verdict=pass，无需补跑 ($DATE)"
+    exit 0
+  elif [[ "$audit_verdict" == "warn" || "$audit_verdict" == "fail" ]]; then
+    log "rerun — 今日已发布但 audit_verdict=$audit_verdict，触发质量重跑 ($DATE)"
+  else
+    log "rerun — 今日文件存在但无法解析 audit_verdict（'$audit_verdict'），保守重跑 ($DATE)"
+  fi
+else
+  log "rerun — 今日未发布，触发补跑 ($DATE)"
 fi
 
 # 守卫 ②：主跑进程仍在运行 → 让它先跑完，本次跳过

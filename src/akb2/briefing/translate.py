@@ -25,10 +25,16 @@ _TRANSLATE_FALLBACK_MODELS = [
     m.strip()
     for m in os.environ.get(
         "AKB2_TRANSLATE_FALLBACK_MODELS",
-        "deepseek/deepseek-v4-pro,z-ai/glm-5.1",
+        "deepseek/deepseek-v4-pro,z-ai/glm-5.1,anthropic/claude-sonnet-4-6",
     ).split(",")
     if m.strip()
 ]
+# 跨网关 fallback：当主力网关（llm-proxy.tapsvc.com）不可用时，可配置备用网关 URL。
+# 通过 AKB2_TRANSLATE_FALLBACK_BASE_URL 环境变量设置为 OpenAI-compatible 的备用网关地址。
+# 未配置时 fallback 模型仍走主网关（仅切换模型，不切换网关），防止单模型故障。
+_TRANSLATE_FALLBACK_BASE_URL = os.environ.get(
+    "AKB2_TRANSLATE_FALLBACK_BASE_URL", ""
+).strip() or None
 
 # 长推阈值（字符数，超过则抽核心段）
 LONG_TWEET_THRESHOLD = 500
@@ -201,8 +207,11 @@ def translate_briefing(
 
     trans = None
     for i, used_model in enumerate(chain):
+        # 主力模型走默认网关，fallback 模型走跨网关备用 URL（防单网关故障）
+        fb_base_url = _TRANSLATE_FALLBACK_BASE_URL if i > 0 else None
         try:
-            raw = _call_llm(messages, model=used_model, json_mode=True, timeout=timeout)
+            raw = _call_llm(messages, model=used_model, json_mode=True, timeout=timeout,
+                            base_url=fb_base_url)
             trans = json.loads(raw)
             break
         except Exception as e:

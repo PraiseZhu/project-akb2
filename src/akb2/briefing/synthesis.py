@@ -49,13 +49,14 @@ def _call_llm(
     json_mode: bool = True,
     max_retries: int = 1,
     timeout: int = 300,
+    base_url: str | None = None,
 ) -> str:
     """通用 LLM 调用（OpenAI-compatible），失败重试一次，返回 raw content string。"""
     import httpx
 
     api_key = os.environ.get("AI_GATEWAY_API_KEY")
-    base_url = os.environ.get("AI_GATEWAY_BASE_URL", "https://llm-proxy.tapsvc.com").rstrip("/")
-    url = f"{base_url}/v1/chat/completions"
+    url_base = (base_url or os.environ.get("AI_GATEWAY_BASE_URL", "https://llm-proxy.tapsvc.com")).rstrip("/")
+    url = f"{url_base}/v1/chat/completions"
 
     payload: dict = {"model": model, "messages": messages, "temperature": 0.2}
     if json_mode:

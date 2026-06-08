@@ -46,14 +46,14 @@
       "description": "今日有原创 + 含 github URL 推文的博主清单"
     },
     "fallback_layer_used": {
-      "enum": ["layer1", "layer2", "layer3"],
-      "description": "实际触发的兜底层级；layer1 = X curator 主路径；layer2 = GitHub Trending HTML；layer3 = 人工 JSON 注入"
+      "enum": ["layer1", "layer2", "layer3", "layer1+2"],
+      "description": "实际触发的兜底层级；layer1 = X curator 主路径；layer2 = GitHub Trending HTML；layer3 = 人工 JSON 注入；layer1+2 = curator + Trending 混合补位"
     },
     "top_repos": {
       "type": "array",
-      "minItems": 10,
+      "minItems": 6,
       "maxItems": 10,
-      "description": "今日 top 10 项目，长度严格 = 10；不足时 pipeline 写 briefing-skipped.json 不落本文件",
+      "description": "今日 top N 项目（6–10 条）；不足最小值时 pipeline 写 briefing-skipped.json 不落本文件",
       "items": {
         "type": "object",
         "required": [

@@ -438,7 +438,7 @@ def test_core_excerpt_uses_selected_core_segment():
 # ---------------------------------------------------------------------------
 
 def test_translate_model_chain_and_timeout():
-    """SC-P2b-1: 翻译主力=gemini，备用链=[deepseek, glm]，默认 timeout=300（可经 AKB2_TRANSLATE_TIMEOUT 覆盖）。
+    """SC-P2b-1: 翻译主力=gemini，备用链=[deepseek, glm, anthropic/claude]（跨网关），默认 timeout=300（可经 AKB2_TRANSLATE_TIMEOUT 覆盖）。
 
     根因实测：翻译慢是模型每次调用的固定开销（~30s 思考期+TTFT），不是 prompt/接口问题。
     gemini 固定开销最低，但真实批量延迟 45-59s 且随网关负载波动；原 120s 在晨间网关变慢时
@@ -450,8 +450,9 @@ def test_translate_model_chain_and_timeout():
 
     assert tr._TRANSLATE_MODEL == "gemini-3.1-pro-preview", \
         f"翻译主力应为 gemini，实际 {tr._TRANSLATE_MODEL}"
-    assert tr._TRANSLATE_FALLBACK_MODELS == ["deepseek/deepseek-v4-pro", "z-ai/glm-5.1"], \
-        f"备用链应为 [deepseek, glm]，实际 {tr._TRANSLATE_FALLBACK_MODELS}"
+    assert tr._TRANSLATE_FALLBACK_MODELS == [
+        "deepseek/deepseek-v4-pro", "z-ai/glm-5.1", "anthropic/claude-sonnet-4-6"
+    ], f"备用链应为 [deepseek, glm, anthropic/claude]，实际 {tr._TRANSLATE_FALLBACK_MODELS}"
 
     sig = inspect.signature(tr.translate_briefing)
     assert sig.parameters["timeout"].default == 300, \
@@ -489,7 +490,7 @@ def test_translate_falls_through_chain_to_second_fallback():
 
 
 def test_translate_all_models_fail_returns_original():
-    """三档全失败 → 返回原始 synth 不抛异常，且确实尝试了全部 3 个模型。"""
+    """四档全失败 → 返回原始 synth 不抛异常，且确实尝试了全部 4 个模型（1 主力 + 3 备用）。"""
     from akb2.briefing.translate import translate_briefing
 
     synth = {
@@ -506,7 +507,7 @@ def test_translate_all_models_fail_returns_original():
     with patch("akb2.briefing.synthesis._call_llm", side_effect=always_fail):
         result = translate_briefing(synth)
 
-    assert len(calls) == 3, f"应尝试全部 3 个模型，实际 {calls}"
+    assert len(calls) == 4, f"应尝试全部 4 个模型（1 主力 + 3 备用），实际 {calls}"
     assert result["executive_summary"] == "Summary.", "全失败应返回原始 synth"
 
 

@@ -33,6 +33,12 @@ _SCHEMA_REPO_FIELDS = {
     "engagement_raw",
 }
 
+# Minimum repos required to produce a briefing (SC-3: partial output allowed above this floor)
+_MIN_REPOS_FOR_BRIEFING = 6
+# Ideal target for supplementation (SC-1: L2 supplement tries to reach this before falling back)
+_IDEAL_REPOS_FOR_BRIEFING = 10
+
+
 def _clean_repo(repo: dict) -> dict:
     """Keep only schema-approved repo fields, stripping enrichment internals."""
     return {k: v for k, v in repo.items() if k in _SCHEMA_REPO_FIELDS}
@@ -55,6 +61,11 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
         candidates, fallback_layer, l1_recency_stats = _real_intake(force_layer)
 
     if not candidates:
+        sys.stderr.write(
+            f"WARNING [github-pipeline]: 0 candidates after intake "
+            f"(fallback_layer={fallback_layer}) — possible transient fetch failure "
+            "or genuinely no trending repos. Backstop should retry.\n"
+        )
         _emit_sc7_metrics(_make_zero_sc7_metrics())
         _write_skipped("no_candidates_after_intake", len(candidates), fallback_layer)
         return 0
@@ -77,15 +88,36 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
     else:
         _novelty_db = _PROJECT_ROOT / "data" / "github_recommended.sqlite"
         _novelty_db.parent.mkdir(parents=True, exist_ok=True)
+    pre_novelty_count = len(aggregated)  # SC-6: capture before dedup for diagnostics
     _novelty = DedupStore(_novelty_db)
     try:
         aggregated = {u: d for u, d in aggregated.items() if not _novelty.is_duplicate(u)}
+        # SC-1 fix: post-novelty L2 supplement for layer1 dead-zone.
+        # Pre-novelty ≥10 but novelty dedup may reduce below 10; try layer2 before giving up.
+        if len(aggregated) < _IDEAL_REPOS_FOR_BRIEFING and fallback_layer == "layer1":
+            if mock:
+                l2_cands, _ = _mock_intake(force_layer=2)
+            else:
+                _l2 = TrendingHTMLCollector().collect()
+                l2_cands = _l2.candidates if _l2.ok else []
+            if l2_cands:
+                l2_agg = _aggregate(l2_cands)
+                l2_new = {
+                    url: data for url, data in l2_agg.items()
+                    if url not in aggregated and not _novelty.is_duplicate(url)
+                }
+                if l2_new:
+                    aggregated.update(l2_new)
+                    fallback_layer = "layer1+2"
     finally:
         _novelty.close()
 
-    if len(aggregated) < 10:
+    if len(aggregated) < _MIN_REPOS_FOR_BRIEFING:
         _emit_sc7_metrics(_make_zero_sc7_metrics())
-        _write_skipped("too_few_aggregated_repos", len(aggregated), fallback_layer)
+        _write_skipped("too_few_aggregated_repos", len(aggregated), fallback_layer,
+                       diag={"before_novelty": pre_novelty_count,
+                             "novelty_dropped": pre_novelty_count - len(aggregated),
+                             "after_novelty": len(aggregated)})
         return 0
 
     # Build tier_map from pool config
@@ -172,7 +204,7 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
         "top10_all_layer1": top10_all_layer1,
     }
 
-    if len(top10) < 10:
+    if len(top10) < _MIN_REPOS_FOR_BRIEFING:
         _emit_sc7_metrics(_sc7_metrics)
         _write_skipped("too_few_after_filter", len(top10), fallback_layer)
         return 0
@@ -223,9 +255,9 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
         )
         return 0
 
-    if len(briefing["top_repos"]) != 10:
+    if len(briefing["top_repos"]) < _MIN_REPOS_FOR_BRIEFING:
         _emit_sc7_metrics(_sc7_metrics)
-        _write_skipped("top_repos_not_10", len(briefing["top_repos"]), fallback_layer)
+        _write_skipped("top_repos_below_min", len(briefing["top_repos"]), fallback_layer)
         return 0
 
     # Write vault
@@ -249,7 +281,7 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
         _novelty.close()
 
     _emit_sc7_metrics(_sc7_metrics)
-    print(f"briefing: WROTE {md_path}")
+    _ts_print(f"briefing: WROTE {md_path}")
     return 0
 
 
@@ -378,20 +410,8 @@ def _real_intake(force_layer: int | None = None) -> tuple[list, str, dict]:
     l2_runner = lambda: TrendingHTMLCollector().collect()
     decision = decide(l1, l2_runner)
 
-    # 死区修复：L1 可用但不够 10 个时，合并 L2 结果补充
-    if decision.selected_layer == "layer1" and len(decision.candidates) < 10:
-        l2 = l2_runner()
-        if l2.ok and l2.candidates:
-            l1_urls = {c.repo_url for c in decision.candidates}
-            l2_new = [c for c in l2.candidates if c.repo_url not in l1_urls]
-            merged = decision.candidates + l2_new
-            # 仅当合并后 ≥10 时使用 layer1+2，否则回退到原始 L1（由 downstream gate skip）
-            if len(merged) >= 10:
-                return merged, "layer1+2", l1.recency_stats
-        # L2 不可用或合并仍不足 10 → 返回原始 L1 candidates（downstream 会 skip）
-        # 不静默丢弃，pipeline 的 <10 gate 会写 briefing-skipped.json 并 emit SC7_METRICS
-
     # 即使 decide 选了 L2，也带 L1 的 recency_stats（SC-7 验收需要）
+    # 注：pre-novelty 死区补位已移至 run_pipeline novelty 去重后执行（SC-1 fix）
     return decision.candidates, decision.selected_layer, l1.recency_stats
 
 
@@ -422,16 +442,20 @@ def _load_tier_map() -> dict[str, int]:
         return {}
 
 
-def _write_skipped(reason: str, candidates_count: int, fallback_layer: str) -> None:
+def _write_skipped(reason: str, candidates_count: int, fallback_layer: str,
+                   diag: dict | None = None) -> None:
+    now = datetime.now(UTC)
     skipped = {
         "status": "skipped",
         "reason": reason,
         "candidates_count": candidates_count,
         "fallback_layer_used": fallback_layer,
-        "generated_at": datetime.now(UTC).isoformat(),
+        "generated_at": now.isoformat(),
     }
+    if diag:
+        skipped["diag"] = diag
     (_PROJECT_ROOT / "briefing-skipped.json").write_text(json.dumps(skipped, indent=2))
-    print(f"briefing: SKIPPED ({reason})")
+    _ts_print(f"briefing: SKIPPED ({reason})")
 
 
 def _write_failed(reason: str, fallback_layer: str = "skip") -> None:
@@ -520,9 +544,14 @@ def _render_markdown(briefing: dict) -> str:
     return "\n".join(lines)
 
 
+def _ts_print(msg: str) -> None:
+    """Print msg prefixed with ISO timestamp for multi-run log disambiguation (SC-8)."""
+    print(f"[{datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%SZ')}] {msg}")
+
+
 def _emit_sc7_metrics(metrics: dict) -> None:
     """Emit deterministic SC7_METRICS line to stdout (SC-7 contract)."""
-    print(f"SC7_METRICS: {json.dumps(metrics, ensure_ascii=False)}")
+    _ts_print(f"SC7_METRICS: {json.dumps(metrics, ensure_ascii=False)}")
 
 
 def _make_zero_sc7_metrics() -> dict:

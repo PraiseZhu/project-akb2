@@ -244,6 +244,7 @@ class TestEngagementRawOutput:
     def test_engagement_raw_in_output(self, tmp_path, monkeypatch):
         """mock 跑后 JSON top_repos[*] 含 engagement_raw≥0 且过 validator。"""
         import json
+
         from akb2.briefing.github.pipeline import run_pipeline
         from akb2.briefing.github.validator import validate
 
@@ -324,6 +325,7 @@ class TestSC7Metrics:
     def test_sc7_metrics_line_emitted(self, tmp_path, monkeypatch, capsys):
         """mock 跑 stdout 含 SC7_METRICS: 行，JSON 8 键齐全且类型正确。"""
         import json
+
         from akb2.briefing.github.pipeline import run_pipeline
 
         vault = tmp_path / "vault"
@@ -338,12 +340,13 @@ class TestSC7Metrics:
         captured = capsys.readouterr()
         sc7_line = None
         for line in captured.out.splitlines():
-            if line.startswith("SC7_METRICS:"):
+            if "SC7_METRICS:" in line:
                 sc7_line = line
                 break
         assert sc7_line is not None, "SC7_METRICS line not found in stdout"
 
-        metrics = json.loads(sc7_line[len("SC7_METRICS:"):].strip())
+        # Format: "[TS] SC7_METRICS: {...}" — strip everything before "SC7_METRICS:"
+        metrics = json.loads(sc7_line[sc7_line.index("SC7_METRICS:") + len("SC7_METRICS:"):].strip())
         required_keys = [
             "candidates_before_recency", "candidates_after_recency",
             "recency_dropped", "timestamp_missing", "timestamp_parse_failed",
@@ -357,3 +360,171 @@ class TestSC7Metrics:
         assert isinstance(metrics["candidates_after_safety"], int)
         assert isinstance(metrics["fallback_triggered"], bool)
         assert isinstance(metrics["top10_all_layer1"], bool)
+
+
+# ── SC-1 / SC-3 ─────────────────────────────────────────────────────────────
+
+def _mock_enrich(url):
+    h = sum(ord(c) for c in url)
+    return {
+        "repo_url": url, "stars": 500 + h % 500, "language": "Python",
+        "topic_tags": ["ai"], "created_at": "2024-01-01T00:00:00Z",
+        "readme_excerpt": "x" * 100, "commits_7d": 5, "enrich_ok": True,
+    }
+
+
+def _mock_synth(repos):
+    return {"top_repos": [
+        {**r,
+         "summary": "This is a test AI repository for machine learning workflows and testing.",
+         "use_case": "Use when building AI pipelines for testing purposes only."}
+        for r in repos
+    ]}
+
+
+class TestSC1PostNoveltyL2Supplement:
+    """SC-1: post-novelty layer2 supplement when L1 ok but novelty dedup drops below 10."""
+
+    def test_l2_supplement_triggered_when_post_novelty_below_10(self, tmp_path, monkeypatch):
+        """L1 yields 10 pre-novelty; novelty eats 5 → 5 post-novelty < 10 → L2 supplement fires."""
+        from datetime import UTC, datetime
+        from unittest.mock import patch
+
+        from akb2.briefing.github.dedup_sqlite import DedupStore
+        from akb2.briefing.github.intake import _ZERO_RECENCY_STATS, Candidate, CollectorResult
+        from akb2.briefing.github.pipeline import run_pipeline
+
+        now = datetime.now(UTC).isoformat()
+        seen_urls = [f"https://github.com/seen/repo{i}" for i in range(5)]
+        fresh_urls = [f"https://github.com/fresh/repo{i}" for i in range(5)]
+        trending_urls = [f"https://github.com/trending/repo{i}" for i in range(5)]
+
+        novelty_db = tmp_path / "novelty.sqlite"
+        store = DedupStore(novelty_db)
+        for u in seen_urls:
+            store.mark_seen(u)
+        store.close()
+
+        l1_cands = [Candidate(u, "@curator", None, now, None) for u in seen_urls + fresh_urls]
+        l2_cands = [Candidate(u, "@github_trending", None, now, None) for u in trending_urls]
+        l2_result = CollectorResult("layer2", l2_cands, [], 0.1, True, None, _ZERO_RECENCY_STATS)
+
+        vault = tmp_path / "vault"
+        (vault / "Praise Space/AKB2.0/AI TRENDS/GitHub").mkdir(parents=True)
+        monkeypatch.setenv("AKB2_NOVELTY_DB", str(novelty_db))
+        monkeypatch.setenv("VAULT_ROOT", str(vault))
+
+        with (
+            patch("akb2.briefing.github.pipeline._real_intake",
+                  return_value=(l1_cands, "layer1", {})),
+            patch("akb2.briefing.github.pipeline.TrendingHTMLCollector") as mock_l2_cls,
+            patch("akb2.briefing.github.pipeline.enrich", side_effect=_mock_enrich),
+            patch("akb2.briefing.github.pipeline.synthesize", side_effect=_mock_synth),
+        ):
+            mock_l2_cls.return_value.collect.return_value = l2_result
+            rc = run_pipeline(mock=False)
+
+        # L2 supplement must have been called once (post-novelty dead-zone)
+        mock_l2_cls.return_value.collect.assert_called_once()
+        assert rc == 0
+
+    def test_l2_supplement_not_triggered_when_post_novelty_sufficient(self, tmp_path, monkeypatch):
+        """When post-novelty already ≥10, L2 supplement is NOT called."""
+        from datetime import UTC, datetime
+        from unittest.mock import patch
+
+        from akb2.briefing.github.intake import Candidate
+        from akb2.briefing.github.pipeline import run_pipeline
+
+        now = datetime.now(UTC).isoformat()
+        l1_cands = [Candidate(f"https://github.com/fresh/repo{i}", "@curator", None, now, None)
+                    for i in range(12)]
+
+        vault = tmp_path / "vault"
+        (vault / "Praise Space/AKB2.0/AI TRENDS/GitHub").mkdir(parents=True)
+        novelty_db = tmp_path / "empty_novelty.sqlite"
+        monkeypatch.setenv("AKB2_NOVELTY_DB", str(novelty_db))
+        monkeypatch.setenv("VAULT_ROOT", str(vault))
+
+        with (
+            patch("akb2.briefing.github.pipeline._real_intake",
+                  return_value=(l1_cands, "layer1", {})),
+            patch("akb2.briefing.github.pipeline.TrendingHTMLCollector") as mock_l2_cls,
+            patch("akb2.briefing.github.pipeline.enrich", side_effect=_mock_enrich),
+            patch("akb2.briefing.github.pipeline.synthesize", side_effect=_mock_synth),
+        ):
+            run_pipeline(mock=False)
+
+        # L2 should NOT be called — post-novelty already ≥10
+        mock_l2_cls.return_value.collect.assert_not_called()
+
+
+class TestSC3PartialOutput:
+    """SC-3: allow partial output (≥ MIN_REPOS_FOR_BRIEFING) instead of always requiring 10."""
+
+    def test_partial_briefing_written_when_between_min_and_10(self, tmp_path, monkeypatch):
+        """7 repos available (≥6=MIN, <10) → briefing file is written, not skipped."""
+        from datetime import UTC, date, datetime, timedelta
+        from unittest.mock import patch
+
+        from akb2.briefing.github.intake import Candidate
+        from akb2.briefing.github.pipeline import run_pipeline
+
+        now = datetime.now(UTC).isoformat()
+        l2_cands = [Candidate(f"https://github.com/trending/repo{i}", "@github_trending", None, now, None)
+                    for i in range(7)]
+
+        vault = tmp_path / "vault"
+        out_dir = vault / "Praise Space/AKB2.0/AI TRENDS/GitHub"
+        out_dir.mkdir(parents=True)
+        novelty_db = tmp_path / "empty_novelty.sqlite"
+        monkeypatch.setenv("AKB2_NOVELTY_DB", str(novelty_db))
+        monkeypatch.setenv("VAULT_ROOT", str(vault))
+
+        with (
+            # Use layer2 directly so no SC-1 supplement branch is triggered
+            patch("akb2.briefing.github.pipeline._real_intake",
+                  return_value=(l2_cands, "layer2", {})),
+            patch("akb2.briefing.github.pipeline.enrich", side_effect=_mock_enrich),
+            patch("akb2.briefing.github.pipeline.synthesize", side_effect=_mock_synth),
+        ):
+            rc = run_pipeline(mock=False)
+
+        assert rc == 0, "partial output (7 repos) should produce a briefing, not skip"
+        next_day = (date.today() + timedelta(days=1)).isoformat()
+        md_path = out_dir / f"{next_day} GitHub Briefing.md"
+        json_path = out_dir / f"{next_day} GitHub Briefing.json"
+        assert md_path.exists(), f"Expected md output: {md_path}"
+        assert json_path.exists(), f"Expected json output: {json_path}"
+
+        with open(json_path) as f:
+            data = json.load(f)
+        assert 6 <= len(data["top_repos"]) <= 10
+
+    def test_below_min_repos_still_skips(self, tmp_path, monkeypatch):
+        """5 repos (< MIN=6) → still skip."""
+        from datetime import UTC, datetime
+        from unittest.mock import patch
+
+        from akb2.briefing.github.intake import Candidate
+        from akb2.briefing.github.pipeline import run_pipeline
+
+        now = datetime.now(UTC).isoformat()
+        l2_cands = [Candidate(f"https://github.com/trending/repo{i}", "@github_trending", None, now, None)
+                    for i in range(5)]
+
+        vault = tmp_path / "vault"
+        (vault / "Praise Space/AKB2.0/AI TRENDS/GitHub").mkdir(parents=True)
+        novelty_db = tmp_path / "empty_novelty.sqlite"
+        monkeypatch.setenv("AKB2_NOVELTY_DB", str(novelty_db))
+        monkeypatch.setenv("VAULT_ROOT", str(vault))
+
+        with (
+            patch("akb2.briefing.github.pipeline._real_intake",
+                  return_value=(l2_cands, "layer2", {})),
+            patch("akb2.briefing.github.pipeline.enrich", side_effect=_mock_enrich),
+            patch("akb2.briefing.github.pipeline.synthesize", side_effect=_mock_synth),
+        ):
+            rc = run_pipeline(mock=False)
+
+        assert rc == 0  # exit 0 but via skip path

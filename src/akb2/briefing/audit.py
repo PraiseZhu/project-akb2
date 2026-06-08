@@ -192,6 +192,17 @@ def _check_standard(synth_zh: dict) -> list[str]:
 # LLM 审计（漂移 + 准确性）
 # ---------------------------------------------------------------------------
 
+_AUDIT_TRUNCATE_CHARS = 600
+_AUDIT_TRUNCATE_MARKER = "[节选，原文更长]"
+
+
+def _truncate_with_marker(text: str, max_chars: int = _AUDIT_TRUNCATE_CHARS) -> str:
+    """截断文本并在超长时追加标记，避免审计模型因自截自判导致假阳性。"""
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + _AUDIT_TRUNCATE_MARKER
+
+
 def _build_audit_prompt(synth_zh: dict, synth_en: dict) -> str:
     en_topics = [fd.get("topic", "") for fd in synth_en.get("focus_discussions", [])]
     zh_topics = [fd.get("topic", "") for fd in synth_zh.get("focus_discussions", [])]
@@ -199,11 +210,11 @@ def _build_audit_prompt(synth_zh: dict, synth_en: dict) -> str:
     zh_summary = synth_zh.get("executive_summary", "")
 
     en_tweets_sample = [
-        {"idx": i, "text": tw.get("text", "")[:300]}
+        {"idx": i, "text": _truncate_with_marker(tw.get("text", ""))}
         for i, tw in enumerate(synth_en.get("tweets", [])[:5])
     ]
     zh_tweets_sample = [
-        {"idx": i, "text": tw.get("text", "")[:300]}
+        {"idx": i, "text": _truncate_with_marker(tw.get("text", ""))}
         for i, tw in enumerate(synth_zh.get("tweets", [])[:5])
     ]
 
