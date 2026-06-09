@@ -9,7 +9,7 @@ Pipeline output contract (§step-4 PIPELINE_OUTPUT_CONTRACT):
 import json
 import os
 import sys
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from .dedup_sqlite import DedupStore
@@ -219,7 +219,7 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
         return 0
 
     # Step 8: Render + validate + write vault
-    next_day = (date.today() + timedelta(days=1)).isoformat()
+    today = date.today().isoformat()
     now_iso = datetime.now(UTC).isoformat()
 
     # Inject engagement_raw before _clean_repo（必须在 clean 前，否则 engagement 字段被剥）
@@ -230,7 +230,7 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
         "schema_version": "v1",
         "briefing_type": "github-curator",
         "generated_at": now_iso,
-        "date": next_day,
+        "date": today,
         "candidate_pool_size": _pool_size(),
         "active_curators_today": list(set(c.mentioner for c in candidates)),
         "fallback_layer_used": fallback_layer,
@@ -263,7 +263,7 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
     # Write vault
     out_dir = vault / OUTPUT_DIR_TEMPLATE
     out_dir.mkdir(parents=True, exist_ok=True)
-    base_name = f"{next_day} GitHub Briefing"
+    base_name = f"{today} GitHub Briefing"
     md_path = out_dir / f"{base_name}.md"
     json_path = out_dir / f"{base_name}.json"
 
