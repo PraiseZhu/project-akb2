@@ -29,8 +29,8 @@ class TestPipelineMockE2E:
 
     def test_mock_output_md_and_json_exist(self):
         """After mock run, .md and .json sidecar files exist."""
-        from datetime import date, timedelta
-        next_day = (date.today() + timedelta(days=1)).isoformat()
+        from datetime import date
+        next_day = date.today().isoformat()
         base = VAULT_STUB / "Praise Space/AKB2.0/AI TRENDS/GitHub" / f"{next_day} GitHub Briefing"
         md_path = base.with_suffix(".md")
         json_path = base.with_suffix(".json")
@@ -40,8 +40,8 @@ class TestPipelineMockE2E:
 
     def test_mock_json_top_repos_is_10(self):
         """JSON output has exactly 10 top_repos."""
-        from datetime import date, timedelta
-        next_day = (date.today() + timedelta(days=1)).isoformat()
+        from datetime import date
+        next_day = date.today().isoformat()
         json_path = VAULT_STUB / "Praise Space/AKB2.0/AI TRENDS/GitHub" / f"{next_day} GitHub Briefing.json"
 
         with open(json_path) as f:
@@ -50,8 +50,8 @@ class TestPipelineMockE2E:
 
     def test_mock_json_passes_validator(self):
         """JSON output passes schema validator."""
-        from datetime import date, timedelta
-        next_day = (date.today() + timedelta(days=1)).isoformat()
+        from datetime import date
+        next_day = date.today().isoformat()
         json_path = VAULT_STUB / "Praise Space/AKB2.0/AI TRENDS/GitHub" / f"{next_day} GitHub Briefing.json"
 
         from akb2.briefing.github.validator import validate
@@ -60,8 +60,8 @@ class TestPipelineMockE2E:
 
     def test_md_has_frontmatter_and_content(self):
         """Markdown output has frontmatter and repo entries."""
-        from datetime import date, timedelta
-        next_day = (date.today() + timedelta(days=1)).isoformat()
+        from datetime import date
+        next_day = date.today().isoformat()
         md_path = VAULT_STUB / "Praise Space/AKB2.0/AI TRENDS/GitHub" / f"{next_day} GitHub Briefing.md"
 
         content = md_path.read_text()
@@ -464,7 +464,7 @@ class TestSC3PartialOutput:
 
     def test_partial_briefing_written_when_between_min_and_10(self, tmp_path, monkeypatch):
         """7 repos available (≥6=MIN, <10) → briefing file is written, not skipped."""
-        from datetime import UTC, date, datetime, timedelta
+        from datetime import UTC, date, datetime
         from unittest.mock import patch
 
         from akb2.briefing.github.intake import Candidate
@@ -491,7 +491,7 @@ class TestSC3PartialOutput:
             rc = run_pipeline(mock=False)
 
         assert rc == 0, "partial output (7 repos) should produce a briefing, not skip"
-        next_day = (date.today() + timedelta(days=1)).isoformat()
+        next_day = date.today().isoformat()
         md_path = out_dir / f"{next_day} GitHub Briefing.md"
         json_path = out_dir / f"{next_day} GitHub Briefing.json"
         assert md_path.exists(), f"Expected md output: {md_path}"

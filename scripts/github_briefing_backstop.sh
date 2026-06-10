@@ -36,35 +36,35 @@ fi
 ts()  { TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S'; }
 log() { echo "$(ts) [github-backstop] $*" | tee -a "$LOG" >&2; }
 
-# GitHub briefing 文件名对齐 pipeline.py：next_day = today + 1d
-DATE_TOMORROW="$(TZ=Asia/Shanghai date -v+1d +%Y-%m-%d)"
-GITHUB_FILE="$VAULT_ROOT/Praise Space/AKB2.0/AI TRENDS/GitHub/$DATE_TOMORROW GitHub Briefing.md"
+# GitHub briefing 文件名对齐 pipeline.py：today = 抓取日（去掉旧的 +1 偏移）
+DATE_TODAY="$(TZ=Asia/Shanghai date +%Y-%m-%d)"
+GITHUB_FILE="$VAULT_ROOT/Praise Space/AKB2.0/AI TRENDS/GitHub/$DATE_TODAY GitHub Briefing.md"
 
 # 幂等守卫 ①：今日 briefing 已产出 → 跳过
 if [[ -f "$GITHUB_FILE" ]]; then
-  log "skip — GitHub briefing 已产出，无需补跑 ($DATE_TOMORROW)"
+  log "skip — GitHub briefing 已产出，无需补跑 ($DATE_TODAY)"
   exit 0
 fi
 
 # 守卫 ②：主跑进程仍在运行 → 让它先跑完
 if pgrep -f "akb2.briefing.github.pipeline" >/dev/null 2>&1; then
-  log "skip — github pipeline 仍在运行，本次不抢 ($DATE_TOMORROW)"
+  log "skip — github pipeline 仍在运行，本次不抢 ($DATE_TODAY)"
   exit 0
 fi
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
-  log "dry-run — 今日 GitHub briefing 缺失，将会触发补跑（实际未执行）($DATE_TOMORROW)"
+  log "dry-run — 今日 GitHub briefing 缺失，将会触发补跑（实际未执行）($DATE_TODAY)"
   exit 0
 fi
 
-log "run — 今日 GitHub briefing 缺失，开始补跑 ($DATE_TOMORROW)"
+log "run — 今日 GitHub briefing 缺失，开始补跑 ($DATE_TODAY)"
 set +e
 bash "$SCRIPT_DIR/daily_github_briefing.sh"
 rc=$?
 set -e
 
 case "$rc" in
-  0) log "recovered — 补跑成功 (exit 0, $DATE_TOMORROW)" ;;
-  *) log "FAILED — 补跑 exit $rc，当日 GitHub briefing 无产出 ($DATE_TOMORROW)" ;;
+  0) log "recovered — 补跑成功 (exit 0, $DATE_TODAY)" ;;
+  *) log "FAILED — 补跑 exit $rc，当日 GitHub briefing 无产出 ($DATE_TODAY)" ;;
 esac
 exit "$rc"

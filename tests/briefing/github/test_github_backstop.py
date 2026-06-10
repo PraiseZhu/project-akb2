@@ -1,16 +1,16 @@
 """Tests for github_briefing_backstop.sh — SC-2: github链路补跑守卫。"""
 
 import subprocess
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 BACKSTOP_SH = PROJECT_ROOT / "scripts" / "github_briefing_backstop.sh"
 
 
-def _tomorrow() -> str:
-    """Return tomorrow's date in YYYY-MM-DD (mirrors pipeline.py next_day)."""
-    return (date.today() + timedelta(days=1)).isoformat()
+def _today() -> str:
+    """Return today's date in YYYY-MM-DD (mirrors pipeline.py today_str)."""
+    return date.today().isoformat()
 
 
 def _run_backstop(vault_root: str, extra_args: list[str] | None = None) -> subprocess.CompletedProcess:
@@ -40,8 +40,8 @@ class TestGithubBackstop:
         vault = tmp_path / "vault"
         out_dir = vault / "Praise Space/AKB2.0/AI TRENDS/GitHub"
         out_dir.mkdir(parents=True)
-        tomorrow = _tomorrow()
-        (out_dir / f"{tomorrow} GitHub Briefing.md").write_text("# existing")
+        today = _today()
+        (out_dir / f"{today} GitHub Briefing.md").write_text("# existing")
 
         result = _run_backstop(str(vault), ["--dry-run"])
         assert "skip" in result.stderr
@@ -62,8 +62,8 @@ class TestGithubBackstop:
         vault = tmp_path / "vault"
         out_dir = vault / "Praise Space/AKB2.0/AI TRENDS/GitHub"
         out_dir.mkdir(parents=True)
-        tomorrow = _tomorrow()
-        (out_dir / f"{tomorrow} GitHub Briefing.md").write_text("# existing")
+        today = _today()
+        (out_dir / f"{today} GitHub Briefing.md").write_text("# existing")
 
         _run_backstop(str(vault), ["--dry-run"])
         log_file = PROJECT_ROOT / "logs" / "github-backstop.log"
