@@ -161,6 +161,11 @@ def _apply_fixes(
                     else:
                         fix_empty.append(field)
 
+            # --- untranslated 字段未匹配任何已知分支 ---
+            else:
+                # 记为未修复而非静默跳过，避免无法处理的字段空转烧满 max_rounds 且不留痕
+                fix_empty.append(field)
+
         elif kind in ("zh_point_missing", "zh_point_untranslated"):
             # --- tweets[i].zh_point ---
             if idx is not None and idx < len(zh_tweets):
@@ -171,6 +176,9 @@ def _apply_fixes(
                     fix_succeeded.append(field)
                 else:
                     fix_empty.append(field)
+            else:
+                # idx 越界 → 记为未修复，保持可观测
+                fix_empty.append(field)
 
     return result, fix_succeeded, fix_empty
 
@@ -235,6 +243,9 @@ def run_audit_fix_loop(
         })
         return current_synth_zh, verdict
 
+    # 初始化，使得 max_rounds==0（循环不执行）时下方终止日志仍可引用
+    fix_succeeded: list[str] = []
+    fix_empty: list[str] = []
     for round_num in range(1, max_rounds + 1):
         # 定点修复（translate_model 仅作用于 zh_point 生成，见 _apply_fixes docstring）
         new_synth_zh, fix_succeeded, fix_empty = _apply_fixes(
@@ -277,8 +288,8 @@ def run_audit_fix_loop(
         "reason": "max_rounds_reached",
         "standard_issue_count": len(structured),
         "fixed_fields": [it["field"] for it in fixable],
-        "fix_succeeded": [],
-        "fix_empty": [],
+        "fix_succeeded": fix_succeeded,
+        "fix_empty": fix_empty,
         "remaining_fixable": len(fixable),
     })
     return current_synth_zh, verdict
