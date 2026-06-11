@@ -23,8 +23,7 @@ import json
 import os
 import re
 import sys
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
 
 # 审计专用模型（默认中文母语模型）
 _AUDIT_MODEL = os.environ.get("AKB2_AUDIT_MODEL", "qwen/qwen3.6-plus")
@@ -94,16 +93,24 @@ def _get_referenced_tweet_ids(synth: dict) -> set[str]:
     return ids
 
 
-def _check_standard(synth_zh: dict) -> list[str]:
-    """代码规则检查，返回 issues 列表（空 = pass）。"""
-    issues: list[str] = []
+def _check_standard_structured(synth_zh: dict) -> list[dict]:
+    """代码规则检查，返回结构化 issues 列表。
+
+    每条 issue: {"kind": str, "field": str, "idx": int|None, "msg": str}
+    kind ∈ {untranslated, zh_point_missing, zh_point_untranslated, empty, structural}
+    """
+    items: list[dict] = []
+
+    def _add(kind: str, field: str, idx, msg: str) -> None:
+        items.append({"kind": kind, "field": field, "idx": idx, "msg": msg})
 
     # executive_summary 必须非空且含中文
     summary = (synth_zh.get("executive_summary") or "").strip()
     if not summary:
-        issues.append("executive_summary 为空（必填字段）")
+        _add("empty", "executive_summary", None, "executive_summary 为空（必填字段）")
     elif _requires_chinese(summary):
-        issues.append(f"executive_summary 无中文（未翻译）: {summary[:80]!r}")
+        _add("untranslated", "executive_summary", None,
+             f"executive_summary 无中文（未翻译）: {summary[:80]!r}")
 
     # 构建 tweet_id 集合用于支撑推文校验
     tweet_ids_in_payload = {str(t.get("id", "")) for t in synth_zh.get("tweets", [])}
@@ -112,53 +119,62 @@ def _check_standard(synth_zh: dict) -> list[str]:
         topic = (fd.get("topic") or "").strip()
         sm = (fd.get("summary") or "").strip()
         if topic and not _has_chinese(topic):
-            issues.append(f"focus_discussions[{i}].topic 无中文: {topic!r}")
+            _add("untranslated", f"focus_discussions[{i}].topic", i,
+                 f"focus_discussions[{i}].topic 无中文: {topic!r}")
 
         # SC-3: summary 必须非空且含中文，且 ≥3 句
         if not sm:
-            issues.append(f"focus_discussions[{i}].summary 为空（必填字段）")
+            _add("empty", f"focus_discussions[{i}].summary", i,
+                 f"focus_discussions[{i}].summary 为空（必填字段）")
         elif _requires_chinese(sm):
-            issues.append(f"focus_discussions[{i}].summary 无中文（未翻译）: {sm[:80]!r}")
+            _add("untranslated", f"focus_discussions[{i}].summary", i,
+                 f"focus_discussions[{i}].summary 无中文（未翻译）: {sm[:80]!r}")
         else:
             sent_count = _count_sentences(sm)
             if sent_count < _MIN_SUMMARY_SENTENCES:
-                issues.append(
-                    f"focus_discussions[{i}].summary 句数不足（{sent_count} 句 < {_MIN_SUMMARY_SENTENCES} 句）: {sm[:80]!r}"
+                sm_msg = (
+                    f"focus_discussions[{i}].summary 句数不足"
+                    f"（{sent_count} 句 < {_MIN_SUMMARY_SENTENCES} 句）: {sm[:80]!r}"
                 )
+                _add("structural", f"focus_discussions[{i}].summary", i, sm_msg)
 
         # SC-1: supporting_tweet_ids 至少 2 个，且引用的推文必须存在于 tweets 列表
         sup_ids = fd.get("supporting_tweet_ids", [])
         if len(sup_ids) < 2:
-            issues.append(
-                f"focus_discussions[{i}].supporting_tweet_ids 少于 2 个（当前 {len(sup_ids)} 个）"
-            )
+            _add("structural", f"focus_discussions[{i}].supporting_tweet_ids", i,
+                 f"focus_discussions[{i}].supporting_tweet_ids 少于 2 个（当前 {len(sup_ids)} 个）")
         for tid in sup_ids:
             if str(tid) not in tweet_ids_in_payload:
-                issues.append(
-                    f"focus_discussions[{i}].supporting_tweet_ids 引用了不存在的 tweet_id: {tid!r}"
+                ref_msg = (
+                    f"focus_discussions[{i}].supporting_tweet_ids"
+                    f" 引用了不存在的 tweet_id: {tid!r}"
                 )
+                _add("structural", f"focus_discussions[{i}].supporting_tweet_ids", i, ref_msg)
 
     # topic 非占位符
     for i, fd in enumerate(synth_zh.get("focus_discussions", [])):
         topic = (fd.get("topic") or "").strip()
         if re.match(r"^AI\s*趋势观察\s*#\d+$", topic):
-            issues.append(f"focus_discussions[{i}].topic 仍是占位符: {topic!r}")
+            _add("structural", f"focus_discussions[{i}].topic", i,
+                 f"focus_discussions[{i}].topic 仍是占位符: {topic!r}")
 
     # tweets text 与 core_excerpt：仅检查展示集合（与 translate 对齐，非展示推文无翻译）
-    from akb2.briefing.translate import _display_tweet_indices, _ORPHAN_TOP_K
+    from akb2.briefing.translate import _ORPHAN_TOP_K, _display_tweet_indices
     display_idxs = _display_tweet_indices(synth_zh, _ORPHAN_TOP_K)
     for i, tw in enumerate(synth_zh.get("tweets", [])):
         if i not in display_idxs:
             continue  # 非展示推文不参与中文检查（未被翻译）
         text = (tw.get("text") or "").strip()
         if _requires_chinese(text):
-            issues.append(f"tweets[{i}].text 无中文（未翻译）: {text[:60]!r}")
+            _add("untranslated", f"tweets[{i}].text", i,
+                 f"tweets[{i}].text 无中文（未翻译）: {text[:60]!r}")
         core = (tw.get("core_excerpt") or "").strip()
         if _requires_chinese(core):
-            issues.append(f"tweets[{i}].core_excerpt 无中文（未翻译）: {core[:60]!r}")
+            _add("untranslated", f"tweets[{i}].core_excerpt", i,
+                 f"tweets[{i}].core_excerpt 无中文（未翻译）: {core[:60]!r}")
 
     # SC-1: top-3 高分推文至少要出现在某个主题的 supporting_tweet_ids 里
-    # （位置 4-10 的推文可作为孤儿单列于「其他高分推文」）
+    # idx=None：rank= 是分数排名，不是数组下标，标 structural 防止误用 idx 作为数组索引
     referenced_ids = _get_referenced_tweet_ids(synth_zh)
     all_tweets_sorted = sorted(
         synth_zh.get("tweets", []),
@@ -168,10 +184,9 @@ def _check_standard(synth_zh: dict) -> list[str]:
     for rank, tw in enumerate(all_tweets_sorted[:3], start=1):
         tid = str(tw.get("id", ""))
         if tid and tid not in referenced_ids:
-            issues.append(
-                f"tweets[rank={rank}] id={tid!r} score={tw.get('score',0):.3f}"
-                f" 未出现在任何主题的 supporting_tweet_ids（top-3 必须有主题支撑）"
-            )
+            _add("structural", f"tweets[rank={rank}]", None,
+                 f"tweets[rank={rank}] id={tid!r} score={tw.get('score',0):.3f}"
+                 f" 未出现在任何主题的 supporting_tweet_ids（top-3 必须有主题支撑）")
 
     # SC-8: 所有展示推文（被引用 + 孤儿）的 zh_point 必须存在且含中文
     tweets_list = synth_zh.get("tweets", [])
@@ -181,11 +196,18 @@ def _check_standard(synth_zh: dict) -> list[str]:
         tw = tweets_list[i]
         zh_point = (tw.get("zh_point") or "").strip()
         if not zh_point:
-            issues.append(f"tweets[{i}].zh_point 缺失（展示推文必须有中文点题）")
+            _add("zh_point_missing", f"tweets[{i}].zh_point", i,
+                 f"tweets[{i}].zh_point 缺失（展示推文必须有中文点题）")
         elif not _has_chinese(zh_point):
-            issues.append(f"tweets[{i}].zh_point 无中文: {zh_point!r}")
+            _add("zh_point_untranslated", f"tweets[{i}].zh_point", i,
+                 f"tweets[{i}].zh_point 无中文: {zh_point!r}")
 
-    return issues
+    return items
+
+
+def _check_standard(synth_zh: dict) -> list[str]:
+    """代码规则检查，返回 issues 列表（空 = pass）。向后兼容包装器。"""
+    return [it["msg"] for it in _check_standard_structured(synth_zh)]
 
 
 # ---------------------------------------------------------------------------
@@ -270,11 +292,12 @@ def audit_briefing(
     model: str | None = None,
 ) -> dict:
     """执行译后自检，返回 verdict dict。LLM 不可用时仅运行代码检查。"""
-    ts = datetime.now(timezone.utc).isoformat()
+    ts = datetime.now(UTC).isoformat()
     used_model = model or _AUDIT_MODEL
 
     # 1. 代码标准检查
-    standard_issues = _check_standard(synth_zh)
+    standard_issues_structured = _check_standard_structured(synth_zh)
+    standard_issues = [it["msg"] for it in standard_issues_structured]
     standard = "fail" if standard_issues else "pass"
 
     # 2. LLM 漂移/准确审计
@@ -314,6 +337,7 @@ def audit_briefing(
     result = {
         "standard": standard,
         "standard_issues": standard_issues,
+        "standard_issues_structured": standard_issues_structured,
         "llm_audit": llm_audit,
         "drift_score": drift_score,
         "accuracy_issues": accuracy_issues,
