@@ -1,9 +1,7 @@
 """test_pipeline_render.py — pipeline 渲染与集成测试。"""
 from __future__ import annotations
 
-import json
-from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
@@ -285,6 +283,7 @@ def test_rendered_tweet_body_has_no_orphan_link_emoji():
 def test_tweet_has_single_original_link():
     """渲染后整条推文只有 1 个 markdown 链接（底部 [原文]）；正文裸链接清零。"""
     import re
+
     from akb2.briefing.pipeline import _render_tweet
 
     t = {
@@ -319,9 +318,12 @@ def test_english_synth_reaches_translate(tmp_path):
         translate_called.append(True)
         return SYNTH_ZH
 
-    def mock_audit(zh, en, **kwargs):
-        return {"verdict": "pass", "standard": "pass", "standard_issues": [],
-                "llm_audit": "skipped", "drift_score": None, "accuracy_issues": [], "ts": ""}
+    def mock_fix_loop(zh, en, **kwargs):
+        verdict = {"verdict": "pass", "standard": "pass", "standard_issues": [],
+                   "standard_issues_structured": [], "llm_audit": "skipped",
+                   "drift_score": None, "accuracy_issues": [], "ts": "",
+                   "fix_loop_reason": "converged"}
+        return zh, verdict
 
     with (
         patch.object(pl, "run_intake", return_value={}),
@@ -329,7 +331,7 @@ def test_english_synth_reaches_translate(tmp_path):
         patch.object(pl, "run_synthesis", return_value=SYNTH_EN),
         patch.object(pl, "run_gate", return_value="active"),
         patch("akb2.briefing.pipeline.translate_briefing", side_effect=mock_translate),
-        patch("akb2.briefing.pipeline.audit_briefing", side_effect=mock_audit),
+        patch.object(pl, "run_audit_fix_loop", side_effect=mock_fix_loop),
     ):
         result = pl.main(["--date", "2026-05-30", "--vault-root", str(vault_root)])
 
@@ -343,17 +345,19 @@ def test_english_synth_reaches_translate(tmp_path):
 
 def test_enforce_fail_no_social(tmp_path):
     """audit verdict=fail → Social 无文件，briefing 留 staging，sys.exit(2)。"""
-    import pytest
     from akb2.briefing import pipeline as pl
 
     vault_root = tmp_path
     (vault_root / "Praise Space" / "AKB2.0" / "staging" / "candidate").mkdir(parents=True)
     (vault_root / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
 
-    def mock_audit(zh, en, **kwargs):
-        return {"verdict": "fail", "standard": "fail",
-                "standard_issues": ["topic 是占位符"],
-                "llm_audit": "skipped", "drift_score": None, "accuracy_issues": [], "ts": ""}
+    def mock_fix_loop(zh, en, **kwargs):
+        verdict = {"verdict": "fail", "standard": "fail",
+                   "standard_issues": ["topic 是占位符"],
+                   "standard_issues_structured": [{"kind": "structural", "field": "focus_discussions[0].topic", "idx": 0, "msg": "topic 是占位符"}],
+                   "llm_audit": "skipped", "drift_score": None, "accuracy_issues": [], "ts": "",
+                   "fix_loop_reason": "max_rounds_reached"}
+        return zh, verdict
 
     with (
         patch.object(pl, "run_intake", return_value={}),
@@ -361,7 +365,7 @@ def test_enforce_fail_no_social(tmp_path):
         patch.object(pl, "run_synthesis", return_value=SYNTH_EN),
         patch.object(pl, "run_gate", return_value="active"),
         patch("akb2.briefing.pipeline.translate_briefing", return_value=SYNTH_ZH),
-        patch("akb2.briefing.pipeline.audit_briefing", side_effect=mock_audit),
+        patch("akb2.briefing.pipeline.run_audit_fix_loop", side_effect=mock_fix_loop),
     ):
         with pytest.raises(SystemExit) as exc_info:
             pl.main(["--date", "2026-05-30", "--vault-root", str(vault_root)])
@@ -382,10 +386,12 @@ def test_enforce_warn_writes_flagged(tmp_path):
     (vault_root / "Praise Space" / "AKB2.0" / "staging" / "candidate").mkdir(parents=True)
     (vault_root / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
 
-    def mock_audit(zh, en, **kwargs):
-        return {"verdict": "warn", "standard": "pass",
-                "standard_issues": [],
-                "llm_audit": "fail", "drift_score": 0.7, "accuracy_issues": ["数字丢失"], "ts": ""}
+    def mock_fix_loop(zh, en, **kwargs):
+        verdict = {"verdict": "warn", "standard": "pass",
+                   "standard_issues": [], "standard_issues_structured": [],
+                   "llm_audit": "fail", "drift_score": 0.7, "accuracy_issues": ["数字丢失"], "ts": "",
+                   "fix_loop_reason": "converged"}
+        return zh, verdict
 
     with (
         patch.object(pl, "run_intake", return_value={}),
@@ -393,7 +399,7 @@ def test_enforce_warn_writes_flagged(tmp_path):
         patch.object(pl, "run_synthesis", return_value=SYNTH_EN),
         patch.object(pl, "run_gate", return_value="active"),
         patch("akb2.briefing.pipeline.translate_briefing", return_value=SYNTH_ZH),
-        patch("akb2.briefing.pipeline.audit_briefing", side_effect=mock_audit),
+        patch("akb2.briefing.pipeline.run_audit_fix_loop", side_effect=mock_fix_loop),
     ):
         result = pl.main(["--date", "2026-05-30", "--vault-root", str(vault_root)])
 
@@ -402,3 +408,129 @@ def test_enforce_warn_writes_flagged(tmp_path):
     content = social_file.read_text()
     assert "audit_verdict: warn" in content, "frontmatter 应标 audit_verdict: warn"
     assert result == 0
+
+
+# ---------------------------------------------------------------------------
+# Step 3: fix_loop pipeline 接线测试（SC-1/SC-4/SC-2）
+# ---------------------------------------------------------------------------
+
+
+
+def test_pipeline_fix_loop_converges_writes_social(tmp_path):
+    """SC-1：fix_loop 收敛 → Social 有文件、result==0、frontmatter pass。"""
+    from akb2.briefing import pipeline as pl
+
+    vault_root = tmp_path
+    (vault_root / "Praise Space" / "AKB2.0" / "staging" / "candidate").mkdir(parents=True)
+    (vault_root / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
+
+    def mock_fix_loop(zh, en, **kwargs):
+        converged_verdict = {
+            "verdict": "pass",
+            "standard": "pass",
+            "standard_issues": [],
+            "standard_issues_structured": [],
+            "llm_audit": "pass",
+            "drift_score": 0.05,
+            "accuracy_issues": [],
+            "fix_loop_reason": "converged",
+            "ts": "",
+        }
+        return zh, converged_verdict
+
+    with (
+        patch.object(pl, "run_intake", return_value={}),
+        patch.object(pl, "run_scoring", return_value=SYNTH_EN),
+        patch.object(pl, "run_synthesis", return_value=SYNTH_EN),
+        patch.object(pl, "run_gate", return_value="active"),
+        patch("akb2.briefing.pipeline.translate_briefing", return_value=SYNTH_ZH),
+        patch.object(pl, "run_audit_fix_loop", side_effect=mock_fix_loop),
+    ):
+        result = pl.main(["--date", "2026-05-30", "--vault-root", str(vault_root)])
+
+    social_file = vault_root / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social" / "2026-05-30 Daily Briefing.md"
+    assert social_file.exists(), "收敛时 Social 应有文件"
+    assert result == 0, f"收敛应返回 0，实际: {result}"
+    content = social_file.read_text()
+    assert "audit_verdict: pass" in content, "frontmatter 应标 audit_verdict: pass"
+    assert "fix_loop: max_rounds_reached" not in content, "收敛时不应标 fix_loop"
+
+
+def test_pipeline_fix_loop_max_rounds_stays_staging(tmp_path):
+    """SC-4：max_rounds_reached + verdict=fail → Social 无、staging 有、SystemExit(2)、标 fix_loop。"""
+    import pytest as pt
+
+    from akb2.briefing import pipeline as pl
+
+    vault_root = tmp_path
+    (vault_root / "Praise Space" / "AKB2.0" / "staging" / "candidate").mkdir(parents=True)
+    (vault_root / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
+
+    def mock_fix_loop_max(zh, en, **kwargs):
+        max_verdict = {
+            "verdict": "fail",
+            "standard": "fail",
+            "standard_issues": ["tweets[0].text 无中文"],
+            "standard_issues_structured": [
+                {"kind": "untranslated", "field": "text", "idx": 0, "msg": "tweets[0].text 无中文"}
+            ],
+            "llm_audit": "skipped",
+            "drift_score": None,
+            "accuracy_issues": [],
+            "fix_loop_reason": "max_rounds_reached",
+            "ts": "",
+        }
+        return zh, max_verdict
+
+    with (
+        patch.object(pl, "run_intake", return_value={}),
+        patch.object(pl, "run_scoring", return_value=SYNTH_EN),
+        patch.object(pl, "run_synthesis", return_value=SYNTH_EN),
+        patch.object(pl, "run_gate", return_value="active"),
+        patch("akb2.briefing.pipeline.translate_briefing", return_value=SYNTH_ZH),
+        patch.object(pl, "run_audit_fix_loop", side_effect=mock_fix_loop_max),
+    ):
+        with pt.raises(SystemExit) as exc_info:
+            pl.main(["--date", "2026-05-30", "--vault-root", str(vault_root)])
+
+    social_file = vault_root / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social" / "2026-05-30 Daily Briefing.md"
+    staging_file = vault_root / "Praise Space" / "AKB2.0" / "staging" / "candidate" / "2026-05-30 Daily Briefing.md"
+
+    assert exc_info.value.code == 2, f"触上限应 exit(2)，实际: {exc_info.value.code}"
+    assert not social_file.exists(), "触上限时 Social 不应有文件"
+    assert staging_file.exists(), "触上限时 staging 应保留文件"
+    content = staging_file.read_text()
+    assert "fix_loop: max_rounds_reached" in content, "frontmatter 应标 fix_loop: max_rounds_reached"
+    assert "audit_verdict: fail" in content, "frontmatter 应标 audit_verdict: fail"
+
+
+def test_pipeline_no_upstream_rerun_during_fix(tmp_path):
+    """SC-2：收敛场景断言 run_intake/run_scoring/run_synthesis 各被调恰 1 次。"""
+    from akb2.briefing import pipeline as pl
+
+    vault_root = tmp_path
+    (vault_root / "Praise Space" / "AKB2.0" / "staging" / "candidate").mkdir(parents=True)
+    (vault_root / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
+
+    def mock_fix_loop(zh, en, **kwargs):
+        return zh, {
+            "verdict": "pass", "standard": "pass", "standard_issues": [],
+            "standard_issues_structured": [],
+            "llm_audit": "pass", "drift_score": 0.05, "accuracy_issues": [],
+            "fix_loop_reason": "converged", "ts": "",
+        }
+
+    with (
+        patch.object(pl, "run_intake", return_value={}) as mock_intake,
+        patch.object(pl, "run_scoring", return_value=SYNTH_EN) as mock_scoring,
+        patch.object(pl, "run_synthesis", return_value=SYNTH_EN) as mock_synthesis,
+        patch.object(pl, "run_gate", return_value="active"),
+        patch("akb2.briefing.pipeline.translate_briefing", return_value=SYNTH_ZH),
+        patch.object(pl, "run_audit_fix_loop", side_effect=mock_fix_loop),
+    ):
+        result = pl.main(["--date", "2026-05-30", "--vault-root", str(vault_root)])
+
+    assert result == 0
+    assert mock_intake.call_count == 1, f"run_intake 应只调 1 次，实际: {mock_intake.call_count}"
+    assert mock_scoring.call_count == 1, f"run_scoring 应只调 1 次，实际: {mock_scoring.call_count}"
+    assert mock_synthesis.call_count == 1, f"run_synthesis 应只调 1 次，实际: {mock_synthesis.call_count}"

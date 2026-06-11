@@ -29,16 +29,15 @@ import datetime
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
-import shutil
 import tempfile
 import zoneinfo
 from pathlib import Path
 
+from akb2.briefing.audit_fix import run_audit_fix_loop  # noqa: E402
 from akb2.briefing.translate import translate_briefing  # noqa: E402
-from akb2.briefing.audit import audit_briefing  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -614,12 +613,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"proposed_gate_decision: {gate_decision}")
         sys.exit(1)
 
-    # Stage 4b: 翻译（全中文化）
+    # Stage 4b: 翻译（全中文化）+ 译后审计定点修复收敛循环
     synth_zh = translate_briefing(synth_en)
-
-    # Stage 4c: 译后审计（自检②：代码标准 + LLM 漂移/准确）
-    verdict = audit_briefing(synth_zh, synth_en)
+    synth_zh, verdict = run_audit_fix_loop(synth_zh, synth_en)
     audit_verdict = verdict["verdict"]  # pass | warn | fail
+    fix_loop_reason = verdict.get("fix_loop_reason")
 
     # Stage 5: 写最终内容（含 gate_decision + audit_verdict）
     final_content = build_briefing_markdown(synth_zh, gate_decision, date,
@@ -630,6 +628,12 @@ def main(argv: list[str] | None = None) -> int:
         f"proposed_gate_decision: {gate_decision}\naudit_verdict: {audit_verdict}",
         1,
     )
+    if fix_loop_reason == "max_rounds_reached":
+        final_content = final_content.replace(
+            f"audit_verdict: {audit_verdict}",
+            f"audit_verdict: {audit_verdict}\nfix_loop: max_rounds_reached",
+            1,
+        )
     real_briefing_path.write_text(final_content, encoding="utf-8")
 
     # Provisional enforcement matrix:

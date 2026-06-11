@@ -211,8 +211,9 @@ def test_enforce_all_pass_verdict_pass():
 
 def test_audit_flags_short_summary():
     """summary 不足 3 句时 → standard=fail。"""
-    from akb2.briefing.audit import _check_standard
     import copy
+
+    from akb2.briefing.audit import _check_standard
 
     synth = copy.deepcopy(SYNTH_ZH_GOOD)
     synth["focus_discussions"][0]["summary"] = "只有一句。"  # < 3 句
@@ -223,8 +224,9 @@ def test_audit_flags_short_summary():
 
 def test_audit_flags_missing_zh_point():
     """被主题引用的推文 zh_point 无中文 → standard 检出 issue。"""
-    from akb2.briefing.audit import _check_standard
     import copy
+
+    from akb2.briefing.audit import _check_standard
 
     synth = copy.deepcopy(SYNTH_ZH_GOOD)
     synth["tweets"][0]["zh_point"] = "memory tool worth watching"  # 英文
@@ -257,8 +259,9 @@ def test_audit_count_sentences():
 
 def test_audit_flags_missing_zh_point_absent():
     """被主题引用的推文缺失 zh_point（未设字段）时 → standard 检出 issue。"""
-    from akb2.briefing.audit import _check_standard
     import copy
+
+    from akb2.briefing.audit import _check_standard
 
     synth = copy.deepcopy(SYNTH_ZH_GOOD)
     # 删掉 zh_point 字段
@@ -275,8 +278,9 @@ def test_audit_flags_missing_zh_point_absent():
 
 def test_audit_flags_empty_executive_summary():
     """executive_summary 为空 → standard 检出 issue。"""
-    from akb2.briefing.audit import _check_standard
     import copy
+
+    from akb2.briefing.audit import _check_standard
 
     synth = copy.deepcopy(SYNTH_ZH_GOOD)
     synth["executive_summary"] = ""
@@ -288,8 +292,9 @@ def test_audit_flags_empty_executive_summary():
 
 def test_audit_flags_empty_focus_summary():
     """focus_discussions[i].summary 为空 → standard 检出 issue。"""
-    from akb2.briefing.audit import _check_standard
     import copy
+
+    from akb2.briefing.audit import _check_standard
 
     synth = copy.deepcopy(SYNTH_ZH_GOOD)
     synth["focus_discussions"][0]["summary"] = ""
@@ -301,8 +306,9 @@ def test_audit_flags_empty_focus_summary():
 
 def test_audit_flags_nonexistent_supporting_tweet():
     """supporting_tweet_ids 引用不存在的 tweet_id → standard 检出 issue。"""
-    from akb2.briefing.audit import _check_standard
     import copy
+
+    from akb2.briefing.audit import _check_standard
 
     synth = copy.deepcopy(SYNTH_ZH_GOOD)
     synth["focus_discussions"][0]["supporting_tweet_ids"] = ["1", "99"]  # tweet 99 不存在
@@ -356,8 +362,9 @@ def test_count_sentences_single_rich_comma_clause():
 
 def test_audit_standard_rich_comma_summary_passes():
     """_check_standard：逗号连缀丰富 summary 不报 '句数不足'。"""
-    from akb2.briefing.audit import _check_standard
     import copy
+
+    from akb2.briefing.audit import _check_standard
 
     synth = copy.deepcopy(SYNTH_ZH_GOOD)
     synth["focus_discussions"][0]["summary"] = (
@@ -394,3 +401,57 @@ def test_audit_flags_top3_tweet_not_covered():
     issues = _check_standard(synth)
     top_issues = [i for i in issues if "top-3" in i or "rank=1" in i or "rank=2" in i]
     assert top_issues, f"应检出 top-3 推文未被引用，issues={issues}"
+
+
+# ---------------------------------------------------------------------------
+# Step 1 新测试
+# ---------------------------------------------------------------------------
+
+def test_standard_issues_backward_compat():
+    """_check_standard 与 _check_standard_structured 输出 msg 完全一致。"""
+    from akb2.briefing.audit import _check_standard, _check_standard_structured
+    assert _check_standard(SYNTH_ZH_BAD) == [
+        it["msg"] for it in _check_standard_structured(SYNTH_ZH_BAD)
+    ]
+
+
+def test_check_standard_structured_kinds():
+    """占位符标 structural、无中文标 untranslated、zh_point 缺失标 zh_point_missing。"""
+    from akb2.briefing.audit import _check_standard_structured
+
+    items = _check_standard_structured(SYNTH_ZH_BAD)
+    kinds = {it["kind"] for it in items}
+    # 占位符 topic → structural
+    assert "structural" in kinds, f"应有 structural，kinds={kinds}"
+    # executive_summary 英文 → untranslated
+    assert "untranslated" in kinds, f"应有 untranslated，kinds={kinds}"
+
+    # zh_point_missing：展示推文缺 zh_point
+    synth = {
+        "executive_summary": "今日摘要包含中文内容满足要求。",
+        "focus_discussions": [
+            {"topic": "测试主题有中文", "summary": "第一句。第二句。第三句。",
+             "supporting_tweet_ids": ["1", "2"]},
+        ],
+        "tweets": [
+            {"id": "1", "score": 0.9, "text": "这是中文推文内容。", "author": "@a"},  # zh_point 缺失
+            {"id": "2", "score": 0.8, "text": "另一条中文推文。", "author": "@b"},
+        ],
+    }
+    items2 = _check_standard_structured(synth)
+    kinds2 = {it["kind"] for it in items2}
+    assert "zh_point_missing" in kinds2, f"应有 zh_point_missing，items2={items2}"
+
+
+def test_audit_returns_structured_key():
+    """audit_briefing 返回包含 standard_issues_structured 的 key。"""
+    from unittest.mock import patch
+
+    from akb2.briefing.audit import audit_briefing
+
+    with patch("akb2.briefing.audit._run_llm_audit", return_value={"llm_verdict": "pass", "accuracy_issues": [], "drift_score": 0.0}):
+        result = audit_briefing(SYNTH_ZH_BAD, SYNTH_EN)
+    assert "standard_issues_structured" in result, "缺少 standard_issues_structured key"
+    structured = result["standard_issues_structured"]
+    assert isinstance(structured, list)
+    assert all(isinstance(it, dict) and "kind" in it for it in structured)
