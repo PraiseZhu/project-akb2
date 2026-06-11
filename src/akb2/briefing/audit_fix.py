@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import sys
 from pathlib import Path
 
 from akb2.briefing.audit import audit_briefing
@@ -70,7 +71,10 @@ def _apply_fixes(
       环境变量、不接收 model 参数，故翻译模型不经此函数传参（M1）。
     - tweet_text 直接赋值 + 补 text_original=英文（不走 _apply_translation_inner，避 R3 污染）
     """
-    from akb2.briefing.translate import _translate_snippet
+    # 保持函数内 import（非惰性）：测试通过 patch("akb2.briefing.translate._translate_snippet")
+    # mock 源模块；若提至模块级，patch 路径须改为 audit_fix._translate_snippet，
+    # 现有 12 处测试均指向 translate 模块，故保留此处以避免测试 mock 路径失效。
+    from akb2.briefing.translate import _translate_snippet  # noqa: PLC0415
 
     result = copy.deepcopy(synth_zh)
     zh_tweets = result.get("tweets", [])
@@ -111,59 +115,46 @@ def _apply_fixes(
                 else:
                     fix_empty.append(field)
 
-            # --- focus_discussions[i].topic ---
-            elif field.startswith("focus_discussions") and ".topic" in field:
+            # --- focus_discussions[i].topic / .summary（结构相同，仅子字段名不同）---
+            elif field.startswith("focus_discussions") and (
+                subfield := next((s for s in ("topic", "summary") if f".{s}" in field), None)
+            ):
                 fds = result.get("focus_discussions", [])
                 if idx is not None and idx < len(fds):
                     en_fd = (synth_en.get("focus_discussions") or [])
-                    en_src = (en_fd[idx].get("topic") or "").strip() if idx < len(en_fd) else ""
+                    en_src = (en_fd[idx].get(subfield) or "").strip() if idx < len(en_fd) else ""
                     translated = _translate_snippet(en_src) if en_src else ""
                     if translated:
-                        fds[idx]["topic"] = translated
+                        fds[idx][subfield] = translated
                         fix_succeeded.append(field)
                     else:
                         fix_empty.append(field)
 
-            # --- focus_discussions[i].summary ---
-            elif field.startswith("focus_discussions") and ".summary" in field:
-                fds = result.get("focus_discussions", [])
-                if idx is not None and idx < len(fds):
-                    en_fd = (synth_en.get("focus_discussions") or [])
-                    en_src = (en_fd[idx].get("summary") or "").strip() if idx < len(en_fd) else ""
-                    translated = _translate_snippet(en_src) if en_src else ""
-                    if translated:
-                        fds[idx]["summary"] = translated
-                        fix_succeeded.append(field)
-                    else:
-                        fix_empty.append(field)
-
-            # --- tweets[i].text ---
-            elif field.startswith("tweets[") and ".text" in field and ".text_original" not in field:
-                en_src = (_en_tweet_for(idx).get("text") or "").strip()
+            # --- tweets[i].text / .core_excerpt（结构相同；text 额外补 text_original）---
+            elif field.startswith("tweets[") and (
+                ".core_excerpt" in field
+                or (".text" in field and ".text_original" not in field)
+            ):
+                tweet_attr = "core_excerpt" if ".core_excerpt" in field else "text"
+                en_src = (_en_tweet_for(idx).get(tweet_attr) or "").strip()
                 if idx is not None and idx < len(zh_tweets):
                     translated = _translate_snippet(en_src) if en_src else ""
                     if translated:
-                        # 直接赋值 + 补 text_original（避 _apply_translation_inner R3 污染）
-                        zh_tweets[idx]["text_original"] = en_src
-                        zh_tweets[idx]["text"] = translated
-                        fix_succeeded.append(field)
-                    else:
-                        fix_empty.append(field)
-
-            # --- tweets[i].core_excerpt ---
-            elif field.startswith("tweets[") and ".core_excerpt" in field:
-                en_src = (_en_tweet_for(idx).get("core_excerpt") or "").strip()
-                if idx is not None and idx < len(zh_tweets):
-                    translated = _translate_snippet(en_src) if en_src else ""
-                    if translated:
-                        zh_tweets[idx]["core_excerpt"] = translated
+                        if tweet_attr == "text":
+                            # 直接赋值 + 补 text_original（避 _apply_translation_inner R3 污染）
+                            zh_tweets[idx]["text_original"] = en_src
+                        zh_tweets[idx][tweet_attr] = translated
                         fix_succeeded.append(field)
                     else:
                         fix_empty.append(field)
 
             # --- untranslated 字段未匹配任何已知分支 ---
             else:
-                # 记为未修复而非静默跳过，避免无法处理的字段空转烧满 max_rounds 且不留痕
+                # 可见警告：新增 checker 字段若无对应 fixer 分支，第一次运行即暴露
+                sys.stderr.write(
+                    f"WARNING [audit_fix]: no fixer branch for untranslated field {field!r}"
+                    " — update _apply_fixes to handle this field\n"
+                )
                 fix_empty.append(field)
 
         elif kind in ("zh_point_missing", "zh_point_untranslated"):
@@ -219,33 +210,20 @@ def run_audit_fix_loop(
     structured = verdict.get("standard_issues_structured", [])
     fixable = [it for it in structured if it["kind"] in _FIXABLE_KINDS]
 
+    # 若无可修缺陷（含 accuracy-only warn），直接收敛；一次 log 覆盖两种状态
     _log_loop_event({
         "round": 0,
-        "reason": "initial",
+        "reason": "no_fixable_remaining" if not fixable else "initial",
         "standard_issue_count": len(structured),
         "fixed_fields": [],
         "fix_succeeded": [],
         "fix_empty": [],
         "remaining_fixable": len(fixable),
     })
-
-    # 若无可修缺陷（含 accuracy-only warn），直接收敛
     if not fixable:
         verdict["fix_loop_reason"] = "converged"
-        _log_loop_event({
-            "round": 0,
-            "reason": "no_fixable_remaining",
-            "standard_issue_count": len(structured),
-            "fixed_fields": [],
-            "fix_succeeded": [],
-            "fix_empty": [],
-            "remaining_fixable": 0,
-        })
         return current_synth_zh, verdict
 
-    # 初始化，使得 max_rounds==0（循环不执行）时下方终止日志仍可引用
-    fix_succeeded: list[str] = []
-    fix_empty: list[str] = []
     for round_num in range(1, max_rounds + 1):
         # 定点修复（translate_model 仅作用于 zh_point 生成，见 _apply_fixes docstring）
         new_synth_zh, fix_succeeded, fix_empty = _apply_fixes(
