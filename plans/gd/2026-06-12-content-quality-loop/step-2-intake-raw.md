@@ -49,8 +49,8 @@ TASK_GOAL:    交付循环 1 前两段:76 源配置 + 发现层(RSS/Atom 优先�
 - [ ] SC-2.4:raw 归档 fail-closed——任一锚点 assert 未命中或 frontmatter 9 字段不齐 → 不产出 raw 文件且落 failure 签名;命中路径产出含锚点目录表的 `<slug>--raw--<date>.md`
   - verify (method: test): `python3 -m pytest tests/quality/test_intake_raw.py -q`
   - expect: exit 0
-- [ ] SC-2.5(= master SC-8):逐源验证产出 sources-ledger 初版,≥70 源有记录(每源含 url/feed/可达/最近发文/试抓结果)
-  - verify (method: command): `python3 -c "import json;rs=[json.loads(l) for l in open('reports/source-validation/sources-ledger.jsonl')];assert len(rs)>=70;assert all({'url','feed','reachable','latest_post','trial_fetch'}<=set(r) for r in rs);print('PASS')"`
+- [ ] SC-2.5(= master SC-8):逐源验证产出 sources-ledger 初版,76 源全覆盖且每行含必填字段（与 master SC-8 对齐：config 源数==76、ledger 行数==76、req_fields 全集、reachable>=70）
+  - verify (method: command): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && python3 -c "import json,yaml; sources=yaml.safe_load(open('config/main_sources.yaml'))['sources']; assert len(sources)==76,f'config sources={len(sources)}!=76'; rs=[json.loads(l) for l in open('reports/source-validation/sources-ledger.jsonl')]; assert len(rs)==76,f'ledger rows={len(rs)}!=76'; req_fields={'feed','url','reachable','latest_post','trial_fetch'}; bad=[str(i) for i,r in enumerate(rs) if not req_fields.issubset(r.keys())]; assert not bad,f'MISSING FIELDS at rows: {bad}'; ok=sum(1 for r in rs if r.get('reachable')); assert ok>=70,f'reachable={ok}<70'; print('PASS')"`
   - expect: `PASS`
 - [ ] SC-2.6:intake 全部测试 + lint 绿
   - verify (method: command): `python3 -m pytest tests/quality/ -q -k intake && ruff check src/akb2/quality/intake tests/quality && echo PASS`
@@ -92,7 +92,7 @@ Step.4
   VERIFY: python3 -m pytest tests/quality/test_intake_raw.py -q → exit 0
 Step.5
   WHERE: src/akb2/quality/intake/source_validator.py(新建) + reports/source-validation/
-  WHAT:  实现逐源验证 CLI(python3 -m akb2.quality.intake.source_validator):feed 可达性 + 最近发文 + 试抓一篇,逐源追加 jsonl 记录(url/feed/reachable/latest_post/trial_fetch);死源记录淘汰原因不删条目
+  WHAT:  实现逐源验证 CLI(python3 -m akb2.quality.intake.source_validator):feed 可达性 + 最近发文 + 试抓一篇,逐源追加 jsonl 记录(url/feed/reachable/latest_post/trial_fetch);feed 字段写入 feed_url（无 feed 源则为 listing_url）的实测值;死源记录淘汰原因不删条目
   WHY:   SC-8 要求 76 源实测台账;无台账则源池质量不可审计,死源会拖垮日常轮询
   VERIFY: 执行期真网跑后 SC-2.5 命令输出 PASS(开发期先以 --dry-run 验证 CLI 可运行)
 Step.6
@@ -108,7 +108,7 @@ Step.6
 
 | task_id | agent_role | owned_paths | blocked_by | can_parallel_with |
 |---------|-----------|------------|-----------|-------------------|
-| step2-intake-raw | child_executor | `config/main_sources.yaml`, `src/akb2/quality/intake/`, `tests/quality/test_intake*.py`, `reports/source-validation/` | step-1 | step-3(owned_paths 无交叉) |
+| step2-intake-raw | child_executor | `config/main_sources.yaml`, `src/akb2/quality/intake/`, `tests/quality/test_intake*.py`, `tests/quality/fixtures/intake/`, `reports/source-validation/` | step-1 | step-3(owned_paths 无交叉) |
 
 Task packet(关键字段):
 - task_id: `step2-intake-raw`

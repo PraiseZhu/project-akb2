@@ -7,12 +7,12 @@ from __future__ import annotations
 
 import pytest
 
-from src.akb2.quality.llm_router import LLMResponse
 from src.akb2.quality.checks_structural import run_structural_checks
 from src.akb2.quality.grader import (
-    run_grader_with_fixture,
     RUBRIC_DIMENSIONS,
+    run_grader_with_fixture,
 )
+from src.akb2.quality.llm_router import LLMResponse
 
 
 @pytest.fixture

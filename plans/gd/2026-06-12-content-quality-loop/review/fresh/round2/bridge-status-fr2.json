@@ -1,0 +1,15 @@
+{
+  "round": "fresh/round2",
+  "status": "completed",
+  "gd_review_decision": "APPROVED",
+  "transport_result": "/Users/praise/.claude/review-baselines/gd-plan-master-plan-md-dfc1fe36bfce/result-20260612T123558Z.md",
+  "mapped_result": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-12-content-quality-loop/review/fresh/round2/codex-mapped-fr2.json",
+  "target_hash": "869c77ba63b9514b42a351e18ca66189699c0b007bff4dbdd507aaf74bdfc7d7",
+  "capsule_hash": "eee9e6a184a013a4c86f7779cf83b24ccfd32a8099d603cc7764a52841c1170a",
+  "timestamp": "2026-06-12T12:38:06Z",
+  "fix_context": {
+    "sc3_verify": "total==20/negative_count==2/repair_rounds<=3 assertions added",
+    "sc8_verify": "assert len(sources)==76 and assert len(ledger_ids)==76 added",
+    "step3_4_paths": "rubric/ boundary clarified: rubric/归 step-4 owned_paths"
+  }
+}

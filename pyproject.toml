@@ -39,5 +39,7 @@ testpaths = ["tests"]
 pythonpath = ["src", "src/akb2/toolbox_scan"]
 markers = [
     "integration: 真机集成测试（需 NLM 登录态 + gateway），默认不跑",
+    "proposal_mode: 提议模式黄金样张回放测试（AKB2_AUTO_PROMOTE=0）",
+    "post_amendment: 出厂正式门黄金样张回放测试（AKB2_AUTO_PROMOTE=1）",
 ]
 addopts = "-m 'not integration'"

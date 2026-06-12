@@ -1,0 +1,33 @@
+{
+  "template_kind": "gd-plan-review",
+  "reviewer": "codex",
+  "review_target": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-12-content-quality-loop/master-plan.md",
+  "review_kind": "plan",
+  "review_run_status": "completed",
+  "gd_review_decision": "REQUIRES_CHANGES",
+  "scope_checked": [
+    {
+      "facet": "raw markdown structure",
+      "result": "pass",
+      "evidence": "writer-validated; verdict=REQUIRES_CHANGES"
+    }
+  ],
+  "findings": [
+    {
+      "severity": "P2",
+      "title": "SC-8 逐源验证缺少覆盖集合断言",
+      "sc_refs": [
+        "SC-8"
+      ],
+      "evidence": "`/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-12-content-quality-loop/master-plan.md:66-67`；源权威说明在 `/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-12-content-quality-loop/master-plan.md:183`",
+      "impact": "某个源遗漏、另一个源重复补行时，`len(rs)==76` 仍可通过，导致“76 源逐源验证”目标被错误判定成功，后续源池质量基线失真。",
+      "required_fix": "在 SC-8 verify 中补充集合校验：从 `config/main_sources.yaml` 提取唯一源标识或 URL/feed 集合，断言 `sources-ledger.jsonl` 的对应集合完全相等且无重复；保留现有字段和 `reachable>=70` 断言。",
+      "verify": "删除任一源记录或复制任一记录补足 76 行时，SC-8 命令必须失败；完整 76 个唯一源且字段齐全、可达数达阈值时输出 `PASS`。"
+    }
+  ],
+  "merge_notes": {
+    "conflict_with_other_reviewer": false
+  },
+  "residual_risk": [],
+  "timestamp": "2026-06-12T13:44:30Z"
+}

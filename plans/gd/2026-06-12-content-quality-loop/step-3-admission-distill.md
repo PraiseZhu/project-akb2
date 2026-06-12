@@ -44,8 +44,8 @@ TASK_GOAL:    交付准入三硬判定(admission.py)+ OpenAI 兼容路由(llm_ro
 - [ ] SC-3.5:段 2 成稿 frontmatter 硬字段全检——`gate_decision: null` 写死 + `source_refs` 含 raw 路径 + `gate_reason`≤150 字符 + `future_questions` 2-3 条 + `related_concepts`≥2,且全部论断带 `[raw §X]` 锚点
   - verify (method: test): `python3 -m pytest tests/quality/test_distill_frontmatter.py -q`
   - expect: exit 0
-- [ ] SC-3.6:skillpack/quality/ 五件齐(rubric v1 / 样张引用清单 / 负样本对照 / 概念索引注入 / 已知坑 5 条)且每文件头带 version 字段
-  - verify (method: command): `ls skillpack/quality/ | grep -vc adapter | awk '{exit ($1<5)}' && grep -L "^version:" skillpack/quality/*.md skillpack/quality/*.yaml 2>/dev/null | grep -v adapter | wc -l | awk '{exit ($1!=0)}' && echo PASS`
+- [ ] SC-3.6:skillpack/quality/ 四件齐(样张引用清单 / 负样本对照 / 概念索引注入 / 已知坑 5 条)且每文件头带 version 字段（rubric/ 目录归 step-4 owned，本 step 不交付）
+  - verify (method: command): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && for f in skillpack/quality/golden-sample-refs.md skillpack/quality/negative-sample-notes.md skillpack/quality/concept-index-injection.md skillpack/quality/known-pitfalls.md; do test -f "$f" || { echo "MISSING $f"; exit 1; }; done && for f in skillpack/quality/golden-sample-refs.md skillpack/quality/negative-sample-notes.md skillpack/quality/concept-index-injection.md skillpack/quality/known-pitfalls.md; do grep -q "^version:" "$f" || { echo "NO VERSION in $f"; exit 1; }; done && echo PASS`
   - expect: `PASS`
 - [ ] SC-3.7(工程门):本 step 测试与 lint 全绿
   - verify (method: command): `python3 -m pytest tests/quality/test_admission_negative.py tests/quality/test_admission_positive.py tests/quality/test_llm_router.py tests/quality/test_distill_extract_retry.py tests/quality/test_distill_frontmatter.py -q && ruff check src/akb2/quality tests/quality && echo PASS`
@@ -63,7 +63,8 @@ TASK_GOAL:    交付准入三硬判定(admission.py)+ OpenAI 兼容路由(llm_ro
 ```text
 Step.1
   WHERE: src/akb2/quality/llm_router.py(新建)
-  WHAT:  实现 OpenAI 兼容端点路由:deepseek-v4-pro(提炼)/gpt-5.4(复核)/gemini-flash(兜底),key 走环境变量缺失即抛 RouterConfigError,预算具名常量(MAX_CALLS_PER_ARTICLE/TIMEOUT_S),模型名含 "-preview" 直接拒绝
+  WHAT:  实现 OpenAI 兼容端点路由:deepseek-v4-pro + reasoning_effort="max"(提炼,Think Max 档)/gpt-5.4(复核)/gemini-flash(兜底),key 走环境变量缺失即抛 RouterConfigError,预算具名常量(MAX_CALLS_PER_ARTICLE/TIMEOUT_S),模型名含 "-preview" 直接拒绝。**passthrough 验证**:litellm 已知 bug(BerriAI/litellm#27439)会丢弃 reasoning_effort 统一映射 thinking enabled——router 必须在请求体显式带 reasoning_effort 并在测试中断言出站 payload 含 "reasoning_effort":"max"(fixture 断言,不打真 API)
+  INTERFACE_CONTRACT(供 step-4 required_context 引用):公开接口签名 `route_llm(model_family: str, messages: list[dict], response_schema: dict | None = None) -> LLMResponse`；LLMResponse dataclass 含 `content: str | dict, model_used: str, calls_used: int`；RouterConfigError 在 key 缺失时抛出。接口规格同步锁定在 `docs/interface-contracts/llm_router.md`（本 step 交付时同步写出）。
   WHY:   宪法 P7 禁 -preview + P4 预算显式;后续 admission/distill/step-4 grader 共用同一路由,避免三处各写一套
   VERIFY: python3 -m pytest tests/quality/test_llm_router.py -q
 Step.2
@@ -83,12 +84,12 @@ Step.4
   VERIFY: python3 -m pytest tests/quality/test_distill_frontmatter.py -q
 Step.5
   WHERE: skillpack/quality/(新建,适配卡除外)
-  WHAT:  写 5 件版本化文件(头部 version 字段):rubric 量规 v1(从样张反提取)/黄金样张引用清单/负样本对照说明/概念索引注入文件/已知坑 5 条
+  WHAT:  写 4 件版本化文件(头部 version 字段):黄金样张引用清单/负样本对照说明/概念索引注入文件/已知坑 5 条（rubric 量规文件改由 step-4 以 skillpack/quality/rubric/ 目录形式交付，本 step 不再交付 rubric）
   WHY:   提炼 prompt 与 step-4 评分器需要稳定引用的量规真源;无版本字段则量规漂移不可审计(宪法 P6 样张锚定)
   VERIFY: SC-3.6 command
 Step.6
   WHERE: tests/quality/test_admission*.py、tests/quality/test_distill*.py、tests/quality/fixtures/(新建)
-  WHAT:  写全 fixture LLM 响应测试(不打真 API):负样本拒收×2 + 正样本误放回归 + router 缺 key/-preview/预算 + 抽取重试路径 + frontmatter 硬字段全检
+  WHAT:  写全 fixture LLM 响应测试(不打真 API):负样本拒收×2 + 正样本误放回归 + router 缺 key/-preview/预算 + 抽取重试路径 + frontmatter 硬字段全检；同时写 `tests/quality/fixtures/candidate_page_fixture.md`（以黄金样张 distill 输出构造的候选页契约 fixture，定义 frontmatter 必填字段 + staging/candidate/ 路径格式，供 step-4 A2 检查作为输入契约引用）
   WHY:   master 风险表"API 波动致测试不稳定"防护;变更纪律要求断言绑定可观测行为(拒收落账/重试次数/字段值)
   VERIFY: python3 -m pytest tests/quality -q -k "admission or distill or llm_router"
 Step.7
@@ -102,7 +103,7 @@ Step.7
 
 | task_id | agent_role | owned_paths | blocked_by | can_parallel_with |
 |---------|-----------|------------|-----------|-------------------|
-| step3-admission-distill | child_executor | src/akb2/quality/{admission,distill,llm_router}.py; skillpack/quality/(适配卡除外); tests/quality/test_admission*.py; tests/quality/test_distill*.py | step-1 | step-2 |
+| step3-admission-distill | child_executor | src/akb2/quality/{admission,distill,llm_router}.py; skillpack/quality/(适配卡 repair-adapter-card.yaml 除外，rubric/ 子目录归 step-4); tests/quality/test_admission*.py; tests/quality/test_distill*.py | step-1 | step-2 |
 
 Task packet(关键字段):
 
@@ -110,8 +111,8 @@ Task packet(关键字段):
 task_id: step3-admission-distill
 agent_role: child_executor
 task_goal: 准入三硬判定 + 路由 + 两段式提炼 + skillpack 量规包,负样本 100% 拒于准入,候选页规避样张已知坑 1-3
-owned_paths: [src/akb2/quality/admission.py, src/akb2/quality/distill.py, src/akb2/quality/llm_router.py, skillpack/quality/, tests/quality/test_admission*.py, tests/quality/test_distill*.py]
-required_context: [plans/gd/2026-06-12-content-quality-loop/master-plan.md, docs/main-pipeline-golden-sample.md, docs/constitution.md, schema/loop-ledger.schema.json, schema/failure-signature.schema.json]
+owned_paths: [src/akb2/quality/admission.py, src/akb2/quality/distill.py, src/akb2/quality/llm_router.py, docs/interface-contracts/llm_router.md, skillpack/quality/golden-sample-refs.md, skillpack/quality/negative-sample-notes.md, skillpack/quality/concept-index-injection.md, skillpack/quality/known-pitfalls.md, tests/quality/test_admission*.py, tests/quality/test_distill*.py, tests/quality/test_llm_router.py, tests/quality/fixtures/candidate_page_fixture.md]
+required_context: [plans/gd/2026-06-12-content-quality-loop/master-plan.md, "docs/main-pipeline-golden-sample.md 步 3-4 标准列（准入判定依据 + 提炼格式要求）", docs/constitution.md, schema/loop-ledger.schema.json, schema/failure-signature.schema.json]
 sc_refs: [SC-3.1, SC-3.2, SC-3.3, SC-3.4, SC-3.5, SC-3.6, SC-3.7]
 blocked_by: [step-1]
 forbidden: [真 API 调用进单测, skillpack/quality/repair-adapter-card.yaml, 连续分数排序, vault 写入]
@@ -121,8 +122,9 @@ forbidden: [真 API 调用进单测, skillpack/quality/repair-adapter-card.yaml,
 
 修改:
 - `src/akb2/quality/admission.py`、`src/akb2/quality/distill.py`、`src/akb2/quality/llm_router.py`(新建)
-- `skillpack/quality/`(新建,**适配卡 repair-adapter-card.yaml 除外**)
-- `tests/quality/test_admission*.py`、`tests/quality/test_distill*.py`、`tests/quality/fixtures/`
+- `skillpack/quality/`(新建,**适配卡 repair-adapter-card.yaml 除外；`skillpack/quality/rubric/` 子目录归 step-4 owned，本 step 仅新建 rubric/ 以外的 4 件文件**)
+- `docs/interface-contracts/llm_router.md`(新建,接口规格;step-4/step-6 required_context 引用)
+- `tests/quality/test_admission*.py`、`tests/quality/test_distill*.py`、`tests/quality/fixtures/`(**`fixtures/intake/` 子目录归 step-2 owned，本 step 只写 admission/distill fixture，不碰 intake/ 下内容**)
 
 不修改:
 - 旧 `/rev` 任何 artifact;`/Users/praise/.claude/**`;vault 任何文件
@@ -148,7 +150,7 @@ ruff check src/akb2/quality tests/quality                                    # l
 
 ## 11. Assumptions
 
-- 模型阵容已锁(deepseek-v4-pro/gpt-5.4/gemini-flash),litellm 风格 OpenAI 兼容端点,key 由用户环境提供(master §9)
+- 模型阵容已锁(deepseek-v4-pro@reasoning_effort=max/gpt-5.4/gemini-flash),litellm 风格 OpenAI 兼容端点,key 由用户环境提供(master §9);max 档为参数档位非独立 model id
 - step-1 交付的账本/故障签名 schema 在本 step 开工时已存在且 json.tool 可解析
 - raw 文件格式由黄金样张 14 步预先锁定,step-2 未完成不阻塞本 step build(fixture 解耦)
 - PAGE-TEMPLATES source 模板 10 节结构以黄金样张 active 页为准(只读引用)

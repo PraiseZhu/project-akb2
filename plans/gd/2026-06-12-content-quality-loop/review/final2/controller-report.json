@@ -1,0 +1,38 @@
+{
+  "stage": "review_plan",
+  "run_mode": "live",
+  "target": "plans/gd/2026-06-12-content-quality-loop/",
+  "review_kind": "plan",
+  "final_decision": "APPROVED",
+  "closure_status": "approved",
+  "rounds": [
+    {
+      "round": 1,
+      "claude": {"decision": "REQUIRES_CHANGES", "p1": 3, "p2": 4, "result_path": "review/final2/claude-final.md"},
+      "codex": {"decision": "REQUIRES_CHANGES", "findings": 1, "raw_size_bytes": 1621, "scope_rows": 1, "result_path": "review/final2/codex/codex-mapped-final2.json"},
+      "fixes_applied": [
+        "step-4 §3 blocked_by 加 step-3",
+        "step-4 §7 required_context 加 candidate_page_fixture.md",
+        "step-5 §3 blocked_by 加 step-3",
+        "step-5 §7 owned_paths 加 vault_fixture/",
+        "step-3 §7 owned_paths 枚举化（消除 glob 排除歧义）+ §6 Step.6 补 candidate_page_fixture 命名",
+        "master SC-4 verify 扩展（+test_runner_lifecycle.py + 7 个停链用例要求）"
+      ]
+    },
+    {
+      "round": 2,
+      "claude": {"decision": "REQUIRES_CHANGES", "p1": 0, "p2": 1, "note": "6/6 R1 fixes verified PASS; 1 new P2: step-4 §7 table blocked_by sync", "result_path": "review/final2/claude-r2-verify.md"},
+      "codex": {"decision": "APPROVED", "findings": 0, "scope_rows": 5, "raw_verdict": "APPROVED", "result_path": "review/final2/codex-r2/codex-mapped-r2.json"},
+      "fixes_applied": [
+        "step-4 §7 表格行 blocked_by 列 step-1 → step-1, step-3（sync）"
+      ]
+    }
+  ],
+  "final_claude": "APPROVED (P2 fixed before Codex result arrived; pure sync, no new logic)",
+  "final_codex": "APPROVED (0 findings, 5 scope rows, real raw VERDICT confirmed)",
+  "residual_p3": [
+    "step-6 SC-6.6 grep 目标为 plist XML 注释行，注释内已说明语义",
+    "step-2 SC-2.5 断言弱于 master SC-8（master 门兜底，已接受）",
+    "step-6 task packet required_context 各模块接口引用较模糊（step-6 §11 Assumptions 已声明接口冻结前提）"
+  ]
+}

@@ -11,20 +11,17 @@ from pathlib import Path
 
 import pytest
 
-from src.akb2.quality.llm_router import LLMResponse
 from src.akb2.quality.checks_structural import (
     Defect,
     run_structural_checks,
-    _extract_body_text,
-    _get_section_text,
 )
+from src.akb2.quality.llm_router import LLMResponse
 from src.akb2.quality.repair import (
     MAX_REPAIR_ROUNDS,
-    run_repair_loop,
-    _verify_unchanged_sections,
     _build_repair_instruction,
+    _verify_unchanged_sections,
+    run_repair_loop,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -353,7 +350,6 @@ class TestRepairLoopNoConverge:
         self, candidate_with_defects, temp_failures_path
     ):
         """3 轮修复后仍有缺陷 → fail-closed, 签名落盘。"""
-        from tests.quality.conftest import make_mock_route_llm
 
         # 每轮修复都返回同样的有缺陷的文本（模拟始终修不好）
         def mock_always_broken(model_family, messages, response_schema=None):
@@ -427,7 +423,6 @@ class TestRepairLoopNoConverge:
 
     def test_signature_follows_schema(self, temp_failures_path):
         """不收敛签名符合 failure-signature.schema.json。"""
-        from tests.quality.conftest import make_mock_route_llm
 
         def mock_always_broken(model_family, messages, response_schema=None):
             if model_family == "deepseek-v4-pro":
@@ -569,7 +564,6 @@ class TestRepairDiffRejection:
         self, candidate_with_defects, temp_failures_path
     ):
         """修复改动了未点名小节 → 该轮重写被丢弃。"""
-        from tests.quality.conftest import make_mock_route_llm
 
         # 修复返回的文本改了"关键发现"（未点名小节）
         tampered_text = candidate_with_defects.replace(

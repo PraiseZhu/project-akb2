@@ -1,0 +1,33 @@
+{
+  "template_kind": "gd-plan-review",
+  "reviewer": "codex",
+  "review_target": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-12-content-quality-loop/master-plan.md",
+  "review_kind": "plan",
+  "review_run_status": "completed",
+  "gd_review_decision": "REQUIRES_CHANGES",
+  "scope_checked": [
+    {
+      "facet": "raw markdown structure",
+      "result": "pass",
+      "evidence": "writer-validated; verdict=REQUIRES_CHANGES"
+    }
+  ],
+  "findings": [
+    {
+      "severity": "P1",
+      "title": "七段链缺少端到端停链验收",
+      "sc_refs": [
+        "SC-4"
+      ],
+      "evidence": "plans/gd/2026-06-12-content-quality-loop/master-plan.md:53 写 SC-4；plans/gd/2026-06-12-content-quality-loop/master-plan.md:54 仅绑定 `tests/loops/test_ledger_lifeline.py`。",
+      "impact": "执行实现可以在某段失败后仍继续提炼、评分或升格，只要账本字段齐全就可能通过 SC-4，违反 fail-closed 七段链，后续可能处理或升格不合格内容。",
+      "required_fix": "在 SC-4 或 step-6 runner 验收中补 7 个 fixture failure case：抓取、raw、准入、提炼、门控、升格、收尾任一段失败时，断言后续段调用计数为 0，并落对应失败终态。",
+      "verify": "`python3 -m pytest tests/quality/test_runner_lifecycle.py tests/loops/test_ledger_lifeline.py -q` 覆盖七段失败停链断言且 exit 0。"
+    }
+  ],
+  "merge_notes": {
+    "conflict_with_other_reviewer": false
+  },
+  "residual_risk": [],
+  "timestamp": "2026-06-12T14:56:05Z"
+}

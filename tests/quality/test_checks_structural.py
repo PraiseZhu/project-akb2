@@ -16,9 +16,7 @@ from src.akb2.quality.checks_structural import (
     check_a5_wikilinks,
     check_a6_maintenance_records,
     run_structural_checks,
-    TEN_SECTION_TITLES,
 )
-
 
 # ---------------------------------------------------------------------------
 # 正样本: 完整的黄金样张风格候选页

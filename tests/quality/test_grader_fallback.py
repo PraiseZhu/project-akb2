@@ -7,12 +7,12 @@ from __future__ import annotations
 
 import pytest
 
-from src.akb2.quality.llm_router import LLMResponse, RouterConfigError
 from src.akb2.quality.grader import (
-    run_grader_with_fixture,
-    PRIMARY_GRADER_MODEL,
     FALLBACK_GRADER_MODEL,
+    PRIMARY_GRADER_MODEL,
+    run_grader_with_fixture,
 )
+from src.akb2.quality.llm_router import LLMResponse, RouterConfigError
 
 
 @pytest.fixture
@@ -173,7 +173,6 @@ class TestGraderFallback:
 
     def test_fallback_to_gemini(self, candidate_page, gemini_flash_pass_response):
         """GPT-5.4 不可用 → 切 gemini-flash 兜底。"""
-        from tests.quality.conftest import make_mock_route_llm
 
         # GPT-5.4 抛出异常，gemini-flash 返回正常
         def mock_with_fallback(model_family, messages, response_schema=None):
@@ -195,7 +194,6 @@ class TestGraderFallback:
 
     def test_both_unavailable_suspends(self, candidate_page):
         """GPT-5.4 和 gemini-flash 皆不可用 → 挂起。"""
-        from tests.quality.conftest import make_mock_route_llm
 
         # 两者都抛异常
         def mock_both_down(model_family, messages, response_schema=None):
@@ -212,7 +210,6 @@ class TestGraderFallback:
         self, candidate_page, gemini_flash_pass_response
     ):
         """GPT-5.4 返回但解析失败 → 切 gemini-flash 兜底。"""
-        from tests.quality.conftest import make_mock_route_llm
 
         def mock_parse_fail_then_fallback(model_family, messages, response_schema=None):
             from src.akb2.quality.llm_router import LLMResponse
@@ -238,7 +235,6 @@ class TestGraderFallback:
         self, candidate_page, gemini_flash_pass_response
     ):
         """GPT-5.4 配置错误（缺 key）→ 切 gemini-flash 兜底。"""
-        from tests.quality.conftest import make_mock_route_llm
 
         def mock_config_error_then_fallback(
             model_family, messages, response_schema=None

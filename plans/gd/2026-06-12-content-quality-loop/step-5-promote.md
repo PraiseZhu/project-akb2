@@ -31,7 +31,7 @@ TASK_GOAL:    交付 promote 模块:五闸自动升格判定 + AKB2_AUTO_PROMOTE
 
 ## 3. 前置条件
 
-- blocked_by:`step-1`(loop-ledger schema 落账依赖);声明已完成依赖:step-4 grader 结果格式(闸⑤读其 PASS 输出,测试用 fixture 解耦,可与 step-4 并行 e3)
+- blocked_by:`step-1`(loop-ledger schema 落账依赖), `step-3`(distill 候选页格式；e3 wave 执行时 e2 已完成，运行时不产生等待);声明已完成依赖:step-4 grader 结果格式(闸⑤读其 PASS 输出,测试用 fixture 解耦,可与 step-4 并行 e3)
 - 必须的 baseline / artifact:`src/akb2/gate/akb2_gate_check.py`(现有 gate CLI,只 subprocess 调用不修改)、现有 lint CLI(`src/akb2/lint/akb2_lint.py`)、`docs/main-pipeline-golden-sample.md` 步 9-14 标准列、step-1 产出的 `schema/loop-ledger.schema.json`
 - Hard-stop 条件:gate CLI 或 lint CLI 入口不存在/不可 subprocess 调用 → 停止并上报,不得复制其判定逻辑到 promote.py
 
@@ -61,7 +61,7 @@ TASK_GOAL:    交付 promote 模块:五闸自动升格判定 + AKB2_AUTO_PROMOTE
 
 - 不修改 `src/akb2/gate/`、`src/akb2/lint/` 任何判定逻辑(五闸只 subprocess 调用现有 CLI)
 - 不实现 step-4 的评分器本体(闸⑤只消费其结果文件,格式由 fixture 钉死)
-- 不直接写 vault `AKB-2.0-CONTENT-STANDARD.md`(只产 draft,批准与应用在用户侧)
+- 不直接写 vault `AKB-2.0-CONTENT-STANDARD.md`(本 step 只产 draft;**修宪已获用户预批——2026-06-13 会话决策,应用动作归 step-6 SC-6.10 出厂序列**)
 - 不实现调度/daemon 接线(step-6 范围);不实现抽检阈值的运营报表
 - 不实现黄金样张步 9 人批 UI/交互——修宪生效前人批仍是唯一升格路径
 
@@ -113,11 +113,11 @@ Step.6  测试套件(全 fixture,AKB2_TEST_HOME 隔离)
 
 | task_id | agent_role | owned_paths | blocked_by | can_parallel_with |
 |---------|-----------|------------|-----------|-------------------|
-| promote-and-closure | executor | `src/akb2/quality/promote.py`, `tests/quality/test_promote*.py`, `docs/vault-amendment-draft.md` | step-1 | step-4(wave e3) |
+| promote-and-closure | executor | `src/akb2/quality/promote.py`, `tests/quality/test_promote*.py`, `docs/vault-amendment-draft.md`, `snapshots/`, `tests/quality/fixtures/vault_fixture/` | step-1, step-3 | step-4(wave e3) |
 
 Task packet 关键字段:
 - task_goal:实现五闸升格 + 提议模式开关 + 快照回滚 + 收尾完整性 + 修宪草案,SC-5.1~5.5 全过
-- required_context:master plan §5 step-5 行、`docs/main-pipeline-golden-sample.md` 步 9-14 + 已知坑 4-5、`src/akb2/gate/akb2_gate_check.py` CLI 接口(只读)、step-1 `schema/loop-ledger.schema.json`、step-4 grader 结果格式 fixture
+- required_context:master plan §5 step-5 行、`docs/main-pipeline-golden-sample.md` 步 9-14 + 已知坑 4-5、`src/akb2/gate/akb2_gate_check.py` CLI 接口(只读)、step-1 `schema/loop-ledger.schema.json`、step-4 grader 结果格式 fixture（格式来源：`tests/quality/fixtures/grader_result_pass.json`；闸⑤消费字段：`{"status": "PASS", "dimensions_checked": int, "findings": []}` 结构，本 step fixture 钉死作为 e3 并行契约）
 - sc_refs:SC-5.1~5.5(映射 master SC-7)
 - 禁改:`src/akb2/gate/**`、`src/akb2/lint/**`、vault 任何文件、其他 step owned_paths
 

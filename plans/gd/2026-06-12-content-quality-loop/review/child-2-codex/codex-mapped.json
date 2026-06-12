@@ -1,0 +1,44 @@
+{
+  "template_kind": "gd-plan-review",
+  "reviewer": "codex",
+  "review_target": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-12-content-quality-loop/master-plan.md",
+  "review_kind": "plan",
+  "review_run_status": "completed",
+  "gd_review_decision": "REQUIRES_CHANGES",
+  "scope_checked": [
+    {
+      "facet": "raw markdown structure",
+      "result": "pass",
+      "evidence": "writer-validated; verdict=REQUIRES_CHANGES"
+    }
+  ],
+  "findings": [
+    {
+      "severity": "P2",
+      "title": "SC-5 骨架验收未覆盖全部关键物",
+      "sc_refs": [
+        "SC-5"
+      ],
+      "evidence": "`plans/gd/2026-06-12-content-quality-loop/master-plan.md:54-55`",
+      "impact": "`failure-signature` 或 `repair-adapter-card` schema 损坏、watchdog 自检失败时，master SC-5 仍可能 PASS，循环 7 骨架出厂判断失真。",
+      "required_fix": "在 SC-5 verify 中补齐两个 schema 的 `python3 -m json.tool`，并加入 `bash scripts/akb2-watchdog.sh --self-test`。",
+      "verify": "人为破坏任一 schema JSON 或让 watchdog self-test 失败时，SC-5 命令必须非 0；恢复后输出 `PASS`。"
+    },
+    {
+      "severity": "P2",
+      "title": "SC-8 逐源验证断言不足",
+      "sc_refs": [
+        "SC-8"
+      ],
+      "evidence": "`plans/gd/2026-06-12-content-quality-loop/master-plan.md:63-64`",
+      "impact": "70 条任意 ledger 行即可通过，未验证或缺字段的源会进入后续链路，源池基线不可信。",
+      "required_fix": "扩展 SC-8 verify：读取 `config/main_sources.yaml` 的 76 源，断言 ledger 覆盖全部源；每条含 feed/url、reachable、latest_post、trial_fetch 或明确失败原因；成功源数阈值再按 `>=70` 判断。",
+      "verify": "删除任一源记录或任一必备字段时命令失败；完整 76 条记录且成功数达阈值时输出 `PASS`。"
+    }
+  ],
+  "merge_notes": {
+    "conflict_with_other_reviewer": false
+  },
+  "residual_risk": [],
+  "timestamp": "2026-06-12T12:04:26Z"
+}

@@ -31,7 +31,7 @@ TASK_GOAL:    交付三层质量评估与修复闭环:A 结构校验器(纯代�
 
 ## 3. 前置条件
 
-- blocked_by:`step-1`(循环 7 契约骨架);can_parallel_with:`step-5`
+- blocked_by:`step-1`(循环 7 契约骨架), `step-3`(llm_router + distill 模块接口；e3 wave 执行时 e2 已完成，运行时不产生等待);can_parallel_with:`step-5`
 - 必须的 baseline / artifact:`schema/failure-signature.schema.json`、`schema/loop-ledger.schema.json`(step-1 产物);`src/akb2/quality/llm_router.py`(step-3 产物,声明已完成依赖);黄金样张 6 文件 fixture(只读);`docs/main-pipeline-golden-sample.md` 14 步清单
 - Hard-stop 条件:step-1 schema 不存在或 `python3 -m json.tool` 解析失败 → 停止;llm_router 接口签名与本 step 假设不符 → 停止并上报
 
@@ -120,11 +120,11 @@ Step.7
 
 | task_id | agent_role | owned_paths | blocked_by | can_parallel_with |
 |---------|-----------|------------|-----------|-------------------|
-| quality-eval-repair-loop | executor | src/akb2/quality/checks_structural.py; src/akb2/quality/grader.py; src/akb2/quality/repair.py; skillpack/quality/rubric/; tests/quality/test_checks*.py; tests/quality/test_grader*.py; tests/quality/test_repair*.py | step-1 | step-5 |
+| quality-eval-repair-loop | executor | src/akb2/quality/checks_structural.py; src/akb2/quality/grader.py; src/akb2/quality/repair.py; skillpack/quality/rubric/; tests/quality/test_checks*.py; tests/quality/test_grader*.py; tests/quality/test_repair*.py | step-1, step-3 | step-5 |
 
 Task packet 关键字段:
 - task_id: `quality-eval-repair-loop`
-- required_context: master-plan §3/§7、`docs/main-pipeline-golden-sample.md` 14 步清单、step-1 schema 三件、llm_router 接口(step-3)、黄金样张 fixture(只读)
+- required_context: master-plan §3/§7、`docs/main-pipeline-golden-sample.md` 14 步清单、step-1 schema 三件、`docs/interface-contracts/llm_router.md`（step-3 产物；接口签名：`route_llm(model_family, messages, response_schema) -> LLMResponse`）、`tests/quality/fixtures/candidate_page_fixture.md`（step-3 以黄金样张 distill 输出构造，定义候选页 frontmatter + staging 路径格式，A2 检查的输入契约）、黄金样张 fixture(只读)
 - definition_of_done: 本 step SC-4.1~SC-4.6 全 pass
 - 禁改: 其他 step owned_paths、`src/akb2/gate/`、`src/akb2/lint/`、vault 任何文件
 
@@ -171,4 +171,4 @@ ruff check src/akb2/quality/checks_structural.py src/akb2/quality/grader.py src/
 - step-3 的 `llm_router.py` 已交付且暴露按模型族路由的 OpenAI 兼容调用接口;本 step 只消费不修改
 - step-1 的 `schema/failure-signature.schema.json` 已存在且含 distill_no_converge 可表达的签名结构
 - 黄金样张 6 文件与 14 步清单(`docs/main-pipeline-golden-sample.md`)固化只读,可作 fixture 引用
-- 模型阵容已锁:deepseek-v4-pro 重写 / gpt-5.4 评分 / gemini-flash 兜底;单测全 fixture,不依赖真 key
+- 模型阵容已锁:deepseek-v4-pro@reasoning_effort=max 重写(Think Max 档,经 llm_router 透传,见 step-3 passthrough 验证) / gpt-5.4 评分 / gemini-flash 兜底;单测全 fixture,不依赖真 key

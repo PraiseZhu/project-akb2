@@ -1,0 +1,44 @@
+{
+  "template_kind": "gd-plan-review",
+  "reviewer": "codex",
+  "review_target": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-12-content-quality-loop/master-plan.md",
+  "review_kind": "plan",
+  "review_run_status": "completed",
+  "gd_review_decision": "REQUIRES_CHANGES",
+  "scope_checked": [
+    {
+      "facet": "raw markdown structure",
+      "result": "pass",
+      "evidence": "writer-validated; verdict=REQUIRES_CHANGES"
+    }
+  ],
+  "findings": [
+    {
+      "severity": "P2",
+      "title": "SC-5 未验证适配卡 v1 与 schema 自洽",
+      "sc_refs": [
+        "SC-5"
+      ],
+      "evidence": "`plans/gd/2026-06-12-content-quality-loop/master-plan.md:56-58`",
+      "impact": "执行后即使适配卡内容缺字段或结构错误，SC-5 仍可通过，循环 7 契约骨架会产出错误接口。",
+      "required_fix": "在 SC-5 verify 中追加适配卡实例 schema 校验，例如纳入 `python3 -m pytest tests/quality/test_adapter_card_schema.py -q` 或等价 `yaml+jsonschema` 命令。",
+      "verify": "运行 SC-5 verify 时，删除/改坏 `skillpack/quality/repair-adapter-card.yaml` 必须导致命令非 0，合法样例输出 `PASS`。"
+    },
+    {
+      "severity": "P2",
+      "title": "SC-8 未验证“试抓”结果字段",
+      "sc_refs": [
+        "SC-8"
+      ],
+      "evidence": "`plans/gd/2026-06-12-content-quality-loop/master-plan.md:65-67`",
+      "impact": "执行者可只写可达性台账、不做逐源试抓，SC-8 仍通过，源质量验收会漏掉抽取层真实失败。",
+      "required_fix": "将 `trial_fetch` 加入 SC-8 `req_fields`，并断言每个源有可审计试抓状态/错误原因。",
+      "verify": "运行 SC-8 verify 时，任一 ledger 行缺少 `trial_fetch` 必须失败；76 源均含试抓结果时输出 `PASS`。"
+    }
+  ],
+  "merge_notes": {
+    "conflict_with_other_reviewer": false
+  },
+  "residual_risk": [],
+  "timestamp": "2026-06-12T12:41:48Z"
+}

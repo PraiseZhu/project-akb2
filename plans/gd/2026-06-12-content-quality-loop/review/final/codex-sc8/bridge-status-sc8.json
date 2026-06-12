@@ -1,0 +1,16 @@
+{
+  "bridge_run": "codex_sc8",
+  "timestamp": "2026-06-12T13:55:28+00:00",
+  "gd_bridge_status": "completed",
+  "gd_review_decision": "APPROVED",
+  "transport_result": "/Users/praise/.claude/review-baselines/gd-plan-master-plan-md-a598959d6bdf/result-20260612T135317Z.md",
+  "mapped_result": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-12-content-quality-loop/review/final/codex-sc8/codex-mapped-sc8.json",
+  "target": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-12-content-quality-loop/master-plan.md",
+  "target_hash": "9a75316e1e7faa1aa08adcfbe855c768ac76a8d53edfdd82955f60f129eaabbe",
+  "capsule_hash": "09d70bf541644f36bbe3b573c393599ad5c395c470a7a27e9d99b02f3fa54680",
+  "queue_job_id": "adhoc-adhoc-139aa836896f7694",
+  "verdict_in_raw": "APPROVED",
+  "fix_context": "SC-8 verify now includes assert unique_urls == config_urls (URL set completeness assertion)",
+  "findings_count": 0,
+  "findings_severity": []
+}

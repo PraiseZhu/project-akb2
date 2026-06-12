@@ -1,0 +1,33 @@
+{
+  "template_kind": "gd-plan-review",
+  "reviewer": "codex",
+  "review_target": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-12-content-quality-loop/master-plan.md",
+  "review_kind": "plan",
+  "review_run_status": "completed",
+  "gd_review_decision": "REQUIRES_CHANGES",
+  "scope_checked": [
+    {
+      "facet": "raw markdown structure",
+      "result": "pass",
+      "evidence": "writer-validated; verdict=REQUIRES_CHANGES"
+    }
+  ],
+  "findings": [
+    {
+      "severity": "P1",
+      "title": "SC-3 校准报告路径未纳入 owned/修改边界",
+      "sc_refs": [
+        "SC-3"
+      ],
+      "evidence": "`/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-12-content-quality-loop/master-plan.md:51` 写 `reports/calibration/factory.json`；`:93` step-6 owned_paths 未含该目录；`:129-135` 修改清单也未含该目录。",
+      "impact": "执行时会产生 task packet owned_paths 外的结果文件，后续 execution review/merge gate 可按路径越界失败，SC-3 出厂验收也无法被边界规则稳定判定。",
+      "required_fix": "在 master plan 的 step-6 owned_paths 与“修改”清单中补入 `reports/calibration/**`，并保持 step-6 task packet 同步。",
+      "verify": "`grep -n \"reports/calibration\" plans/gd/2026-06-12-content-quality-loop/master-plan.md` 能同时命中 SC-3 verify、step-6 owned_paths、全局修改边界三处。"
+    }
+  ],
+  "merge_notes": {
+    "conflict_with_other_reviewer": false
+  },
+  "residual_risk": [],
+  "timestamp": "2026-06-12T12:18:21Z"
+}

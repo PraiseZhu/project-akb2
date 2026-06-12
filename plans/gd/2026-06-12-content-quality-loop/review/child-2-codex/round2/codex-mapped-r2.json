@@ -1,0 +1,44 @@
+{
+  "template_kind": "gd-plan-review",
+  "reviewer": "codex",
+  "review_target": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-12-content-quality-loop/master-plan.md",
+  "review_kind": "plan",
+  "review_run_status": "completed",
+  "gd_review_decision": "REQUIRES_CHANGES",
+  "scope_checked": [
+    {
+      "facet": "raw markdown structure",
+      "result": "pass",
+      "evidence": "writer-validated; verdict=REQUIRES_CHANGES"
+    }
+  ],
+  "findings": [
+    {
+      "severity": "P2",
+      "title": "Step 拆分未满足 task packet 最小字段",
+      "sc_refs": [
+        "SC-1"
+      ],
+      "evidence": "`/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-12-content-quality-loop/master-plan.md:84` 表头缺少上述字段；`:86-91` 六个 Step 均沿用该不完整结构。",
+      "impact": "`/gd execute` 生成 task packet 时无法校验路径边界、输入上下文和交付物，SC 成功也无法按 step 判定。",
+      "required_fix": "为 Step 1-6 补齐 `forbidden_paths`、`required_context`、`deliverables`、`verify`；复用现有 SC 命令，不新增执行范围。",
+      "verify": "每个 Step 均能看到四个字段，且 `required_context` 只列文件路径并不落入自身 `owned_paths`。"
+    },
+    {
+      "severity": "P1",
+      "title": "SC-8 源清单权威输入不自包含",
+      "sc_refs": [
+        "SC-8"
+      ],
+      "evidence": "`/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-12-content-quality-loop/master-plan.md:65-67` 定义 SC-8；`:177` 写明“76 源清单以 ... + 会话记录为准”。",
+      "impact": "执行者可能生成不同的 `config/main_sources.yaml`，后续 `sources-ledger` 即使通过也不能证明覆盖目标 76 源，生成链路会漂移。",
+      "required_fix": "将“会话记录”替换为明确文件路径，或在计划内指定冻结的 76 源 ID 清单 artifact，并要求 `config/main_sources.yaml` 从该 artifact 派生。",
+      "verify": "`grep -n '会话记录' plans/gd/2026-06-12-content-quality-loop/master-plan.md` 无结果；SC-8 verify 额外断言源 ID 与冻结清单完全一致。"
+    }
+  ],
+  "merge_notes": {
+    "conflict_with_other_reviewer": false
+  },
+  "residual_risk": [],
+  "timestamp": "2026-06-12T12:13:19Z"
+}

@@ -1,0 +1,12 @@
+{
+  "bridge_run": "codex_final2",
+  "timestamp": "2026-06-12T13:50:27.969098+00:00",
+  "gd_bridge_status": "completed",
+  "gd_review_decision": "REQUIRES_CHANGES",
+  "transport_result": "/Users/praise/.claude/review-baselines/gd-plan-master-plan-md-2b0019d64d56/result-20260612T134835Z.md",
+  "mapped_result": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-12-content-quality-loop/review/final/codex-round2/codex-mapped-final2.json",
+  "findings_count": 1,
+  "findings_severity": [
+    "P2"
+  ]
+}

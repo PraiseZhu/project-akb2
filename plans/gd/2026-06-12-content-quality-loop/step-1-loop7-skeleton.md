@@ -52,7 +52,7 @@ TASK_GOAL:    交付循环 7 契约骨架五件套:统一 jsonl 账本 schema + 
   - verify (method: command): `test -x scripts/akb2-watchdog.sh && [ "$(wc -l < scripts/akb2-watchdog.sh)" -le 80 ] && ! grep -qiE 'curl.*chat|openai|deepseek|llm' scripts/akb2-watchdog.sh && bash scripts/akb2-watchdog.sh --self-test && echo PASS`
   - expect: `PASS`
 - [ ] SC-s5:隔离区目录约定以具名常量导出,可被后续 step import
-  - verify (method: assertion): `python3 -c "from akb2.loops import paths; assert 'quarantine' in paths.QUARANTINE_SUBDIR; print('PASS')"`(经 pytest pythonpath 或 PYTHONPATH=src)
+  - verify (method: assertion): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && PYTHONPATH=src python3 -c "from akb2.loops import paths; assert 'quarantine' in paths.QUARANTINE_SUBDIR; print('PASS')"`
   - expect: `PASS`
 - [ ] SC-s6(工程门局部):本 step 新增代码 lint 干净
   - verify (method: command): `ruff check src/akb2/loops tests/loops && echo PASS`
@@ -88,7 +88,7 @@ Step.3
   WHERE: schema/repair-adapter-card.schema.json
   WHAT:  定义修复适配卡 9 字段:故障签名表/诊断线索映射/S 档动作白名单/B 档可碰路径/R 档红线/验证方法/回滚方法/watchdog 配置行/共享依赖声明,9 字段全 required
   WHY:   适配卡是后续修复 agent 的唯一行动契约,字段缺失即放开红线
-  VERIFY: python3 -c "import json;s=json.load(open('schema/repair-adapter-card.schema.json'));assert len(s['required'])==9"
+  VERIFY: cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && python3 -c "import json;s=json.load(open('schema/repair-adapter-card.schema.json'));assert len(s['required'])==9"
 
 Step.4
   WHERE: src/akb2/loops/(__init__.py + paths.py + ledger.py)

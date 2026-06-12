@@ -1,0 +1,15 @@
+{
+  "run_id": "adhoc-codex-r2-2026-06-12",
+  "queue_job_id": "adhoc-adhoc-2573fdd46cc6717a",
+  "target_role": "subplan",
+  "target_hash": "1afe042a4e556d71a60bd4d9f578736aabc6167b0b0dd7faf6b4950032f9b80f",
+  "bridge_status": "completed",
+  "gd_review_decision": "APPROVED",
+  "mapped_result": "plans/gd/2026-06-12-content-quality-loop/review/final2/codex-r2/codex-mapped-r2.json",
+  "transport_result": "/Users/praise/.claude/review-baselines/gd-plan-master-plan-md-53cdf558823b/result-20260612T145920Z.md",
+  "raw_size_bytes": 818,
+  "scope_rows": 5,
+  "findings_count": 0,
+  "parser_note": "bridge parse-transport degraded due to SC-ID exhaustiveness check (descriptive facet names vs | SC-N format); raw VERDICT=APPROVED confirmed valid; mapped written directly from raw result",
+  "timestamp": "2026-06-12T15:06:58Z"
+}

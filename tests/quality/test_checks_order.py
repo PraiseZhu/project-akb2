@@ -8,7 +8,6 @@ from __future__ import annotations
 import pytest
 
 from src.akb2.quality.checks_structural import run_structural_checks
-from src.akb2.quality.grader import run_grader_with_fixture
 
 
 @pytest.fixture

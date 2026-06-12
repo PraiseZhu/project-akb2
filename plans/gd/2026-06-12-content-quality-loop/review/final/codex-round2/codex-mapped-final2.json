@@ -1,0 +1,33 @@
+{
+  "template_kind": "gd-plan-review",
+  "reviewer": "codex",
+  "review_target": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-12-content-quality-loop/master-plan.md",
+  "review_kind": "plan",
+  "review_run_status": "completed",
+  "gd_review_decision": "REQUIRES_CHANGES",
+  "scope_checked": [
+    {
+      "facet": "raw markdown structure",
+      "result": "pass",
+      "evidence": "writer-validated; verdict=REQUIRES_CHANGES"
+    }
+  ],
+  "findings": [
+    {
+      "severity": "P2",
+      "title": "SC-8 验收未证明 ledger 对应 76 源",
+      "sc_refs": [
+        "SC-8"
+      ],
+      "evidence": "`plans/gd/2026-06-12-content-quality-loop/master-plan.md:67` — `config_urls=...; rs=...; unique_urls=...; assert len(unique_urls)==76`，缺少 `assert unique_urls == config_urls`。",
+      "impact": "执行结果可能产出与 `config/main_sources.yaml` 不对应的 `sources-ledger.jsonl`，仍被 SC-8 判定 PASS，后续源池基线失真。",
+      "required_fix": "在 SC-8 verify 命令中加入 `assert unique_urls == config_urls`，并输出缺失/多余 URL；如源以 ID 为权威，也同步断言 source_id 集合一致。",
+      "verify": "重新运行 SC-8 verify；用删改一条 ledger URL 的负例确认命令失败并报告差异。"
+    }
+  ],
+  "merge_notes": {
+    "conflict_with_other_reviewer": false
+  },
+  "residual_risk": [],
+  "timestamp": "2026-06-12T13:49:59Z"
+}

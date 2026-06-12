@@ -7,14 +7,13 @@ from __future__ import annotations
 
 import pytest
 
-from src.akb2.quality.llm_router import LLMResponse
 from src.akb2.quality.grader import (
-    run_grader_with_fixture,
-    _parse_grader_output,
-    _load_rubric_text,
     RUBRIC_DIMENSIONS,
+    _load_rubric_text,
+    _parse_grader_output,
+    run_grader_with_fixture,
 )
-
+from src.akb2.quality.llm_router import LLMResponse
 
 # ---------------------------------------------------------------------------
 # Fixtures
