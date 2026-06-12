@@ -37,30 +37,38 @@ TASK_GOAL:    交付 24h 常驻串行单工 runner + launchd 产物(产出不加
 
 ## 4. 成功标准(SC)
 
-- [ ] SC-6.1:runner 行为契约成立——文件队列驱动(raw 有而账本未标记=待处理)、串行单工(同一时刻仅 1 篇)、SIGTERM 优雅退出、每篇七段生命线完整落账、周抽检检查位在达标率<80% 时创建校准任务文件并落账(全部 fixture mock,不调真 API)
+- [ ] SC-6.1:runner 行为契约成立——文件队列驱动(raw 有而账本未标记=待处理)、串行单工(同一时刻仅 1 篇)、SIGTERM 优雅退出、每篇七段生命线完整落账、周抽检检查位在达标率<80% 时创建校准任务文件并落账 **且产出 `reports/quality-loop/weekly-summary.json`**（含校准任务说明、原因摘要、`manual_intervention_required_count`、`quality_feedback_required_count`；happy path 两计数必须为 0）(全部 fixture mock,不调真 API)
   - verify (method: test): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && python3 -m pytest tests/quality/test_runner_queue.py tests/quality/test_runner_lifecycle.py -q`
-  - expect: exit 0
-- [ ] SC-6.2(master SC-1):黄金样张 URL 端到端重跑,14 步逐项断言结构等价(真 API,执行期)
-  - verify (method: test): `python3 -m pytest tests/quality/test_golden_replay.py -q -m integration`
-  - expect: exit 0
+  - expect: exit 0（test_runner_lifecycle.py 周抽检用例须断言：达标率<80% fixture 下若无 weekly-summary.json 或两计数非 0 则测试 fail；happy path fixture 下 weekly-summary.json 存在且两计数==0）
+- [ ] SC-6.2(master SC-1):黄金样张 URL 端到端重跑,结构等价验收分两档
+  - verify (method: test, proposal-mode): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && AKB2_RUN_INTEGRATION=1 /usr/bin/env python3 -m pytest tests/quality/test_golden_replay.py -q -m "integration and proposal_mode"` —— **默认门**：断言 proposal manifest 产出、active 目录 tree_sha256 不变
+  - expect (proposal-mode): exit 0
+  - verify (method: test, post-amendment): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && AKB2_RUN_INTEGRATION=1 AKB2_AUTO_PROMOTE=1 AKB2_AMENDMENT_APPLIED=1 /usr/bin/env python3 -m pytest tests/quality/test_golden_replay.py -q -m "integration and post_amendment"` —— **出厂正式门（修宪已预批,应用修宪文本+开开关后必跑）**：断言 14 步含 active 收尾（索引摘要行、概念回边、lint 0）
+  - expect (post-amendment): exit 0（出厂序列必跑项,不可 skip 交付）
 - [ ] SC-6.3(master SC-2):2 个负样本 100% 拒于准入段,账本零提炼调用
   - verify (method: test): `python3 -m pytest tests/quality/test_negative_samples.py -q`
   - expect: exit 0
-- [ ] SC-6.4(master SC-3):校准语料全量端到端,出厂判定达标
-  - verify (method: command): `python3 -m akb2.quality.calibration --corpus evals/main-pipeline-quality/corpus.yaml --report-out reports/calibration/factory.json && python3 -c "import json;r=json.load(open('reports/calibration/factory.json'));assert r['positive_pass_rate']>=0.9 and r['negative_reject_rate']==1.0;print('PASS')"`
-  - expect: `PASS`
+- [ ] SC-6.4(master SC-3):校准语料全量端到端,出厂判定达标；报告含 promotion_mode 字段
+  - verify (method: command): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && python3 -m akb2.quality.calibration --corpus evals/main-pipeline-quality/corpus.yaml --report-out reports/calibration/factory.json && python3 -c "import json;r=json.load(open('reports/calibration/factory.json'));assert r.get('total_samples',0)==20,'total!=20';assert r.get('negative_count',0)==2,'negative!=2';assert r['positive_pass_rate']>=0.9;assert r['negative_reject_rate']==1.0;assert all(e.get('repair_rounds',0)<=3 for e in r.get('entries',[])),'repair_rounds exceeded 3';assert 'promotion_mode' in r,'missing promotion_mode field';assert r.get('promotion_mode') in ('proposal','active'),'invalid promotion_mode';assert 'amendment_status' in r,'missing amendment_status field';assert r.get('amendment_status') in ('not_applied','applied'),'invalid amendment_status';assert not (r.get('promotion_mode')=='active' and r.get('amendment_status')!='applied'),'active mode requires amendment_status=applied';assert not (r.get('promotion_mode')=='proposal' and r.get('amendment_status')!='not_applied'),'proposal mode requires amendment_status=not_applied';print('PASS')"`
+  - expect: `PASS`（默认 promotion_mode=proposal；修宪生效后为 active）
 - [ ] SC-6.5:语料结构正确——corpus.yaml 恰 20 条,18 条 `expected: ingest` + 2 条 `expected: reject`,每条带 url 与领域标签
   - verify (method: command): `python3 -c "import yaml;c=yaml.safe_load(open('evals/main-pipeline-quality/corpus.yaml'));e=[x['expected'] for x in c['entries']];assert len(e)==20 and e.count('ingest')==18 and e.count('reject')==2;print('PASS')"`
   - expect: `PASS`
 - [ ] SC-6.6:launchd 产物合法且**未加载**——plist 语法合法、头部注释含安装命令、launchctl 中无该 label
-  - verify (method: command): `plutil -lint launchd/com.akb2.main-pipeline.plist && head -20 launchd/com.akb2.main-pipeline.plist | grep -q "launchctl" && ! launchctl list | grep -q com.akb2.main-pipeline && echo PASS`
+  - verify (method: command): `plutil -lint launchd/com.akb2.main-pipeline.plist && grep -qE "launchctl (load|bootstrap)" launchd/com.akb2.main-pipeline.plist && grep -q "AKB2_AMENDMENT_APPLIED" launchd/com.akb2.main-pipeline.plist && ! launchctl list | grep -q com.akb2.main-pipeline && echo PASS`
   - expect: `PASS`
 - [ ] SC-6.7:循环 1 修复适配卡 v1 通过 step-1 schema 校验(9 字段齐:故障签名表 7 项/诊断线索/S 白名单/B 可碰路径/R 红线/验证/回滚/watchdog 配置/共享依赖)
   - verify (method: test): `python3 -m pytest tests/quality/test_adapter_card_schema.py -q`
   - expect: exit 0
 - [ ] SC-6.8(master SC-6 本 step 份额):全量测试 + lint 绿
-  - verify (method: command): `python3 -m pytest -q && ruff check src tests && echo PASS`
+  - verify (method: command): `/usr/bin/env python3 -m pytest -q && ruff check src tests && echo PASS`
   - expect: `PASS`
+- [ ] SC-6.9(master SC-9):3 篇真实源专项——从 sources-ledger 取 3 个 reachable 源各抓 1 篇新内容跑全链,实测达黄金样张标准所需修复轮数
+  - verify (method: command): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && python3 -m akb2.quality.calibration --live-sample 3 --report-out reports/calibration/live-sample.json && python3 -c "import json;r=json.load(open('reports/calibration/live-sample.json'));es=r['entries'];assert len(es)==3;bad=[e['url'] for e in es if e.get('final_status') not in ('promoted','proposal_passed')];assert not bad,f'not golden: {bad}';assert all(e.get('repair_rounds',99)<=3 for e in es);print('PASS');print('rounds:',[(e['url'],e['repair_rounds']) for e in es])"`
+  - expect: `PASS` + 每篇修复轮数清单（真 API,执行期;calibration.py 须支持 --live-sample N 从 ledger 选 reachable 源实抓）
+- [ ] SC-6.10(修宪应用+自动升格出厂形态):出厂序列收口——校准通过后将 `docs/vault-amendment-draft.md` 修订文本应用到 vault CONTENT-STANDARD(用户已预批,2026-06-13 会话决策),plist EnvironmentVariables 写入 `AKB2_AUTO_PROMOTE=1` + `AKB2_AMENDMENT_APPLIED=1`,终态校准报告 promotion_mode=active + amendment_status=applied
+  - verify (method: command): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && grep -q "AKB2_AUTO_PROMOTE" launchd/com.akb2.main-pipeline.plist && grep -q "AKB2_AMENDMENT_APPLIED" launchd/com.akb2.main-pipeline.plist && python3 -c "import json;r=json.load(open('reports/calibration/factory.json'));assert r['promotion_mode']=='active' and r['amendment_status']=='applied';print('PASS')"`
+  - expect: `PASS`（顺序硬约束:SC-6.4 校准通过 → 应用修宪 → 开开关 → 重跑出厂校准与 SC-6.2 active 门;修宪文本未应用前任何 active 写入仍被 SC-7/五闸拦截）
 
 ---
 
@@ -84,13 +92,13 @@ Step.1
 
 Step.2
   WHERE: src/akb2/quality/runner.py(新建)+ tests/quality/test_runner_queue.py、test_runner_lifecycle.py(新建)
-  WHAT:  实现 24h 常驻串行单工 daemon:文件队列扫描(raw 有而账本未标记=待处理)、外层等触发循环(轮询 sleep 用具名常量 POLL_INTERVAL_SECONDS)、SIGTERM 优雅停、每篇调 step-1 ledger 落七段生命线、串联 step-2/3/4/5 模块、内嵌周抽检检查位(抽近期入库 3 篇重过 grader,<80% 写校准任务文件+落账)
+  WHAT:  实现 24h 常驻串行单工 daemon:文件队列扫描(raw 有而账本未标记=待处理)、外层等触发循环(轮询 sleep 用具名常量 POLL_INTERVAL_SECONDS)、**避让窗口具名常量 AVOID_WINDOWS(briefing/github_briefing/feishu-sync 三条时效性链路 launchd 触发时刻 ±15min 内暂停取新队列,在处理中的单篇做完不中断)**、SIGTERM 优雅停、每篇调 step-1 ledger 落七段生命线、串联 step-2/3/4/5 模块、内嵌周抽检检查位(抽近期入库 3 篇重过 grader,<80% 写校准任务文件+落账+产 weekly-summary.json)
   WHY:   FR-017 常驻调度是七段链的集成壳,无它则前 5 个 step 只是零件
   VERIFY: python3 -m pytest tests/quality/test_runner_queue.py tests/quality/test_runner_lifecycle.py -q 退出码 0
 
 Step.3
   WHERE: scripts/akb2-main-pipeline.sh + launchd/com.akb2.main-pipeline.plist(均新建)
-  WHAT:  sh 做启动包装(env 检查/单实例锁/日志重定向);plist 为 KeepAlive 常驻型,头部 XML 注释写明 launchctl 安装命令,本 step 绝不执行加载
+  WHAT:  sh 做启动包装(env 检查/单实例锁/日志重定向);plist 为 KeepAlive 常驻型,EnvironmentVariables 含 AKB2_AUTO_PROMOTE=1 + AKB2_AMENDMENT_APPLIED=1(出厂形态,SC-6.10),头部 XML 注释写明 launchctl 安装命令 + **briefing/github_briefing/feishu-sync 三链路触发时间对照表(从各自 plist 实测读取,与 AVOID_WINDOWS 常量一致)**,本 step 绝不执行加载
   WHY:   Mac mini 部署需要可审计的启动物料,且宪法禁止 agent 自行注册触发器
   VERIFY: SC-6.6 命令输出 PASS(含 ! launchctl list 断言未加载)
 
@@ -125,11 +133,11 @@ Step.7
 
 | task_id | agent_role | owned_paths | blocked_by | can_parallel_with |
 |---------|-----------|------------|-----------|-------------------|
-| t6-runner-calibration-factory | executor | `src/akb2/quality/runner.py`, `src/akb2/quality/calibration.py`, `scripts/akb2-main-pipeline.sh`, `launchd/com.akb2.main-pipeline.plist`, `evals/main-pipeline-quality/`, `skillpack/quality/repair-adapter-card.yaml`, `tests/quality/test_runner*.py`, `tests/quality/test_golden_replay.py`, `tests/quality/test_negative_samples.py`, `tests/quality/test_adapter_card_schema.py` | step-2,3,4,5 | —(execution wave e4 串行单工) |
+| t6-runner-calibration-factory | executor | `src/akb2/quality/runner.py`, `src/akb2/quality/calibration.py`, `scripts/akb2-main-pipeline.sh`, `launchd/com.akb2.main-pipeline.plist`, `evals/main-pipeline-quality/`, `skillpack/quality/repair-adapter-card.yaml`, `tests/quality/test_runner*.py`, `tests/quality/test_golden_replay.py`, `tests/quality/test_negative_samples.py`, `tests/quality/test_adapter_card_schema.py`, `reports/calibration/` | step-2,3,4,5 | —(execution wave e4 串行单工) |
 
 Task packet 关键字段:
-- required_context:master plan §5 step-6 行、`docs/main-pipeline-golden-sample.md` 14 步全表、`schema/repair-adapter-card.schema.json`(step-1 产物)、step-2/3/4/5 各模块公开接口、`docs/constitution.md` P1/P3/P4 条款
-- sc_refs:SC-6.1 ~ SC-6.8(对应 master SC-1/SC-2/SC-3/SC-5(适配卡份额)/SC-6)
+- required_context:master plan §5 step-6 行、`docs/main-pipeline-golden-sample.md` 14 步全表、`schema/repair-adapter-card.schema.json`(step-1 产物)、`docs/interface-contracts/llm_router.md`(step-3 产物，接口签名)、step-2/3/4/5 各模块公开接口、`docs/constitution.md` P1/P3/P4 条款
+- sc_refs:SC-6.1 ~ SC-6.10(对应 master SC-1/SC-2/SC-3/SC-5(适配卡份额)/SC-6/SC-9 + 修宪应用出厂收口)
 - 完成定义:§4 全部 SC verify 通过;其中 SC-6.2/SC-6.4 为执行期真 API 项,build 期以测试可收集 + CLI 入口可用为提交门,出厂宣告以真 API 跑通为准
 
 ---

@@ -74,6 +74,8 @@
     <dict>
         <key>AKB2_AUTO_PROMOTE</key>
         <string>1</string>
+        <key>AKB2_AMENDMENT_APPLIED</key>
+        <string>1</string>
         <key>PYTHONPATH</key>
         <string>/Users/praise/AI-Agent/Claude/projects/Project AKB2/src</string>
         <key>PATH</key>
