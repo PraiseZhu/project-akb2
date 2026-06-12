@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://akb2.local/schema/failure-signature.schema.json",
+  "title": "Failure Signature Schema",
+  "description": "故障签名记录结构。每行记录一个故障签名的出现，同签名累计计数；count 达到 3 时写入 escalation 标记行（不抛弃前两次记录）。用于循环 7 免疫系统的故障感知与升级规则触发。",
+  "type": "object",
+  "required": ["loop", "node", "error_class", "count", "ts"],
+  "properties": {
+    "loop": {
+      "type": "string",
+      "description": "故障所属循环。",
+      "enum": ["loop1", "loop2", "loop3", "loop4", "loop5", "loop6", "loop7"]
+    },
+    "node": {
+      "type": "string",
+      "description": "故障发生节点/阶段标识。"
+    },
+    "error_class": {
+      "type": "string",
+      "description": "故障分类枚举。fetch_fail(抓取失败) / anchor_mismatch(锚点不匹配) / admission_error(准入异常) / distill_no_converge(提炼不收敛) / grader_all_down(评分器全 down) / promote_integrity_fail(升格完整性失败) / quarantine_overflow(隔离区溢出)。",
+      "enum": [
+        "fetch_fail",
+        "anchor_mismatch",
+        "admission_error",
+        "distill_no_converge",
+        "grader_all_down",
+        "promote_integrity_fail",
+        "quarantine_overflow"
+      ]
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "本签名的累计出现次数（含本次）。"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time",
+      "description": "本次记录时刻，ISO-8601 UTC。"
+    },
+    "escalation": {
+      "type": "object",
+      "description": "升级标记。count 达到 3 时必须填写，否则不填。",
+      "properties": {
+        "escalated": {
+          "type": "boolean",
+          "description": "是否已触发升级。"
+        },
+        "escalated_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "升级触发时刻。"
+        },
+        "reason": {
+          "type": "string",
+          "description": "升级原因简述（如 '同一签名第 3 次出现'）。"
+        }
+      },
+      "required": ["escalated", "escalated_at", "reason"]
+    }
+  },
+  "x-extension": {
+    "notes": "error_class 枚举可按循环扩展，新增类名前缀 loop_id+':' 避免冲突。escalation 仅在 count>=3 时出现；升级规则由循环 7 内核的升级规则引擎消费，不在 schema 层表达。"
+  }
+}
