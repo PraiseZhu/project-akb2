@@ -1,0 +1,711 @@
+# AKB2 主源清单 — 76 源配置
+#
+# 来源: docs/loops-design-decisions.md §11 (23 核心 + 29 补充 + 24 源头权威扩充)
+# 状态: 全部 trial，逐源验证后按循环 4 状态机流转
+#
+# Schema:
+#   sources[].slug          — 唯一标识符（kebab-case）
+#   sources[].domain        — 域名（用于限频去重）
+#   sources[].feed_url      — RSS/Atom feed URL（优先）
+#   sources[].listing_url   — 列表页 URL（无 feed 时用）
+#   sources[].rate_limit    — 最小请求间隔（秒）
+#   sources[].status        — trial（默认）
+#   sources[].category      — core | supplementary | authority
+#   sources[].notes         — 可选备注
+
+sources:
+  # =========================================================================
+  # 核心源 (24) — 领域定义者与一手工程团队
+  # =========================================================================
+
+  - slug: anthropic-engineering
+    domain: anthropic.com
+    feed_url: https://www.anthropic.com/engineering/feed
+    listing_url: https://www.anthropic.com/engineering
+    rate_limit: 3600
+    status: trial
+    category: core
+    notes: "AI Agent / Claude 工程团队官方博客"
+
+  - slug: openai-blog
+    domain: openai.com
+    feed_url: https://openai.com/blog/rss.xml
+    listing_url: https://openai.com/blog
+    rate_limit: 3600
+    status: trial
+    category: core
+    notes: "OpenAI 官方博客"
+
+  - slug: openai-cookbook
+    domain: cookbook.openai.com
+    feed_url: https://cookbook.openai.com/feed.xml
+    listing_url: https://cookbook.openai.com
+    rate_limit: 3600
+    status: trial
+    category: core
+    notes: "OpenAI Cookbook — 实践指南"
+
+  - slug: addy-osmani
+    domain: addyosmani.com
+    feed_url: https://addyosmani.com/blog/feed.xml
+    listing_url: https://addyosmani.com/blog
+    rate_limit: 3600
+    status: trial
+    category: core
+    notes: "Addy Osmani — Loop Engineering / 前端架构"
+
+  - slug: simon-willison
+    domain: simonwillison.net
+    feed_url: https://simonwillison.net/atom/everything/
+    listing_url: https://simonwillison.net
+    rate_limit: 3600
+    status: trial
+    category: core
+    notes: "Simon Willison — LLM / 工具链 / 数据工程"
+
+  - slug: steipete
+    domain: steipete.me
+    feed_url: https://steipete.me/feed.xml
+    listing_url: https://steipete.me
+    rate_limit: 3600
+    status: trial
+    category: core
+    notes: "steipete.me — iOS / Swift / 系统编程"
+
+  - slug: lilian-weng
+    domain: lilianweng.github.io
+    feed_url: https://lilianweng.github.io/feed.xml
+    listing_url: https://lilianweng.github.io
+    rate_limit: 3600
+    status: trial
+    category: core
+    notes: "Lilian Weng — OpenAI 安全 / LLM / Agent"
+
+  - slug: chip-huyen
+    domain: huyenchip.com
+    feed_url: https://huyenchip.com/feed.xml
+    listing_url: https://huyenchip.com/blog
+    rate_limit: 3600
+    status: trial
+    category: core
+    notes: "Chip Huyen — ML 系统设计 / AI 工程"
+
+  - slug: eugene-yan
+    domain: eugeneyan.com
+    feed_url: https://eugeneyan.com/feed.xml
+    listing_url: https://eugeneyan.com
+    rate_limit: 3600
+    status: trial
+    category: core
+    notes: "Eugene Yan — ML 系统 / 推荐 / 搜索"
+
+  - slug: hamel-husain
+    domain: hamel.dev
+    feed_url: https://hamel.dev/feed.xml
+    listing_url: https://hamel.dev
+    rate_limit: 3600
+    status: trial
+    category: core
+    notes: "Hamel Husain — ML 工程 / LLM 工具链"
+
+  - slug: langchain-blog
+    domain: blog.langchain.dev
+    feed_url: https://blog.langchain.dev/feed
+    listing_url: https://blog.langchain.dev
+    rate_limit: 3600
+    status: trial
+    category: core
+    notes: "LangChain / LangGraph 官方博客"
+
+  - slug: huggingface-blog
+    domain: huggingface.co
+    feed_url: https://huggingface.co/blog/feed.xml
+    listing_url: https://huggingface.co/blog
+    rate_limit: 3600
+    status: trial
+    category: core
+    notes: "HuggingFace 官方博客"
+
+  - slug: rauno-freiberg
+    domain: rauno.me
+    feed_url: https://rauno.me/feed.xml
+    listing_url: https://rauno.me
+    rate_limit: 3600
+    status: trial
+    category: core
+    notes: "Rauno Freiberg — 设计工程 / UI 设计"
+
+  - slug: josh-comeau
+    domain: joshwcomeau.com
+    feed_url: https://www.joshwcomeau.com/rss.xml
+    listing_url: https://www.joshwcomeau.com
+    rate_limit: 3600
+    status: trial
+    category: core
+    notes: "Josh Comeau — CSS / 前端动画 / 交互设计"
+
+  - slug: emil-kowalski
+    domain: emilkowal.ski
+    feed_url: https://emilkowal.ski/feed.xml
+    listing_url: https://emilkowal.ski
+    rate_limit: 3600
+    status: trial
+    category: core
+    notes: "Emil Kowalski — UI 工程 / 动画"
+
+  - slug: framer-motion
+    domain: framer.com
+    feed_url: https://www.framer.com/blog/feed
+    listing_url: https://www.framer.com/blog
+    rate_limit: 3600
+    status: trial
+    category: core
+    notes: "Framer Motion — 动画库 / 交互设计"
+
+  - slug: web-dev
+    domain: web.dev
+    feed_url: https://web.dev/feed.xml
+    listing_url: https://web.dev/blog
+    rate_limit: 3600
+    status: trial
+    category: core
+    notes: "Google web.dev — Web 平台工程"
+
+  - slug: vercel-blog
+    domain: vercel.com
+    feed_url: https://vercel.com/feed
+    listing_url: https://vercel.com/blog
+    rate_limit: 3600
+    status: trial
+    category: core
+    notes: "Vercel — 前端基础设施 / Next.js"
+
+  - slug: ahmad-shadeed
+    domain: ishadeed.com
+    feed_url: https://ishadeed.com/feed.xml
+    listing_url: https://ishadeed.com
+    rate_limit: 3600
+    status: trial
+    category: core
+    notes: "Ahmad Shadeed — CSS / 布局 / 设计细节"
+
+  - slug: figma-blog
+    domain: figma.com
+    feed_url: https://www.figma.com/blog/feed
+    listing_url: https://www.figma.com/blog
+    rate_limit: 3600
+    status: trial
+    category: core
+    notes: "Figma — 设计工具 / 设计系统"
+
+  - slug: linear-blog
+    domain: linear.app
+    feed_url: https://linear.app/blog/feed
+    listing_url: https://linear.app/blog
+    rate_limit: 3600
+    status: trial
+    category: core
+    notes: "Linear — 产品设计 / 工程文化"
+
+  - slug: maggie-appleton
+    domain: maggieappleton.com
+    feed_url: https://maggieappleton.com/rss.xml
+    listing_url: https://maggieappleton.com
+    rate_limit: 3600
+    status: trial
+    category: core
+    notes: "Maggie Appleton — 设计人类学 / 知识可视化"
+
+  - slug: game-developer
+    domain: gamedeveloper.com
+    feed_url: https://www.gamedeveloper.com/feed
+    listing_url: https://www.gamedeveloper.com
+    rate_limit: 3600
+    status: trial
+    category: core
+    notes: "Game Developer — 游戏设计 / 开发"
+
+  - slug: lost-garden
+    domain: lostgarden.com
+    feed_url: https://lostgarden.com/feed.xml
+    listing_url: https://lostgarden.com
+    rate_limit: 3600
+    status: trial
+    category: core
+    notes: "Lost Garden — 游戏设计理论 / 系统设计"
+
+  # =========================================================================
+  # 补充源 (29) — 领域强相关但非一手定义者
+  # =========================================================================
+
+  - slug: dan-abramov
+    domain: overreacted.io
+    feed_url: https://overreacted.io/rss.xml
+    listing_url: https://overreacted.io
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Dan Abramov — React / 前端心智模型"
+
+  - slug: lee-robinson
+    domain: leerob.io
+    feed_url: https://leerob.io/feed.xml
+    listing_url: https://leerob.io
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Lee Robinson — Next.js / 前端工程"
+
+  - slug: kent-c-dodds
+    domain: kentcdodds.com
+    feed_url: https://kentcdodds.com/blog/rss.xml
+    listing_url: https://kentcdodds.com/blog
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Kent C. Dodds — React / 测试 / 前端最佳实践"
+
+  - slug: tanner-linsley
+    domain: tannerlinsley.com
+    feed_url: https://tannerlinsley.com/feed.xml
+    listing_url: https://tannerlinsley.com
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Tanner Linsley — TanStack / 前端数据"
+
+  - slug: swyx
+    domain: swyx.io
+    feed_url: https://www.swyx.io/rss.xml
+    listing_url: https://www.swyx.io
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "swyx — AI 工程 / 开发者体验"
+
+  - slug: andrej-karpathy
+    domain: karpathy.ai
+    feed_url: https://karpathy.ai/feed.xml
+    listing_url: https://karpathy.ai
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Andrej Karpathy — AI / 深度学习"
+
+  - slug: julia-evans
+    domain: jvns.ca
+    feed_url: https://jvns.ca/atom.xml
+    listing_url: https://jvns.ca
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Julia Evans — 系统编程 / 调试 / 工具"
+
+  - slug: martin-fowler
+    domain: martinfowler.com
+    feed_url: https://martinfowler.com/feed.atom
+    listing_url: https://martinfowler.com
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Martin Fowler — 软件架构 / 重构"
+
+  - slug: netflix-tech-blog
+    domain: netflixtechblog.com
+    feed_url: https://netflixtechblog.com/feed
+    listing_url: https://netflixtechblog.com
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Netflix Tech Blog — 工程实践"
+
+  - slug: stripe-blog
+    domain: stripe.com
+    feed_url: https://stripe.com/blog/feed.rss
+    listing_url: https://stripe.com/blog/engineering
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Stripe Engineering — 支付 / 基础设施"
+
+  - slug: cloudflare-blog
+    domain: blog.cloudflare.com
+    feed_url: https://blog.cloudflare.com/rss
+    listing_url: https://blog.cloudflare.com
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Cloudflare Blog — 边缘计算 / 网络"
+
+  - slug: smashing-magazine
+    domain: smashingmagazine.com
+    feed_url: https://www.smashingmagazine.com/feed
+    listing_url: https://www.smashingmagazine.com
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Smashing Magazine — Web 设计 / 前端"
+
+  - slug: css-tricks
+    domain: css-tricks.com
+    feed_url: https://css-tricks.com/feed
+    listing_url: https://css-tricks.com
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "CSS-Tricks — CSS / 前端技巧（汰换观察位）"
+
+  - slug: a-list-apart
+    domain: alistapart.com
+    feed_url: https://alistapart.com/main/feed
+    listing_url: https://alistapart.com
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "A List Apart — Web 设计思想"
+
+  - slug: benedict-evans
+    domain: ben-evans.com
+    feed_url: https://www.ben-evans.com/newsletter/feed
+    listing_url: https://www.ben-evans.com/newsletter
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Benedict Evans — 科技趋势分析"
+
+  - slug: paul-graham
+    domain: paulgraham.com
+    feed_url: https://paulgraham.com/feed.xml
+    listing_url: https://paulgraham.com/articles.html
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Paul Graham — 创业 / 技术思想"
+
+  - slug: gwern
+    domain: gwern.net
+    feed_url: https://gwern.net/feed.xml
+    listing_url: https://gwern.net
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Gwern — AI / 长篇研究"
+
+  - slug: tobias-ahlin
+    domain: tobiasahlin.com
+    feed_url: https://tobiasahlin.com/feed.xml
+    listing_url: https://tobiasahlin.com/blog
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Tobias Ahlin — 设计工程 / 动画"
+
+  - slug: brad-frost
+    domain: bradfrost.com
+    feed_url: https://bradfrost.com/feed
+    listing_url: https://bradfrost.com/blog
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Brad Frost — 设计系统 / 原子设计"
+
+  - slug: design-details
+    domain: designdetails.fm
+    feed_url: https://designdetails.fm/feed.xml
+    listing_url: https://designdetails.fm
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Design Details — 设计播客 / 博客"
+
+  - slug: ux-collective
+    domain: uxdesign.cc
+    feed_url: https://uxdesign.cc/feed
+    listing_url: https://uxdesign.cc
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "UX Collective — UX 设计"
+
+  - slug: css-irl
+    domain: css-irl.info
+    feed_url: https://css-irl.info/feed.xml
+    listing_url: https://css-irl.info
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "CSS {IRL} — CSS 实战"
+
+  - slug: jake-archibald
+    domain: jakearchibald.com
+    feed_url: https://jakearchibald.com/feed.xml
+    listing_url: https://jakearchibald.com
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Jake Archibald — 浏览器 / 性能"
+
+  - slug: ryan-carniato
+    domain: ryancarniato.com
+    feed_url: https://ryancarniato.com/feed.xml
+    listing_url: https://ryancarniato.com
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Ryan Carniato — SolidJS / 前端响应式"
+
+  - slug: max-stoiber
+    domain: mxstbr.com
+    feed_url: https://mxstbr.com/feed.xml
+    listing_url: https://mxstbr.com
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Max Stoiber — styled-components / 前端工具"
+
+  - slug: eric-elliott
+    domain: ericelliottjs.com
+    feed_url: https://ericelliottjs.com/feed.xml
+    listing_url: https://ericelliottjs.com
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Eric Elliott — JS 架构 / 函数式编程"
+
+  - slug: css-wizardry
+    domain: csswizardry.com
+    feed_url: https://csswizardry.com/feed.xml
+    listing_url: https://csswizardry.com
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Harry Roberts / CSS Wizardry — CSS 性能 / 架构"
+
+  - slug: sarah-drasner
+    domain: sarahdrasnerdesign.com
+    feed_url: https://sarahdrasnerdesign.com/feed.xml
+    listing_url: https://sarahdrasnerdesign.com
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Sarah Drasner — SVG / 动画 / 前端"
+
+  - slug: una-kravets
+    domain: una.im
+    feed_url: https://una.im/feed.xml
+    listing_url: https://una.im
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Una Kravets — CSS / 设计工程"
+
+  # =========================================================================
+  # 源头权威扩充 (23) — 领域特定权威源
+  # =========================================================================
+
+  - slug: google-ai-blog
+    domain: ai.googleblog.com
+    feed_url: https://ai.googleblog.com/feeds/posts/default
+    listing_url: https://ai.googleblog.com
+    rate_limit: 3600
+    status: trial
+    category: authority
+    notes: "Google AI Blog — AI 研究"
+
+  - slug: deepmind-blog
+    domain: deepmind.google
+    feed_url: https://deepmind.google/discover/blog/feed
+    listing_url: https://deepmind.google/discover/blog
+    rate_limit: 3600
+    status: trial
+    category: authority
+    notes: "DeepMind Blog — AI 研究前沿"
+
+  - slug: microsoft-research
+    domain: microsoft.com
+    feed_url: https://www.microsoft.com/en-us/research/feed
+    listing_url: https://www.microsoft.com/en-us/research/blog
+    rate_limit: 3600
+    status: trial
+    category: authority
+    notes: "Microsoft Research"
+
+  - slug: meta-ai-blog
+    domain: ai.meta.com
+    feed_url: https://ai.meta.com/feed.xml
+    listing_url: https://ai.meta.com/blog
+    rate_limit: 3600
+    status: trial
+    category: authority
+    notes: "Meta AI Blog"
+
+  - slug: mistral-ai-blog
+    domain: mistral.ai
+    feed_url: https://mistral.ai/feed.xml
+    listing_url: https://mistral.ai/news
+    rate_limit: 3600
+    status: trial
+    category: authority
+    notes: "Mistral AI — 开源模型"
+
+  - slug: cohere-blog
+    domain: cohere.com
+    feed_url: https://cohere.com/blog/feed
+    listing_url: https://cohere.com/blog
+    rate_limit: 3600
+    status: trial
+    category: authority
+    notes: "Cohere Blog — 企业 AI"
+
+  - slug: replicate-blog
+    domain: replicate.com
+    feed_url: https://replicate.com/blog/feed
+    listing_url: https://replicate.com/blog
+    rate_limit: 3600
+    status: trial
+    category: authority
+    notes: "Replicate — 模型部署 / 推理"
+
+  - slug: weights-and-biases
+    domain: wandb.ai
+    feed_url: https://wandb.ai/site/feed.xml
+    listing_url: https://wandb.ai/fully-connected
+    rate_limit: 3600
+    status: trial
+    category: authority
+    notes: "Weights & Biases — ML 实验管理"
+
+  - slug: notion-blog
+    domain: notion.so
+    feed_url: https://www.notion.so/blog/feed
+    listing_url: https://www.notion.so/blog
+    rate_limit: 3600
+    status: trial
+    category: authority
+    notes: "Notion — 产品设计 / 工程"
+
+  - slug: tailwind-blog
+    domain: tailwindcss.com
+    feed_url: https://tailwindcss.com/feed.xml
+    listing_url: https://tailwindcss.com/blog
+    rate_limit: 3600
+    status: trial
+    category: authority
+    notes: "Tailwind CSS — 设计系统 / 工具"
+
+  - slug: radix-ui
+    domain: radix-ui.com
+    feed_url: https://www.radix-ui.com/blog/feed
+    listing_url: https://www.radix-ui.com/blog
+    rate_limit: 3600
+    status: trial
+    category: authority
+    notes: "Radix UI — 无障碍组件库"
+
+  - slug: shadcn-blog
+    domain: shadcn.com
+    feed_url: https://shadcn.com/feed.xml
+    listing_url: https://shadcn.com/blog
+    rate_limit: 3600
+    status: trial
+    category: authority
+    notes: "shadcn — UI 组件 / 设计系统"
+
+  - slug: astro-blog
+    domain: astro.build
+    feed_url: https://astro.build/blog/feed.xml
+    listing_url: https://astro.build/blog
+    rate_limit: 3600
+    status: trial
+    category: authority
+    notes: "Astro — Web 框架"
+
+  - slug: supabase-blog
+    domain: supabase.com
+    feed_url: https://supabase.com/blog/feed
+    listing_url: https://supabase.com/blog
+    rate_limit: 3600
+    status: trial
+    category: authority
+    notes: "Supabase — 后端 / 数据库"
+
+  - slug: planetscale-blog
+    domain: planetscale.com
+    feed_url: https://planetscale.com/blog/feed
+    listing_url: https://planetscale.com/blog
+    rate_limit: 3600
+    status: trial
+    category: authority
+    notes: "PlanetScale — 数据库工程"
+
+  - slug: svelte-blog
+    domain: svelte.dev
+    feed_url: https://svelte.dev/blog/feed.xml
+    listing_url: https://svelte.dev/blog
+    rate_limit: 3600
+    status: trial
+    category: authority
+    notes: "Svelte — 前端框架"
+
+  - slug: observable-blog
+    domain: observablehq.com
+    feed_url: https://observablehq.com/blog/feed
+    listing_url: https://observablehq.com/blog
+    rate_limit: 3600
+    status: trial
+    category: authority
+    notes: "Observable — 数据可视化 / 计算笔记"
+
+  - slug: cursor-blog
+    domain: cursor.com
+    feed_url: https://cursor.com/blog/feed
+    listing_url: https://cursor.com/blog
+    rate_limit: 3600
+    status: trial
+    category: authority
+    notes: "Cursor — AI 编辑器 / 开发者工具"
+
+  - slug: replit-blog
+    domain: blog.replit.com
+    feed_url: https://blog.replit.com/feed
+    listing_url: https://blog.replit.com
+    rate_limit: 3600
+    status: trial
+    category: authority
+    notes: "Replit — AI 编程 / 开发者平台"
+
+  - slug: bun-blog
+    domain: bun.sh
+    feed_url: https://bun.sh/blog/feed.xml
+    listing_url: https://bun.sh/blog
+    rate_limit: 3600
+    status: trial
+    category: authority
+    notes: "Bun — JS 运行时"
+
+  - slug: 11ty-blog
+    domain: 11ty.dev
+    feed_url: https://www.11ty.dev/blog/feed.xml
+    listing_url: https://www.11ty.dev/blog
+    rate_limit: 3600
+    status: trial
+    category: authority
+    notes: "Eleventy — 静态站点生成器"
+
+  - slug: deno-blog
+    domain: deno.com
+    feed_url: https://deno.com/feed
+    listing_url: https://deno.com/blog
+    rate_limit: 3600
+    status: trial
+    category: authority
+    notes: "Deno — JS/TS 运行时"
+
+  - slug: t3-tooling
+    domain: t3.gg
+    feed_url: https://t3.gg/feed.xml
+    listing_url: https://t3.gg
+    rate_limit: 3600
+    status: trial
+    category: authority
+    notes: "Theo / T3 — TS 工具链 / 前端工程"

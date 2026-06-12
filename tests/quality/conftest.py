@@ -1,0 +1,463 @@
+"""Quality 模块共享测试 fixtures。
+
+所有 fixture LLM 响应，不打真 API。
+"""
+
+from __future__ import annotations
+
+import tempfile
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+# ---------------------------------------------------------------------------
+# Intake 模块 fixtures（step-2: 抓取/发现/抽取/raw 归档）
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def intake_fixtures_dir() -> Path:
+    """Path to the intake test fixtures directory."""
+    return Path(__file__).parent / "fixtures" / "intake"
+
+
+@pytest.fixture()
+def sample_rss_xml(intake_fixtures_dir: Path) -> str:
+    """Sample RSS 2.0 feed XML content."""
+    return (intake_fixtures_dir / "sample_feed_rss.xml").read_text(encoding="utf-8")
+
+
+@pytest.fixture()
+def sample_atom_xml(intake_fixtures_dir: Path) -> str:
+    """Sample Atom 1.0 feed XML content."""
+    return (intake_fixtures_dir / "sample_feed_atom.xml").read_text(encoding="utf-8")
+
+
+@pytest.fixture()
+def sample_article_html(intake_fixtures_dir: Path) -> str:
+    """Full article HTML (loop engineering)."""
+    return (intake_fixtures_dir / "article_loop_engineering.html").read_text(encoding="utf-8")
+
+
+@pytest.fixture()
+def sample_article_md(intake_fixtures_dir: Path) -> str:
+    """Full article markdown content."""
+    return (intake_fixtures_dir / "article_loop_engineering.md").read_text(encoding="utf-8")
+
+
+@pytest.fixture()
+def sample_short_html(intake_fixtures_dir: Path) -> str:
+    """Short article HTML (too short to pass extraction)."""
+    return (intake_fixtures_dir / "article_short.html").read_text(encoding="utf-8")
+
+
+@pytest.fixture()
+def sample_short_md(intake_fixtures_dir: Path) -> str:
+    """Short article markdown."""
+    return (intake_fixtures_dir / "article_short.md").read_text(encoding="utf-8")
+
+
+@pytest.fixture()
+def sample_anti_bot_html(intake_fixtures_dir: Path) -> str:
+    """Anti-bot / Cloudflare challenge HTML."""
+    return (intake_fixtures_dir / "article_anti_bot.html").read_text(encoding="utf-8")
+
+
+@pytest.fixture()
+def sample_source_config() -> dict:
+    """Single source config dict matching main_sources.yaml schema."""
+    return {
+        "slug": "test-blog",
+        "domain": "example.com",
+        "feed_url": "https://example.com/feed.xml",
+        "listing_url": "https://example.com/blog",
+        "rate_limit": 3600,
+        "status": "trial",
+        "category": "core",
+    }
+
+
+@pytest.fixture()
+def sample_source_config_no_feed() -> dict:
+    """Source config without feed_url (listing-only)."""
+    return {
+        "slug": "test-no-feed",
+        "domain": "no-feed.example.com",
+        "listing_url": "https://no-feed.example.com",
+        "rate_limit": 3600,
+        "status": "trial",
+        "category": "supplementary",
+    }
+
+
+@pytest.fixture()
+def temp_ledger_path(tmp_path: Path) -> Path:
+    """Temporary ledger jsonl path for dedup testing."""
+    return tmp_path / "quality-ledger.jsonl"
+
+
+@pytest.fixture()
+def temp_failures_path(tmp_path: Path) -> Path:
+    """Temporary failures jsonl path for signature testing."""
+    return tmp_path / "failures.jsonl"
+
+
+@pytest.fixture()
+def temp_output_dir(tmp_path: Path) -> Path:
+    """Temporary output directory for raw archiver."""
+    out = tmp_path / "raw"
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Fixture LLM 响应工厂
+# ---------------------------------------------------------------------------
+
+
+def make_mock_route_llm(responses: dict[str, Any] | None = None):
+    """创建一个 mock route_llm 函数，返回预设响应。
+
+    Args:
+        responses: key="model_family:call_index" → LLMResponse 的 dict。
+            默认提供空响应。
+
+    Returns:
+        callable: 签名兼容 route_llm 的 mock 函数。
+    """
+    _responses = responses or {}
+    _call_counts: dict[str, int] = {}
+
+    def mock_route_llm(
+        model_family: str,
+        messages: list[dict],
+        response_schema: dict | None = None,
+    ):
+        from src.akb2.quality.llm_router import LLMResponse
+
+        key = model_family
+        idx = _call_counts.get(key, 0)
+        _call_counts[key] = idx + 1
+        lookup = f"{key}:{idx}"
+
+        if lookup in _responses:
+            return _responses[lookup]
+        if key in _responses:
+            return _responses[key]
+        # 默认空响应
+        return LLMResponse(
+            content={"pass": True, "reason": "mock default"},
+            model_used=key,
+            calls_used=1,
+        )
+
+    return mock_route_llm
+
+
+# ---------------------------------------------------------------------------
+# 共享 fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def sample_raw_content() -> str:
+    """黄金样张风格的 raw 内容（模拟 Loop Engineering 文章）。"""
+    return """---
+artifact_type: raw
+source_slug: addy-osmani-loop-engineering
+source_url: https://example.com/loop-engineering
+source_title: Loop Engineering
+source_authors: Addy Osmani
+source_publisher: Addy Osmani's Blog
+source_published_at: 2026-06-07
+fetched_at: 2026-06-13T00:00:00Z
+fetched_via: defuddle
+---
+
+# §A Loop Engineering
+
+Loop engineering is the practice of designing AI agent loops that are bounded,
+convergent, and observable. An agent loop without explicit stopping conditions is
+a runaway cost generator.
+
+# §B How: A Complete Loop Shape
+
+A well-designed loop has five components:
+1. A trigger (schedule, event, or manual)
+2. A work unit selector (read ledger, pick next item)
+3. An action executor (run the actual work)
+4. A quality gate (verify output meets standards)
+5. A ledger writer (record what happened)
+
+The key insight: every loop must write to the ledger BEFORE executing the next action,
+so recovery from crashes is a simple read of the last ledger entry.
+
+# §C Convergence Over Restart
+
+When a step produces defects, fix the specific defects rather than restarting the
+entire pipeline. This is the principle of convergence over restart. The cost of
+re-running upstream steps (fetching, scoring, synthesizing) is far higher than the
+cost of targeted repair.
+
+# §D Budget Constraints
+
+Every loop must have an explicit budget. The budget must be a named constant, not
+an inline magic number. Common budget types include max_rounds (for iteration
+loops), budget_seconds (for time-bounded loops), and max_retries (for retry loops).
+
+# §E Maker/Checker Separation
+
+The model that produces content must not be the model that judges it. Use different
+model families (e.g., DeepSeek for extraction, GPT-5.4 for review, Gemini Flash for
+fallback). This ensures that systematic biases in one family are caught by another.
+
+# §F Golden Sample Anchoring
+
+Quality standards must be anchored to concrete golden samples. The golden sample
+defines the minimum acceptable quality level. Every new piece of content must pass
+the same 14-step checklist that the golden sample passed.
+
+# §G Measured Value Verdict
+
+Don't predict value — measure it. Use real usage data (call frequency, co-occurrence,
+hit rate, conversion rate) to determine the actual value of knowledge. Star ratings
+(0-3) are driven by usage data, not by model predictions.
+
+# §H Agent Boundary Rules
+
+Not every node needs an agent. Fixed transformations (fixed input → one API call →
+schema-validated output) should be implemented as scripts or LLM functions, not as
+agent sessions. Agents are only needed when the node requires "autonomous decision
+about the next step."
+
+# §I Skill Packs
+
+Loops need externalized knowledge: rubrics, known pitfalls, templates — these are
+the carriers of loop compound interest. A loop without a skill pack is a loop that
+cannot improve from experience.
+
+# §J Failure Signatures
+
+Every failure must leave a signature. Signatures are classified by (loop, node,
+error_class). The third occurrence of the same signature triggers escalation. This
+is the immune system of the loop ecosystem.
+
+## 锚点目录
+
+- §A: Loop Engineering 定义
+- §B: How 模板 — 完整 loop 形状
+- §C: 收敛优先于重跑
+- §D: 预算约束
+- §E: Maker/Checker 分离
+- §F: 黄金样张锚定
+- §G: 实测价值裁决
+- §H: Agent 边界规则
+- §I: 技能包
+- §J: 故障签名
+"""
+
+
+@pytest.fixture
+def sample_raw_path() -> str:
+    """raw 文件路径 fixture。"""
+    return "raw/addy-osmani-loop-engineering--raw--2026-06-11.md"
+
+
+@pytest.fixture
+def tmp_ledger_path() -> str:
+    """临时账本路径 fixture。"""
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".jsonl", delete=False
+    ) as f:
+        f.write("")
+    path = f.name
+    yield path
+    Path(path).unlink(missing_ok=True)
+
+
+@pytest.fixture
+def admission_pass_responses() -> dict[str, Any]:
+    """准入三判定全 pass 的 fixture LLM 响应。"""
+    from src.akb2.quality.llm_router import LLMResponse
+
+    return {
+        "gemini-flash:0": LLMResponse(
+            content={"pass": True, "reason": "命中 Loop Engineering / AI Agent 领域"},
+            model_used="gemini-2.5-flash",
+            calls_used=1,
+        ),
+        "gemini-flash:1": LLMResponse(
+            content={"pass": True, "reason": "含可执行 loop 组件模板和代码示例"},
+            model_used="gemini-2.5-flash",
+            calls_used=1,
+        ),
+        "gemini-flash:2": LLMResponse(
+            content={"pass": True, "reason": "无既有 wiki 引用，默认通过"},
+            model_used="gemini-2.5-flash",
+            calls_used=1,
+        ),
+    }
+
+
+@pytest.fixture
+def admission_fail_news_response() -> dict[str, Any]:
+    """新闻型负样本 fixture 响应（How 倾向 fail）。"""
+    from src.akb2.quality.llm_router import LLMResponse
+
+    return {
+        "gemini-flash:0": LLMResponse(
+            content={"pass": True, "reason": "命中 AI Agent 领域"},
+            model_used="gemini-2.5-flash",
+            calls_used=1,
+        ),
+        "gemini-flash:1": LLMResponse(
+            content={"pass": False, "reason": "纯新闻播报，无可执行步骤或代码"},
+            model_used="gemini-2.5-flash",
+            calls_used=1,
+        ),
+        "gemini-flash:2": LLMResponse(
+            content={"pass": True, "reason": "无既有 wiki 引用，默认通过"},
+            model_used="gemini-2.5-flash",
+            calls_used=1,
+        ),
+    }
+
+
+@pytest.fixture
+def admission_fail_plagiarism_response() -> dict[str, Any]:
+    """洗稿型负样本 fixture 响应（新颖度 fail）。"""
+    from src.akb2.quality.llm_router import LLMResponse
+
+    return {
+        "gemini-flash:0": LLMResponse(
+            content={"pass": True, "reason": "命中 AI Agent 领域"},
+            model_used="gemini-2.5-flash",
+            calls_used=1,
+        ),
+        "gemini-flash:1": LLMResponse(
+            content={"pass": True, "reason": "含 loop 设计模式"},
+            model_used="gemini-2.5-flash",
+            calls_used=1,
+        ),
+        "gemini-flash:2": LLMResponse(
+            content={"pass": False, "reason": "与既有 wiki 高度重叠，零增量"},
+            model_used="gemini-2.5-flash",
+            calls_used=1,
+        ),
+    }
+
+
+@pytest.fixture
+def extract_success_response() -> dict[str, Any]:
+    """段 1 抽取成功 fixture 响应。"""
+    from src.akb2.quality.llm_router import LLMResponse
+
+    return {
+        "deepseek-v4-pro": LLMResponse(
+            content={
+                "claims": [
+                    {
+                        "text": "Loop engineering is the practice of designing bounded, convergent, observable AI agent loops",
+                        "anchor": "§A",
+                        "provenance": "source_grounded",
+                    },
+                    {
+                        "text": "A well-designed loop has five components: trigger, work unit selector, action executor, quality gate, ledger writer",
+                        "anchor": "§B",
+                        "provenance": "source_grounded",
+                    },
+                    {
+                        "text": "Fix specific defects rather than restarting the entire pipeline — convergence over restart",
+                        "anchor": "§C",
+                        "provenance": "source_grounded",
+                    },
+                ],
+                "how_steps": [
+                    "1. Define trigger type (schedule/event/manual)",
+                    "2. Implement work unit selector (read ledger, pick next)",
+                    "3. Build action executor (run the work)",
+                    "4. Add quality gate (verify output)",
+                    "5. Write ledger entry BEFORE next action",
+                ],
+                "params": {
+                    "max_rounds": 3,
+                    "budget_seconds": 300,
+                    "maker_model": "deepseek-v4-pro",
+                    "checker_model": "gpt-5.4",
+                },
+                "referenced_concepts": [
+                    "loop-engineering",
+                    "harness-engineering",
+                    "agent-collaboration",
+                ],
+            },
+            model_used="deepseek-v4-pro",
+            calls_used=1,
+        ),
+    }
+
+
+@pytest.fixture
+def extract_fail_invalid_json_response() -> dict[str, Any]:
+    """段 1 抽取失败 fixture（非法 JSON，3 次重试全失败）。"""
+    from src.akb2.quality.llm_router import LLMResponse
+
+    return {
+        "deepseek-v4-pro": LLMResponse(
+            content="not a valid json response",
+            model_used="deepseek-v4-pro",
+            calls_used=1,
+        ),
+    }
+
+
+@pytest.fixture
+def extract_fail_missing_anchor_response() -> dict[str, Any]:
+    """段 1 抽取失败 fixture（claims 缺少 anchor 字段）。"""
+    from src.akb2.quality.llm_router import LLMResponse
+
+    return {
+        "deepseek-v4-pro": LLMResponse(
+            content={
+                "claims": [
+                    {
+                        "text": "some claim without anchor",
+                        "provenance": "source_grounded",
+                    }
+                ],
+                "how_steps": [],
+                "params": {},
+                "referenced_concepts": [],
+            },
+            model_used="deepseek-v4-pro",
+            calls_used=1,
+        ),
+    }
+
+
+@pytest.fixture
+def news_content() -> str:
+    """新闻型内容 fixture（How 倾向应 fail）。"""
+    return """---
+artifact_type: raw
+source_slug: google-io-2026-recap
+source_url: https://example.com/google-io-2026
+source_title: Google I/O 2026 Recap
+source_authors: Tech Reporter
+source_publisher: Tech News Daily
+source_published_at: 2026-06-10
+fetched_at: 2026-06-13T00:00:00Z
+fetched_via: defuddle
+---
+
+# Google I/O 2026 Recap
+
+Google announced several new products at I/O 2026. The keynote included
+updates to Gemini, Android, and Web platform. The new Gemini 3.0 model
+offers improved reasoning capabilities. Android 17 will ship with new
+AI features. Chrome got a performance boost of 15% in the latest benchmark.
+
+The event was held at Shoreline Amphitheatre with 5000 attendees.
+Sundar Pichai opened the keynote with a focus on AI responsibility.
+"""
