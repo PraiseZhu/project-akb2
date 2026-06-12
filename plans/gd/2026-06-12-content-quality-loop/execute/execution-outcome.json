@@ -1,0 +1,106 @@
+{
+  "outcome_version": "1.0",
+  "outcome_id": "akb2-cql-plan1-execution",
+  "task_outcomes": [
+    {
+      "task_id": "e-step1",
+      "exec_status": "completed",
+      "sc_acceptance": [
+        {"sc_ref": "SC-s1", "status": "pass", "evidence": "3 schema files + json.tool all pass"},
+        {"sc_ref": "SC-s2", "status": "pass", "evidence": "ledger_lifeline 9 tests passed"},
+        {"sc_ref": "SC-s3", "status": "pass", "evidence": "signatures 9 tests passed"},
+        {"sc_ref": "SC-s4", "status": "pass", "evidence": "watchdog 76 lines, --self-test exit 0"},
+        {"sc_ref": "SC-s5", "status": "pass", "evidence": "QUARANTINE_SUBDIR importable"},
+        {"sc_ref": "SC-s6", "status": "pass", "evidence": "ruff clean"}
+      ],
+      "files_added": ["schema/", "src/akb2/loops/", "scripts/akb2-watchdog.sh", "tests/loops/"],
+      "files_modified": [],
+      "owned_paths_post_audit": true,
+      "forbidden_paths_touched": []
+    },
+    {
+      "task_id": "e-step2",
+      "exec_status": "completed",
+      "sc_acceptance": [
+        {"sc_ref": "SC-2.1", "status": "pass", "evidence": "76 sources, all trial"},
+        {"sc_ref": "SC-2.2", "status": "pass", "evidence": "30 discovery tests passed"},
+        {"sc_ref": "SC-2.3", "status": "pass", "evidence": "25 extract tests passed"},
+        {"sc_ref": "SC-2.4", "status": "pass", "evidence": "22 raw tests passed"},
+        {"sc_ref": "SC-2.5", "status": "pass", "evidence": "76 ledger rows, 5 fields"},
+        {"sc_ref": "SC-2.6", "status": "pass", "evidence": "77 tests + ruff clean"}
+      ],
+      "files_added": ["config/main_sources.yaml", "src/akb2/quality/intake/", "tests/quality/test_intake*.py", "tests/quality/fixtures/intake/"],
+      "files_modified": [],
+      "owned_paths_post_audit": true,
+      "forbidden_paths_touched": []
+    },
+    {
+      "task_id": "e-step3",
+      "exec_status": "completed",
+      "sc_acceptance": [
+        {"sc_ref": "SC-3.1", "status": "pass", "evidence": "negative samples 100% rejected"},
+        {"sc_ref": "SC-3.2", "status": "pass", "evidence": "positive samples all pass, binary"},
+        {"sc_ref": "SC-3.3", "status": "pass", "evidence": "router key/preview/budget valid"},
+        {"sc_ref": "SC-3.4", "status": "pass", "evidence": "extract retry path tested"},
+        {"sc_ref": "SC-3.5", "status": "pass", "evidence": "frontmatter 5 hard fields checked"},
+        {"sc_ref": "SC-3.6", "status": "pass", "evidence": "4 skillpack files + version header"},
+        {"sc_ref": "SC-3.7", "status": "pass", "evidence": "53 tests + ruff clean"}
+      ],
+      "files_added": ["src/akb2/quality/admission.py", "src/akb2/quality/distill.py", "src/akb2/quality/llm_router.py", "docs/interface-contracts/", "skillpack/quality/"],
+      "files_modified": [],
+      "owned_paths_post_audit": true,
+      "forbidden_paths_touched": []
+    },
+    {
+      "task_id": "e-step4",
+      "exec_status": "completed",
+      "sc_acceptance": [
+        {"sc_ref": "SC-4.1", "status": "pass", "evidence": "A-layer 6 checks correct"},
+        {"sc_ref": "SC-4.2", "status": "pass", "evidence": "B-layer defect list with location"},
+        {"sc_ref": "SC-4.3", "status": "pass", "evidence": "anti-fill B must fail"},
+        {"sc_ref": "SC-4.4", "status": "pass", "evidence": "repair loop + diff check"},
+        {"sc_ref": "SC-4.5", "status": "pass", "evidence": "A->B order, fallback, suspend"},
+        {"sc_ref": "SC-4.6", "status": "pass", "evidence": "70 tests + ruff clean"}
+      ],
+      "files_added": ["src/akb2/quality/checks_structural.py", "src/akb2/quality/grader.py", "src/akb2/quality/repair.py", "skillpack/quality/rubric/"],
+      "files_modified": [],
+      "owned_paths_post_audit": true,
+      "forbidden_paths_touched": []
+    },
+    {
+      "task_id": "e-step5",
+      "exec_status": "completed",
+      "sc_acceptance": [
+        {"sc_ref": "SC-5.1", "status": "pass", "evidence": "switch 0: active tree_sha256 unchanged"},
+        {"sc_ref": "SC-5.2", "status": "pass", "evidence": "5 gates parameterized + all pass"},
+        {"sc_ref": "SC-5.3", "status": "pass", "evidence": "snapshot-rollback sha256 roundtrip"},
+        {"sc_ref": "SC-5.4", "status": "pass", "evidence": "finalize: index regex + backlink + merge"},
+        {"sc_ref": "SC-5.5", "status": "pass", "evidence": "amendment draft 5 sections exist"}
+      ],
+      "files_added": ["src/akb2/quality/promote.py", "docs/vault-amendment-draft.md"],
+      "files_modified": [],
+      "owned_paths_post_audit": true,
+      "forbidden_paths_touched": []
+    },
+    {
+      "task_id": "e-step6",
+      "exec_status": "completed",
+      "sc_acceptance": [
+        {"sc_ref": "SC-6.1", "status": "pass", "evidence": "runner queue + lifecycle 14 tests"},
+        {"sc_ref": "SC-6.2", "status": "pass", "evidence": "golden replay collectable"},
+        {"sc_ref": "SC-6.3", "status": "pass", "evidence": "negative samples 4 tests"},
+        {"sc_ref": "SC-6.4", "status": "not_run", "not_run_reason": "requires real API keys + 20 corpus calibration"},
+        {"sc_ref": "SC-6.5", "status": "pass", "evidence": "corpus 20 entries, 18 ingest, 2 reject"},
+        {"sc_ref": "SC-6.6", "status": "pass", "evidence": "plist valid, not loaded"},
+        {"sc_ref": "SC-6.7", "status": "pass", "evidence": "adapter card 13 tests, 9 fields"},
+        {"sc_ref": "SC-6.8", "status": "pass", "evidence": "293 tests + ruff clean"},
+        {"sc_ref": "SC-6.9", "status": "not_run", "not_run_reason": "requires real API live sample scrape from 3 sources"},
+        {"sc_ref": "SC-6.10", "status": "not_run", "not_run_reason": "amendment application gated on SC-6.4 calibration pass"}
+      ],
+      "files_added": ["src/akb2/quality/runner.py", "src/akb2/quality/calibration.py", "scripts/akb2-main-pipeline.sh", "launchd/", "evals/", "skillpack/quality/repair-adapter-card.yaml"],
+      "files_modified": ["pyproject.toml"],
+      "owned_paths_post_audit": true,
+      "forbidden_paths_touched": []
+    }
+  ]
+}
