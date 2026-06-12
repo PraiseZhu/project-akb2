@@ -1,0 +1,5 @@
+<!-- gd-child-plan-proposal-json:start -->
+```json
+{"proposal_id": "akb2-cql-plan-dispatch-v2-t-step4-w2b1", "parent_dispatch_id": "akb2-cql-plan-dispatch-v2", "parent_track_id": "t-step4", "agent_role": "child_planner", "output_status": "completed", "summary_cn": "step-4 草稿完成:A 结构校验器(6 检查零 LLM)+ B 评分器(10 维定位化量规、GPT-5.4 经 llm_router、gemini-flash 兜底、双不可用挂起)+ 定点修复循环(MAX_REPAIR_ROUNDS=3、diff 校验未点名小节不变、不收敛落 distill_no_converge),6 条 SC 全带可执行 verify,含反填表用例。", "task_packets": [{"task_id": "quality-eval-repair-loop", "owned_paths": ["src/akb2/quality/checks_structural.py", "src/akb2/quality/grader.py", "src/akb2/quality/repair.py", "skillpack/quality/rubric/", "tests/quality/test_checks*.py", "tests/quality/test_grader*.py", "tests/quality/test_repair*.py"], "required_context": ["plans/gd/2026-06-12-content-quality-loop/master-plan.md", "docs/main-pipeline-golden-sample.md", "schema/failure-signature.schema.json", "src/akb2/quality/llm_router.py"]}], "sc_refs": ["SC-1"], "verify": [{"sc_ref": "SC-1", "method": "test", "cmd": "python3 -m pytest tests/quality/test_repair_loop.py -q"}], "blocked_reason": null}
+```
+<!-- gd-child-plan-proposal-json:end -->

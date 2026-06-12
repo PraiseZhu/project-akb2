@@ -1,0 +1,132 @@
+{
+  "schema_version": "1.1",
+  "run_mode": "live",
+  "started_at": "2026-06-12T10:18:00Z",
+  "finished_at": "2026-06-12T11:44:18Z",
+  "aggregate_path": "plans/gd/2026-06-12-content-quality-loop/dispatch/merge-report.md",
+  "manifest_path": "plans/gd/2026-06-12-content-quality-loop/dispatch/dispatch_map.json",
+  "primary_gate": {
+    "verdict": "APPROVED",
+    "blocking": []
+  },
+  "secondary_gate": {
+    "verdict": "APPROVED",
+    "blocking": []
+  },
+  "gate_consistent": true,
+  "dirty_detected": false,
+  "jobs": [
+    {
+      "queue_job_id": "t-step1",
+      "target_role": "child_planner",
+      "primary_target": "plans/gd/2026-06-12-content-quality-loop/step-1-loop7-skeleton.md",
+      "bridge_exit": 0,
+      "bridge_stderr_path": "n_a_local_agent_dispatch",
+      "bridge_stderr_summary": "live local Agent tool dispatch; proposal validated exit 0",
+      "raw_verdict": "completed",
+      "mapped_status": "completed",
+      "aggregate_bucket": "approved"
+    },
+    {
+      "queue_job_id": "t-step2",
+      "target_role": "child_planner",
+      "primary_target": "plans/gd/2026-06-12-content-quality-loop/step-2-intake-raw.md",
+      "bridge_exit": 0,
+      "bridge_stderr_path": "n_a_local_agent_dispatch",
+      "bridge_stderr_summary": "live local Agent tool dispatch; proposal validated exit 0",
+      "raw_verdict": "completed",
+      "mapped_status": "completed",
+      "aggregate_bucket": "approved"
+    },
+    {
+      "queue_job_id": "t-step3",
+      "target_role": "child_planner",
+      "primary_target": "plans/gd/2026-06-12-content-quality-loop/step-3-admission-distill.md",
+      "bridge_exit": 0,
+      "bridge_stderr_path": "n_a_local_agent_dispatch",
+      "bridge_stderr_summary": "live local Agent tool dispatch; proposal validated exit 0",
+      "raw_verdict": "completed",
+      "mapped_status": "completed",
+      "aggregate_bucket": "approved"
+    },
+    {
+      "queue_job_id": "t-step4",
+      "target_role": "child_planner",
+      "primary_target": "plans/gd/2026-06-12-content-quality-loop/step-4-quality-repair.md",
+      "bridge_exit": 0,
+      "bridge_stderr_path": "n_a_local_agent_dispatch",
+      "bridge_stderr_summary": "live local Agent tool dispatch; proposal validated exit 0",
+      "raw_verdict": "completed",
+      "mapped_status": "completed",
+      "aggregate_bucket": "approved"
+    },
+    {
+      "queue_job_id": "t-step5",
+      "target_role": "child_planner",
+      "primary_target": "plans/gd/2026-06-12-content-quality-loop/step-5-promote.md",
+      "bridge_exit": 0,
+      "bridge_stderr_path": "n_a_local_agent_dispatch",
+      "bridge_stderr_summary": "live local Agent tool dispatch; proposal validated exit 0",
+      "raw_verdict": "completed",
+      "mapped_status": "completed",
+      "aggregate_bucket": "approved"
+    },
+    {
+      "queue_job_id": "t-step6",
+      "target_role": "child_planner",
+      "primary_target": "plans/gd/2026-06-12-content-quality-loop/step-6-runner-calibration.md",
+      "bridge_exit": 0,
+      "bridge_stderr_path": "n_a_local_agent_dispatch",
+      "bridge_stderr_summary": "live local Agent tool dispatch; proposal validated exit 0",
+      "raw_verdict": "completed",
+      "mapped_status": "completed",
+      "aggregate_bucket": "approved"
+    }
+  ],
+  "batch_ledgers": [
+    {
+      "path": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-12-content-quality-loop/dispatch/stage-dispatch-ledger-w1.json",
+      "hash": "99a06d6f8d3d3eb77678127fa57ef703975bfbc0a1b547a65dbd3d4145fe3bd4"
+    },
+    {
+      "path": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-12-content-quality-loop/dispatch/stage-dispatch-ledger-w2.json",
+      "hash": "19191f63d4c0ab6a088258ea8f60451bdada2c652c3a6edb7799b1ea872865dc"
+    },
+    {
+      "path": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-12-content-quality-loop/dispatch/stage-dispatch-ledger-w3.json",
+      "hash": "3c2054d93c35df44a7ed323fd82834bc67f2aa04b214bf4a6ba402a8b73d48e3"
+    }
+  ],
+  "suite_target_closure": [
+    {
+      "target_id": "t-step1",
+      "mapped_status": "completed",
+      "evidence_kind": "controller_approved"
+    },
+    {
+      "target_id": "t-step2",
+      "mapped_status": "completed",
+      "evidence_kind": "controller_approved"
+    },
+    {
+      "target_id": "t-step3",
+      "mapped_status": "completed",
+      "evidence_kind": "controller_approved"
+    },
+    {
+      "target_id": "t-step4",
+      "mapped_status": "completed",
+      "evidence_kind": "controller_approved"
+    },
+    {
+      "target_id": "t-step5",
+      "mapped_status": "completed",
+      "evidence_kind": "controller_approved"
+    },
+    {
+      "target_id": "t-step6",
+      "mapped_status": "completed",
+      "evidence_kind": "controller_approved"
+    }
+  ]
+}

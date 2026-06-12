@@ -1,61 +1,85 @@
-# AKB2
+# CLAUDE.md
 
-> 创建日期：2026-05-08
-> 技术栈：python
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## 项目目标
+# Project AKB2
 
-AKB2.0 工程根：lint/gate/intake CLI + MCP wrapper + tests + eval harness + engineering docs（不含知识库本体）
+AKB2.0 工程根：lint / gate / intake / briefing / video / feishu_sync 等管线 + CLI + MCP wrapper + eval harness。**不含知识库本体**——知识库在 Obsidian vault（`Praise Space/AKB2.0/`），本工程通过 `config/vault.toml` 解析 vault 路径，禁止硬编码。
 
-## 技术栈
+## 常用命令
 
-- **主语言**：python
+```bash
+# 测试（默认排除 integration 标记的真机测试）
+pytest                          # 全量（-m 'not integration' 已在 pyproject 配置）
+pytest tests/test_gate.py       # 单文件
+pytest tests/test_gate.py::test_name   # 单测试
+pytest -m integration           # 真机集成测试（需 NLM 登录态 + gateway）
 
-## 目录约定
+# Lint
+ruff check src tests            # line-length=100, py311, select E/F/W/I/B/UP
 
-```
-Project AKB2/
-├── CLAUDE.md           # 本文件 — 项目指引
-├── VERSIONING.md       # 版本管理规范
-├── README.md           # 用户向项目说明
-├── .gitignore          # Git 忽略规则
-├── src/                # 源代码
-├── docs/               # 文档
-├── tests/              # 测试
-├── data/               # 数据文件（大数据加 .nosync 后缀）
-├── config/             # 配置（不含 .env）
-└── history/            # ECC 会话数据（不入 git）
-    ├── checkpoints/
-    └── daily/
+# 管线入口
+python3 -m akb2.briefing.pipeline --date YYYY-MM-DD --vault-root <path> [--dry-run-intake]
+python3 -m akb2.video --dry-run --fixture       # video 链路（manual 触发）
 ```
 
-## 协作约定
+- Python ≥ 3.11（`scripts/find-python311.sh` 可定位解释器）
+- `pythonpath = ["src", "src/akb2/toolbox_scan"]` 由 pytest 配置注入，无需安装即可跑测试
 
-- **AI 助手**：Claude Code（主），其他 provider 通过 `/ask` 调用
-- **代码评审**：通过 `/review` 触发
-- **测试覆盖**：参见 VERSIONING.md
+## 架构
 
-## 代码规范
+### 模块布局（`src/akb2/`）
 
-- 遵循 `~/.claude/rules/python/` 下的语言规范
-- 全局规范：`~/.claude/rules/common/`
-- 项目特定 invariants：本节后续追加
+| 模块 | 职责 |
+|------|------|
+| `briefing/` | 社媒日报主链路：intake → scoring → synthesis → gate → 写 vault。含 `github/` 子链路、audit_fix 收敛循环、translate、embeddings |
+| `video/` | 视频报告链路：collector → extractor → reasoner → assembler，LLM 经 `llm_adapter`。CLI 手动触发 |
+| `gate/` | `akb2_gate_check.py` — fail-closed 质量门控 CLI |
+| `lint/` | `akb2_lint.py` + `rules/` — vault 笔记 lint |
+| `feishu_sync/` | vault → 飞书同步：discover → render → gate → notify，带 idempotency/state |
+| `automation_gate/` | 能力提升为自动化前的门控（带 fixtures 正/负样例） |
+| `promotion/`、`promotion_gate/` | toolbox 工具晋升流程与门控 |
+| `toolbox_scan/`、`matrix/`、`search_quality/`、`index/`、`closure/`、`backlinks/` | 工具库扫描 / 评测矩阵 / 搜索质量 / 索引 / 收口快照 |
+| `mcp_servers/` | MCP wrapper（占位） |
 
-## 敏感数据保护
+### 关键数据流
 
-**绝不入 git 的内容**：
-- `.env`、`*.key`、`*.pem`、`credentials/`、`*.token.json`、`.auth.json`
-- 任何含 API key / OAuth token / 密码的文件
-- 用户个人信息（PII）
+```
+vault（Obsidian）→ 工程 lint/gate → 回写 vault 内容/toolbox 元数据   （单向，见 constitution 原则 5）
+```
 
-`.gitignore` 已配置基础排除。新增敏感文件类型时同步更新。
+briefing pipeline 的三重断言保证：stdout 的 `proposed_gate_decision` == 输出文件 frontmatter == gate CLI 对最终文件的判定（gate 是确定性的）。
 
-## 版本管理
+### 自动化拓扑
 
-详见 `VERSIONING.md`。
+- `launchd/*.plist`：briefing / github_briefing / feishu-sync 定时 + backstop 兜底（`scripts/bootstrap_launchd.sh` 安装）
+- 触发器分类必须标注 `manual` / `event` / `schedule`；**新增自动化触发器必须人工确认，agent 不得自行注册**
 
----
+## 治理约束（docs/constitution.md，违反需在 docs/allowed-residuals.md 登记豁免）
 
-## 项目特定记录
+8 条原则的操作要点（constitution v1.1.0）：
 
-（在此追加项目的具体决策、踩坑、TODO）
+1. **有界自动化** — 循环必须有显式停止条件与预算
+2. **收敛优先于重跑** — 修复循环（如 audit_fix）以收敛为目标，不整体重跑
+3. **Fail-closed 门控** — gate 失败即阻断，不降级放行；主链路全链七段贯穿，前段不过后段不启动
+4. **预算显式 / 失败可见** — LLM/外部额度循环的预算用具名常量；部分失败（"队列只清了 60%"）必须明示，不得报成功
+5. **工程与 vault 解耦** — 禁止向 vault 写入任何 `.py`/`.sh`；vault 路径只经 `config/vault.toml` 解析
+6. **黄金样张质量锚定** — 入库产出必须达样张级（机判：14 步清单 + 量规）；负样本必拒；新循环设计必须过八要素对账
+7. **Maker/Checker 异族分离** — 生产与裁决不同模型家族（deepseek 提炼 / gpt-5.4 复核 / gemini-flash 兜底）；任何机制不自评自批；7×24 管线禁用 -preview 模型
+8. **实测价值裁决** — 价值由调用数据定（星级 0-3 封顶）；入库用硬指标 pass/fail，无连续分数排序
+
+循环工程详规：`docs/loops-design-decisions.md`（7 循环 4 Plan）+ `docs/main-pipeline-golden-sample.md`（14 步验收基准）
+
+变更纪律：循环/门控/入库逻辑改动**必须带测试**，且断言绑定可观测行为（收敛/门控/预算效果），不是"能跑通"；形状相似但停止条件不同的循环（briefing 质量收敛 vs video 队列清空）不强行抽象合并。
+
+## 测试约定
+
+- `tests/conftest.py` 提供 `repo_root` / `run_script`（HOME 覆盖跑 bash 脚本）/ `sha256_file` / `tree_sha256` fixtures
+- bash 脚本测试用 `AKB2_TEST_HOME` 模式隔离
+- `evals/` 存放各阶段评测产物（l2-regression、briefing-scoring 等），`lint_evals/` 为 lint 评测
+
+## 其他
+
+- 工作流：`创建 MR` → 开发 → `提交代码` → `提交 MR`（10 维度审查）→ GitLab 手动 merge；版本规范见 `VERSIONING.md`
+- `docs/runbooks/`、`docs/mac-mini-deployment-notes.md` 为部署运维参考
+- 敏感文件（`.env`、`*.key`、token）绝不入 git；`config/*.env.example` 为模板；`data/` 大文件加 `.nosync` 后缀；`history/` 不入 git
