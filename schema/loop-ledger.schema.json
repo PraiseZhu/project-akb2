@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://akb2.local/schema/loop-ledger.schema.json",
+  "title": "Loop Ledger JSONL Row Schema",
+  "description": "七循环共用统一 jsonl 账本行 schema。每行记录一条循环事件，七段生命线事件枚举涵盖从 intake 到 finalize/abort 的全过程。content_hash 包含 ts + event + loop_id + node 使合法重复事件（同内容不同时刻）可区分；账本幂等去重时以整行 SHA-256 为 key（见 ledger.py）。",
+  "type": "object",
+  "required": ["loop_id", "node", "event", "content_hash", "ts"],
+  "properties": {
+    "loop_id": {
+      "type": "string",
+      "description": "循环标识。枚举值: loop1(内容质量) / loop2(宪法治理) / loop3(星级体系) / loop4(源汰换) / loop5(图谱健康) / loop6(检索效用) / loop7(管线修复)。",
+      "enum": ["loop1", "loop2", "loop3", "loop4", "loop5", "loop6", "loop7"]
+    },
+    "node": {
+      "type": "string",
+      "description": "本事件所属节点/阶段标识，由各自循环定义。循环 1 七段: intake_raw / admission / distill_extract / distill_compose / grade_structural / grade_llm / repair_loop / promote / finalize / abort。其他循环按各自八要素卡定义。"
+    },
+    "event": {
+      "type": "string",
+      "description": "生命线事件枚举。intake_raw(抓取原始内容) / admission(准入判定) / distill_extract(知识提炼) / distill_compose(候选页组装) / grade_structural(结构校验) / grade_llm(LLM 评分) / repair_loop(定点修复) / promote(升格) / finalize(收尾完成) / abort(中止)。非循环 1 的循环使用扩展事件，以 loop_id 为前缀命名。",
+      "enum": [
+        "intake_raw",
+        "admission",
+        "distill_extract",
+        "distill_compose",
+        "grade_structural",
+        "grade_llm",
+        "repair_loop",
+        "promote",
+        "finalize",
+        "abort"
+      ]
+    },
+    "content_hash": {
+      "type": "string",
+      "description": "本事件关联内容实体的 SHA-256 hex 摘要（如 raw 文件 hash、wiki 页 hash、源 URL hash）。事件无内容实体时填 ''。",
+      "minLength": 0
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time",
+      "description": "事件发生时刻，ISO-8601 UTC（如 2026-06-12T10:30:00Z）。"
+    },
+    "budget": {
+      "type": "object",
+      "description": "本事件消耗的资源预算快照（可选，但建议填写以支撑原则 4 失败可见）。",
+      "properties": {
+        "token_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "LLM token 消耗（如有）。无 LLM 调用填 0。"
+        },
+        "elapsed_sec": {
+          "type": "number",
+          "minimum": 0,
+          "description": "本事件耗时（秒）。"
+        },
+        "retry_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "本事件内重试次数。"
+        }
+      },
+      "additionalProperties": true
+    },
+    "details": {
+      "type": "object",
+      "description": "循环特定的附加上下文（自由字段，由各循环自行定义）。",
+      "additionalProperties": true
+    }
+  },
+  "x-extension": {
+    "notes": "events 枚举可按循环扩展，新增事件名前缀 loop_id+':' 避免冲突。如 loop2:claim_check / loop3:star_promote / loop4:source_trial。",
+    "deferred_fields": ["details"]
+  }
+}

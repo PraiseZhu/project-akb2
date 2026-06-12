@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://akb2.local/schema/repair-adapter-card.schema.json",
+  "title": "Repair Adapter Card Schema",
+  "description": "修复适配卡格式规范。每个循环上线前必须提供一张适配卡，以 9 个必填字段声明本循环的故障签名、S/B/R 权限边界和回滚/验证方法。适配卡是修复 agent 的唯一行动契约——字段缺失即放开红线。修复适配卡与循环一一对应，卡与卡完全独立（互不引用），跨循环协同由内核承担。",
+  "type": "object",
+  "required": [
+    "failure_signatures",
+    "diagnosis_hints",
+    "s_whitelist",
+    "b_editable",
+    "r_redlines",
+    "verify",
+    "rollback",
+    "watchdog_config",
+    "shared_deps"
+  ],
+  "properties": {
+    "failure_signatures": {
+      "type": "array",
+      "description": "本循环的故障签名表。每条签名声明本循环可能出现的 error_class 及对应处理策略。",
+      "items": {
+        "type": "object",
+        "required": ["error_class", "tier", "description"],
+        "properties": {
+          "error_class": {
+            "type": "string",
+            "description": "故障类枚举，见 failure-signature.schema.json error_class 枚举。"
+          },
+          "tier": {
+            "type": "string",
+            "enum": ["S", "B", "R"],
+            "description": "修复档位: S(静默,数据级自修复) / B(分支,diff<50行+不碰保护路径+测试绿自动合并) / R(红线,提案人批)。"
+          },
+          "description": {
+            "type": "string",
+            "description": "故障场景描述。"
+          }
+        }
+      },
+      "minItems": 1
+    },
+    "diagnosis_hints": {
+      "type": "object",
+      "description": "诊断线索映射。key=error_class, value=诊断线索(排查步骤/日志位置/关联文件)。修复 agent 用它定位根因。",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "s_whitelist": {
+      "type": "array",
+      "description": "S 档动作白名单。仅列表中声明的操作允许自动静默执行（如参数微调、缓存清理）。",
+      "items": {
+        "type": "string"
+      }
+    },
+    "b_editable": {
+      "type": "array",
+      "description": "B 档可碰路径。仅列表中声明的文件允许分支修复自动修改（diff < 50 行 + 测试绿）。",
+      "items": {
+        "type": "string"
+      }
+    },
+    "r_redlines": {
+      "type": "array",
+      "description": "R 档红线。任何碰触红线的修复必须走提案制人批，不得自动执行。",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "verify": {
+      "type": "object",
+      "description": "验证方法。修复 agent 执行修复后必须运行的验证步骤。",
+      "required": ["commands"],
+      "properties": {
+        "commands": {
+          "type": "array",
+          "description": "验证命令列表（按顺序执行，任一非 0 即失败）。",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "timeout_sec": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "验证超时（秒）。"
+        }
+      }
+    },
+    "rollback": {
+      "type": "object",
+      "description": "回滚方法。修复失败时必须执行的回滚步骤。",
+      "required": ["commands"],
+      "properties": {
+        "commands": {
+          "type": "array",
+          "description": "回滚命令列表（按顺序执行）。",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "description": {
+          "type": "string",
+          "description": "回滚操作说明。"
+        }
+      }
+    },
+    "watchdog_config": {
+      "type": "object",
+      "description": "watchdog 配置行。本循环接入 watchdog 的监控参数。",
+      "required": ["heartbeat_path", "ledger_path"],
+      "properties": {
+        "heartbeat_path": {
+          "type": "string",
+          "description": "心跳文件路径（相对 vault staging）。"
+        },
+        "ledger_path": {
+          "type": "string",
+          "description": "本循环账本路径。"
+        },
+        "max_heartbeat_age_sec": {
+          "type": "integer",
+          "minimum": 60,
+          "description": "心跳最大静默时长（秒），超限 watchdog 报警。"
+        },
+        "max_ledger_age_sec": {
+          "type": "integer",
+          "minimum": 60,
+          "description": "账本最大静默时长（秒），超限 watchdog 报警。"
+        }
+      }
+    },
+    "shared_deps": {
+      "type": "array",
+      "description": "共享依赖声明。本循环依赖的外部资源/服务（如 API key、共享文件、数据库）。内核按依赖去重报警：六循环报警 → 一个工单 → 修一次 → 各卡分别验证。",
+      "items": {
+        "type": "object",
+        "required": ["name", "kind"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "依赖名称（如 deepseek-api / gpt5-checker / staging-dir / sources-ledger）。"
+          },
+          "kind": {
+            "type": "string",
+            "enum": ["api", "file", "directory", "service"],
+            "description": "依赖类型。"
+          },
+          "critical": {
+            "type": "boolean",
+            "default": true,
+            "description": "是否关键依赖（down 时暂停重试防风暴）。"
+          }
+        }
+      }
+    }
+  },
+  "x-extension": {
+    "notes": "本 schema 定义适配卡通用格式。各循环适配卡实例（如 skillpack/quality/repair-adapter-card.yaml）按此 schema 填写并需通过 jsonschema 验证。字段语义以 loops-design-decisions.md §7 为权威。"
+  }
+}
