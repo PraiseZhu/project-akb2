@@ -63,7 +63,7 @@ PHASE_GOAL:   AKB2 内容质量循环(循环 1)全链上线:URL 入队 → 抓�
   - expect: `PASS`
   - note: 本 SC verify 命令需 step-6 完成后方可运行（repair-adapter-card.yaml 为 step-6 交付物；step-1 只交付 schema 骨架，承接 SC-5 schema 骨架部分；step-6 收口适配卡实例+全量 verify）
 - [ ] SC-6(工程门):测试与 lint 全绿
-  - verify (method: command): `/usr/bin/env python3 -m pytest -q && ruff check src tests && echo PASS`
+  - verify (method: command): `/usr/bin/env python3 -m pytest tests/loops/ tests/quality/ -q && ruff check src/akb2/loops/ src/akb2/quality/ tests/loops/ tests/quality/ && echo PASS`
   - expect: `PASS`
 - [ ] SC-7(FR-009 修宪开关):vault 修宪未生效时升格停在提议模式
   - verify (method: test): `python3 -m pytest tests/quality/test_promote_gate_switch.py -q`
