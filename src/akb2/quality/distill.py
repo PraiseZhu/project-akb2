@@ -536,6 +536,10 @@ def _build_body(
         for c in claims
     )
 
+    from datetime import UTC, datetime
+
+    _now_date_str = datetime.now(UTC).strftime("%Y-%m-%d")
+
     body = f"""## TLDR
 
 {claims[0]['text'] if claims else '（待补充）'}
@@ -581,16 +585,9 @@ def _build_body(
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
-| {_now_date()} | 初始创建 | 段1-2 提炼，raw: {raw_path} |"""
+| {_now_date_str} | 初始创建 | 段1-2 提炼，raw: {raw_path} |"""
 
     return body
-
-
-def _now_date() -> str:
-    """当前日期字符串 YYYY-MM-DD。"""
-    from datetime import UTC, datetime
-
-    return datetime.now(UTC).strftime("%Y-%m-%d")
 
 
 def _assemble_page(frontmatter: dict[str, Any], body: str) -> str:

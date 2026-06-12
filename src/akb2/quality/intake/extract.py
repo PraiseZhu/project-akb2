@@ -293,7 +293,7 @@ def _record_fetch_fail(failures_path: str, url: str, error: str) -> None:
 
     调用 step-1 signatures 模块的 record_failure。
     """
-    from akb2.loops.signatures import record_failure
+    from src.akb2.loops.signatures import record_failure
 
     record_failure(
         failures_path=failures_path,

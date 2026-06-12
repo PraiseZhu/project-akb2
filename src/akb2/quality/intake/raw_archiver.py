@@ -390,7 +390,7 @@ def _record_archive_fail(
     detail: str,
 ) -> None:
     """记录归档失败签名。"""
-    from akb2.loops.signatures import record_failure
+    from src.akb2.loops.signatures import record_failure
 
     record_failure(
         failures_path=failures_path,

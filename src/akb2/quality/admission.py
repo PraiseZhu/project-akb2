@@ -35,6 +35,12 @@ _ADMISSION_CHECK_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+# 内容截断长度：送入 LLM 判定的最大字符数
+# 主题相关性和 How 倾向取 4000 字足以覆盖导语+前几段核心内容
+# 新颖度判定需更完整的论点和论证结构，取 3000 字聚焦核心主张
+MAX_ADMISSION_CONTENT_CHARS: int = 4000
+MAX_NOVELTY_CONTENT_CHARS: int = 3000
+
 # 领域 taxonomy 锚点（从 skillpack/quality/concept-index-injection.md 运行时注入）
 # 初版硬编码 fallback，后续从概念索引注入文件读取
 _DEFAULT_DOMAIN_TAXONOMY: list[str] = [
@@ -165,7 +171,7 @@ def _check_topic_relevance(
     # 构建包含 taxonomy 的 prompt
     taxonomy_str = "\n".join(f"- {t}" for t in _DEFAULT_DOMAIN_TAXONOMY)
     # 只取前 4000 字符避免 token 浪费
-    content_snippet = raw_content[:4000]
+    content_snippet = raw_content[:MAX_ADMISSION_CONTENT_CHARS]
 
     messages = [
         {
@@ -215,7 +221,7 @@ def _check_how_tendency(
     """
     from src.akb2.quality.llm_router import RouterConfigError
 
-    content_snippet = raw_content[:4000]
+    content_snippet = raw_content[:MAX_ADMISSION_CONTENT_CHARS]
 
     messages = [
         {
@@ -275,7 +281,7 @@ def _check_novelty(
     from src.akb2.quality.llm_router import RouterConfigError
 
     refs_str = "\n---\n".join(ref[:800] for ref in wiki_references[:5])
-    content_snippet = raw_content[:3000]
+    content_snippet = raw_content[:MAX_NOVELTY_CONTENT_CHARS]
 
     messages = [
         {

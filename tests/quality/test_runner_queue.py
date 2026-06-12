@@ -226,7 +226,7 @@ class TestRunnerAvoidWindows:
         """在避让窗口内 → _should_avoid() 返回 True。"""
         import src.akb2.quality.runner as runner_mod
 
-        windows = runner_mod._parse_avoid_windows()
+        windows = runner_mod.AVOID_WINDOWS
         # 模拟 feishu-sync 窗口内的时间 (02:05 UTC = 10:05 CST)
         with mock.patch.object(runner_mod, "_now") as mock_now:
             mock_now.return_value = datetime(2026, 6, 13, 2, 5, 0, tzinfo=UTC)
@@ -236,7 +236,7 @@ class TestRunnerAvoidWindows:
         """在避让窗口外 → _should_avoid() 返回 False。"""
         import src.akb2.quality.runner as runner_mod
 
-        windows = runner_mod._parse_avoid_windows()
+        windows = runner_mod.AVOID_WINDOWS
         with mock.patch.object(runner_mod, "_now") as mock_now:
             mock_now.return_value = datetime(2026, 6, 13, 14, 0, 0, tzinfo=UTC)
             assert runner_mod._should_avoid(windows) is False

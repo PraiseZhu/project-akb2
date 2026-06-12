@@ -29,6 +29,7 @@ from src.akb2.quality.checks_structural import (
     Defect,
     _extract_body_text,
     _find_section_boundaries,
+    _get_section_text,
     run_structural_checks,
 )
 from src.akb2.quality.grader import run_grader_with_fixture
@@ -96,18 +97,6 @@ def _get_named_sections(text: str) -> set[str]:
     return {title for title, _, _ in sections}
 
 
-def _get_section_text_by_title(text: str, section_title: str) -> str:
-    """获取指定节标题的完整文本（从标题到下一个标题）。"""
-    lines = text.split("\n")
-    sections = _find_section_boundaries(text)
-
-    for title, start, end in sections:
-        if title == section_title:
-            return "\n".join(lines[start:end])
-
-    return ""
-
-
 def _verify_unchanged_sections(
     original: str,
     repaired: str,
@@ -134,8 +123,8 @@ def _verify_unchanged_sections(
         if section in named_sections:
             continue  # 点名小节允许改动
 
-        orig_section_text = _get_section_text_by_title(orig_body, section)
-        rep_section_text = _get_section_text_by_title(rep_body, section)
+        orig_section_text = _get_section_text(orig_body, section)
+        rep_section_text = _get_section_text(rep_body, section)
 
         if orig_section_text != rep_section_text:
             changed.append(section)

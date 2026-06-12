@@ -104,11 +104,6 @@ def _now() -> datetime:
 # ---------------------------------------------------------------------------
 
 
-def _parse_avoid_windows() -> list[tuple[int, int]]:
-    """解析避让窗口列表。"""
-    return list(AVOID_WINDOWS)
-
-
 def _should_avoid(windows: list[tuple[int, int]]) -> bool:
     """判断当前是否在避让窗口内。
 
@@ -747,7 +742,7 @@ def _run_main_loop(config: RunnerConfig) -> int:
     global _shutdown_flag
 
     _install_signal_handlers()
-    avoid_windows = _parse_avoid_windows()
+    avoid_windows = list(AVOID_WINDOWS)
 
     print(f"[runner] 启动: raw_dir={config.raw_dir}, poll={config.poll_interval_seconds}s",
           file=sys.stderr)
