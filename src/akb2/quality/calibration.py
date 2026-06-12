@@ -52,9 +52,20 @@ def _now_iso() -> str:
 
 
 def _init_report(total_samples: int, negative_count: int) -> dict[str, Any]:
-    """初始化校准报告骨架。"""
+    """初始化校准报告骨架。fail-closed: auto_promote 开启但修宪未应用时拒绝。"""
     auto_promote = os.environ.get("AKB2_AUTO_PROMOTE", "0") == "1"
     amendment_applied = os.environ.get("AKB2_AMENDMENT_APPLIED", "0") == "1"
+
+    # fail-closed: auto_promote 开启但修宪未应用 → 强制退回 proposal 模式
+    if auto_promote and not amendment_applied:
+        promotion = "proposal"
+        amendment = "not_applied"
+    elif auto_promote and amendment_applied:
+        promotion = "active"
+        amendment = "applied"
+    else:
+        promotion = "proposal"
+        amendment = "not_applied"
 
     return {
         "calibration_ts": _now_iso(),
@@ -63,8 +74,8 @@ def _init_report(total_samples: int, negative_count: int) -> dict[str, Any]:
         "positive_count": total_samples - negative_count,
         "positive_pass_rate": 0.0,
         "negative_reject_rate": 0.0,
-        "promotion_mode": "active" if auto_promote else "proposal",
-        "amendment_status": "applied" if amendment_applied else "not_applied",
+        "promotion_mode": promotion,
+        "amendment_status": amendment,
         "per_segment_failures": {},
         "rounds_distribution": {},
         "entries": [],

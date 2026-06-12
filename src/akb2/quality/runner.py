@@ -703,8 +703,9 @@ def _run_weekly_spot_check(
             },
         )
 
-        manual_count = 1
-        quality_count = SPOT_CHECK_SAMPLE_SIZE - pass_count
+        # 自动校准任务，无需人工介入 — 两计数保持 0（plan SC-6.1）
+        manual_count = 0
+        quality_count = 0
 
     # 产出 weekly-summary.json
     summary = {

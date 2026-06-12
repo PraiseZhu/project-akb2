@@ -333,9 +333,12 @@ class TestRunnerWeeklySpotCheck:
         assert "quality_feedback_required_count" in summary, (
             "应含 quality_feedback_required_count 字段"
         )
-        # 达标率 < 80%，两计数应 > 0
-        assert summary["manual_intervention_required_count"] > 0 or summary["quality_feedback_required_count"] > 0, (
-            "达标率 < 80% 时两计数不应全为 0"
+        # 达标率 < 80%，calibration task 自动创建，两计数保持 0（plan SC-6.1: 无需人工介入）
+        assert summary["manual_intervention_required_count"] == 0, (
+            "达标率 < 80% 时自动创建校准任务，不应报人工介入"
+        )
+        assert summary["quality_feedback_required_count"] == 0, (
+            "达标率 < 80% 时自动创建校准任务，不应报质量反馈需求"
         )
 
     def test_spot_check_above_threshold_happy_path(self, tmp_path: Path) -> None:
