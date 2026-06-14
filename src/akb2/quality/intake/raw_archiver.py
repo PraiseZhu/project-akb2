@@ -2,18 +2,19 @@
 
 公开函数:
     archive_raw(extract_result, output_dir, failures_path) -> ArchiveResult
+    archive_from_extract_result(extract_result, output_dir, ...) -> ArchiveResult
     ANCHOR_DEFINITIONS: 锚点定义映射
     REQUIRED_ANCHORS: 必须注入的锚点键列表
 
 产出格式:
-    <slug>--raw--<YYYY-MM-DD>.md
+    <slug>--<article_id>--raw--<YYYY-MM-DD>.md
     frontmatter 9 字段:
         artifact_type, source_slug, source_url, source_title,
         source_authors, source_publisher, source_published_at,
         fetched_at, fetched_via
 
 golden-sample 步 2 标准:
-    1. 文件名 <slug>--raw--<YYYY-MM-DD>.md
+    1. 文件名 <slug>--<article_id>--raw--<YYYY-MM-DD>.md（F3 article_id 唯一化）
     2. frontmatter 9 字段
     3. 原文标题加锚点,每个锚点替换必须 assert 命中
     4. 带锚点目录表
@@ -23,14 +24,18 @@ golden-sample 步 2 标准:
 fail-closed (P3):
     任一锚点 assert 未命中 → 不写文件，落 anchor_mismatch 签名
     frontmatter 9 字段不齐 → 不写文件，落签名
+    签名含 details/sample_error 字段（P3 排障）
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from src.akb2.quality.intake.models import ExtractionContext, compute_article_id
 
 # ---------------------------------------------------------------------------
 # 具名常量
@@ -296,6 +301,7 @@ def archive_raw(
     anchors: dict[str, str] | None = None,
     required_anchors: tuple[str, ...] = REQUIRED_ANCHORS,
     date_str: str | None = None,
+    article_id: str | None = None,
 ) -> ArchiveResult:
     """生成 raw 锚点化归档文件。
 
@@ -313,12 +319,17 @@ def archive_raw(
         anchors: 锚点定义映射（None 使用全部 ANCHOR_DEFINITIONS）
         required_anchors: 必须全部命中的锚点键
         date_str: 覆盖日期（YYYY-MM-DD，默认今天）
+        article_id: 文章唯一短码（默认 compute_article_id(url)[:12]）
 
     Returns:
         ArchiveResult 含成功/失败信息与输出路径。
     """
     if date_str is None:
         date_str = datetime.now(UTC).strftime("%Y-%m-%d")
+
+    # 计算 article_id（F3 唯一化）
+    if article_id is None:
+        article_id = compute_article_id(url) if url else "unknown000000"
 
     result = ArchiveResult(slug=slug)
 
@@ -341,7 +352,8 @@ def archive_raw(
         if failures_path:
             _record_archive_fail(
                 failures_path, slug, "anchor_mismatch",
-                f"frontmatter missing: {missing_fields}",
+                details=f"frontmatter missing: {missing_fields}",
+                sample_error=f"Missing fields: {missing_fields}",
             )
         return result
 
@@ -360,7 +372,8 @@ def archive_raw(
         if failures_path:
             _record_archive_fail(
                 failures_path, slug, "anchor_mismatch",
-                f"missing anchors: {missing_anchors}",
+                details=f"missing anchors: {missing_anchors}",
+                sample_error=f"Required anchors not hit: {missing_anchors}",
             )
         return result
 
@@ -370,8 +383,8 @@ def archive_raw(
 
     raw_md = f"{fm_block}\n\n{toc_block}\n\n{anchored_content}\n"
 
-    # 6. 写入文件
-    filename = f"{slug}--raw--{date_str}.md"
+    # 6. 写入文件（F3: 文件名含 article_id 短码）
+    filename = f"{slug}--{article_id}--raw--{date_str}.md"
     if output_dir is None:
         output_dir = Path(".")
     out_path = Path(output_dir) / filename
@@ -387,17 +400,27 @@ def _record_archive_fail(
     failures_path: str,
     slug: str,
     error_class: str,
-    detail: str,
+    details: str = "",
+    sample_error: str = "",
 ) -> None:
-    """记录归档失败签名。"""
-    from src.akb2.loops.signatures import record_failure
+    """记录归档失败签名，含 details/sample_error 字段（P3 排障）。
 
-    record_failure(
-        failures_path=failures_path,
-        error_class=error_class,
-        node=f"intake.raw_archiver.{slug}",
-        loop="loop1",
-    )
+    直接写入 JSONL 行（含 details/sample_error），不经过 record_failure 以保留扩展字段。
+    """
+    path = Path(failures_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    record: dict[str, Any] = {
+        "loop": "loop1",
+        "node": f"intake.raw_archiver.{slug}",
+        "error_class": error_class,
+        "count": 1,
+        "ts": ts,
+        "details": details,
+        "sample_error": sample_error,
+    }
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, sort_keys=True, ensure_ascii=False) + "\n")
 
 
 # ---------------------------------------------------------------------------
@@ -411,31 +434,65 @@ def archive_from_extract_result(
     failures_path: str | None = None,
     publisher: str = "",
     date_str: str | None = None,
+    source_metadata: ExtractionContext | None = None,
 ) -> ArchiveResult:
     """从 ExtractResult 直接生成 raw 归档。
 
     便捷函数，串联 extract → archive 流程。
+
+    Args:
+        extract_result: ExtractResult（含 url/title/author/content/method/published）
+        output_dir: 输出目录
+        failures_path: 故障签名落账路径
+        publisher: 发布者/站点名（source_metadata 有值时优先从其获取）
+        date_str: 覆盖日期（YYYY-MM-DD）
+        source_metadata: ExtractionContext，携带 feed 元数据供 frontmatter 补全
     """
     method_str = (
         extract_result.method.value
         if hasattr(extract_result.method, "value")
         else str(extract_result.method)
     )
-    slug = (
-        extract_result.source_slug
-        if hasattr(extract_result, "source_slug")
-        else "unknown"
-    )
+
+    # slug 优先从 source_metadata 取，其次从 extract_result
+    if source_metadata is not None and source_metadata.source_slug:
+        slug = source_metadata.source_slug
+    elif hasattr(extract_result, "source_slug"):
+        slug = extract_result.source_slug
+    else:
+        slug = "unknown"
+
+    # publisher 优先从 source_metadata 取
+    effective_publisher = publisher
+    if source_metadata is not None and source_metadata.source_publisher:
+        effective_publisher = source_metadata.source_publisher
+
+    # author 优先从 source_metadata 的 feed_author 取（当 extract_result.author 为空时）
+    author = extract_result.author
+    if not author and source_metadata is not None and source_metadata.feed_author:
+        author = source_metadata.feed_author
+
+    # published_at 优先从 source_metadata 的 feed_published 取（当 extract_result.published 为空时）
+    published_at = extract_result.published
+    if not published_at and source_metadata is not None and source_metadata.feed_published:
+        published_at = source_metadata.feed_published
+
+    # article_id 优先从 source_metadata.content_hash[:12] 取，其次 compute_article_id(url)
+    article_id: str | None = None
+    if source_metadata is not None and source_metadata.content_hash:
+        article_id = source_metadata.content_hash[:12]
+
     return archive_raw(
         slug=slug,
         url=extract_result.url,
         title=extract_result.title,
-        author=extract_result.author,
+        author=author,
         content=extract_result.content,
-        published_at=extract_result.published,
-        publisher=publisher,
+        published_at=published_at,
+        publisher=effective_publisher,
         fetched_via=method_str,
         output_dir=output_dir,
         failures_path=failures_path,
         date_str=date_str,
+        article_id=article_id,
     )

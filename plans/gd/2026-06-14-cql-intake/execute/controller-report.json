@@ -1,0 +1,91 @@
+{
+  "schema_version": "1.0",
+  "run_mode": "live",
+  "started_at": "2026-06-14T14:00:00Z",
+  "finished_at": "2026-06-14T15:30:00Z",
+  "aggregate_path": "plans/gd/2026-06-14-cql-intake/execute/stage-dispatch-ledger.json",
+  "manifest_path": "plans/gd/2026-06-14-cql-intake/dispatch_map.json",
+  "primary_gate": {
+    "verdict": "APPROVED",
+    "blocking": false
+  },
+  "secondary_gate": {
+    "verdict": "APPROVED",
+    "blocking": false
+  },
+  "gate_consistent": true,
+  "dirty_detected": false,
+  "jobs": [
+    {
+      "queue_job_id": "batch-w1-t1",
+      "target_role": "child_executor",
+      "primary_target": "plans/gd/2026-06-14-cql-intake/execute/e-step1-result.yaml",
+      "bridge_exit": 0,
+      "bridge_stderr_path": "",
+      "bridge_stderr_summary": "completed",
+      "raw_verdict": "APPROVED",
+      "mapped_status": "approved",
+      "aggregate_bucket": "primary"
+    },
+    {
+      "queue_job_id": "batch-w2-t2",
+      "target_role": "child_executor",
+      "primary_target": "plans/gd/2026-06-14-cql-intake/execute/e-step2-result.yaml",
+      "bridge_exit": 0,
+      "bridge_stderr_path": "",
+      "bridge_stderr_summary": "completed",
+      "raw_verdict": "APPROVED",
+      "mapped_status": "approved",
+      "aggregate_bucket": "primary"
+    },
+    {
+      "queue_job_id": "batch-w2-t4",
+      "target_role": "child_executor",
+      "primary_target": "plans/gd/2026-06-14-cql-intake/execute/e-step4-result.yaml",
+      "bridge_exit": 0,
+      "bridge_stderr_path": "",
+      "bridge_stderr_summary": "completed",
+      "raw_verdict": "APPROVED",
+      "mapped_status": "approved",
+      "aggregate_bucket": "primary"
+    },
+    {
+      "queue_job_id": "batch-w3-t3",
+      "target_role": "child_executor",
+      "primary_target": "plans/gd/2026-06-14-cql-intake/execute/e-step3-result.yaml",
+      "bridge_exit": 0,
+      "bridge_stderr_path": "",
+      "bridge_stderr_summary": "completed",
+      "raw_verdict": "APPROVED",
+      "mapped_status": "approved",
+      "aggregate_bucket": "primary"
+    },
+    {
+      "queue_job_id": "batch-w3-t5",
+      "target_role": "child_executor",
+      "primary_target": "plans/gd/2026-06-14-cql-intake/execute/e-step5-result.yaml",
+      "bridge_exit": 0,
+      "bridge_stderr_path": "",
+      "bridge_stderr_summary": "completed",
+      "raw_verdict": "APPROVED",
+      "mapped_status": "approved",
+      "aggregate_bucket": "primary"
+    },
+    {
+      "queue_job_id": "batch-w4-t6",
+      "target_role": "child_executor",
+      "primary_target": "plans/gd/2026-06-14-cql-intake/execute/e-step6-result.yaml",
+      "bridge_exit": 0,
+      "bridge_stderr_path": "",
+      "bridge_stderr_summary": "completed",
+      "raw_verdict": "APPROVED",
+      "mapped_status": "approved",
+      "aggregate_bucket": "primary"
+    }
+  ],
+  "final_decision": "APPROVED",
+  "sc_not_run_list": ["SC-10"],
+  "main_agent_merge": {
+    "merge_report_path": "plans/gd/2026-06-14-cql-intake/execute/controller-report.json"
+  }
+}

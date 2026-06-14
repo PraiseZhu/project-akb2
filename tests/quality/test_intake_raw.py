@@ -6,7 +6,9 @@
     - 锚点 §A-§Z 注入 + assert 命中
     - 必需锚点缺失 → fail-closed，不写文件
     - 锚点目录表
-    - 文件名格式 <slug>--raw--<YYYY-MM-DD>.md
+    - 文件名格式 <slug>--<article_id>--raw--<YYYY-MM-DD>.md（F3 唯一化）
+    - failure 签名含 details/sample_error 字段（P3 排障）
+    - archive_from_extract_result 支持 source_metadata 参数
     - 原文不翻译
 
 全 fixture，不打真网。
@@ -14,8 +16,10 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+from src.akb2.quality.intake.models import ExtractionContext, compute_article_id
 from src.akb2.quality.intake.raw_archiver import (
     ANCHOR_DEFINITIONS,
     FRONTMATTER_FIELDS,
@@ -25,6 +29,7 @@ from src.akb2.quality.intake.raw_archiver import (
     _format_frontmatter_yaml,
     _inject_anchors,
     _validate_frontmatter,
+    archive_from_extract_result,
     archive_raw,
 )
 
@@ -227,7 +232,64 @@ class TestArchiveRaw:
     def test_archive_filename_format(
         self, sample_article_md: str, temp_output_dir: Path
     ):
-        """文件名格式为 <slug>--raw--<YYYY-MM-DD>.md。"""
+        """文件名格式为 <slug>--<article_id>--raw--<YYYY-MM-DD>.md（F3 唯一化）。"""
+        url = "https://example.com/article"
+        expected_article_id = compute_article_id(url)
+        result = archive_raw(
+            slug="test-blog",
+            url=url,
+            title="Test",
+            author="A",
+            content=sample_article_md,
+            published_at="2026-06-12",
+            publisher="Example Blog",
+            output_dir=temp_output_dir,
+            date_str="2026-06-13",
+        )
+        assert result.success
+        expected_name = f"test-blog--{expected_article_id}--raw--2026-06-13.md"
+        assert Path(result.output_path).name == expected_name
+
+    def test_archive_filename_contains_article_id(
+        self, sample_article_md: str, temp_output_dir: Path
+    ):
+        """文件名包含 article_id 短码，同源同日不同 URL 产生不同文件名。"""
+        url_a = "https://example.com/article-a"
+        url_b = "https://example.com/article-b"
+        result_a = archive_raw(
+            slug="test-blog",
+            url=url_a,
+            title="Article A",
+            author="A",
+            content=sample_article_md,
+            published_at="2026-06-12",
+            publisher="Example Blog",
+            output_dir=temp_output_dir,
+            date_str="2026-06-13",
+        )
+        result_b = archive_raw(
+            slug="test-blog",
+            url=url_b,
+            title="Article B",
+            author="A",
+            content=sample_article_md,
+            published_at="2026-06-12",
+            publisher="Example Blog",
+            output_dir=temp_output_dir,
+            date_str="2026-06-13",
+        )
+        assert result_a.success
+        assert result_b.success
+        # 两个不同 URL 产生不同文件名（F3 唯一化）
+        assert Path(result_a.output_path).name != Path(result_b.output_path).name
+        # article_id 与 compute_article_id 一致
+        assert compute_article_id(url_a) in Path(result_a.output_path).name
+        assert compute_article_id(url_b) in Path(result_b.output_path).name
+
+    def test_archive_explicit_article_id(
+        self, sample_article_md: str, temp_output_dir: Path
+    ):
+        """显式传入 article_id 时使用该值。"""
         result = archive_raw(
             slug="test-blog",
             url="https://example.com/article",
@@ -238,9 +300,10 @@ class TestArchiveRaw:
             publisher="Example Blog",
             output_dir=temp_output_dir,
             date_str="2026-06-13",
+            article_id="abc123def456",
         )
         assert result.success
-        assert Path(result.output_path).name == "test-blog--raw--2026-06-13.md"
+        assert Path(result.output_path).name == "test-blog--abc123def456--raw--2026-06-13.md"
 
     def test_archive_missing_frontmatter_fields(
         self, sample_article_md: str, temp_output_dir: Path, temp_failures_path: Path
@@ -362,6 +425,199 @@ class TestArchiveRaw:
             failures_path=None,
         )
         assert not result.success
+
+    def test_failure_signature_has_details_field(
+        self, sample_short_md: str, temp_output_dir: Path, temp_failures_path: Path
+    ):
+        """failure 签名含 details 字段（P3 排障）— 锚点缺失场景。"""
+        archive_raw(
+            slug="test-blog",
+            url="https://example.com/short",
+            title="Short",
+            author="Jane",
+            content=sample_short_md,
+            published_at="2026-06-12",
+            publisher="Example Blog",
+            output_dir=temp_output_dir,
+            failures_path=str(temp_failures_path),
+        )
+        assert temp_failures_path.exists()
+        lines = [
+            json.loads(line)
+            for line in temp_failures_path.read_text().splitlines()
+            if line.strip()
+        ]
+        assert len(lines) >= 1
+        record = lines[0]
+        assert "details" in record, "failure 签名缺少 details 字段"
+        assert "sample_error" in record, "failure 签名缺少 sample_error 字段"
+        # details 含有上下文信息
+        assert record["details"] != ""
+
+    def test_failure_signature_has_details_field_frontmatter(
+        self, sample_article_md: str, temp_output_dir: Path, temp_failures_path: Path
+    ):
+        """failure 签名含 details 字段（P3 排障）— frontmatter 缺失场景。"""
+        archive_raw(
+            slug="",  # empty slug → missing source_slug
+            url="",   # empty url → missing source_url
+            title="",
+            author="",
+            content=sample_article_md,
+            publisher="",
+            published_at="",
+            output_dir=temp_output_dir,
+            failures_path=str(temp_failures_path),
+        )
+        assert temp_failures_path.exists()
+        lines = [
+            json.loads(line)
+            for line in temp_failures_path.read_text().splitlines()
+            if line.strip()
+        ]
+        assert len(lines) >= 1
+        record = lines[0]
+        assert "details" in record, "failure 签名缺少 details 字段"
+        assert "sample_error" in record, "failure 签名缺少 sample_error 字段"
+        # details 包含缺失字段信息
+        assert "frontmatter" in record["details"].lower() or "missing" in record["details"].lower()
+
+
+# ---------------------------------------------------------------------------
+# archive_from_extract_result 测试
+# ---------------------------------------------------------------------------
+
+
+class TestArchiveFromExtractResult:
+    """archive_from_extract_result 与 source_metadata 参数测试。"""
+
+    def _make_extract_result(
+        self,
+        url: str = "https://example.com/article",
+        title: str = "Test Article",
+        author: str = "Jane Author",
+        content: str = "",
+        published: str = "2026-06-12",
+        source_slug: str = "test-blog",
+        method_value: str = "defuddle",
+    ):
+        """构造最小兼容 ExtractResult duck-type 对象。"""
+        class MockMethod:
+            value = method_value
+
+        class MockExtractResult:
+            pass
+
+        r = MockExtractResult()
+        r.url = url
+        r.title = title
+        r.author = author
+        r.content = content
+        r.published = published
+        r.source_slug = source_slug
+        r.method = MockMethod()
+        return r
+
+    def test_archive_from_extract_result_basic(
+        self, sample_article_md: str, temp_output_dir: Path
+    ):
+        """无 source_metadata 时基本归档成功。"""
+        er = self._make_extract_result(content=sample_article_md)
+        result = archive_from_extract_result(
+            extract_result=er,
+            output_dir=temp_output_dir,
+            publisher="Example Blog",
+            date_str="2026-06-13",
+        )
+        assert result.success
+        assert result.output_path is not None
+
+    def test_archive_from_extract_result_with_source_metadata(
+        self, sample_article_md: str, temp_output_dir: Path
+    ):
+        """source_metadata 传入时，frontmatter 使用 metadata 中的 publisher/slug。"""
+        er = self._make_extract_result(
+            content=sample_article_md,
+            author="",       # 空 author，由 metadata 填补
+            published="",    # 空 published，由 metadata 填补
+        )
+        metadata = ExtractionContext(
+            source_slug="metadata-slug",
+            source_publisher="Metadata Publisher",
+            feed_title="Feed Title",
+            feed_author="Feed Author",
+            feed_published="2026-05-20",
+            url="https://example.com/article",
+            content_type="text/html",
+            content_hash="abc123def456xyz",
+        )
+        result = archive_from_extract_result(
+            extract_result=er,
+            output_dir=temp_output_dir,
+            date_str="2026-06-13",
+            source_metadata=metadata,
+        )
+        assert result.success
+        assert result.output_path is not None
+        raw_content = Path(result.output_path).read_text(encoding="utf-8")
+        # publisher 来自 metadata
+        assert "Metadata Publisher" in raw_content
+        # slug 来自 metadata
+        assert "metadata-slug" in raw_content
+        # article_id 来自 content_hash[:12]
+        assert "abc123def456" in Path(result.output_path).name
+
+    def test_archive_from_extract_result_metadata_author_fallback(
+        self, sample_article_md: str, temp_output_dir: Path
+    ):
+        """extract_result.author 为空时从 source_metadata.feed_author 取值。"""
+        er = self._make_extract_result(
+            content=sample_article_md,
+            author="",
+        )
+        metadata = ExtractionContext(
+            source_slug="test-blog",
+            source_publisher="Test Publisher",
+            feed_title="",
+            feed_author="Feed Author from Metadata",
+            feed_published="",
+            url="https://example.com/article",
+        )
+        result = archive_from_extract_result(
+            extract_result=er,
+            output_dir=temp_output_dir,
+            date_str="2026-06-13",
+            source_metadata=metadata,
+        )
+        assert result.success
+        raw_content = Path(result.output_path).read_text(encoding="utf-8")
+        assert "Feed Author from Metadata" in raw_content
+
+    def test_archive_from_extract_result_metadata_published_fallback(
+        self, sample_article_md: str, temp_output_dir: Path
+    ):
+        """extract_result.published 为空时从 source_metadata.feed_published 取值。"""
+        er = self._make_extract_result(
+            content=sample_article_md,
+            published="",
+        )
+        metadata = ExtractionContext(
+            source_slug="test-blog",
+            source_publisher="Test Publisher",
+            feed_title="",
+            feed_author="A",
+            feed_published="2026-04-01",
+            url="https://example.com/article",
+        )
+        result = archive_from_extract_result(
+            extract_result=er,
+            output_dir=temp_output_dir,
+            date_str="2026-06-13",
+            source_metadata=metadata,
+        )
+        assert result.success
+        raw_content = Path(result.output_path).read_text(encoding="utf-8")
+        assert "2026-04-01" in raw_content
 
 
 # ---------------------------------------------------------------------------

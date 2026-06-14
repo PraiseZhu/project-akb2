@@ -1,0 +1,292 @@
+{
+  "dispatch_id": "cql-intake-v1",
+  "source_master_plan": "plans/gd/2026-06-14-cql-intake/master-plan.md",
+  "goal_chain": {
+    "PROJECT_GOAL": "AKB2 内容质量循环（循环1）全链上线，以 76 个源自动供料。",
+    "CHAIN_GOAL": "把抓取链路（discovery→extract→archive→orchestrator）从占位 stub 接成生产可用，补全数据契约和幂等机制。",
+    "PHASE_GOAL": "全部 SC 通过（pytest 绿 + lint 绿），orchestrator CLI 可 dry-run 无错，source_validator 可产 sources-ledger.jsonl，raw 文件名含 article_id 短码，重跑幂等。"
+  },
+  "max_parallel_planning": 1,
+  "max_parallel_execution": 2,
+  "max_parallel_review": 2,
+  "max_parallel_validation": 2,
+  "overrides_rationale": "planning=1: 计划已手写跳过 plan 阶段",
+  "merge_gates": [
+    { "gate_id": "G1", "description": "child 输出格式合规" },
+    { "gate_id": "G2", "description": "files_added/modified 全在 owned_paths 内" },
+    { "gate_id": "G3", "description": "execution result 无 REV_VERDICT/GD_REVIEW_DECISION 字段" },
+    { "gate_id": "G4", "description": "SC 有 evidence 或 not_run_reason" },
+    { "gate_id": "G5", "description": "并行 wave 全完才进串行 wave" },
+    { "gate_id": "G6", "description": "reviewer 冲突时 master 写仲裁理由" }
+  ],
+  "tracks": [
+    {
+      "track_id": "t1",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "src/akb2/quality/intake/models.py",
+        "src/akb2/quality/intake/extract.py",
+        "tests/quality/test_extraction_context.py"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "src/akb2/quality/{admission,distill,grader,repair,promote,runner,calibration}.py",
+        "plans/gd/2026-06-12-content-quality-loop/"
+      ],
+      "required_context": [
+        "plans/gd/2026-06-14-cql-intake/step-1-data-contracts.md"
+      ],
+      "deliverables": [
+        { "path": "src/akb2/quality/intake/models.py", "kind": "file", "must_exist": true },
+        { "path": "tests/quality/test_extraction_context.py", "kind": "file", "must_exist": true }
+      ],
+      "blocked_by": [],
+      "can_parallel_with": [],
+      "sc_refs": ["SC-1"],
+      "verify": [
+        {
+          "sc_ref": "SC-1",
+          "method": "test",
+          "cmd": "cd /Users/praise/AI-Agent/Claude/projects/Project\\ AKB2 && python -m pytest tests/quality/test_extraction_context.py -q",
+          "expect": "exit 0"
+        }
+      ]
+    },
+    {
+      "track_id": "t2",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "src/akb2/quality/intake/extract.py",
+        "tests/quality/test_intake_extract.py"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "src/akb2/quality/intake/models.py",
+        "src/akb2/quality/intake/raw_archiver.py",
+        "src/akb2/quality/intake/orchestrator.py",
+        "src/akb2/quality/intake/source_validator.py",
+        "src/akb2/quality/intake/discovery.py",
+        "pyproject.toml"
+      ],
+      "required_context": [
+        "src/akb2/quality/intake/models.py",
+        "plans/gd/2026-06-14-cql-intake/step-2-extract-tools.md"
+      ],
+      "deliverables": [
+        { "path": "src/akb2/quality/intake/extract.py", "kind": "file", "must_exist": true },
+        { "path": "tests/quality/test_intake_extract.py", "kind": "file", "must_exist": true }
+      ],
+      "blocked_by": ["t1"],
+      "can_parallel_with": ["t4"],
+      "sc_refs": ["SC-2", "SC-3", "SC-4"],
+      "verify": [
+        {
+          "sc_ref": "SC-2",
+          "method": "test",
+          "cmd": "cd /Users/praise/AI-Agent/Claude/projects/Project\\ AKB2 && python -m pytest tests/quality/test_intake_extract.py::TestExtractViaDefuddle -q",
+          "expect": "exit 0"
+        },
+        {
+          "sc_ref": "SC-3",
+          "method": "test",
+          "cmd": "cd /Users/praise/AI-Agent/Claude/projects/Project\\ AKB2 && python -m pytest tests/quality/test_intake_extract.py::TestExtractViaScrapling -q",
+          "expect": "exit 0"
+        },
+        {
+          "sc_ref": "SC-4",
+          "method": "test",
+          "cmd": "cd /Users/praise/AI-Agent/Claude/projects/Project\\ AKB2 && python -m pytest tests/quality/test_intake_extract.py::TestExtractViaDocling -q",
+          "expect": "exit 0"
+        }
+      ]
+    },
+    {
+      "track_id": "t3",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "src/akb2/quality/intake/orchestrator.py",
+        "reports/intake/",
+        ".gitignore",
+        "tests/quality/test_intake_orchestrator.py"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "src/akb2/quality/intake/extract.py",
+        "src/akb2/quality/intake/raw_archiver.py",
+        "src/akb2/quality/intake/source_validator.py",
+        "src/akb2/quality/intake/discovery.py"
+      ],
+      "required_context": [
+        "src/akb2/quality/intake/models.py",
+        "src/akb2/quality/intake/extract.py",
+        "plans/gd/2026-06-14-cql-intake/step-3-orchestrator.md"
+      ],
+      "deliverables": [
+        { "path": "src/akb2/quality/intake/orchestrator.py", "kind": "file", "must_exist": true },
+        { "path": "tests/quality/test_intake_orchestrator.py", "kind": "file", "must_exist": true }
+      ],
+      "blocked_by": ["t1", "t2"],
+      "can_parallel_with": ["t5"],
+      "sc_refs": ["SC-5", "SC-7", "SC-8"],
+      "verify": [
+        {
+          "sc_ref": "SC-5",
+          "method": "test",
+          "cmd": "cd /Users/praise/AI-Agent/Claude/projects/Project\\ AKB2 && python -m pytest tests/quality/test_intake_orchestrator.py -q -k 'article_id or idempotent'",
+          "expect": "exit 0"
+        },
+        {
+          "sc_ref": "SC-7",
+          "method": "command",
+          "cmd": "cd /Users/praise/AI-Agent/Claude/projects/Project\\ AKB2 && PYTHONPATH=src python -m akb2.quality.intake.orchestrator --dry-run --limit 3 --sources-config config/main_sources.yaml 2>&1 | tee /tmp/dry-run-out.txt && grep -q 'archived=0' /tmp/dry-run-out.txt && echo PASS",
+          "expect": "PASS"
+        },
+        {
+          "sc_ref": "SC-8",
+          "method": "test",
+          "cmd": "cd /Users/praise/AI-Agent/Claude/projects/Project\\ AKB2 && python -m pytest tests/quality/test_intake_orchestrator.py -q -k 'rate_limit or quarantine or ledger'",
+          "expect": "exit 0"
+        }
+      ]
+    },
+    {
+      "track_id": "t4",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "src/akb2/quality/intake/raw_archiver.py",
+        "tests/quality/test_intake_raw.py"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "src/akb2/quality/intake/extract.py",
+        "src/akb2/quality/intake/orchestrator.py",
+        "src/akb2/quality/intake/discovery.py",
+        "src/akb2/quality/intake/source_validator.py"
+      ],
+      "required_context": [
+        "src/akb2/quality/intake/models.py",
+        "plans/gd/2026-06-14-cql-intake/step-4-raw-archive.md"
+      ],
+      "deliverables": [
+        { "path": "src/akb2/quality/intake/raw_archiver.py", "kind": "file", "must_exist": true },
+        { "path": "tests/quality/test_intake_raw.py", "kind": "file", "must_exist": true }
+      ],
+      "blocked_by": ["t1"],
+      "can_parallel_with": ["t2", "t5"],
+      "sc_refs": ["SC-6"],
+      "verify": [
+        {
+          "sc_ref": "SC-6",
+          "method": "test",
+          "cmd": "cd /Users/praise/AI-Agent/Claude/projects/Project\\ AKB2 && python -m pytest tests/quality/test_intake_raw.py -q",
+          "expect": "exit 0; ≥22 tests passed"
+        }
+      ]
+    },
+    {
+      "track_id": "t5",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "src/akb2/quality/intake/source_validator.py",
+        "src/akb2/quality/intake/discovery.py",
+        "reports/source-validation/sources-ledger.jsonl",
+        "tests/quality/test_source_validator.py"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "src/akb2/quality/intake/extract.py",
+        "src/akb2/quality/intake/orchestrator.py",
+        "src/akb2/quality/intake/raw_archiver.py"
+      ],
+      "required_context": [
+        "src/akb2/quality/intake/models.py",
+        "config/main_sources.yaml",
+        "plans/gd/2026-06-14-cql-intake/step-5-source-validator.md"
+      ],
+      "deliverables": [
+        { "path": "src/akb2/quality/intake/source_validator.py", "kind": "file", "must_exist": true },
+        { "path": "tests/quality/test_source_validator.py", "kind": "file", "must_exist": true }
+      ],
+      "blocked_by": ["t1"],
+      "can_parallel_with": ["t3", "t4"],
+      "sc_refs": ["SC-9", "SC-10"],
+      "verify": [
+        {
+          "sc_ref": "SC-9",
+          "method": "test",
+          "cmd": "cd /Users/praise/AI-Agent/Claude/projects/Project\\ AKB2 && python -m pytest tests/quality/test_source_validator.py -q -m 'not integration'",
+          "expect": "exit 0"
+        },
+        {
+          "sc_ref": "SC-10",
+          "method": "command",
+          "cmd": "cd /Users/praise/AI-Agent/Claude/projects/Project\\ AKB2 && AKB2_LIVE_VALIDATE=1 PYTHONPATH=src python -m akb2.quality.intake.source_validator --live --out reports/source-validation/sources-ledger.jsonl && python -c \"import json,yaml; rs=[json.loads(l) for l in open('reports/source-validation/sources-ledger.jsonl')]; assert len(rs)==76; print('PASS')\"",
+          "expect": "PASS"
+        }
+      ]
+    },
+    {
+      "track_id": "t6",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "pyproject.toml",
+        "src/akb2/quality/intake/__init__.py",
+        "docs/runbooks/"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "src/akb2/quality/intake/extract.py",
+        "src/akb2/quality/intake/orchestrator.py",
+        "src/akb2/quality/intake/raw_archiver.py",
+        "src/akb2/quality/intake/source_validator.py",
+        "src/akb2/quality/intake/discovery.py"
+      ],
+      "required_context": [
+        "plans/gd/2026-06-14-cql-intake/step-6-engineering-gate.md"
+      ],
+      "deliverables": [
+        { "path": "pyproject.toml", "kind": "file", "must_exist": true },
+        { "path": "src/akb2/quality/intake/__init__.py", "kind": "file", "must_exist": true }
+      ],
+      "blocked_by": ["t2", "t3", "t4", "t5"],
+      "can_parallel_with": [],
+      "sc_refs": ["SC-11"],
+      "verify": [
+        {
+          "sc_ref": "SC-11",
+          "method": "command",
+          "cmd": "cd /Users/praise/AI-Agent/Claude/projects/Project\\ AKB2 && python -m pytest tests/quality/ tests/loops/ -q && ruff check src/akb2/quality/intake/ tests/quality/ && echo PASS",
+          "expect": "PASS"
+        }
+      ]
+    }
+  ],
+  "waves": [
+    {
+      "wave_id": "w1",
+      "track_ids": ["t1"],
+      "description": "数据契约与身份契约（ExtractionContext + article_id）—— 所有后续 step 的基础"
+    },
+    {
+      "wave_id": "w2",
+      "track_ids": ["t2", "t4"],
+      "description": "三工具接真（t2）+ raw 归档契约补全（t4）—— 均只依赖 t1，可并行"
+    },
+    {
+      "wave_id": "w3",
+      "track_ids": ["t3", "t5"],
+      "description": "orchestrator+ledger（t3，需 t1+t2）+ source_validator live（t5，需 t1）—— 可并行"
+    },
+    {
+      "wave_id": "w4",
+      "track_ids": ["t6"],
+      "description": "工程门 + import gate + pyproject —— 依赖 t2~t5 全部完成"
+    }
+  ]
+}

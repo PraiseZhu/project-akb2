@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.0",
+  "stage": "execute",
+  "parent_run_id": "cql-intake-v1",
+  "batch_id": "batch-w4",
+  "recorded_at": "2026-06-14T15:35:12Z",
+  "child_agent_count": 1,
+  "max_parallel": 2,
+  "child_jobs": [
+    {
+      "job_id": "batch-w4-t6",
+      "result_path": "plans/gd/2026-06-14-cql-intake/execute/e-step6-result.yaml",
+      "result_hash": "0561926ab41a174827463b4cfd3e18733c8d023ab8749097964fb3570c979ec2",
+      "status": "completed"
+    }
+  ],
+  "main_agent_merge": {
+    "merge_report_path": "plans/gd/2026-06-14-cql-intake/execute/controller-report.json",
+    "merge_report_hash": "caf94e6e0e84a6ff43f3876dd1aa28b3ef8d53c7d9448c457cc4baf30c3aad0c",
+    "final_decision": "APPROVED",
+    "blocking_buckets": []
+  }
+}

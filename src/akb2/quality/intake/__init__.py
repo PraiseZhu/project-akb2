@@ -8,3 +8,22 @@
 """
 
 from __future__ import annotations
+
+import importlib.util
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def _check_tool_available(name: str) -> bool:
+    """探测 Python 包是否可在当前环境导入。
+
+    不抛异常；不可用时记录 warning 并返回 False。
+    """
+    available = importlib.util.find_spec(name) is not None
+    if not available:
+        logger.warning(
+            "%s not available in current Python env; related extraction will be skipped",
+            name,
+        )
+    return available

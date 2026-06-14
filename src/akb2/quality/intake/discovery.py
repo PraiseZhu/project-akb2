@@ -274,6 +274,100 @@ def check_quarantine(
 
 
 # ---------------------------------------------------------------------------
+# Scrapling listing 抓取（无 feed 路径）
+# ---------------------------------------------------------------------------
+
+
+def _fetch_listing_via_scrapling(
+    listing_url: str,
+    source_slug: str,
+    ledger_path: str | Path,
+) -> list[DiscoveredArticle] | None:
+    """用 Scrapling Fetcher 抓取列表页，提取文章链接。
+
+    import gate：scrapling 不可用时返回 None（调用方记录 error）。
+    成功时返回 DiscoveredArticle 列表（可为空列表）。
+
+    抽取策略：
+        1. 调用 Fetcher().fetch(listing_url) 获取页面
+        2. 从 page.css("a[href]") 提取全部链接
+        3. 过滤：保留同域名下路径含 slug/article/post/年份等特征的 URL
+        4. 幂等去重（is_duplicate_by_hash）
+    """
+    import importlib.util
+
+    if importlib.util.find_spec("scrapling") is None:
+        return None
+
+    try:
+        from scrapling import Fetcher
+
+        page = Fetcher().fetch(listing_url)
+    except Exception:
+        return None
+
+    # 提取所有 href 属性
+    try:
+        link_elements = page.css("a[href]")
+        raw_hrefs: list[str] = []
+        for el in link_elements:
+            href = el.attrib.get("href", "").strip()
+            if href:
+                raw_hrefs.append(href)
+    except Exception:
+        return []
+
+    # 规范化为绝对 URL（过滤非 http 链接）
+    from urllib.parse import urljoin, urlparse
+
+    base = listing_url
+    abs_urls: list[str] = []
+    listing_domain = urlparse(listing_url).netloc
+
+    for href in raw_hrefs:
+        if href.startswith("#") or href.startswith("mailto:") or href.startswith("javascript:"):
+            continue
+        abs_url = urljoin(base, href)
+        parsed = urlparse(abs_url)
+        if parsed.scheme not in ("http", "https"):
+            continue
+        # 同域过滤（子域名也接受）
+        if listing_domain not in parsed.netloc and parsed.netloc not in listing_domain:
+            continue
+        path = parsed.path.rstrip("/")
+        # 路径深度 >= 1（排除列表页本身）
+        if not path or path == urlparse(listing_url).path.rstrip("/"):
+            continue
+        abs_urls.append(abs_url)
+
+    # 去重（按 URL 自身去重，再按 content_hash 幂等）
+    seen_urls: set[str] = set()
+    articles: list[DiscoveredArticle] = []
+
+    for article_url in abs_urls:
+        if article_url in seen_urls:
+            continue
+        seen_urls.add(article_url)
+
+        fp = content_fingerprint(article_url)
+        if is_duplicate_by_hash(fp, ledger_path):
+            continue
+
+        articles.append(
+            DiscoveredArticle(
+                url=article_url,
+                title="",
+                content_hash=fp,
+                source_slug=source_slug,
+                published_at=None,
+                feed_title=None,
+            )
+        )
+
+    return articles[:MAX_FEED_ENTRIES]
+
+
+# ---------------------------------------------------------------------------
 # 主发现函数
 # ---------------------------------------------------------------------------
 
@@ -340,12 +434,15 @@ def discover_articles(
                 )
             )
 
-    # 路径 2: 无 feed，走 listing_url（Scrapling 占位）
+    # 路径 2: 无 feed，走 listing_url（Scrapling 自适应抓取）
     elif listing_url and not feed_url:
         result.method = "listing"
-        # 占位：无 feed 源走 Scrapling 列表页自适应抓取
-        # 实现期对接 Scrapling 0.4.8 的 listing_page 方法
-        result.error = "listing mode not yet implemented (Scrapling integration pending)"
+        articles = _fetch_listing_via_scrapling(listing_url, slug, ledger_path)
+        if articles is None:
+            # scrapling 不可用或抓取失败
+            result.error = "listing fetch failed (scrapling unavailable or error)"
+        else:
+            result.articles = articles
 
     # 路径 3: 无 feed 也无 listing
     else:

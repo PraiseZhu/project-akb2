@@ -217,7 +217,8 @@ class TestDiscoverArticles:
             sample_source_config_no_feed, temp_ledger_path, feed_content=None
         )
         assert result.method == "listing"
-        assert "not yet implemented" in (result.error or "")
+        # listing 路径已接 scrapling；scrapling 不可用时 fallback 为 error，但不再是 "not yet implemented"
+        # 只断言 method=listing 即可；error 字段取决于运行环境 scrapling 可用性
 
     def test_discover_no_feed_no_listing(
         self, temp_ledger_path: Path

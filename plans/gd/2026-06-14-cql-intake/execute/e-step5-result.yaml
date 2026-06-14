@@ -1,0 +1,51 @@
+template_kind: gd-execution-result
+result_id: step-5-source-validator
+task_id: t5
+parent_step: step-5
+parent_plan: plans/gd/2026-06-14-cql-intake/master-plan.md
+executor_role: claude_subagent
+exec_status: completed
+
+sc_acceptance:
+  - sc_ref: SC-9
+    status: pass
+    evidence: |
+      cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && python -m pytest tests/quality/test_source_validator.py -q -m "not integration"
+      25 passed, 1 deselected in 0.37s
+      exit 0
+      覆盖：dry-run 结构/CLI 可用/ledger 字段完整/reachable=False/run_id 存在/原子写入/run_id 一致性/UUID 格式/两次运行不同 run_id/extract_latest_url RSS+Atom/timeout 处理
+  - sc_ref: SC-10
+    status: not_run
+    evidence: ""
+    not_run_reason: "integration 真网测试，需 AKB2_LIVE_VALIDATE=1 手动触发"
+
+files_added:
+  - tests/quality/test_source_validator.py
+
+files_modified:
+  - src/akb2/quality/intake/source_validator.py
+  - src/akb2/quality/intake/discovery.py
+
+owned_paths_writes_only: true
+forbidden_paths_touched: []
+
+implementation_notes:
+  source_validator_changes:
+    - "_validate_source_live 接真实 httpx.get（timeout=10，follow_redirects=True）"
+    - "_extract_latest_url 从 RSS/Atom feed 文本提取最新文章 URL（regex 三级匹配）"
+    - "run_id 用 uuid4() 生成，全部 records 共享同一个 run_id"
+    - "_write_jsonl_atomic 原子写入：先写 .jsonl.tmp，成功后 os.replace 覆盖目标（非追加）"
+    - "validate_sources 收集所有 records 后一次性原子写入（替代原 _append_jsonl 循环追加）"
+    - "--live 需 AKB2_LIVE_VALIDATE=1 门控防误触"
+    - "增加 run_id 字段到 dry-run 和 live 两个 record 生成函数"
+  discovery_changes:
+    - "listing 路径（elif listing_url and not feed_url）由 error 占位改为调用 _fetch_listing_via_scrapling"
+    - "_fetch_listing_via_scrapling：import gate（scrapling 不可用返回 None），Fetcher().fetch() 抓列表页"
+    - "提取全部 a[href] → 规范化绝对 URL → 同域过滤 → 路径深度过滤 → is_duplicate_by_hash 去重"
+    - "返回 list[DiscoveredArticle] 或 None；None 时调用方记录 error"
+
+handoff:
+  result_path: plans/gd/2026-06-14-cql-intake/execute/e-step5-result.yaml
+  status_field: exec_status
+  summary: "source_validator live 模式接真实 httpx（原子写 run_id 共享 ledger）；discovery listing 路径接 scrapling；test_source_validator.py 新建 25 个 mocked 单测全部通过（SC-9 pass）；ruff lint 零报告"
+  blockers: none

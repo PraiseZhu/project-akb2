@@ -11,22 +11,33 @@
     4. 两级全失败 → 调用 step-1 signatures 模块落 fetch_fail 签名
 
 成功硬判定:
-    - 正文字数 >= 50（与页面声明字数核对，放宽至保守下限）
+    - 正文字数 >= 200（与页面声明字数核对，放宽至保守下限）
     - 元数据 4 件齐: title / author / published / url
 """
 
 from __future__ import annotations
 
+import importlib.util
+import json
+import logging
 import re
+import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from src.akb2.quality.intake.models import ExtractionContext  # noqa: F401
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # 具名常量
 # ---------------------------------------------------------------------------
 
-MIN_CONTENT_LENGTH = 50  # 最小正文字数（保守下限，与页面声明核对）
+MIN_CONTENT_LENGTH = 200  # 最小正文字数（保守下限，与页面声明核对）
 REQUIRED_METADATA_FIELDS = ("title", "author", "published", "url")
 
 # 反爬 / JS 重模式列表（defuddle 失败时检测）
@@ -115,62 +126,188 @@ def _validate_metadata(result: ExtractResult) -> bool:
     return all(v for v in fields.values())
 
 
+def _apply_feed_fallback(
+    result: ExtractResult,
+    context: ExtractionContext | None,
+) -> None:
+    """将 ExtractionContext 的 feed 元数据回填到 result 中缺失的字段。
+
+    fallback 顺序（四个字段独立判断）:
+        title     ← result.title     or context.feed_title
+        author    ← result.author    or context.feed_author
+        published ← result.published or context.feed_published
+        publisher ← result.raw_metadata["publisher"] or context.source_publisher
+
+    此函数在 _validate_metadata 之前调用，仅补充空字段，不覆盖已有值。
+    context 为 None 时本函数为 no-op。
+    """
+    if context is None:
+        return
+
+    if not result.title and context.feed_title:
+        result.title = context.feed_title
+    if not result.author and context.feed_author:
+        result.author = context.feed_author
+    if not result.published and context.feed_published:
+        result.published = context.feed_published
+    # publisher 存入 raw_metadata 供下游消费
+    if not result.raw_metadata.get("publisher") and context.source_publisher:
+        result.raw_metadata["publisher"] = context.source_publisher
+
+
 # ---------------------------------------------------------------------------
 # 抽取方法（占位实现，真实工具在运行期注入）
 # ---------------------------------------------------------------------------
 
 
 def _extract_via_defuddle(url: str, html: str | None = None) -> dict[str, Any]:
-    """通过 defuddle 抽取正文（占位实现）。
+    """通过 defuddle CLI 抽取正文。
 
-    真实实现期：调用 defuddle CLI 或 Python API。
+    调用 defuddle parse <tmpfile> --json -m，解析 JSON 输出提取
+    title / author / published / content（markdown 正文） / word_count。
+
+    html 为 None 时直接传 url 给 defuddle（defuddle 支持 URL 输入）。
+    返回空 dict 表示抽取失败。
     """
-    # 占位：返回模拟结果
-    if html and len(html.strip()) > 100:
+    try:
+        if html is not None:
+            # HTML 写入临时文件
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".html", delete=False, encoding="utf-8"
+            ) as tmp:
+                tmp.write(html)
+                tmp_path = tmp.name
+            source_arg = tmp_path
+        else:
+            source_arg = url
+            tmp_path = None
+
+        try:
+            proc = subprocess.run(
+                ["defuddle", "parse", source_arg, "--json", "-m"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        finally:
+            if tmp_path:
+                Path(tmp_path).unlink(missing_ok=True)
+
+        if proc.returncode != 0:
+            logger.debug("defuddle exited %d: %s", proc.returncode, proc.stderr[:200])
+            return {}
+
+        data: dict[str, Any] = json.loads(proc.stdout)
+        content: str = data.get("content", "")
+        word_count: int = data.get("wordCount") or _count_words(content)
+
         return {
-            "title": "Defuddle Extracted Title",
-            "author": "Defuddle Author",
-            "published": "2026-01-01",
-            "content": html,
-            "word_count": _count_words(html),
+            "title": data.get("title", ""),
+            "author": data.get("author", ""),
+            "published": data.get("published", ""),
+            "content": content,
+            "word_count": word_count,
         }
-    return {}
+
+    except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError) as exc:
+        logger.warning("defuddle extraction failed: %s", exc)
+        return {}
 
 
 def _extract_via_scrapling(
     url: str, html: str | None = None, browser_mode: bool = False
 ) -> dict[str, Any]:
-    """通过 Scrapling 0.4.8 抽取正文（占位实现）。
+    """通过 Scrapling 抽取正文。
 
-    真实实现期：import scrapling，调用自适应抽取或浏览器模式。
+    import gate：scrapling 不可用时 log warning 并返回空 dict。
+    自适应模式（browser_mode=False）：Fetcher().fetch(url)
+    浏览器模式（browser_mode=True）：StealthyFetcher().fetch(url)
+
+    返回空 dict 表示抽取失败。
     """
-    mode = "browser" if browser_mode else "adaptive"
-    if html and len(html.strip()) > 100:
+    if importlib.util.find_spec("scrapling") is None:
+        logger.warning("scrapling not available, falling back")
+        return {}
+
+    try:
+        if browser_mode:
+            from scrapling import StealthyFetcher
+
+            page = StealthyFetcher().fetch(url)
+        else:
+            from scrapling import Fetcher
+
+            page = Fetcher().fetch(url)
+
+        # Scrapling page 对象：.html_content 或 .body 含原始 HTML；
+        # .get_best_summary() / .title 等提供元数据。
+        raw_html: str = getattr(page, "html_content", None) or str(page.body or "")
+        title: str = str(getattr(page, "title", "") or "")
+        content: str = raw_html
+        word_count: int = _count_words(raw_html)
+
         return {
-            "title": f"Scrapling {mode} Title",
-            "author": "Scrapling Author",
-            "published": "2026-01-01",
-            "content": html,
-            "word_count": _count_words(html),
+            "title": title,
+            "author": "",
+            "published": "",
+            "content": content,
+            "word_count": word_count,
         }
-    return {}
+
+    except Exception as exc:
+        logger.warning("scrapling extraction failed: %s", exc)
+        return {}
 
 
 def _extract_via_docling(url: str, file_bytes: bytes | None = None) -> dict[str, Any]:
-    """通过 Docling 抽取 PDF 正文（占位实现）。
+    """通过 Docling 抽取 PDF 正文。
 
-    真实实现期：import docling，调用文档转换。
+    import gate：docling 不可用时 log warning 并返回空 dict。
+    file_bytes 落临时 PDF 文件，调用 DocumentConverter().convert()，
+    返回 result.document.export_to_markdown() 内容。
+
+    返回空 dict 表示抽取失败。
     """
-    if file_bytes and len(file_bytes) > 100:
-        text = file_bytes.decode("utf-8", errors="replace")
+    if importlib.util.find_spec("docling") is None:
+        logger.warning("docling not available, falling back")
+        return {}
+
+    if not file_bytes:
+        logger.debug("_extract_via_docling: no file_bytes provided")
+        return {}
+
+    try:
+        from docling.document_converter import DocumentConverter
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            tmp.write(file_bytes)
+            tmp_pdf = tmp.name
+
+        try:
+            result = DocumentConverter().convert(tmp_pdf)
+        finally:
+            Path(tmp_pdf).unlink(missing_ok=True)
+
+        content: str = result.document.export_to_markdown()
+        word_count: int = _count_words(content)
+
+        # Docling result 可能携带元数据
+        meta = getattr(result, "metadata", None) or {}
+        title: str = str(meta.get("title", "") or "")
+        author: str = str(meta.get("author", "") or "")
+        published: str = str(meta.get("date", "") or "")
+
         return {
-            "title": "Docling PDF Title",
-            "author": "Docling Author",
-            "published": "2026-01-01",
-            "content": text,
-            "word_count": _count_words(text),
+            "title": title,
+            "author": author,
+            "published": published,
+            "content": content,
+            "word_count": word_count,
         }
-    return {}
+
+    except Exception as exc:
+        logger.warning("docling extraction failed: %s", exc)
+        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +321,7 @@ def extract_content(
     content_type: str = "",
     file_bytes: bytes | None = None,
     failures_path: str | None = None,
+    extraction_config: ExtractionContext | None = None,
 ) -> ExtractResult:
     """对单个 URL 执行抽取决策树。
 
@@ -193,11 +331,28 @@ def extract_content(
         content_type: HTTP Content-Type 头
         file_bytes: 注入的 PDF 字节（测试用）
         failures_path: 故障签名落账路径（为 None 时不落签名）
+        extraction_config: ExtractionContext，携带 feed 元数据供 fallback。
+            当抽取器无法提取 title/author/published/publisher 时，
+            从 context 中补充。四者皆缺且 _validate_metadata 仍失败时，
+            fail-closed 不产 raw（不写签名，返回失败 ExtractResult）。
 
     Returns:
         ExtractResult 含抽取结果与成功判定。
     """
     result = ExtractResult(url=url)
+
+    # HTTP fetcher 入口：html 为 None 且非 PDF 时自动抓取 HTML
+    if html is None and file_bytes is None and not _detect_pdf(url, content_type):
+        try:
+            import httpx
+
+            resp = httpx.get(url, follow_redirects=True, timeout=30)
+            html = resp.text
+            if not content_type:
+                content_type = resp.headers.get("content-type", "")
+        except Exception as exc:
+            logger.warning("HTTP fetch failed for %s: %s", url, exc)
+            html = None
 
     # 分支 1: PDF 检测
     if _detect_pdf(url, content_type):
@@ -209,6 +364,8 @@ def extract_content(
             result.published = extracted.get("published", "")
             result.content = extracted.get("content", "")
             result.word_count = extracted.get("word_count", 0)
+            # feed 元数据 fallback（补充抽取器未能获取的字段）
+            _apply_feed_fallback(result, extraction_config)
             result.metadata_complete = _validate_metadata(result)
             result.extraction_success = (
                 result.word_count >= MIN_CONTENT_LENGTH and result.metadata_complete
@@ -231,11 +388,17 @@ def extract_content(
                     result.published = extracted.get("published", "")
                     result.content = extracted.get("content", "")
                     result.word_count = wc
+                    # feed 元数据 fallback
+                    _apply_feed_fallback(result, extraction_config)
                     result.metadata_complete = _validate_metadata(result)
                     result.extraction_success = result.metadata_complete
                     if result.extraction_success:
                         return result
-                    result.error = "defuddle succeeded but metadata incomplete"
+                    # fallback 后仍缺元数据 → fail-closed（不产 raw，不落签名）
+                    result.error = "defuddle succeeded but metadata incomplete after feed fallback"
+                    result.method = ExtractMethod.FAILED
+                    result.extraction_success = False
+                    return result
                 else:
                     result.error = "defuddle content too short"
 
@@ -253,14 +416,20 @@ def extract_content(
                 result.published = extracted.get("published", "")
                 result.content = extracted.get("content", "")
                 result.word_count = wc
+                # feed 元数据 fallback
+                _apply_feed_fallback(result, extraction_config)
                 result.metadata_complete = _validate_metadata(result)
                 result.extraction_success = result.metadata_complete
                 if result.extraction_success:
                     return result
+                # fallback 后仍缺元数据 → fail-closed（不产 raw，不落签名）
                 result.error = (
                     f"Scrapling {'browser' if use_browser else 'adaptive'}"
-                    " succeeded but metadata incomplete"
+                    " succeeded but metadata incomplete after feed fallback"
                 )
+                result.method = ExtractMethod.FAILED
+                result.extraction_success = False
+                return result
             else:
                 result.error = (
                     f"Scrapling {'browser' if use_browser else 'adaptive'}"
@@ -312,6 +481,7 @@ def batch_extract(
     urls: list[str],
     html_map: dict[str, str] | None = None,
     failures_path: str | None = None,
+    extraction_config: ExtractionContext | None = None,
 ) -> dict[str, ExtractResult]:
     """批量执行抽取决策树。
 
@@ -319,6 +489,7 @@ def batch_extract(
         urls: 目标 URL 列表
         html_map: {url: html_text} 注入（测试用）
         failures_path: 故障签名落账路径
+        extraction_config: ExtractionContext，供所有 URL 共享的 feed 元数据 fallback
 
     Returns:
         {url: ExtractResult} 每个 URL 的抽取结果。
@@ -330,5 +501,6 @@ def batch_extract(
             url=url,
             html=html,
             failures_path=failures_path,
+            extraction_config=extraction_config,
         )
     return results
