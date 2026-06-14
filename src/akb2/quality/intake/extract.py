@@ -27,8 +27,6 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from akb2.quality.intake import _check_tool_available
-
 if TYPE_CHECKING:
     from src.akb2.quality.intake.models import ExtractionContext  # noqa: F401
 
@@ -226,6 +224,7 @@ def _extract_via_scrapling(
 
     返回空 dict 表示抽取失败。
     """
+    from akb2.quality.intake import _check_tool_available
     if not _check_tool_available("scrapling", logger=logger):
         return {}
 
@@ -268,6 +267,7 @@ def _extract_via_docling(url: str, file_bytes: bytes | None = None) -> dict[str,
 
     返回空 dict 表示抽取失败。
     """
+    from akb2.quality.intake import _check_tool_available
     if not _check_tool_available("docling", probe=_docling_probe, logger=logger):
         return {}
 
