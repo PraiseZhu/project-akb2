@@ -53,26 +53,99 @@
         "config/vault.toml"
       ],
       "deliverables": [
-        {"path": "schema/loop-ledger.schema.json", "kind": "file", "must_exist": true},
-        {"path": "schema/failure-signature.schema.json", "kind": "file", "must_exist": true},
-        {"path": "schema/repair-adapter-card.schema.json", "kind": "file", "must_exist": true},
-        {"path": "src/akb2/loops/__init__.py", "kind": "file", "must_exist": true},
-        {"path": "src/akb2/loops/paths.py", "kind": "file", "must_exist": true},
-        {"path": "src/akb2/loops/ledger.py", "kind": "file", "must_exist": true},
-        {"path": "src/akb2/loops/signatures.py", "kind": "file", "must_exist": true},
-        {"path": "scripts/akb2-watchdog.sh", "kind": "file", "must_exist": true},
-        {"path": "tests/loops/", "kind": "directory", "must_exist": true}
+        {
+          "path": "schema/loop-ledger.schema.json",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "schema/failure-signature.schema.json",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "schema/repair-adapter-card.schema.json",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "src/akb2/loops/__init__.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "src/akb2/loops/paths.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "src/akb2/loops/ledger.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "src/akb2/loops/signatures.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "scripts/akb2-watchdog.sh",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/loops/",
+          "kind": "directory",
+          "must_exist": true
+        }
       ],
       "blocked_by": [],
       "can_parallel_with": [],
-      "sc_refs": ["SC-s1", "SC-s2", "SC-s3", "SC-s4", "SC-s5", "SC-s6"],
+      "sc_refs": [
+        "SC-s1",
+        "SC-s2",
+        "SC-s3",
+        "SC-s4",
+        "SC-s5",
+        "SC-s6"
+      ],
       "verify": [
-        {"sc_ref": "SC-s1", "method": "command", "cmd": "test -f schema/loop-ledger.schema.json && test -f schema/failure-signature.schema.json && test -f schema/repair-adapter-card.schema.json && python3 -m json.tool schema/loop-ledger.schema.json >/dev/null && python3 -m json.tool schema/failure-signature.schema.json >/dev/null && python3 -m json.tool schema/repair-adapter-card.schema.json >/dev/null && echo PASS", "expect": "PASS"},
-        {"sc_ref": "SC-s2", "method": "test", "cmd": "python3 -m pytest tests/loops/test_ledger_lifeline.py -q", "expect": "exit 0"},
-        {"sc_ref": "SC-s3", "method": "test", "cmd": "python3 -m pytest tests/loops/test_signatures.py -q", "expect": "exit 0"},
-        {"sc_ref": "SC-s4", "method": "command", "cmd": "test -x scripts/akb2-watchdog.sh && [ \"$(wc -l < scripts/akb2-watchdog.sh)\" -le 80 ] && ! grep -qiE 'curl.*chat|openai|deepseek|llm' scripts/akb2-watchdog.sh && bash scripts/akb2-watchdog.sh --self-test && echo PASS", "expect": "PASS"},
-        {"sc_ref": "SC-s5", "method": "assertion", "cmd": "PYTHONPATH=src python3 -c \"from akb2.loops import paths; assert 'quarantine' in paths.QUARANTINE_SUBDIR; print('PASS')\"", "expect": "PASS"},
-        {"sc_ref": "SC-s6", "method": "command", "cmd": "ruff check src/akb2/loops tests/loops && echo PASS", "expect": "PASS"}
+        {
+          "sc_ref": "SC-s1",
+          "method": "command",
+          "cmd": "test -f schema/loop-ledger.schema.json && test -f schema/failure-signature.schema.json && test -f schema/repair-adapter-card.schema.json && python3 -m json.tool schema/loop-ledger.schema.json >/dev/null && python3 -m json.tool schema/failure-signature.schema.json >/dev/null && python3 -m json.tool schema/repair-adapter-card.schema.json >/dev/null && echo PASS",
+          "expect": "PASS"
+        },
+        {
+          "sc_ref": "SC-s2",
+          "method": "test",
+          "cmd": "python3 -m pytest tests/loops/test_ledger_lifeline.py -q",
+          "expect": "exit 0"
+        },
+        {
+          "sc_ref": "SC-s3",
+          "method": "test",
+          "cmd": "python3 -m pytest tests/loops/test_signatures.py -q",
+          "expect": "exit 0"
+        },
+        {
+          "sc_ref": "SC-s4",
+          "method": "command",
+          "cmd": "test -x scripts/akb2-watchdog.sh && [ \"$(wc -l < scripts/akb2-watchdog.sh)\" -le 80 ] && ! grep -qiE 'curl.*chat|openai|deepseek|llm' scripts/akb2-watchdog.sh && bash scripts/akb2-watchdog.sh --self-test && echo PASS",
+          "expect": "PASS"
+        },
+        {
+          "sc_ref": "SC-s5",
+          "method": "assertion",
+          "cmd": "PYTHONPATH=src python3 -c \"from akb2.loops import paths; assert 'quarantine' in paths.QUARANTINE_SUBDIR; print('PASS')\"",
+          "expect": "PASS"
+        },
+        {
+          "sc_ref": "SC-s6",
+          "method": "command",
+          "cmd": "ruff check src/akb2/loops tests/loops && echo PASS",
+          "expect": "PASS"
+        }
       ]
     },
     {
@@ -114,27 +187,109 @@
         "docs/loops-design-decisions.md"
       ],
       "deliverables": [
-        {"path": "config/main_sources.yaml", "kind": "file", "must_exist": true},
-        {"path": "src/akb2/quality/intake/__init__.py", "kind": "file", "must_exist": true},
-        {"path": "src/akb2/quality/intake/discovery.py", "kind": "file", "must_exist": true},
-        {"path": "src/akb2/quality/intake/extract.py", "kind": "file", "must_exist": true},
-        {"path": "src/akb2/quality/intake/raw_archiver.py", "kind": "file", "must_exist": true},
-        {"path": "src/akb2/quality/intake/source_validator.py", "kind": "file", "must_exist": true},
-        {"path": "tests/quality/test_intake_discovery.py", "kind": "file", "must_exist": true},
-        {"path": "tests/quality/test_intake_extract.py", "kind": "file", "must_exist": true},
-        {"path": "tests/quality/test_intake_raw.py", "kind": "file", "must_exist": true},
-        {"path": "tests/quality/fixtures/intake/", "kind": "directory", "must_exist": true}
+        {
+          "path": "config/main_sources.yaml",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "src/akb2/quality/intake/__init__.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "src/akb2/quality/intake/discovery.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "src/akb2/quality/intake/extract.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "src/akb2/quality/intake/raw_archiver.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "src/akb2/quality/intake/source_validator.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/quality/test_intake_discovery.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/quality/test_intake_extract.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/quality/test_intake_raw.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/quality/fixtures/intake/",
+          "kind": "directory",
+          "must_exist": true
+        }
       ],
-      "blocked_by": ["e-step1"],
-      "can_parallel_with": ["e-step3"],
-      "sc_refs": ["SC-2.1", "SC-2.2", "SC-2.3", "SC-2.4", "SC-2.5", "SC-2.6"],
+      "blocked_by": [
+        "e-step1"
+      ],
+      "can_parallel_with": [
+        "e-step3"
+      ],
+      "sc_refs": [
+        "SC-2.1",
+        "SC-2.2",
+        "SC-2.3",
+        "SC-2.4",
+        "SC-2.5",
+        "SC-2.6"
+      ],
       "verify": [
-        {"sc_ref": "SC-2.1", "method": "command", "cmd": "python3 -c \"import yaml;d=yaml.safe_load(open('config/main_sources.yaml'));ss=d['sources'];assert len(ss)==76 and all(('feed_url' in s or 'listing_url' in s) and s['status']=='trial' and 'domain' in s and 'rate_limit' in s for s in ss);print('PASS')\"", "expect": "PASS"},
-        {"sc_ref": "SC-2.2", "method": "test", "cmd": "python3 -m pytest tests/quality/test_intake_discovery.py -q", "expect": "exit 0"},
-        {"sc_ref": "SC-2.3", "method": "test", "cmd": "python3 -m pytest tests/quality/test_intake_extract.py -q", "expect": "exit 0"},
-        {"sc_ref": "SC-2.4", "method": "test", "cmd": "python3 -m pytest tests/quality/test_intake_raw.py -q", "expect": "exit 0"},
-        {"sc_ref": "SC-2.5", "method": "command", "cmd": "python3 -c \"import json,yaml; sources=yaml.safe_load(open('config/main_sources.yaml'))['sources']; assert len(sources)==76; rs=[json.loads(l) for l in open('reports/source-validation/sources-ledger.jsonl')]; assert len(rs)==76; req_fields={'feed','url','reachable','latest_post','trial_fetch'}; bad=[str(i) for i,r in enumerate(rs) if not req_fields.issubset(r.keys())]; assert not bad; ok=sum(1 for r in rs if r.get('reachable')); assert ok>=70; print('PASS')\"", "expect": "PASS"},
-        {"sc_ref": "SC-2.6", "method": "command", "cmd": "python3 -m pytest tests/quality/ -q -k intake && ruff check src/akb2/quality/intake tests/quality && echo PASS", "expect": "PASS"}
+        {
+          "sc_ref": "SC-2.1",
+          "method": "command",
+          "cmd": "python3 -c \"import yaml;d=yaml.safe_load(open('config/main_sources.yaml'));ss=d['sources'];assert len(ss)==76 and all(('feed_url' in s or 'listing_url' in s) and s['status']=='trial' and 'domain' in s and 'rate_limit' in s for s in ss);print('PASS')\"",
+          "expect": "PASS"
+        },
+        {
+          "sc_ref": "SC-2.2",
+          "method": "test",
+          "cmd": "python3 -m pytest tests/quality/test_intake_discovery.py -q",
+          "expect": "exit 0"
+        },
+        {
+          "sc_ref": "SC-2.3",
+          "method": "test",
+          "cmd": "python3 -m pytest tests/quality/test_intake_extract.py -q",
+          "expect": "exit 0"
+        },
+        {
+          "sc_ref": "SC-2.4",
+          "method": "test",
+          "cmd": "python3 -m pytest tests/quality/test_intake_raw.py -q",
+          "expect": "exit 0"
+        },
+        {
+          "sc_ref": "SC-2.5",
+          "method": "command",
+          "cmd": "cd \"/Users/praise/AI-Agent/Claude/projects/Project AKB2\" && python -c \"import json,yaml; sources=yaml.safe_load(open('config/main_sources.yaml'))['sources']; assert len(sources)==76,f'config sources={len(sources)}!=76'; config_urls={s.get('feed_url') or s.get('listing_url') for s in sources} - {None,''}; rs=[json.loads(l) for l in open('reports/source-validation/sources-ledger.jsonl')]; assert len(rs)==76,f'ledger rows={len(rs)}!=76'; unique_urls={r['url'] for r in rs}; assert len(unique_urls)==76,f'duplicate ledger urls: unique={len(unique_urls)}!=76'; assert unique_urls==config_urls,f'URL mismatch: extra={unique_urls-config_urls}, missing={config_urls-unique_urls}'; req_fields={'feed','url','reachable','latest_post','trial_fetch'}; bad=[str(i) for i,r in enumerate(rs) if not req_fields.issubset(r.keys())]; assert not bad,f'MISSING FIELDS at rows: {bad}'; ok=sum(1 for r in rs if r.get('reachable')); assert ok>=70,f'reachable={ok}<70'; print('PASS')\"",
+          "expect": "PASS",
+          "note": "F-r5-2 fix 2026-06-13: synced with step-2 SC-2.5 (unique_urls==config_urls added)"
+        },
+        {
+          "sc_ref": "SC-2.6",
+          "method": "command",
+          "cmd": "python3 -m pytest tests/quality/ -q -k intake && ruff check src/akb2/quality/intake tests/quality && echo PASS",
+          "expect": "PASS"
+        }
       ]
     },
     {
@@ -183,32 +338,135 @@
         "schema/failure-signature.schema.json"
       ],
       "deliverables": [
-        {"path": "src/akb2/quality/llm_router.py", "kind": "file", "must_exist": true},
-        {"path": "src/akb2/quality/admission.py", "kind": "file", "must_exist": true},
-        {"path": "src/akb2/quality/distill.py", "kind": "file", "must_exist": true},
-        {"path": "docs/interface-contracts/llm_router.md", "kind": "file", "must_exist": true},
-        {"path": "skillpack/quality/golden-sample-refs.md", "kind": "file", "must_exist": true},
-        {"path": "skillpack/quality/negative-sample-notes.md", "kind": "file", "must_exist": true},
-        {"path": "skillpack/quality/concept-index-injection.md", "kind": "file", "must_exist": true},
-        {"path": "skillpack/quality/known-pitfalls.md", "kind": "file", "must_exist": true},
-        {"path": "tests/quality/test_admission_negative.py", "kind": "file", "must_exist": true},
-        {"path": "tests/quality/test_admission_positive.py", "kind": "file", "must_exist": true},
-        {"path": "tests/quality/test_llm_router.py", "kind": "file", "must_exist": true},
-        {"path": "tests/quality/test_distill_extract_retry.py", "kind": "file", "must_exist": true},
-        {"path": "tests/quality/test_distill_frontmatter.py", "kind": "file", "must_exist": true},
-        {"path": "tests/quality/fixtures/candidate_page_fixture.md", "kind": "file", "must_exist": true}
+        {
+          "path": "src/akb2/quality/llm_router.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "src/akb2/quality/admission.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "src/akb2/quality/distill.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "docs/interface-contracts/llm_router.md",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "skillpack/quality/golden-sample-refs.md",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "skillpack/quality/negative-sample-notes.md",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "skillpack/quality/concept-index-injection.md",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "skillpack/quality/known-pitfalls.md",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/quality/test_admission_negative.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/quality/test_admission_positive.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/quality/test_llm_router.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/quality/test_distill_extract_retry.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/quality/test_distill_frontmatter.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/quality/fixtures/candidate_page_fixture.md",
+          "kind": "file",
+          "must_exist": true
+        }
       ],
-      "blocked_by": ["e-step1"],
-      "can_parallel_with": ["e-step2"],
-      "sc_refs": ["SC-3.1", "SC-3.2", "SC-3.3", "SC-3.4", "SC-3.5", "SC-3.6", "SC-3.7"],
+      "blocked_by": [
+        "e-step1"
+      ],
+      "can_parallel_with": [
+        "e-step2"
+      ],
+      "sc_refs": [
+        "SC-3.1",
+        "SC-3.2",
+        "SC-3.3",
+        "SC-3.4",
+        "SC-3.5",
+        "SC-3.6",
+        "SC-3.7"
+      ],
       "verify": [
-        {"sc_ref": "SC-3.1", "method": "test", "cmd": "python3 -m pytest tests/quality/test_admission_negative.py -q", "expect": "exit 0"},
-        {"sc_ref": "SC-3.2", "method": "test", "cmd": "python3 -m pytest tests/quality/test_admission_positive.py -q", "expect": "exit 0"},
-        {"sc_ref": "SC-3.3", "method": "test", "cmd": "python3 -m pytest tests/quality/test_llm_router.py -q", "expect": "exit 0"},
-        {"sc_ref": "SC-3.4", "method": "test", "cmd": "python3 -m pytest tests/quality/test_distill_extract_retry.py -q", "expect": "exit 0"},
-        {"sc_ref": "SC-3.5", "method": "test", "cmd": "python3 -m pytest tests/quality/test_distill_frontmatter.py -q", "expect": "exit 0"},
-        {"sc_ref": "SC-3.6", "method": "command", "cmd": "for f in skillpack/quality/golden-sample-refs.md skillpack/quality/negative-sample-notes.md skillpack/quality/concept-index-injection.md skillpack/quality/known-pitfalls.md; do test -f \"$f\" || { echo MISSING $f; exit 1; }; done && for f in skillpack/quality/golden-sample-refs.md skillpack/quality/negative-sample-notes.md skillpack/quality/concept-index-injection.md skillpack/quality/known-pitfalls.md; do grep -q \"^version:\" \"$f\" || { echo NO VERSION in $f; exit 1; }; done && echo PASS", "expect": "PASS"},
-        {"sc_ref": "SC-3.7", "method": "command", "cmd": "python3 -m pytest tests/quality/test_admission_negative.py tests/quality/test_admission_positive.py tests/quality/test_llm_router.py tests/quality/test_distill_extract_retry.py tests/quality/test_distill_frontmatter.py -q && ruff check src/akb2/quality/admission.py src/akb2/quality/distill.py src/akb2/quality/llm_router.py tests/quality && echo PASS", "expect": "PASS"}
+        {
+          "sc_ref": "SC-3.1",
+          "method": "test",
+          "cmd": "python3 -m pytest tests/quality/test_admission_negative.py -q",
+          "expect": "exit 0"
+        },
+        {
+          "sc_ref": "SC-3.2",
+          "method": "test",
+          "cmd": "python3 -m pytest tests/quality/test_admission_positive.py -q",
+          "expect": "exit 0"
+        },
+        {
+          "sc_ref": "SC-3.3",
+          "method": "test",
+          "cmd": "python3 -m pytest tests/quality/test_llm_router.py -q",
+          "expect": "exit 0"
+        },
+        {
+          "sc_ref": "SC-3.4",
+          "method": "test",
+          "cmd": "python3 -m pytest tests/quality/test_distill_extract_retry.py -q",
+          "expect": "exit 0"
+        },
+        {
+          "sc_ref": "SC-3.5",
+          "method": "test",
+          "cmd": "python3 -m pytest tests/quality/test_distill_frontmatter.py -q",
+          "expect": "exit 0"
+        },
+        {
+          "sc_ref": "SC-3.6",
+          "method": "command",
+          "cmd": "for f in skillpack/quality/golden-sample-refs.md skillpack/quality/negative-sample-notes.md skillpack/quality/concept-index-injection.md skillpack/quality/known-pitfalls.md; do test -f \"$f\" || { echo MISSING $f; exit 1; }; done && for f in skillpack/quality/golden-sample-refs.md skillpack/quality/negative-sample-notes.md skillpack/quality/concept-index-injection.md skillpack/quality/known-pitfalls.md; do grep -q \"^version:\" \"$f\" || { echo NO VERSION in $f; exit 1; }; done && echo PASS",
+          "expect": "PASS"
+        },
+        {
+          "sc_ref": "SC-3.7",
+          "method": "command",
+          "cmd": "python3 -m pytest tests/quality/test_admission_negative.py tests/quality/test_admission_positive.py tests/quality/test_llm_router.py tests/quality/test_distill_extract_retry.py tests/quality/test_distill_frontmatter.py -q && ruff check src/akb2/quality/admission.py src/akb2/quality/distill.py src/akb2/quality/llm_router.py tests/quality && echo PASS",
+          "expect": "PASS"
+        }
       ]
     },
     {
@@ -253,27 +511,109 @@
         "docs/interface-contracts/llm_router.md"
       ],
       "deliverables": [
-        {"path": "src/akb2/quality/checks_structural.py", "kind": "file", "must_exist": true},
-        {"path": "src/akb2/quality/grader.py", "kind": "file", "must_exist": true},
-        {"path": "src/akb2/quality/repair.py", "kind": "file", "must_exist": true},
-        {"path": "skillpack/quality/rubric/", "kind": "directory", "must_exist": true},
-        {"path": "tests/quality/test_checks_structural.py", "kind": "file", "must_exist": true},
-        {"path": "tests/quality/test_checks_order.py", "kind": "file", "must_exist": true},
-        {"path": "tests/quality/test_grader.py", "kind": "file", "must_exist": true},
-        {"path": "tests/quality/test_grader_antifill.py", "kind": "file", "must_exist": true},
-        {"path": "tests/quality/test_grader_fallback.py", "kind": "file", "must_exist": true},
-        {"path": "tests/quality/test_repair_loop.py", "kind": "file", "must_exist": true}
+        {
+          "path": "src/akb2/quality/checks_structural.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "src/akb2/quality/grader.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "src/akb2/quality/repair.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "skillpack/quality/rubric/",
+          "kind": "directory",
+          "must_exist": true
+        },
+        {
+          "path": "tests/quality/test_checks_structural.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/quality/test_checks_order.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/quality/test_grader.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/quality/test_grader_antifill.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/quality/test_grader_fallback.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/quality/test_repair_loop.py",
+          "kind": "file",
+          "must_exist": true
+        }
       ],
-      "blocked_by": ["e-step1", "e-step3"],
-      "can_parallel_with": ["e-step5"],
-      "sc_refs": ["SC-4.1", "SC-4.2", "SC-4.3", "SC-4.4", "SC-4.5", "SC-4.6"],
+      "blocked_by": [
+        "e-step1",
+        "e-step3"
+      ],
+      "can_parallel_with": [
+        "e-step5"
+      ],
+      "sc_refs": [
+        "SC-4.1",
+        "SC-4.2",
+        "SC-4.3",
+        "SC-4.4",
+        "SC-4.5",
+        "SC-4.6"
+      ],
       "verify": [
-        {"sc_ref": "SC-4.1", "method": "test", "cmd": "python3 -m pytest tests/quality/test_checks_structural.py -q", "expect": "exit 0"},
-        {"sc_ref": "SC-4.2", "method": "test", "cmd": "python3 -m pytest tests/quality/test_grader.py -q", "expect": "exit 0"},
-        {"sc_ref": "SC-4.3", "method": "test", "cmd": "python3 -m pytest tests/quality/test_grader_antifill.py -q", "expect": "exit 0"},
-        {"sc_ref": "SC-4.4", "method": "test", "cmd": "python3 -m pytest tests/quality/test_repair_loop.py -q", "expect": "exit 0"},
-        {"sc_ref": "SC-4.5", "method": "test", "cmd": "python3 -m pytest tests/quality/test_grader_fallback.py tests/quality/test_checks_order.py -q", "expect": "exit 0"},
-        {"sc_ref": "SC-4.6", "method": "command", "cmd": "python3 -m pytest tests/quality/test_checks_structural.py tests/quality/test_grader.py tests/quality/test_grader_antifill.py tests/quality/test_grader_fallback.py tests/quality/test_checks_order.py tests/quality/test_repair_loop.py -q && ruff check src/akb2/quality/checks_structural.py src/akb2/quality/grader.py src/akb2/quality/repair.py && echo PASS", "expect": "PASS"}
+        {
+          "sc_ref": "SC-4.1",
+          "method": "test",
+          "cmd": "python3 -m pytest tests/quality/test_checks_structural.py -q",
+          "expect": "exit 0"
+        },
+        {
+          "sc_ref": "SC-4.2",
+          "method": "test",
+          "cmd": "python3 -m pytest tests/quality/test_grader.py -q",
+          "expect": "exit 0"
+        },
+        {
+          "sc_ref": "SC-4.3",
+          "method": "test",
+          "cmd": "python3 -m pytest tests/quality/test_grader_antifill.py -q",
+          "expect": "exit 0"
+        },
+        {
+          "sc_ref": "SC-4.4",
+          "method": "test",
+          "cmd": "python3 -m pytest tests/quality/test_repair_loop.py -q",
+          "expect": "exit 0"
+        },
+        {
+          "sc_ref": "SC-4.5",
+          "method": "test",
+          "cmd": "python3 -m pytest tests/quality/test_grader_fallback.py tests/quality/test_checks_order.py -q",
+          "expect": "exit 0"
+        },
+        {
+          "sc_ref": "SC-4.6",
+          "method": "command",
+          "cmd": "python3 -m pytest tests/quality/test_checks_structural.py tests/quality/test_grader.py tests/quality/test_grader_antifill.py tests/quality/test_grader_fallback.py tests/quality/test_checks_order.py tests/quality/test_repair_loop.py -q && ruff check src/akb2/quality/checks_structural.py src/akb2/quality/grader.py src/akb2/quality/repair.py && echo PASS",
+          "expect": "PASS"
+        }
       ]
     },
     {
@@ -317,24 +657,92 @@
         "src/akb2/lint/akb2_lint.py"
       ],
       "deliverables": [
-        {"path": "src/akb2/quality/promote.py", "kind": "file", "must_exist": true},
-        {"path": "tests/quality/test_promote_gate_switch.py", "kind": "file", "must_exist": true},
-        {"path": "tests/quality/test_promote_gates.py", "kind": "file", "must_exist": true},
-        {"path": "tests/quality/test_promote_snapshot_rollback.py", "kind": "file", "must_exist": true},
-        {"path": "tests/quality/test_promote_finalize.py", "kind": "file", "must_exist": true},
-        {"path": "docs/vault-amendment-draft.md", "kind": "file", "must_exist": true},
-        {"path": "snapshots/", "kind": "directory", "must_exist": true},
-        {"path": "tests/quality/fixtures/vault_fixture/", "kind": "directory", "must_exist": true}
+        {
+          "path": "src/akb2/quality/promote.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/quality/test_promote_gate_switch.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/quality/test_promote_gates.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/quality/test_promote_snapshot_rollback.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/quality/test_promote_finalize.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "docs/vault-amendment-draft.md",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "snapshots/",
+          "kind": "directory",
+          "must_exist": true
+        },
+        {
+          "path": "tests/quality/fixtures/vault_fixture/",
+          "kind": "directory",
+          "must_exist": true
+        }
       ],
-      "blocked_by": ["e-step1", "e-step3"],
-      "can_parallel_with": ["e-step4"],
-      "sc_refs": ["SC-5.1", "SC-5.2", "SC-5.3", "SC-5.4", "SC-5.5"],
+      "blocked_by": [
+        "e-step1",
+        "e-step3"
+      ],
+      "can_parallel_with": [
+        "e-step4"
+      ],
+      "sc_refs": [
+        "SC-5.1",
+        "SC-5.2",
+        "SC-5.3",
+        "SC-5.4",
+        "SC-5.5"
+      ],
       "verify": [
-        {"sc_ref": "SC-5.1", "method": "test", "cmd": "python3 -m pytest tests/quality/test_promote_gate_switch.py -q", "expect": "exit 0"},
-        {"sc_ref": "SC-5.2", "method": "test", "cmd": "python3 -m pytest tests/quality/test_promote_gates.py -q", "expect": "exit 0"},
-        {"sc_ref": "SC-5.3", "method": "test", "cmd": "python3 -m pytest tests/quality/test_promote_snapshot_rollback.py -q", "expect": "exit 0"},
-        {"sc_ref": "SC-5.4", "method": "test", "cmd": "python3 -m pytest tests/quality/test_promote_finalize.py -q", "expect": "exit 0"},
-        {"sc_ref": "SC-5.5", "method": "command", "cmd": "for s in \"Sync Impact\" \"五闸定义\" \"双轨试运行\" \"回滚条款\" \"批准\"; do grep -q \"$s\" docs/vault-amendment-draft.md || exit 1; done && echo PASS", "expect": "PASS"}
+        {
+          "sc_ref": "SC-5.1",
+          "method": "test",
+          "cmd": "python3 -m pytest tests/quality/test_promote_gate_switch.py -q",
+          "expect": "exit 0"
+        },
+        {
+          "sc_ref": "SC-5.2",
+          "method": "test",
+          "cmd": "python3 -m pytest tests/quality/test_promote_gates.py -q",
+          "expect": "exit 0"
+        },
+        {
+          "sc_ref": "SC-5.3",
+          "method": "test",
+          "cmd": "python3 -m pytest tests/quality/test_promote_snapshot_rollback.py -q",
+          "expect": "exit 0"
+        },
+        {
+          "sc_ref": "SC-5.4",
+          "method": "test",
+          "cmd": "python3 -m pytest tests/quality/test_promote_finalize.py -q",
+          "expect": "exit 0"
+        },
+        {
+          "sc_ref": "SC-5.5",
+          "method": "command",
+          "cmd": "for s in \"Sync Impact\" \"五闸定义\" \"双轨试运行\" \"回滚条款\" \"批准\"; do grep -q \"$s\" docs/vault-amendment-draft.md || exit 1; done && echo PASS",
+          "expect": "PASS"
+        }
       ]
     },
     {
@@ -378,47 +786,214 @@
         "docs/loops-design-decisions.md"
       ],
       "deliverables": [
-        {"path": "src/akb2/quality/runner.py", "kind": "file", "must_exist": true},
-        {"path": "src/akb2/quality/calibration.py", "kind": "file", "must_exist": true},
-        {"path": "scripts/akb2-main-pipeline.sh", "kind": "file", "must_exist": true},
-        {"path": "launchd/com.akb2.main-pipeline.plist", "kind": "file", "must_exist": true},
-        {"path": "evals/main-pipeline-quality/corpus.yaml", "kind": "file", "must_exist": true},
-        {"path": "skillpack/quality/repair-adapter-card.yaml", "kind": "file", "must_exist": true},
-        {"path": "tests/quality/test_runner_queue.py", "kind": "file", "must_exist": true},
-        {"path": "tests/quality/test_runner_lifecycle.py", "kind": "file", "must_exist": true},
-        {"path": "tests/quality/test_golden_replay.py", "kind": "file", "must_exist": true},
-        {"path": "tests/quality/test_negative_samples.py", "kind": "file", "must_exist": true},
-        {"path": "tests/quality/test_adapter_card_schema.py", "kind": "file", "must_exist": true}
+        {
+          "path": "src/akb2/quality/runner.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "src/akb2/quality/calibration.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "scripts/akb2-main-pipeline.sh",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "launchd/com.akb2.main-pipeline.plist",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "evals/main-pipeline-quality/corpus.yaml",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "skillpack/quality/repair-adapter-card.yaml",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/quality/test_runner_queue.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/quality/test_runner_lifecycle.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/quality/test_golden_replay.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/quality/test_negative_samples.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/quality/test_adapter_card_schema.py",
+          "kind": "file",
+          "must_exist": true
+        }
       ],
-      "blocked_by": ["e-step1", "e-step2", "e-step3", "e-step4", "e-step5"],
+      "blocked_by": [
+        "e-step1",
+        "e-step2",
+        "e-step3",
+        "e-step4",
+        "e-step5"
+      ],
       "can_parallel_with": [],
-      "sc_refs": ["SC-6.1", "SC-6.2", "SC-6.3", "SC-6.4", "SC-6.5", "SC-6.6", "SC-6.7", "SC-6.8", "SC-6.9", "SC-6.10"],
+      "sc_refs": [
+        "SC-6.1",
+        "SC-6.2",
+        "SC-6.3",
+        "SC-6.4",
+        "SC-6.5",
+        "SC-6.6",
+        "SC-6.7",
+        "SC-6.8",
+        "SC-6.9",
+        "SC-6.10"
+      ],
       "verify": [
-        {"sc_ref": "SC-6.1", "method": "test", "cmd": "python3 -m pytest tests/quality/test_runner_queue.py tests/quality/test_runner_lifecycle.py -q", "expect": "exit 0"},
-        {"sc_ref": "SC-6.2", "method": "test", "cmd": "python3 -m pytest tests/quality/test_golden_replay.py --collect-only -q", "expect": "no errors"},
-        {"sc_ref": "SC-6.3", "method": "test", "cmd": "python3 -m pytest tests/quality/test_negative_samples.py -q", "expect": "exit 0"},
-        {"sc_ref": "SC-6.4", "method": "command", "cmd": "python3 -m akb2.quality.calibration --help >/dev/null 2>&1 && echo PASS", "expect": "PASS"},
-        {"sc_ref": "SC-6.5", "method": "command", "cmd": "python3 -c \"import yaml;c=yaml.safe_load(open('evals/main-pipeline-quality/corpus.yaml'));e=[x['expected'] for x in c['entries']];assert len(e)==20 and e.count('ingest')==18 and e.count('reject')==2;print('PASS')\"", "expect": "PASS"},
-        {"sc_ref": "SC-6.6", "method": "command", "cmd": "plutil -lint launchd/com.akb2.main-pipeline.plist && grep -qE \"launchctl (load|bootstrap)\" launchd/com.akb2.main-pipeline.plist && ! launchctl list | grep -q com.akb2.main-pipeline && echo PASS", "expect": "PASS"},
-        {"sc_ref": "SC-6.7", "method": "test", "cmd": "python3 -m pytest tests/quality/test_adapter_card_schema.py -q", "expect": "exit 0"},
-        {"sc_ref": "SC-6.8", "method": "command", "cmd": "python3 -m pytest -q && ruff check src tests && echo PASS", "expect": "PASS"},
-        {"sc_ref": "SC-6.9", "method": "command", "cmd": "python3 -m akb2.quality.calibration --help 2>&1 | grep -q 'live-sample' && echo PASS", "expect": "PASS"},
-        {"sc_ref": "SC-6.10", "method": "command", "cmd": "grep -q 'AKB2_AUTO_PROMOTE' launchd/com.akb2.main-pipeline.plist && echo PASS", "expect": "PASS"}
+        {
+          "sc_ref": "SC-6.1",
+          "method": "test",
+          "cmd": "python3 -m pytest tests/quality/test_runner_queue.py tests/quality/test_runner_lifecycle.py -q",
+          "expect": "exit 0"
+        },
+        {
+          "sc_ref": "SC-6.2",
+          "method": "test",
+          "cmd": "python3 -m pytest tests/quality/test_golden_replay.py --collect-only -q",
+          "expect": "no errors"
+        },
+        {
+          "sc_ref": "SC-6.3",
+          "method": "test",
+          "cmd": "python3 -m pytest tests/quality/test_negative_samples.py -q",
+          "expect": "exit 0"
+        },
+        {
+          "sc_ref": "SC-6.4",
+          "method": "command",
+          "cmd": "python -m akb2.quality.calibration --help >/dev/null 2>&1 && echo BUILD_GATE_PASS",
+          "expect": "PASS",
+          "not_run_reason": "requires live LLM API; CLI --help only confirms module loads",
+          "build_gate_cmd": "python3 -m akb2.quality.calibration --help >/dev/null 2>&1 && echo PASS",
+          "execution_gate_cmd": "cd \"/Users/praise/AI-Agent/Claude/projects/Project AKB2\" && PYTHONPATH=src python -m akb2.quality.calibration --corpus evals/main-pipeline-quality/corpus.yaml --report-out reports/calibration/factory.json && python -c \"import json;r=json.load(open('reports/calibration/factory.json'));assert r.get('total_samples',0)==20,'total!=20';assert r.get('negative_count',0)==2,'negative!=2';assert r['positive_pass_rate']>=0.9;assert r['negative_reject_rate']==1.0;assert all(e.get('repair_rounds',0)<=3 for e in r.get('entries',[])),'repair_rounds exceeded 3';assert 'promotion_mode' in r,'missing promotion_mode field';assert r.get('promotion_mode') in ('proposal','active'),'invalid promotion_mode';assert 'amendment_status' in r,'missing amendment_status field';assert r.get('amendment_status') in ('not_applied','applied'),'invalid amendment_status';assert not (r.get('promotion_mode')=='active' and r.get('amendment_status')!='applied'),'active mode requires amendment_status=applied';assert not (r.get('promotion_mode')=='proposal' and r.get('amendment_status')!='not_applied'),'proposal mode requires amendment_status=not_applied';print('PASS')\"",
+          "note": "; F-r5-2: execution_gate_cmd added"
+        },
+        {
+          "sc_ref": "SC-6.5",
+          "method": "command",
+          "cmd": "python3 -c \"import yaml;c=yaml.safe_load(open('evals/main-pipeline-quality/corpus.yaml'));e=[x['expected'] for x in c['entries']];assert len(e)==20 and e.count('ingest')==18 and e.count('reject')==2;print('PASS')\"",
+          "expect": "PASS"
+        },
+        {
+          "sc_ref": "SC-6.6",
+          "method": "command",
+          "cmd": "plutil -lint launchd/com.akb2.main-pipeline.plist && grep -qE \"launchctl (load|bootstrap)\" launchd/com.akb2.main-pipeline.plist && ! launchctl list | grep -q com.akb2.main-pipeline && echo PASS",
+          "expect": "PASS"
+        },
+        {
+          "sc_ref": "SC-6.7",
+          "method": "test",
+          "cmd": "python3 -m pytest tests/quality/test_adapter_card_schema.py -q",
+          "expect": "exit 0"
+        },
+        {
+          "sc_ref": "SC-6.8",
+          "method": "command",
+          "cmd": "python -m pytest tests/loops/ tests/quality/ -q && ruff check src/akb2/loops/ src/akb2/quality/ tests/loops/ tests/quality/ && echo PASS",
+          "expect": "PASS",
+          "note": "F-new-4 fix 2026-06-13: owned-scope python (pyenv shim); matches master-plan SC-6 and step-6 SC-6.8"
+        },
+        {
+          "sc_ref": "SC-6.9",
+          "method": "command",
+          "cmd": "python -m akb2.quality.calibration --help 2>&1 | grep -q live-sample && echo BUILD_GATE_PASS",
+          "expect": "PASS",
+          "not_run_reason": "requires sources-ledger.jsonl (SC-8 blocked) + live API",
+          "build_gate_cmd": "python3 -m akb2.quality.calibration --help 2>&1 | grep -q 'live-sample' && echo PASS",
+          "execution_gate_cmd": "cd \"/Users/praise/AI-Agent/Claude/projects/Project AKB2\" && PYTHONPATH=src python -m akb2.quality.calibration --live-sample 3 --report-out reports/calibration/live-sample.json && python -c \"import json;r=json.load(open('reports/calibration/live-sample.json'));es=r['entries'];assert len(es)==3;bad=[e['url'] for e in es if e.get('final_status') not in ('promoted','proposal_passed')];assert not bad,f'not golden: {bad}';assert all(e.get('repair_rounds',99)<=3 for e in es);print('PASS');print('rounds:',[(e['url'],e['repair_rounds']) for e in es])\"",
+          "note": "; F-r5-2: execution_gate_cmd added"
+        },
+        {
+          "sc_ref": "SC-6.10",
+          "method": "command",
+          "cmd": "grep -q 'AKB2_AUTO_PROMOTE' launchd/com.akb2.main-pipeline.plist && echo PASS",
+          "expect": "PASS",
+          "not_run_reason": "requires SC-6.4 calibration pass + amendment applied",
+          "execution_gate_cmd": "cd \"/Users/praise/AI-Agent/Claude/projects/Project AKB2\" && grep -q \"AKB2_AUTO_PROMOTE\" launchd/com.akb2.main-pipeline.plist && grep -q \"AKB2_AMENDMENT_APPLIED\" launchd/com.akb2.main-pipeline.plist && python -c \"import json;r=json.load(open('reports/calibration/factory.json'));assert r['promotion_mode']=='active' and r['amendment_status']=='applied';print('PASS')\"",
+          "note": "; F-r5-2: execution_gate_cmd added"
+        }
       ]
     }
   ],
   "waves": [
-    {"wave_id": "e1", "track_ids": ["e-step1"], "description": "地基串行——循环7契约骨架(账本/签名/适配卡schema+watchdog+隔离区)"},
-    {"wave_id": "e2", "track_ids": ["e-step2", "e-step3"], "description": "并行——抓取raw+准入提炼(owned_paths无重叠,raw格式由黄金样张fixture解耦)"},
-    {"wave_id": "e3", "track_ids": ["e-step4", "e-step5"], "description": "并行——质量修复+升格收尾(owned_paths无重叠,均以step-1 schema+黄金样张fixture为输入)"},
-    {"wave_id": "e4", "track_ids": ["e-step6"], "description": "集成串行——常驻调度+校准出厂(blocked_by全部前置step)"}
+    {
+      "wave_id": "e1",
+      "track_ids": [
+        "e-step1"
+      ],
+      "description": "地基串行——循环7契约骨架(账本/签名/适配卡schema+watchdog+隔离区)"
+    },
+    {
+      "wave_id": "e2",
+      "track_ids": [
+        "e-step2",
+        "e-step3"
+      ],
+      "description": "并行——抓取raw+准入提炼(owned_paths无重叠,raw格式由黄金样张fixture解耦)"
+    },
+    {
+      "wave_id": "e3",
+      "track_ids": [
+        "e-step4",
+        "e-step5"
+      ],
+      "description": "并行——质量修复+升格收尾(owned_paths无重叠,均以step-1 schema+黄金样张fixture为输入)"
+    },
+    {
+      "wave_id": "e4",
+      "track_ids": [
+        "e-step6"
+      ],
+      "description": "集成串行——常驻调度+校准出厂(blocked_by全部前置step)"
+    }
   ],
   "merge_gates": [
-    {"gate_id": "G1", "description": "child executor 输出符合 gd-execution-result-template 结构"},
-    {"gate_id": "G2", "description": "deliverables 路径在 owned_paths 内，无越界"},
-    {"gate_id": "G3", "description": "每条 SC 有对应 verify 结果(非空 evidence 或 not_run_reason)"},
-    {"gate_id": "G4", "description": "每波全完成并 post-wave audit 通过后才进下一波"},
-    {"gate_id": "G5", "description": "forbidden_paths 未被触碰"},
-    {"gate_id": "G6", "description": "ruff check 与 pytest 全绿"}
+    {
+      "gate_id": "G1",
+      "description": "child executor 输出符合 gd-execution-result-template 结构"
+    },
+    {
+      "gate_id": "G2",
+      "description": "deliverables 路径在 owned_paths 内，无越界"
+    },
+    {
+      "gate_id": "G3",
+      "description": "每条 SC 有对应 verify 结果(非空 evidence 或 not_run_reason)"
+    },
+    {
+      "gate_id": "G4",
+      "description": "每波全完成并 post-wave audit 通过后才进下一波"
+    },
+    {
+      "gate_id": "G5",
+      "description": "forbidden_paths 未被触碰"
+    },
+    {
+      "gate_id": "G6",
+      "description": "ruff check 与 pytest 全绿"
+    }
   ]
 }

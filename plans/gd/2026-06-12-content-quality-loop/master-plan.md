@@ -40,36 +40,37 @@ PHASE_GOAL:   AKB2 内容质量循环(循环 1)全链上线:URL 入队 → 抓�
 > Anti-fill:每条 SC 绑定命令/路径/输出断言;对应 spec SC-001~008 的可执行化翻译。
 
 - [ ] SC-1(spec SC-003):黄金样张 URL 端到端重跑产出结构等价
-  - verify (method: test, build-gate): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && python3 -m pytest tests/quality/test_golden_replay.py --collect-only -q`
+  - verify (method: test, build-gate): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && python -m pytest tests/quality/test_golden_replay.py --collect-only -q`
   - expect (build-gate): 至少 1 用例可收集（no errors）
-  - verify (method: test, execution-gate-proposal): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && AKB2_RUN_INTEGRATION=1 /usr/bin/env python3 -m pytest tests/quality/test_golden_replay.py -q -m "integration and proposal_mode"` —— **默认门（AKB2_AUTO_PROMOTE=0）**：断言产出 proposal manifest、active 目录 tree_sha256 与运行前相同（零 active 写入），对齐 SC-7
+  - verify (method: test, execution-gate-proposal): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && AKB2_RUN_INTEGRATION=1 python -m pytest tests/quality/test_golden_replay.py -q -m "integration and proposal_mode"` —— **默认门（AKB2_AUTO_PROMOTE=0）**：断言产出 proposal manifest、active 目录 tree_sha256 与运行前相同（零 active 写入），对齐 SC-7
   - expect (execution-gate-proposal): exit 0
-  - verify (method: test, execution-gate-active): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && AKB2_RUN_INTEGRATION=1 AKB2_AUTO_PROMOTE=1 AKB2_AMENDMENT_APPLIED=1 /usr/bin/env python3 -m pytest tests/quality/test_golden_replay.py -q -m "integration and post_amendment"` —— **出厂正式门（修宪文本应用到 vault + AKB2_AUTO_PROMOTE=1 + AKB2_AMENDMENT_APPLIED=1 后必跑，非可选）**：断言 14 步结构等价含 active、索引摘要行、概念回边、lint 0
+  - verify (method: test, execution-gate-active): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && AKB2_RUN_INTEGRATION=1 AKB2_AUTO_PROMOTE=1 AKB2_AMENDMENT_APPLIED=1 python -m pytest tests/quality/test_golden_replay.py -q -m "integration and post_amendment"` —— **出厂正式门（修宪文本应用到 vault + AKB2_AUTO_PROMOTE=1 + AKB2_AMENDMENT_APPLIED=1 后必跑，非可选）**：断言 14 步结构等价含 active、索引摘要行、概念回边、lint 0
   - expect (execution-gate-active): exit 0（修宪已获用户预批——2026-06-13 会话决策：五闸即黄金样张标准机判，满足即自动入 active；出厂序列=校准通过→应用修宪→开开关→跑本门）
 - [ ] SC-2(spec SC-002):2 个负样本 100% 拒于准入段,且账本显示零提炼调用
-  - verify (method: test): `python3 -m pytest tests/quality/test_negative_samples.py -q`
+  - verify (method: test): `python -m pytest tests/quality/test_negative_samples.py -q`
   - expect: exit 0
 - [ ] SC-3(spec SC-001):校准语料端到端,≥90% 正样本在 ≤3 修复轮内走完全链；校准报告明示运行模式与修宪状态
-  - verify (method: command): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && python3 -m akb2.quality.calibration --corpus evals/main-pipeline-quality/corpus.yaml --report-out reports/calibration/factory.json && python3 -c "import json;r=json.load(open('reports/calibration/factory.json'));assert r.get('total_samples',0)==20,'total!=20';assert r.get('negative_count',0)==2,'negative!=2';assert r['positive_pass_rate']>=0.9;assert r['negative_reject_rate']==1.0;assert all(e.get('repair_rounds',0)<=3 for e in r.get('entries',[])),'repair_rounds exceeded 3';assert 'promotion_mode' in r,'missing promotion_mode field';assert r.get('promotion_mode') in ('proposal','active'),'invalid promotion_mode';assert 'amendment_status' in r,'missing amendment_status field';assert r.get('amendment_status') in ('not_applied','applied'),'invalid amendment_status';assert not (r.get('promotion_mode')=='active' and r.get('amendment_status')!='applied'),'active mode requires amendment_status=applied';assert not (r.get('promotion_mode')=='proposal' and r.get('amendment_status')!='not_applied'),'proposal mode requires amendment_status=not_applied';print('PASS')"`
+  - verify (method: command): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && PYTHONPATH=src python -m akb2.quality.calibration --corpus evals/main-pipeline-quality/corpus.yaml --report-out reports/calibration/factory.json && python -c "import json;r=json.load(open('reports/calibration/factory.json'));assert r.get('total_samples',0)==20,'total!=20';assert r.get('negative_count',0)==2,'negative!=2';assert r['positive_pass_rate']>=0.9;assert r['negative_reject_rate']==1.0;assert all(e.get('repair_rounds',0)<=3 for e in r.get('entries',[])),'repair_rounds exceeded 3';assert 'promotion_mode' in r,'missing promotion_mode field';assert r.get('promotion_mode') in ('proposal','active'),'invalid promotion_mode';assert 'amendment_status' in r,'missing amendment_status field';assert r.get('amendment_status') in ('not_applied','applied'),'invalid amendment_status';assert not (r.get('promotion_mode')=='active' and r.get('amendment_status')!='applied'),'active mode requires amendment_status=applied';assert not (r.get('promotion_mode')=='proposal' and r.get('amendment_status')!='not_applied'),'proposal mode requires amendment_status=not_applied';print('PASS')"`
   - expect: `PASS`（build 期校准 promotion_mode=proposal+not_applied；出厂终态校准 promotion_mode=active+applied）
 - [ ] SC-9(真实源专项):从 sources-ledger 取 3 个 reachable 真实源各抓 1 篇新内容跑全链,评估达黄金样张标准所需修复轮数
-  - verify (method: command): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && python3 -m akb2.quality.calibration --live-sample 3 --report-out reports/calibration/live-sample.json && python3 -c "import json;r=json.load(open('reports/calibration/live-sample.json'));es=r['entries'];assert len(es)==3,f'entries={len(es)}!=3';bad=[e['url'] for e in es if e.get('final_status') not in ('promoted','proposal_passed')];assert not bad,f'not reached golden standard: {bad}';assert all(e.get('repair_rounds',99)<=3 for e in es),'repair_rounds exceeded 3';print('PASS');print('rounds:',[ (e['url'],e['repair_rounds']) for e in es])"`
+  - verify (method: command): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && PYTHONPATH=src python -m akb2.quality.calibration --live-sample 3 --report-out reports/calibration/live-sample.json && python -c "import json;r=json.load(open('reports/calibration/live-sample.json'));es=r['entries'];assert len(es)==3,f'entries={len(es)}!=3';bad=[e['url'] for e in es if e.get('final_status') not in ('promoted','proposal_passed')];assert not bad,f'not reached golden standard: {bad}';assert all(e.get('repair_rounds',99)<=3 for e in es),'repair_rounds exceeded 3';print('PASS');print('rounds:',[ (e['url'],e['repair_rounds']) for e in es])"`
   - expect: `PASS` + 每篇 url 与实际修复轮数清单（作为"循环几次达标"的实测数据）
 - [ ] SC-4(spec SC-004/005):每篇内容七段生命线完整落账,无人工介入事件;七段任一失败时后续段调用计数为 0 且账本落对应失败终态(fail-closed 停链)
-  - verify (method: test): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && python3 -m pytest tests/loops/test_ledger_lifeline.py tests/quality/test_runner_lifecycle.py -q`
+  - verify (method: test): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && python -m pytest tests/loops/test_ledger_lifeline.py tests/quality/test_runner_lifecycle.py -q`
   - expect: exit 0（test_runner_lifecycle.py 必须包含 7 个停链用例：抓取/raw/准入/提炼/评估/升格/收尾各自失败时断言后续段调用计数==0 + ledger 终态为对应 failure event）
 - [ ] SC-5(循环 7 骨架):账本 schema、故障签名 schema、适配卡格式 spec、循环 1 适配卡 v1、watchdog 全部存在且 schema 自洽；适配卡实例与 schema 自洽
-  - verify (method: command): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && test -f schema/loop-ledger.schema.json && test -f schema/failure-signature.schema.json && test -f schema/repair-adapter-card.schema.json && python3 -m json.tool schema/loop-ledger.schema.json >/dev/null && python3 -m json.tool schema/failure-signature.schema.json >/dev/null && python3 -m json.tool schema/repair-adapter-card.schema.json >/dev/null && test -f skillpack/quality/repair-adapter-card.yaml && python3 -c "import yaml,json,jsonschema; schema=json.load(open('schema/repair-adapter-card.schema.json')); instance=yaml.safe_load(open('skillpack/quality/repair-adapter-card.yaml')); jsonschema.validate(instance,schema); print('adapter-card schema OK')" && test -x scripts/akb2-watchdog.sh && bash scripts/akb2-watchdog.sh --self-test && echo PASS`
+  - verify (method: command): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && test -f schema/loop-ledger.schema.json && test -f schema/failure-signature.schema.json && test -f schema/repair-adapter-card.schema.json && python -m json.tool schema/loop-ledger.schema.json >/dev/null && python -m json.tool schema/failure-signature.schema.json >/dev/null && python -m json.tool schema/repair-adapter-card.schema.json >/dev/null && test -f skillpack/quality/repair-adapter-card.yaml && python -c "import yaml,json,jsonschema; schema=json.load(open('schema/repair-adapter-card.schema.json')); instance=yaml.safe_load(open('skillpack/quality/repair-adapter-card.yaml')); jsonschema.validate(instance,schema); print('adapter-card schema OK')" && test -x scripts/akb2-watchdog.sh && bash scripts/akb2-watchdog.sh --self-test && echo PASS`
   - expect: `PASS`
   - note: 本 SC verify 命令需 step-6 完成后方可运行（repair-adapter-card.yaml 为 step-6 交付物；step-1 只交付 schema 骨架，承接 SC-5 schema 骨架部分；step-6 收口适配卡实例+全量 verify）
 - [ ] SC-6(工程门):测试与 lint 全绿
-  - verify (method: command): `/usr/bin/env python3 -m pytest tests/loops/ tests/quality/ -q && ruff check src/akb2/loops/ src/akb2/quality/ tests/loops/ tests/quality/ && echo PASS`
+  - verify (method: command): `python -m pytest tests/loops/ tests/quality/ -q && ruff check src/akb2/loops/ src/akb2/quality/ tests/loops/ tests/quality/ && echo PASS`
   - expect: `PASS`
+  - note: 使用 `python`（pyenv shim）而非 `/usr/bin/env python3`（系统 3.9.6，无 pytest）
 - [ ] SC-7(FR-009 修宪开关):vault 修宪未生效时升格停在提议模式
-  - verify (method: test): `python3 -m pytest tests/quality/test_promote_gate_switch.py -q`
+  - verify (method: test): `python -m pytest tests/quality/test_promote_gate_switch.py -q`
   - expect: exit 0
 - [ ] SC-8(源验证报告):76 源逐源 feed 验证 + 试抓产出 sources-ledger 初版；每行含试抓状态字段
-  - verify (method: command): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && python3 -c "import json,yaml; sources=yaml.safe_load(open('config/main_sources.yaml'))['sources']; assert len(sources)==76,f'config sources={len(sources)}!=76'; config_urls={s.get('feed_url') or s.get('listing_url') for s in sources} - {None,''}; rs=[json.loads(l) for l in open('reports/source-validation/sources-ledger.jsonl')]; assert len(rs)==76,f'ledger rows={len(rs)}!=76'; unique_urls={r['url'] for r in rs}; assert len(unique_urls)==76,f'duplicate ledger urls: unique={len(unique_urls)}!=76'; assert unique_urls==config_urls,f'ledger url mismatch: extra={unique_urls-config_urls}, missing={config_urls-unique_urls}'; req_fields={'feed','url','reachable','latest_post','trial_fetch'}; bad=[str(i) for i,r in enumerate(rs) if not req_fields.issubset(r.keys())]; assert not bad,f'MISSING FIELDS at rows: {bad}'; ok=sum(1 for r in rs if r.get('reachable')); assert ok>=70,f'reachable={ok}<70'; print('PASS')"`
+  - verify (method: command): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && python -c "import json,yaml; sources=yaml.safe_load(open('config/main_sources.yaml'))['sources']; assert len(sources)==76,f'config sources={len(sources)}!=76'; config_urls={s.get('feed_url') or s.get('listing_url') for s in sources} - {None,''}; rs=[json.loads(l) for l in open('reports/source-validation/sources-ledger.jsonl')]; assert len(rs)==76,f'ledger rows={len(rs)}!=76'; unique_urls={r['url'] for r in rs}; assert len(unique_urls)==76,f'duplicate ledger urls: unique={len(unique_urls)}!=76'; assert unique_urls==config_urls,f'ledger url mismatch: extra={unique_urls-config_urls}, missing={config_urls-unique_urls}'; req_fields={'feed','url','reachable','latest_post','trial_fetch'}; bad=[str(i) for i,r in enumerate(rs) if not req_fields.issubset(r.keys())]; assert not bad,f'MISSING FIELDS at rows: {bad}'; ok=sum(1 for r in rs if r.get('reachable')); assert ok>=70,f'reachable={ok}<70'; print('PASS')"`
   - expect: `PASS`
 
 ---
@@ -169,11 +170,11 @@ step-2 与 step-3 在 e2 wave 可并行的根本前提：**step-3 build 期通�
 
 ```bash
 cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2"
-python3 -m pytest tests/loops tests/quality -q          # 单元+契约测试(fixture LLM)
+python -m pytest tests/loops tests/quality -q          # 单元+契约测试(fixture LLM)
 ruff check src tests                                     # lint
-python3 -m pytest tests/quality/test_golden_replay.py -q # SC-1 样张回归
-python3 -m pytest tests/quality/test_negative_samples.py -q  # SC-2 负样本拒收
-python3 -m akb2.quality.calibration --corpus evals/main-pipeline-quality/corpus.yaml --report-out reports/calibration/factory.json  # SC-3 出厂(真 API)
+python -m pytest tests/quality/test_golden_replay.py -q # SC-1 样张回归
+python -m pytest tests/quality/test_negative_samples.py -q  # SC-2 负样本拒收
+PYTHONPATH=src python -m akb2.quality.calibration --corpus evals/main-pipeline-quality/corpus.yaml --report-out reports/calibration/factory.json  # SC-3 出厂(真 API)
 bash scripts/akb2-watchdog.sh --self-test                # SC-5 watchdog 自检
 ```
 

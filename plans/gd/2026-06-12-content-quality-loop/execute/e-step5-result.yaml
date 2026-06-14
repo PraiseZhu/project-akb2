@@ -7,22 +7,22 @@ success_criteria:
   - id: SC-5.1
     description: "AKB2_AUTO_PROMOTE=0 下 active 目录 tree_sha256 不变"
     status: pass
-    verify: "python3 -m pytest tests/quality/test_promote_gate_switch.py -q"
+    verify: "python -m pytest tests/quality/test_promote_gate_switch.py -q"
     result: "3 passed"
   - id: SC-5.2
     description: "五闸逐闸 fail 留 staging（参数化 5+1 用例）"
     status: pass
-    verify: "python3 -m pytest tests/quality/test_promote_gates.py -q"
+    verify: "python -m pytest tests/quality/test_promote_gates.py -q"
     result: "6 passed (5 fail gates + 1 all pass + dataclass test)"
   - id: SC-5.3
     description: "快照->升格->回滚 sha256 往返全等"
     status: pass
-    verify: "python3 -m pytest tests/quality/test_promote_snapshot_rollback.py -q"
+    verify: "python -m pytest tests/quality/test_promote_snapshot_rollback.py -q"
     result: "5 passed (manifest creation, rollback hash equality, nonexistent snapshot, missing file handling, pruning)"
   - id: SC-5.4
     description: "收尾对齐黄金样张步 10-14: frontmatter 翻转/索引摘要行/概念回链/维护记录合并/lint 复验"
     status: pass
-    verify: "python3 -m pytest tests/quality/test_promote_finalize.py -q"
+    verify: "python -m pytest tests/quality/test_promote_finalize.py -q"
     result: "12 passed (frontmatter flip, index format regex, revision line, backlink 4 columns, dedup, missing concept pending, pending queue written, maintenance append, maintenance merge, staging preserved, active page created, lint failure rollback)"
   - id: SC-5.5
     description: "修宪草案 docs/vault-amendment-draft.md 含五个必备节"
@@ -33,7 +33,7 @@ success_criteria:
 engineering_gate:
   ruff: "No issues found (0 violations)"
   tests: "28 passed, 0 failed"
-  verify_command: "python3 -m pytest tests/quality/test_promote_gate_switch.py tests/quality/test_promote_gates.py tests/quality/test_promote_snapshot_rollback.py tests/quality/test_promote_finalize.py -q && ruff check src/akb2/quality/promote.py tests/quality/test_promote_*.py"
+  verify_command: "python -m pytest tests/quality/test_promote_gate_switch.py tests/quality/test_promote_gates.py tests/quality/test_promote_snapshot_rollback.py tests/quality/test_promote_finalize.py -q && ruff check src/akb2/quality/promote.py tests/quality/test_promote_*.py"
 
 deliverables:
   - path: src/akb2/quality/promote.py

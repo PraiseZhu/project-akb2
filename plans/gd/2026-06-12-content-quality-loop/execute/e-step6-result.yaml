@@ -2,7 +2,8 @@
 # Step 6 执行完成 — 常驻调度与校准出厂 v1
 # 日期: 2026-06-13
 
-status: completed
+status: completed_build_only
+status_note: "SC-6.4/6.9/6.10 not_run（需真实 API）；SC-6.2 execution gate not_run；与 controller APPROVED_BUILD_ONLY 一致；F-r4 fix 2026-06-13"
 agent: child_executor (Claude Fable 5)
 plan_source: approved step-6 plan
 
@@ -58,14 +59,18 @@ sc_verification:
   SC-6.2-build-gate:
     status: pass
     verify: "pytest tests/quality/test_golden_replay.py --collect-only -q"
-    result: "1 test collected (TestGoldenReplayBuildGate::test_collect_golden_replay), 4 deselected (integration)"
+    result: "4 build-gate tests collected, 4 integration deselected"
+  SC-6.2-execution-gate:
+    status: not_run
+    not_run_reason: "proposal/active integration gates require live API + AKB2_VAULT_ROOT; build-gate only verifies test collectability"
+    note: "与 aggregate execution-outcome.json SC-6.2 not_run 对齐；F-r4 fix 2026-06-13"
   SC-6.3:
     status: pass
     verify: "pytest tests/quality/test_negative_samples.py -q"
     result: "4 tests passed (plagiarism/neg/news/admission rejection + zero distill calls + corpus count)"
   SC-6.5:
     status: pass
-    verify: "python3 -c 'import yaml; ...'"
+    verify: "python -c 'import yaml; ...'"
     result: "PASS — 20 entries, 18 ingest, 2 reject"
   SC-6.6:
     status: pass
@@ -77,15 +82,16 @@ sc_verification:
     result: "13 tests passed (jsonschema validate + 9 fields + 7 signatures + tiers + hints + deps)"
   SC-6.8:
     status: pass
-    verify: "pytest tests/quality/ tests/loops/ -q && ruff check src tests"
-    result: "293 passed, 4 deselected, ruff: All checks passed!"
+    verify: "python -m pytest tests/loops/ tests/quality/ -q && ruff check src/akb2/loops/ src/akb2/quality/ tests/loops/ tests/quality/ && echo PASS"
+    result: "293 passed, 4 deselected, ruff: All checks passed! (owned-scope)"
+    note: "F-4 fix 2026-06-13: corrected from full-repo command to owned-scope; matches master-plan SC-6"
   SC-6.4:
     status: not_run
-    verify: "python3 -m akb2.quality.calibration --corpus ... --report-out ..."
+    verify: "PYTHONPATH=src python -m akb2.quality.calibration --corpus ... --report-out ..."
     note: "执行期真 API 项，需 LLM 端点可用。CLI --help 已验证可用。"
   SC-6.9:
     status: not_run
-    verify: "python3 -m akb2.quality.calibration --live-sample 3 --report-out ..."
+    verify: "PYTHONPATH=src python -m akb2.quality.calibration --live-sample 3 --report-out ..."
     note: "执行期真 API 项，需 sources-ledger 有 reachable 源。"
   SC-6.10:
     status: not_run
@@ -104,7 +110,24 @@ review:
 # =========================================================================
 # 残余风险
 # =========================================================================
-residual_risks: none
-# - 执行期 SC-6.4/SC-6.9 需真 API 环境验证，build 期仅验证 CLI 可用与测试可收集
-# - feishu_sync 测试因 langgraph 未安装而无法收集（预存问题，非本 step 引入）
-# - runner 常驻模式未在本会话实测（需 Mac mini 部署环境）
+residual_risks:
+  - sc_ref: SC-6.4
+    description: "校准出厂（20条语料端到端）未在执行期验证"
+    requires: "DEEPSEEK_API_KEY + OPENAI_API_KEY；reports/calibration/ 目录存在；factory.json 不存在或为空"
+    status: not_run
+  - sc_ref: SC-6.9
+    description: "3篇真实源专项未验证；blocked_by SC-8（sources-ledger.jsonl 不存在）"
+    requires: "SC-8 先通过（sources-ledger.jsonl 有 ≥3 个 reachable 源）+ live API"
+    status: not_run
+  - sc_ref: SC-6.10
+    description: "修宪应用 + 自动升格出厂形态未完成；需 SC-6.4 校准通过后应用修宪文本"
+    requires: "SC-6.4 通过 → 应用 docs/vault-amendment-draft.md → 重跑校准 → promotion_mode=active"
+    status: not_run
+  - sc_ref: null
+    description: "feishu_sync 测试因 langgraph 未安装无法收集（预存问题，非本 step 引入）"
+    requires: "pip install langgraph 或标记该测试 skip"
+    status: known_issue
+  - sc_ref: null
+    description: "runner 常驻模式未在本会话实测；24h daemon 需 Mac mini 部署环境"
+    requires: "Mac mini 部署 + launchctl load（用户手动执行）"
+    status: deferred

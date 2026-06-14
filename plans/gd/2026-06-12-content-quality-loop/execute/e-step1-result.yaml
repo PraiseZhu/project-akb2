@@ -9,7 +9,7 @@ exec_status: completed
 sc_acceptance:
   - sc_ref: SC-s1
     status: pass
-    evidence: "三个 schema 文件存在且 python3 -m json.tool 全部通过；repair-adapter-card 9 字段 required"
+    evidence: "三个 schema 文件存在且 python -m json.tool 全部通过；repair-adapter-card 9 字段 required"
   - sc_ref: SC-s2
     status: pass
     evidence: "pytest tests/loops/test_ledger_lifeline.py: 9 passed — 幂等追加、七段生命线字段齐全、不同 ts/event 必增行、budget 保留、MAX_LEDGER_RETRIES 具名常量"
@@ -21,7 +21,7 @@ sc_acceptance:
     evidence: "scripts/akb2-watchdog.sh: 76 行 ≤80、可执行、grep 无 LLM API 模式、--self-test 退出码 0 输出 SELF_TEST_PASS、无 args 退出 4 输出 Usage"
   - sc_ref: SC-s5
     status: pass
-    evidence: "PYTHONPATH=src python3 -c \"from akb2.loops import paths; assert 'quarantine' in paths.QUARANTINE_SUBDIR\" 输出 PASS"
+    evidence: "PYTHONPATH=src python -c \"from akb2.loops import paths; assert 'quarantine' in paths.QUARANTINE_SUBDIR\" 输出 PASS"
   - sc_ref: SC-s6
     status: pass
     evidence: "ruff check src/akb2/loops tests/loops: No issues found"
@@ -51,6 +51,6 @@ handoff:
   summary: "循环 7 契约骨架五件套全部交付：3 schema + loops 包(幂等账本/签名升级/paths) + watchdog(76行纯shell) + 隔离区约定 + 30 个契约测试全绿，ruff clean"
   blockers: none
 known_limitations:
-  - pytest CLI 被 RTK 拦截导致 "No tests collected" 显示，通过 python3 -c 直接调用 pytest.main() 运行时 30 测试全绿；根源在 RTK tee 输出重定向，非本 step 代码问题
+  - pytest CLI 被 RTK 拦截导致 "No tests collected" 显示，通过 python -c 直接调用 pytest.main() 运行时 30 测试全绿；根源在 RTK tee 输出重定向，非本 step 代码问题
   - vault.toml 路径解析通过 configparser 读取，在 AKB2_TEST_HOME 未设置时解析到真实 vault 路径（仅 paths.py 内部使用，测试不依赖此路径）
   - 适配卡 v1 实例 (skillpack/quality/repair-adapter-card.yaml) 由 step-6 交付，本 step 只交 schema

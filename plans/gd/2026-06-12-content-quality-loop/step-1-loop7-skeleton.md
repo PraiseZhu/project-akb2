@@ -40,19 +40,19 @@ TASK_GOAL:    交付循环 7 契约骨架五件套:统一 jsonl 账本 schema + 
 ## 4. 成功标准(SC,本 step 内的)
 
 - [ ] SC-s1(承载 master SC-5 骨架部分):三个 schema 文件存在且 JSON 自洽
-  - verify (method: command): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && test -f schema/loop-ledger.schema.json && test -f schema/failure-signature.schema.json && test -f schema/repair-adapter-card.schema.json && python3 -m json.tool schema/loop-ledger.schema.json >/dev/null && python3 -m json.tool schema/failure-signature.schema.json >/dev/null && python3 -m json.tool schema/repair-adapter-card.schema.json >/dev/null && echo PASS`
+  - verify (method: command): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && test -f schema/loop-ledger.schema.json && test -f schema/failure-signature.schema.json && test -f schema/repair-adapter-card.schema.json && python -m json.tool schema/loop-ledger.schema.json >/dev/null && python -m json.tool schema/failure-signature.schema.json >/dev/null && python -m json.tool schema/repair-adapter-card.schema.json >/dev/null && echo PASS`
   - expect: `PASS`
 - [ ] SC-s2(承载 master SC-4):账本幂等追加——同内容重复写入不产生重复行,七段生命线字段齐全
-  - verify (method: test): `python3 -m pytest tests/loops/test_ledger_lifeline.py -q`
+  - verify (method: test): `python -m pytest tests/loops/test_ledger_lifeline.py -q`
   - expect: exit 0
 - [ ] SC-s3:故障签名计数正确,同签名第 3 次出现写入 escalation 标记
-  - verify (method: test): `python3 -m pytest tests/loops/test_signatures.py -q`
+  - verify (method: test): `python -m pytest tests/loops/test_signatures.py -q`
   - expect: exit 0
 - [ ] SC-s4:watchdog 纯 shell ≤80 行、不含 LLM 调用,--self-test 退出码 0
   - verify (method: command): `test -x scripts/akb2-watchdog.sh && [ "$(wc -l < scripts/akb2-watchdog.sh)" -le 80 ] && ! grep -qiE 'curl.*chat|openai|deepseek|llm' scripts/akb2-watchdog.sh && bash scripts/akb2-watchdog.sh --self-test && echo PASS`
   - expect: `PASS`
 - [ ] SC-s5:隔离区目录约定以具名常量导出,可被后续 step import
-  - verify (method: assertion): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && PYTHONPATH=src python3 -c "from akb2.loops import paths; assert 'quarantine' in paths.QUARANTINE_SUBDIR; print('PASS')"`
+  - verify (method: assertion): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && PYTHONPATH=src python -c "from akb2.loops import paths; assert 'quarantine' in paths.QUARANTINE_SUBDIR; print('PASS')"`
   - expect: `PASS`
 - [ ] SC-s6(工程门局部):本 step 新增代码 lint 干净
   - verify (method: command): `ruff check src/akb2/loops tests/loops && echo PASS`
@@ -76,31 +76,31 @@ Step.1
   WHERE: schema/loop-ledger.schema.json
   WHAT:  定义七循环共用 jsonl 账本行 schema:loop_id/node/event/content_hash/ts/budget 字段 + 七段生命线事件枚举
   WHY:   账本统一格式是循环 7 读取一切的前提(自动化纪律 4),必须先于所有写账方冻结
-  VERIFY: python3 -m json.tool schema/loop-ledger.schema.json >/dev/null
+  VERIFY: python -m json.tool schema/loop-ledger.schema.json >/dev/null
 
 Step.2
   WHERE: schema/failure-signature.schema.json
   WHAT:  定义故障签名结构:loop/node/error_class/count + escalation 标记字段
   WHY:   签名落账使失败可见(P4),计数字段支撑第 3 次升级规则
-  VERIFY: python3 -m json.tool schema/failure-signature.schema.json >/dev/null
+  VERIFY: python -m json.tool schema/failure-signature.schema.json >/dev/null
 
 Step.3
   WHERE: schema/repair-adapter-card.schema.json
   WHAT:  定义修复适配卡 9 字段:故障签名表/诊断线索映射/S 档动作白名单/B 档可碰路径/R 档红线/验证方法/回滚方法/watchdog 配置行/共享依赖声明,9 字段全 required
   WHY:   适配卡是后续修复 agent 的唯一行动契约,字段缺失即放开红线
-  VERIFY: cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && python3 -c "import json;s=json.load(open('schema/repair-adapter-card.schema.json'));assert len(s['required'])==9"
+  VERIFY: cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && python -c "import json;s=json.load(open('schema/repair-adapter-card.schema.json'));assert len(s['required'])==9"
 
 Step.4
   WHERE: src/akb2/loops/(__init__.py + paths.py + ledger.py)
   WHAT:  paths.py 导出隔离区约定常量(staging 下 quarantine 子目录,路径经 vault.toml 解析);ledger.py 实现幂等追加(行内容 hash 去重,有限重试具名常量,无 while True)
   WHY:   幂等保证修复循环重入不污染账本(P2 收敛优先);隔离区常量化避免各 step 各写一套路径
-  VERIFY: python3 -m pytest tests/loops/test_ledger_lifeline.py -q
+  VERIFY: python -m pytest tests/loops/test_ledger_lifeline.py -q
 
 Step.5
   WHERE: src/akb2/loops/signatures.py
   WHAT:  实现签名记录到 failures.jsonl(按 signature schema)+ 同签名计数;count 达 3 写 escalation 标记行,不抛弃前两次记录
   WHY:   升级规则是循环 7 从"记录"到"行动"的触发条件,必须确定性可测
-  VERIFY: python3 -m pytest tests/loops/test_signatures.py -q
+  VERIFY: python -m pytest tests/loops/test_signatures.py -q
 
 Step.6
   WHERE: scripts/akb2-watchdog.sh
@@ -112,7 +112,7 @@ Step.7
   WHERE: tests/loops/(test_schema_selfcheck.py + test_ledger_lifeline.py + test_signatures.py + test_watchdog.py)
   WHAT:  四组契约测试:三 schema json.tool 自洽与 9 字段断言/账本幂等追加与七段字段/签名计数与第 3 次升级/watchdog --self-test 退出码(经 conftest run_script,AKB2_TEST_HOME 隔离)
   WHY:   断言绑定可观测行为(幂等/升级/退出码),契约被 step 2-6 消费前必须钉死
-  VERIFY: python3 -m pytest tests/loops -q && ruff check src/akb2/loops tests/loops
+  VERIFY: python -m pytest tests/loops -q && ruff check src/akb2/loops tests/loops
 ```
 
 ---
@@ -158,10 +158,10 @@ Task packet 关键字段(gd-task-packet-template 摘要):
 
 ```bash
 cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2"
-python3 -m pytest tests/loops -q                 # 契约测试全量(SC-s2/s3 + schema/watchdog 用例)
+python -m pytest tests/loops -q                 # 契约测试全量(SC-s2/s3 + schema/watchdog 用例)
 ruff check src/akb2/loops tests/loops            # SC-s6
 bash scripts/akb2-watchdog.sh --self-test        # SC-s4(等价于 master SC-5 watchdog 项)
-python3 -m json.tool schema/loop-ledger.schema.json >/dev/null && echo PASS   # SC-s1 抽样
+python -m json.tool schema/loop-ledger.schema.json >/dev/null && echo PASS   # SC-s1 抽样
 ```
 
 ---

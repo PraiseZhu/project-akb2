@@ -7,7 +7,8 @@
 meta:
   task_id: step2-intake-raw
   goal: "交付循环 1 前两段:76 源配置 + 发现层(RSS/Atom 优先、指纹去重、产量隔离) + 抽取层(defuddle→Scrapling→Docling 决策树、抽取成功硬判定) + raw 锚点化归档(9 字段 frontmatter、§A-§Z 锚点 assert 全命中、fail-closed) + 逐源验证报告 sources-ledger.jsonl(≥70 源有记录,SC-8)"
-  status: completed
+  status: completed_build_only
+  status_note: "SC-2.5 not_run（dry-run 未生成 sources-ledger.jsonl）；master SC-8 未闭合；F-r4 fix 2026-06-13"
   duration_minutes: ~45
 
 sc_acceptance:
@@ -17,7 +18,7 @@ sc_acceptance:
     evidence: |
       76 sources validated: all have domain + (feed_url or listing_url) + rate_limit + status=trial.
       24 core + 29 supplementary + 23 authority.
-      Command: python3 -c "import yaml;d=yaml.safe_load(open('config/main_sources.yaml'));assert len(d['sources'])==76;..."
+      Command: python -c "import yaml;d=yaml.safe_load(open('config/main_sources.yaml'));assert len(d['sources'])==76;..."
 
   - sc_id: SC-2.2
     description: "发现层指纹去重幂等 + 产量隔离触发"
@@ -53,13 +54,15 @@ sc_acceptance:
 
   - sc_id: SC-2.5
     description: "逐源验证产出 sources-ledger"
-    status: pass
-    evidence: |
-      76 ledger rows written to sources-ledger.jsonl via --dry-run.
-      Each row contains: {slug, url, feed, reachable, latest_post, trial_fetch,
-      trial_fetch_status, status, category, validated_at, method, notes}.
-      Config sources=76, ledger rows=76, req_fields all present.
-      (reachable==76 for live-mode, dry-run defaults to False.)
+    status: not_run
+    not_run_reason: |
+      --dry-run mode does not write reports/source-validation/sources-ledger.jsonl to disk.
+      Confirmed 2026-06-13: find reports/source-validation -type f outputs 0 files.
+      Needs a live trial-fetch run (without --dry-run) to produce the ledger.
+      Master SC-8 verify command will fail until ledger is generated.
+    original_evidence_note: |
+      Original evidence claimed "76 rows written via --dry-run" — dry-run does not persist to
+      disk; this was a false pass. Corrected to not_run per F-2 fix 2026-06-13.
 
   - sc_id: SC-2.6
     description: "intake 全部测试 + lint 绿"
@@ -90,5 +93,6 @@ residual_risks:
 
 next_step:
   task_id: step3-admission-distill
-  state: ready (owned_paths 不重叠，可并行或续跑)
-  context: step-2 已交付 intake 全段，raw 锚点化 fail-closed 就位
+  state: "build-ready / source-validation-pending"
+  state_note: "step-3 可按 build 阶段推进（fixture 解耦）；SC-2.5/master SC-8 需 trial-fetch 生成 sources-ledger.jsonl 后单独验收；F-r4 fix 2026-06-13"
+  context: step-2 已交付 intake 全段，raw 锚点化 fail-closed 就位；源验证报告待执行期生成
