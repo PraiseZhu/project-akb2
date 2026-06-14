@@ -40,9 +40,9 @@ REVIEW_FOCUS: 抽取数据契约(F2 ExtractionContext/fallback); article_id 唯�
 
 ## 3. 成功标准（SC）
 
-- [ ] SC-1（数据契约）: `ExtractionContext` dataclass ≥8 字段（source_slug/source_publisher/feed_title/feed_author/feed_published/url/content_type/content_hash）；`extract_content(url, extraction_config)` fallback 顺序：`title ← extracted.title or context.feed_title`、`author ← extracted.author or context.feed_author`、`published ← extracted.published or context.feed_published`；两者皆缺且 4 件元数据不齐时 fail-closed 不产 raw 文件
+- [ ] SC-1（数据契约）: `ExtractionContext` dataclass ≥8 字段（source_slug/source_publisher/feed_title/feed_author/feed_published/url/content_type/content_hash）；`extract_content(url, extraction_config)` fallback 顺序：`title ← extracted.title or context.feed_title`、`author ← extracted.author or context.feed_author`、`published ← extracted.published or context.feed_published`、`publisher ← extracted.publisher or context.source_publisher`；四者皆缺且元数据不齐时 fail-closed 不产 raw 文件
   - verify (method: test): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && python -m pytest tests/quality/test_extraction_context.py -q`
-  - expect: exit 0; "extractor 缺 title 但 feed_title 存在→可归档；author/published 同理；两者皆缺 fail-closed 断言通过"
+  - expect: exit 0; "extractor 缺 title 但 feed_title 存在→可归档；author/published/publisher 同理 fallback；四者皆缺 fail-closed 断言通过"
 
 - [ ] SC-2（defuddle 接真）: `_extract_via_defuddle` 调 `defuddle parse <tmpfile> --json -m` 而非返回模拟标题；word_count 基于 markdown 正文计算（非 HTML 字符数）
   - verify (method: test): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && python -m pytest tests/quality/test_intake_extract.py::TestExtractViaDefuddle -q`
@@ -64,9 +64,9 @@ REVIEW_FOCUS: 抽取数据契约(F2 ExtractionContext/fallback); article_id 唯�
   - verify (method: test): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && python -m pytest tests/quality/test_intake_raw.py -q`
   - expect: exit 0; "≥22 tests passed；frontmatter 缺字段→无文件断言、锚点未命中→无文件断言、failure 签名有 details 字段断言全过"
 
-- [ ] SC-7（orchestrator dry-run）: `python -m akb2.quality.intake.orchestrator --dry-run --limit 3 --sources-config config/main_sources.yaml` 退出码 0；stdout 含 discovered/skipped/archived 计数；不写任何 raw 文件；不打真网
-  - verify (method: command): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && PYTHONPATH=src python -m akb2.quality.intake.orchestrator --dry-run --limit 3 --sources-config config/main_sources.yaml && echo PASS`
-  - expect: PASS; stdout 包含 "discovered=" "skipped=" "archived=" 三个字段且 archived=0（dry-run 不写文件）
+- [ ] SC-7（orchestrator dry-run）: `python -m akb2.quality.intake.orchestrator --dry-run --limit 3 --sources-config config/main_sources.yaml` 退出码 0；stdout 含 discovered/skipped/archived 计数；不写任何 raw 文件（archived=0）；不打真网
+  - verify (method: command): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && PYTHONPATH=src python -m akb2.quality.intake.orchestrator --dry-run --limit 3 --sources-config config/main_sources.yaml 2>&1 | tee /tmp/dry-run-out.txt && grep -q 'archived=0' /tmp/dry-run-out.txt && echo PASS`
+  - expect: PASS; stdout 包含 "discovered=" "skipped=" "archived=0" 三个字段且 grep archived=0 命中（dry-run 不写文件）
 
 - [ ] SC-8（intake state ledger）: orchestrator 写/读 reports/intake/intake-state.jsonl；字段含 run_id/source_slug/article_id/last_fetch_at/daily_count/quarantine_status/status；rate_limit 超限 status=skipped_rate_limit；quarantine 命中 status=skipped_quarantine 不写 raw
   - verify (method: test): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && python -m pytest tests/quality/test_intake_orchestrator.py -q -k "rate_limit or quarantine or ledger"`
@@ -137,7 +137,7 @@ Hard-stop: extract.py 改动导致 test_intake_extract.py 红 → 修复现有�
 
 ```text
 WHERE: src/akb2/quality/intake/extract.py（_extract_via_defuddle:123, _via_scrapling:140, _via_docling:159 + HTTP fetcher 入口）; tests/quality/test_intake_extract.py（TestExtractViaDefuddle/Scrapling/Docling 三个 class）
-WHAT: defuddle→`defuddle parse <tmpfile> --json -m`；scrapling→`scrapling.Fetcher/StealthyFetcher`；docling→`DocumentConverter().convert()`；extract_content html is None 时 httpx 自动抓取；MIN_CONTENT_LENGTH 上调至 200；word_count 基于 markdown 正文；pyproject.toml 补 scrapling/docling；import gate 探测（importlib + log warning）
+WHAT: defuddle→`defuddle parse <tmpfile> --json -m`；scrapling→`scrapling.Fetcher/StealthyFetcher`；docling→`DocumentConverter().convert()`；extract_content html is None 时 httpx 自动抓取；MIN_CONTENT_LENGTH 上调至 200；word_count 基于 markdown 正文；import gate 探测（importlib + log warning）；pyproject.toml 依赖修改归 step-6 所有，此处仅实现接口不修改 pyproject
 WHY: 三方法全是占位 stub 返回模拟数据；无 HTTP fetcher 入口导致决策树分支 2/3 永远不进；P3 安装≠可导入需 import gate
 VERIFY: python -m pytest tests/quality/test_intake_extract.py -q
 ```
@@ -172,7 +172,7 @@ VERIFY: python -m pytest tests/quality/test_intake_raw.py -q
 WHERE: src/akb2/quality/intake/source_validator.py（_validate_source_live:67 接真）; src/akb2/quality/intake/discovery.py（listing 路径:343-348 接 scrapling）; tests/quality/test_source_validator.py（新建）
 WHAT: source_validator live：真 trial-fetch 76 源；必填字段（feed/url/reachable/latest_post/trial_fetch）齐；以 run_id 原子写入 sources-ledger.jsonl（替换非追加）；失败记录保留；discovery listing 路径接 scrapling 列表页自适应（F6/P3 run_id 原子替换）
 WHY: F6 live 是 skeleton；P3 jsonl 追加混旧记录；discovery listing 未实现
-VERIFY: python -m pytest tests/quality/test_source_validator.py -q -m "not integration"
+VERIFY: python -m pytest tests/quality/test_source_validator.py -q -m "not integration" && AKB2_LIVE_VALIDATE=1 PYTHONPATH=src python -m akb2.quality.intake.source_validator --live --out reports/source-validation/sources-ledger.jsonl && python -c "import json,yaml; cfg=yaml.safe_load(open('config/main_sources.yaml'))['sources']; c_urls={s.get('feed_url') or s.get('listing_url') for s in cfg}-{None,''}; rs=[json.loads(l) for l in open('reports/source-validation/sources-ledger.jsonl')]; assert len(rs)==76; u={r['url'] for r in rs}; assert u==c_urls; ok=sum(1 for r in rs if r.get('reachable')); assert ok>=70; run_ids={r.get('run_id') for r in rs}; assert len(run_ids)==1; print('PASS')"
 ```
 
 成功标准：SC-9, SC-10（第 3 节）

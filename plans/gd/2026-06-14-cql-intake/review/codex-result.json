@@ -1,0 +1,29 @@
+{
+  "schema_version": "2.0",
+  "template_kind": "gd-plan-review",
+  "review_kind": "plan",
+  "review_target_kind": "plan_only",
+  "target_role": "plan_artifact",
+  "reviewer": "codex",
+  "review_target": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-14-cql-intake/master-plan.md",
+  "review_run_status": "degraded",
+  "gd_review_decision": "FAILED",
+  "source_of_truth_decision": {
+    "location": "top_level_machine_header",
+    "value": "FAILED"
+  },
+  "scope_checked": [
+    {
+      "area": "bridge runtime",
+      "result": "fail",
+      "evidence": "raw 缺 gd-review-result-json fenced block"
+    }
+  ],
+  "findings": [],
+  "merge_notes": {
+    "conflict_with_other_reviewer": false,
+    "degraded_reason": "raw 缺 gd-review-result-json fenced block"
+  },
+  "residual_risk": "",
+  "timestamp": "2026-06-14T13:37:57Z"
+}

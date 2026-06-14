@@ -10,7 +10,7 @@ TEMPLATE_KIND: gd-step-plan
 ## 1. 目标链
 
 ```text
-TASK_GOAL: _extract_via_defuddle/_via_scrapling/_via_docling 三方法从占位 stub 改为真调用；HTTP fetcher 入口；MIN_CONTENT_LENGTH 上调；word_count 基于 markdown 正文；import gate 探测；pyproject 补依赖。
+TASK_GOAL: _extract_via_defuddle/_via_scrapling/_via_docling 三方法从占位 stub 改为真调用；HTTP fetcher 入口；MIN_CONTENT_LENGTH 上调；word_count 基于 markdown 正文；import gate 探测。pyproject 依赖修改归 step-6 所有。
 ```
 
 REVIEW_DOMAIN: ai_infra
@@ -69,8 +69,8 @@ Step.4
   VERIFY: python -m pytest tests/quality/test_intake_extract.py -q
 
 Step.5
-  WHERE: src/akb2/quality/intake/__init__.py；pyproject.toml
-  WHAT:  import gate 探测（importlib，不可用 log warning 不抛）；pyproject 补 scrapling/docling dependencies
+  WHERE: src/akb2/quality/intake/__init__.py
+  WHAT:  import gate 探测（importlib，不可用 log warning 不抛）；pyproject 依赖已归 step-6 负责，此步不修改 pyproject.toml
   WHY:   P3 安装≠当前 Python 可导入
   VERIFY: python -m pytest tests/quality/ -q -k "import_gate"
 ```

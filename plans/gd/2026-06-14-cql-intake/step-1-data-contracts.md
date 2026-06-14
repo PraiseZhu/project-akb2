@@ -52,7 +52,7 @@ Step.1
 
 Step.2
   WHERE: src/akb2/quality/intake/extract.py:181（extract_content 函数）
-  WHAT:  extraction_config 参数接收 ExtractionContext；fallback 顺序：`title ← extracted.title or context.feed_title`、`author ← extracted.author or context.feed_author`、`published ← extracted.published or context.feed_published`；两者皆缺且 _validate_metadata 失败→不产 raw，落 fetch_fail 签名
+  WHAT:  extraction_config 参数接收 ExtractionContext；fallback 顺序：`title ← extracted.title or context.feed_title`、`author ← extracted.author or context.feed_author`、`published ← extracted.published or context.feed_published`、`publisher ← extracted.publisher or context.source_publisher`；四者皆缺且 _validate_metadata 失败→不产 raw，落 fetch_fail 签名
   WHY:   F2/F3 数据契约；F-p2-3 feed_title fallback 缺失
   VERIFY: python -m pytest tests/quality/test_extraction_context.py -q
 
