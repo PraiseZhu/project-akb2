@@ -535,11 +535,13 @@ class TestArchiveFromExtractResult:
     def test_archive_from_extract_result_with_source_metadata(
         self, sample_article_md: str, temp_output_dir: Path
     ):
-        """source_metadata 传入时，frontmatter 使用 metadata 中的 publisher/slug。"""
+        """source_metadata 传入时，frontmatter 使用 metadata 中的 publisher/slug。
+        extract_content 在调用 archive 前已通过 _apply_feed_fallback 填充 author/published。
+        """
         er = self._make_extract_result(
             content=sample_article_md,
-            author="",       # 空 author，由 metadata 填补
-            published="",    # 空 published，由 metadata 填补
+            author="Feed Author",     # extract_content 已做 fallback，此处已有值
+            published="2026-05-20",   # extract_content 已做 fallback，此处已有值
         )
         metadata = ExtractionContext(
             source_slug="metadata-slug",
@@ -570,17 +572,19 @@ class TestArchiveFromExtractResult:
     def test_archive_from_extract_result_metadata_author_fallback(
         self, sample_article_md: str, temp_output_dir: Path
     ):
-        """extract_result.author 为空时从 source_metadata.feed_author 取值。"""
+        """extract_result.author 已由 extract_content._apply_feed_fallback 填充；
+        archive_from_extract_result 直接使用 extract_result.author。
+        """
         er = self._make_extract_result(
             content=sample_article_md,
-            author="",
+            author="Feed Author from Metadata",  # extract 已做 fallback，值已在 result 内
         )
         metadata = ExtractionContext(
             source_slug="test-blog",
             source_publisher="Test Publisher",
             feed_title="",
             feed_author="Feed Author from Metadata",
-            feed_published="",
+            feed_published="2026-05-01",
             url="https://example.com/article",
         )
         result = archive_from_extract_result(
@@ -596,10 +600,13 @@ class TestArchiveFromExtractResult:
     def test_archive_from_extract_result_metadata_published_fallback(
         self, sample_article_md: str, temp_output_dir: Path
     ):
-        """extract_result.published 为空时从 source_metadata.feed_published 取值。"""
+        """extract_result.published 已由 extract_content._apply_feed_fallback 填充；
+        archive_from_extract_result 直接使用 extract_result.published。
+        """
         er = self._make_extract_result(
             content=sample_article_md,
-            published="",
+            author="A",
+            published="2026-04-01",  # extract 已做 fallback，值已在 result 内
         )
         metadata = ExtractionContext(
             source_slug="test-blog",

@@ -467,23 +467,13 @@ def archive_from_extract_result(
     if source_metadata is not None and source_metadata.source_publisher:
         effective_publisher = source_metadata.source_publisher
 
-    # author 优先从 source_metadata 的 feed_author 取（当 extract_result.author 为空时）
-    author = extract_result.author
-    if not author and source_metadata is not None and source_metadata.feed_author:
-        author = source_metadata.feed_author
-
-    # published_at 优先从 source_metadata 的 feed_published 取（当 extract_result.published 为空时）
-    published_at = extract_result.published
-    if not published_at and source_metadata is not None and source_metadata.feed_published:
-        published_at = source_metadata.feed_published
-
     return archive_raw(
         slug=slug,
         url=extract_result.url,
         title=extract_result.title,
-        author=author,
+        author=extract_result.author,
         content=extract_result.content,
-        published_at=published_at,
+        published_at=extract_result.published,
         publisher=effective_publisher,
         fetched_via=method_str,
         output_dir=output_dir,

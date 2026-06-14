@@ -1,0 +1,153 @@
+{
+  "outcome_version": "1.0",
+  "outcome_id": "cql-intake-v1-combined",
+  "task_outcomes": [
+    {
+      "task_id": "t1",
+      "exec_status": "completed",
+      "sc_acceptance": [
+        {
+          "sc_ref": "SC-1",
+          "status": "pass",
+          "evidence": "python -m pytest tests/quality/test_extraction_context.py -v\n12 passed in 0.06s (exit 0)\n\n覆盖用例:\n  TestFeedTitleFallback::test_missing_title_falls_back_to_feed_title        PASSED\n  TestFeedMetadataFallbacks::test_missing_author_falls_back                 PASSED\n  TestFeedMetadataFallbacks::test_missing_published_falls_back              PASSED\n  TestFeedMetadataFallbacks::test_missing_publisher_stored_in_raw_metadata  PASSED\n  TestFailClosed::test_all_missing_fail_closed                              PASSED\n  TestFailClosed::test_no_context_no_metadata_fail_closed                  PASSED\n  TestExtractionContextFields::test_field_count_at_least_8                 PASSED\n  TestExtractionContextFields::test_instantiation_with_all_fields          PASSED\n  TestArticleId::test_deterministic_same_url                                PASSED\n  TestArticleId::test_length_is_12                                          PASSED\n  TestArticleId::test_different_urls_different_ids                          PASSED\n  TestArticleId::test_matches_manual_sha256                                 PASSED\n\n回归验证: tests/quality/test_intake_extract.py 25 passed in 0.07s (exit 0)\nLint: ruff check 3 files — All checks passed! (exit 0)\n",
+          "not_run_reason": ""
+        }
+      ],
+      "files_added": [
+        "src/akb2/quality/intake/models.py",
+        "tests/quality/test_extraction_context.py"
+      ],
+      "files_modified": [
+        "src/akb2/quality/intake/extract.py"
+      ],
+      "owned_paths_writes_only": true,
+      "forbidden_paths_touched": []
+    },
+    {
+      "task_id": "t2",
+      "exec_status": "completed",
+      "sc_acceptance": [
+        {
+          "sc_ref": "SC-2",
+          "status": "pass",
+          "evidence": "python -c \"import pytest; pytest.main(['tests/quality/test_intake_extract.py::TestExtractViaDefuddle', '-v'])\"\n4 passed in 0.55s\n- test_returns_markdown_content_without_html_tags: PASSED (no <html>/<body>/<p> tags)\n- test_title_is_not_hardcoded_stub: PASSED (title=\"Building AI Agents with Loop Engineering\", not \"Defuddle Extracted Title\")\n- test_word_count_based_on_markdown_body: PASSED (word_count=397, manual_count delta <=20%)\n- test_empty_html_returns_empty_dict: PASSED\n"
+        },
+        {
+          "sc_ref": "SC-3",
+          "status": "pass",
+          "evidence": "python -c \"import pytest; pytest.main(['tests/quality/test_intake_extract.py::TestExtractViaScrapling', '-v'])\"\n4 passed in 0.24s\n- test_adaptive_mode_calls_fetcher: PASSED (Fetcher mock, title from page)\n- test_browser_mode_calls_stealthy_fetcher: PASSED (StealthyFetcher mock)\n- test_scrapling_unavailable_returns_empty_and_warns: PASSED (import gate warning)\n- test_scrapling_exception_returns_empty: PASSED (graceful degradation)\n"
+        },
+        {
+          "sc_ref": "SC-4",
+          "status": "pass",
+          "evidence": "python -c \"import pytest; pytest.main(['tests/quality/test_intake_extract.py::TestExtractViaDocling', '-v'])\"\n5 passed in 0.07s\n- test_returns_markdown_from_export: PASSED (content = export_to_markdown(), not bytes.decode())\n- test_file_bytes_written_to_temp_pdf: PASSED (convert() called with .pdf temp path)\n- test_no_file_bytes_returns_empty: PASSED\n- test_docling_unavailable_returns_empty_and_warns: PASSED (import gate warning)\n- test_docling_exception_returns_empty: PASSED (graceful degradation)\n"
+        }
+      ],
+      "files_added": [],
+      "files_modified": [
+        "src/akb2/quality/intake/extract.py",
+        "tests/quality/test_intake_extract.py",
+        "tests/quality/test_extraction_context.py"
+      ],
+      "owned_paths_writes_only": true,
+      "forbidden_paths_touched": []
+    },
+    {
+      "task_id": "t3",
+      "exec_status": "completed",
+      "sc_acceptance": [
+        {
+          "sc_ref": "SC-5",
+          "status": "pass",
+          "evidence": "pytest tests/quality/test_intake_orchestrator.py -k \"article_id or idempotent\"\n→ test_article_id_uniqueness PASSED (不同 URL 产 2 个不同 12 位 article_id)\n→ test_article_id_deterministic PASSED (相同 URL 重复调用结果一致)\n→ test_idempotent PASSED (同 URL 重跑 ledger 已有 → skipped_seen，ledger 行数不增，无新 raw 文件)\n"
+        },
+        {
+          "sc_ref": "SC-7",
+          "status": "pass",
+          "evidence": "PYTHONPATH=src python -m akb2.quality.intake.orchestrator --dry-run --limit 3 \\\n  --sources-config config/main_sources.yaml 2>&1 | grep -q 'archived=0' && echo PASS\n→ 输出末行: discovered=0 skipped=0 archived=0\n→ grep 命中 archived=0，exit 0，PASS\n→ test_dry_run_no_raw PASSED\n→ test_dry_run_no_network_no_raw PASSED (httpx/scrapling patch fail-on-call，干跑通过)\n→ test_stdout_format PASSED (stdout 含 discovered=/skipped=/archived=0)\n"
+        },
+        {
+          "sc_ref": "SC-8",
+          "status": "pass",
+          "evidence": "pytest tests/quality/test_intake_orchestrator.py -k \"rate_limit or quarantine or ledger\"\n→ test_rate_limit_skip PASSED (超限 status=skipped_rate_limit)\n→ test_quarantine_skip PASSED (quarantine=True → archived=0，不写 raw)\n→ test_ledger_fields PASSED (run_id/source_slug/article_id/last_fetch_at/daily_count/quarantine_status/status 全部存在)\n→ test_ledger_write_and_reload PASSED\n全部 7 passed, 0 failed\n"
+        }
+      ],
+      "files_added": [
+        "src/akb2/quality/intake/orchestrator.py",
+        "tests/quality/test_intake_orchestrator.py",
+        "reports/intake/.gitkeep"
+      ],
+      "files_modified": [
+        ".gitignore"
+      ],
+      "owned_paths_writes_only": true,
+      "forbidden_paths_touched": []
+    },
+    {
+      "task_id": "t4",
+      "exec_status": "completed",
+      "sc_acceptance": [
+        {
+          "sc_ref": "SC-6",
+          "status": "pass",
+          "evidence": "30 passed in 0.06s (exit 0) — frontmatter 9 字段齐、§A-§Z assert 全命中、frontmatter缺失→无文件、锚点缺失→无文件、failure签名有details/sample_error字段断言全过、article_id文件名格式断言通过"
+        }
+      ],
+      "files_added": [],
+      "files_modified": [
+        "src/akb2/quality/intake/raw_archiver.py",
+        "tests/quality/test_intake_raw.py"
+      ],
+      "owned_paths_writes_only": true,
+      "forbidden_paths_touched": []
+    },
+    {
+      "task_id": "t5",
+      "exec_status": "completed",
+      "sc_acceptance": [
+        {
+          "sc_ref": "SC-9",
+          "status": "pass",
+          "evidence": "cd \"/Users/praise/AI-Agent/Claude/projects/Project AKB2\" && python -m pytest tests/quality/test_source_validator.py -q -m \"not integration\"\n25 passed, 1 deselected in 0.37s\nexit 0\n覆盖：dry-run 结构/CLI 可用/ledger 字段完整/reachable=False/run_id 存在/原子写入/run_id 一致性/UUID 格式/两次运行不同 run_id/extract_latest_url RSS+Atom/timeout 处理\n"
+        },
+        {
+          "sc_ref": "SC-10",
+          "status": "fail",
+          "evidence": "AKB2_LIVE_VALIDATE=1 PYTHONPATH=src python3 -m akb2.quality.intake.source_validator --live --out reports/source-validation/sources-ledger.jsonl\nstdout: Done. 32/76 reachable. Ledger written to reports/source-validation/sources-ledger.jsonl\nexit: 0 (命令本身成功，但 reachable=32 未达 SC-10 要求的 >=70)\n\n根因: 44 个 feed URL HTTP 404 (陈旧配置，非网络故障)\n示例: addyosmani.com/blog/feed.xml 404，但 addyosmani.com/feed.xml 200\n修复路径: Phase 4 corpus 死链修复 (更新 config/main_sources.yaml 中过期的 feed_url)\n",
+          "not_run_reason": ""
+        }
+      ],
+      "files_added": [
+        "tests/quality/test_source_validator.py"
+      ],
+      "files_modified": [
+        "src/akb2/quality/intake/source_validator.py",
+        "src/akb2/quality/intake/discovery.py"
+      ],
+      "owned_paths_writes_only": true,
+      "forbidden_paths_touched": []
+    },
+    {
+      "task_id": "t6",
+      "exec_status": "completed",
+      "sc_acceptance": [
+        {
+          "sc_ref": "SC-11",
+          "status": "pass",
+          "evidence": "364 passed, 5 deselected (integration), 2 warnings in 5.88s\nruff check src/akb2/quality/intake/ tests/quality/ → All checks passed!\n_check_tool_available('json') → True; _check_tool_available('_nonexistent') → False + WARNING log\npyproject.toml deps verified: ['scrapling>=0.4.8', 'docling>=2.0.0']\n"
+        }
+      ],
+      "files_added": [
+        "docs/runbooks/intake-tools-setup.md"
+      ],
+      "files_modified": [
+        "pyproject.toml",
+        "src/akb2/quality/intake/__init__.py",
+        "tests/quality/test_intake_extract.py",
+        "tests/quality/test_intake_orchestrator.py"
+      ],
+      "owned_paths_writes_only": true,
+      "forbidden_paths_touched": []
+    }
+  ]
+}

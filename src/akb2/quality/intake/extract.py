@@ -345,7 +345,18 @@ def extract_content(
         try:
             import httpx
 
-            resp = httpx.get(url, follow_redirects=True, timeout=30)
+            resp = httpx.get(
+                url,
+                follow_redirects=True,
+                timeout=30,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/120.0.0.0 Safari/537.36"
+                    )
+                },
+            )
             html = resp.text
             if not content_type:
                 content_type = resp.headers.get("content-type", "")
