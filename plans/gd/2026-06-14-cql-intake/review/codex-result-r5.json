@@ -1,0 +1,44 @@
+{
+  "template_kind": "gd-plan-review",
+  "reviewer": "codex",
+  "review_target": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-14-cql-intake/master-plan.md",
+  "review_kind": "plan",
+  "review_run_status": "completed",
+  "gd_review_decision": "REQUIRES_CHANGES",
+  "scope_checked": [
+    {
+      "facet": "raw markdown structure",
+      "result": "pass",
+      "evidence": "writer-validated; verdict=REQUIRES_CHANGES"
+    }
+  ],
+  "findings": [
+    {
+      "severity": "P2",
+      "title": "source_validator live 产物未纳入 Step-5 ownership",
+      "sc_refs": [
+        "SC-10"
+      ],
+      "evidence": "`plans/gd/2026-06-14-cql-intake/master-plan.md:81` 写该路径；`:98`、`:109` 的 Step-5 只列代码和测试产物。",
+      "impact": "执行时要么越过 task packet 边界写报告，要么漏产 ledger，后续 live baseline/state 无法稳定判断。",
+      "required_fix": "把 `reports/source-validation/` 或精确 `reports/source-validation/sources-ledger.jsonl` 加入 Step-5 owned_paths、deliverables 和 §5 修改边界，并说明 track/ignore 意图。",
+      "verify": "`grep -n \"reports/source-validation\" plans/gd/2026-06-14-cql-intake/master-plan.md` 能在 SC-10、Step-5 owned/deliverables、§5 边界同时命中。"
+    },
+    {
+      "severity": "P2",
+      "title": "`.gitignore` 修改声明无执行 step 承接",
+      "sc_refs": [
+        "SC-8"
+      ],
+      "evidence": "`plans/gd/2026-06-14-cql-intake/master-plan.md:120`、`:121` 声明目录和 ignore；`:96`、`:107` 的 Step-3 未列 `.gitignore`。",
+      "impact": "ledger 可能进入 git 状态污染后续运行；若执行器严格按 owned_paths 校验，补 ignore 会被判越界。",
+      "required_fix": "将 `.gitignore` 明确加入负责 `reports/intake/` 的 step owned_paths/deliverables，并补一条 verify。",
+      "verify": "计划中出现 `git check-ignore reports/intake/intake-state.jsonl` 或等价断言，且 `.gitignore` 出现在同一 step 的 owned_paths/deliverables。"
+    }
+  ],
+  "merge_notes": {
+    "conflict_with_other_reviewer": false
+  },
+  "residual_risk": [],
+  "timestamp": "2026-06-14T14:35:37Z"
+}

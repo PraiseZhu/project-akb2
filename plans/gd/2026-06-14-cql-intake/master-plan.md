@@ -64,9 +64,10 @@ REVIEW_FOCUS: 抽取数据契约(F2 ExtractionContext/fallback); article_id 唯�
   - verify (method: test): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && python -m pytest tests/quality/test_intake_raw.py -q`
   - expect: exit 0; "≥22 tests passed；frontmatter 缺字段→无文件断言、锚点未命中→无文件断言、failure 签名有 details 字段断言全过"
 
-- [ ] SC-7（orchestrator dry-run）: `python -m akb2.quality.intake.orchestrator --dry-run --limit 3 --sources-config config/main_sources.yaml` 退出码 0；stdout 含 discovered/skipped/archived 计数；不写任何 raw 文件（archived=0）；不打真网
+- [ ] SC-7（orchestrator dry-run）: `python -m akb2.quality.intake.orchestrator --dry-run --limit 3 --sources-config config/main_sources.yaml` 退出码 0；stdout 含 discovered/skipped/archived 计数；不写任何 raw 文件（archived=0）；不打真网（httpx/scrapling 被 mock 为 fail-on-call）
   - verify (method: command): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && PYTHONPATH=src python -m akb2.quality.intake.orchestrator --dry-run --limit 3 --sources-config config/main_sources.yaml 2>&1 | tee /tmp/dry-run-out.txt && grep -q 'archived=0' /tmp/dry-run-out.txt && echo PASS`
-  - expect: PASS; stdout 包含 "discovered=" "skipped=" "archived=0" 三个字段且 grep archived=0 命中（dry-run 不写文件）
+  - verify (method: test): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && python -m pytest tests/quality/test_intake_orchestrator.py -q -k "dry_run_no_network or no_network_no_raw"`
+  - expect: PASS + exit 0; archived=0；网络调用触发时测试失败，正常 dry-run 通过（`test_dry_run_no_network_no_raw` 断言）
 
 - [ ] SC-8（intake state ledger）: orchestrator 写/读 reports/intake/intake-state.jsonl；字段含 run_id/source_slug/article_id/last_fetch_at/daily_count/quarantine_status/status；rate_limit 超限 status=skipped_rate_limit；quarantine 命中 status=skipped_quarantine 不写 raw
   - verify (method: test): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && python -m pytest tests/quality/test_intake_orchestrator.py -q -k "rate_limit or quarantine or ledger"`
@@ -77,8 +78,8 @@ REVIEW_FOCUS: 抽取数据契约(F2 ExtractionContext/fallback); article_id 唯�
   - expect: exit 0
 
 - [ ] SC-10（source_validator live—真网 integration 门）: --live 模式产 sources-ledger.jsonl；76 行、unique_urls==config_urls、必填字段（feed/url/reachable/latest_post/trial_fetch）齐、reachable≥70；同次运行 run_id 一致；以 run_id 原子写入不混旧记录
-  - verify (method: command): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && AKB2_LIVE_VALIDATE=1 PYTHONPATH=src python -m akb2.quality.intake.source_validator --live --out reports/source-validation/sources-ledger.jsonl && python -c "import json,yaml; cfg=yaml.safe_load(open('config/main_sources.yaml'))['sources']; c_urls={s.get('feed_url') or s.get('listing_url') for s in cfg}-{None,''}; rs=[json.loads(l) for l in open('reports/source-validation/sources-ledger.jsonl')]; assert len(rs)==76,'rows!=76'; u={r['url'] for r in rs}; assert u==c_urls,'url mismatch'; req_fields={'feed','url','reachable','latest_post','trial_fetch'}; bad=[i for i,r in enumerate(rs) if not req_fields.issubset(r.keys())]; assert not bad,f'missing fields at rows {bad}'; ok=sum(1 for r in rs if r.get('reachable')); assert ok>=70,f'reachable={ok}<70'; run_ids={r.get('run_id') for r in rs}; assert len(run_ids)==1,f'mixed run_ids: {run_ids}'; print('PASS')"`
-  - expect: PASS; 76 行 ledger，unique_urls==config_urls，必填字段齐，reachable≥70，run_id 一致
+  - verify (method: command): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && AKB2_LIVE_VALIDATE=1 PYTHONPATH=src python -m akb2.quality.intake.source_validator --live --out reports/source-validation/sources-ledger.jsonl && python -c "import json,yaml; cfg=yaml.safe_load(open('config/main_sources.yaml'))['sources']; c_urls={s.get('feed_url') or s.get('listing_url') for s in cfg}-{None,''}; rs=[json.loads(l) for l in open('reports/source-validation/sources-ledger.jsonl')]; assert len(rs)==76,'rows!=76'; u={r['url'] for r in rs}; assert u==c_urls,'url mismatch'; req_fields={'feed','url','reachable','latest_post','trial_fetch'}; bad=[i for i,r in enumerate(rs) if not req_fields.issubset(r.keys())]; assert not bad,f'missing fields at rows {bad}'; ok=sum(1 for r in rs if r.get('reachable')); assert ok>=70,f'reachable={ok}<70'; ok_fields=sum(1 for r in rs if r.get('reachable') and r.get('trial_fetch') and r.get('latest_post')); assert ok_fields>=60,f'reachable+nonempty_trial_fetch+latest_post={ok_fields}<60'; run_ids={r.get('run_id') for r in rs}; assert len(run_ids)==1,f'mixed run_ids: {run_ids}'; print('PASS')"`
+  - expect: PASS; 76 行 ledger，unique_urls==config_urls，必填字段齐，reachable≥70，reachable 源 trial_fetch+latest_post 非空≥60，run_id 一致
 
 - [ ] SC-11（工程门）: 抓取链路全量测试 + lint 绿；无真网调用（integration 标记 deselected）
   - verify (method: command): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && python -m pytest tests/quality/ tests/loops/ -q && ruff check src/akb2/quality/intake/ tests/quality/ && echo PASS`
@@ -92,10 +93,21 @@ REVIEW_FOCUS: 抽取数据契约(F2 ExtractionContext/fallback); article_id 唯�
 |------|------|-------------|-----------|---------|
 | 1 | 数据契约与身份契约 | `src/akb2/quality/intake/models.py`(新建), `extract.py`(API 扩展), `tests/quality/test_extraction_context.py`(新建) | — | SC-1, SC-5(partial) |
 | 2 | 抽取三工具接真 | `src/akb2/quality/intake/extract.py`, `tests/quality/test_intake_extract.py`(修改) | step-1 | SC-2, SC-3, SC-4 |
-| 3 | orchestrator + intake state ledger | `src/akb2/quality/intake/orchestrator.py`(新建), `reports/intake/`, `tests/quality/test_intake_orchestrator.py`(新建) | step-1,2 | SC-5(full), SC-7, SC-8 |
+| 3 | orchestrator + intake state ledger | `src/akb2/quality/intake/orchestrator.py`(新建), `reports/intake/`, `.gitignore`(补 reports/intake/ 排除), `tests/quality/test_intake_orchestrator.py`(新建) | step-1,2 | SC-5(full), SC-7, SC-8 |
 | 4 | raw 归档契约补全 | `src/akb2/quality/intake/raw_archiver.py`, `tests/quality/test_intake_raw.py`(修改) | step-1 | SC-6 |
-| 5 | source_validator live + discovery listing | `src/akb2/quality/intake/source_validator.py`, `discovery.py`, `tests/quality/test_source_validator.py`(新建) | step-1 | SC-9, SC-10 |
+| 5 | source_validator live + discovery listing | `src/akb2/quality/intake/source_validator.py`, `discovery.py`, `reports/source-validation/sources-ledger.jsonl`(运行时产出), `tests/quality/test_source_validator.py`(新建) | step-1 | SC-9, SC-10 |
 | 6 | 工程门 + import gate + pyproject | `pyproject.toml`, `src/akb2/quality/intake/__init__.py`, `docs/` | step-2~5 | SC-11 |
+
+### 4.5 Task Packet 契约字段速查（GD §6 required fields）
+
+| Step | forbidden_paths（禁改） | can_parallel_with | required_context | deliverables |
+|------|------------------------|-------------------|-----------------|--------------|
+| 1 | 见§5 全局 forbidden_paths | — | `intake/extract.py`（现有接口） | `intake/models.py`（新建）、`test_extraction_context.py`（新建） |
+| 2 | `intake/models.py`（只读）; 见§5 | step-4 | `intake/models.py`（step-1产出） | `intake/extract.py`（修改）、`test_intake_extract.py`（修改） |
+| 3 | `intake/extract.py`、`intake/raw_archiver.py`、`intake/source_validator.py`、`intake/discovery.py`（只读）; 见§5 | — | `intake/models.py`（step-1）、`intake/extract.py`（step-2产出） | `intake/orchestrator.py`（新建）、`test_intake_orchestrator.py`（新建）、`reports/intake/`（运行时目录）、`.gitignore`（补 reports/intake/ 排除） |
+| 4 | `intake/extract.py`、`intake/orchestrator.py`、`intake/discovery.py`、`intake/source_validator.py`（只读）; 见§5 | step-2 | `intake/models.py`（step-1）、`intake/raw_archiver.py`（现有） | `intake/raw_archiver.py`（修改）、`test_intake_raw.py`（修改） |
+| 5 | `intake/extract.py`、`intake/orchestrator.py`、`intake/raw_archiver.py`（只读）; 见§5 | step-3、step-4 | `intake/models.py`（step-1）、`config/main_sources.yaml` | `intake/source_validator.py`（修改）、`intake/discovery.py`（修改）、`test_source_validator.py`（新建）、`reports/source-validation/sources-ledger.jsonl`（运行时产出） |
+| 6 | `intake/extract.py`~`intake/source_validator.py`（只读）; 见§5 | — | `pyproject.toml`（现有）、step-2~5 产出 | `pyproject.toml`（修改）、`intake/__init__.py`（修改）、`docs/runbooks/`（新建） |
 
 ---
 
@@ -105,8 +117,9 @@ REVIEW_FOCUS: 抽取数据契约(F2 ExtractionContext/fallback); article_id 唯�
 - `src/akb2/quality/intake/`（全目录：extract.py/raw_archiver.py/discovery.py/source_validator.py 修改；models.py/orchestrator.py 新建）
 - `tests/quality/test_intake_extract.py`、`test_intake_raw.py`（修改）
 - `tests/quality/test_extraction_context.py`、`test_intake_orchestrator.py`、`test_source_validator.py`（新建）
-- `reports/intake/`（新建目录，gitignore 排除）
-- `.gitignore`（补 `reports/intake/` 排除规则）
+- `reports/intake/`（新建目录，step-3 负责；`.gitignore` 同步排除）
+- `.gitignore`（step-3 负责补 `reports/intake/` 排除规则；verify: `git check-ignore reports/intake/intake-state.jsonl`）
+- `reports/source-validation/sources-ledger.jsonl`（step-5 live 模式运行时产出；verify: SC-10 命令断言 76 行）
 - `pyproject.toml`（scrapling/docling 补入 dependencies）
 
 不修改（forbidden_paths）：
@@ -150,6 +163,7 @@ VERIFY: python -m pytest tests/quality/test_intake_extract.py -q
 WHERE: src/akb2/quality/intake/orchestrator.py（新建）; reports/intake/intake-state.jsonl（运行时产出）; tests/quality/test_intake_orchestrator.py（新建）
 WHAT: 读 main_sources.yaml → discover_articles（listing 实现由 step-5 负责，此处只调用）→ extract_content（传 ExtractionContext）→ archive_from_extract_result；状态外置到 intake-state.jsonl（run_id/source_slug/article_id/last_fetch_at/daily_count/quarantine_status/status）；rate_limit 超限 skip；quarantine 命中 skip 不写 raw；CLI 入参 --dry-run/--limit/--sources-config/--state-file
 WHY: F7 orchestrator 无状态 rate_limit/quarantine 失效；F3 article_id 需写 ledger 幂等
+NOTE-dry-run-safety: discovery.py:344 listing 路径触发条件为 `elif listing_url and not feed_url`；config/main_sources.yaml 全部 76 源均有 feed_url（实测），故 listing 路径不触发。Step-5 完成前 dry-run 可独立验收；orchestrator 测试 mock discover_articles，与 listing 实现无关。
 VERIFY: python -m pytest tests/quality/test_intake_orchestrator.py -q
 ```
 
@@ -193,7 +207,7 @@ VERIFY: python -m pytest tests/quality/ tests/loops/ -q && ruff check src/akb2/q
 ## 7. 执行路径（plan mode 退出后）
 
 1. 把本文件内容落成 `Project AKB2/plans/gd/2026-06-14-cql-intake/master-plan.md`（正式 GD 计划，本文件是蓝本）
-2. 跑 `python3 "Project GD/scripts/gd-validate-review2-plan-target.py" --target plans/gd/2026-06-14-cql-intake/master-plan.md` → PLAN_TEMPLATE_STATUS: pass
+2. 跑 `python3 "/Users/praise/AI-Agent/Claude/projects/Project GD/scripts/gd-validate-review2-plan-target.py" --target plans/gd/2026-06-14-cql-intake/master-plan.md` → PLAN_TEMPLATE_STATUS: pass
 3. `/review2 plan plans/gd/2026-06-14-cql-intake/master-plan.md` 或 `/gd 审计划`（Codex 交叉审查）
 4. APPROVED 后 `/gd 执行`（按 step-1~6 顺序）
 

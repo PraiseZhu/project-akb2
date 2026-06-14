@@ -1,0 +1,22 @@
+{
+  "template_kind": "gd-plan-review",
+  "reviewer": "codex",
+  "review_target": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-14-cql-intake/master-plan.md",
+  "review_kind": "plan",
+  "review_run_status": "degraded",
+  "gd_review_decision": "FAILED",
+  "scope_checked": [
+    {
+      "facet": "bridge runtime",
+      "result": "fail",
+      "evidence": "SHALLOW_REVIEW_APPROVED: Scope Checked 表仅 0 行 < 目标 SC 数 11，判"
+    }
+  ],
+  "findings": [],
+  "merge_notes": {
+    "conflict_with_other_reviewer": false,
+    "degraded_reason": "SHALLOW_REVIEW_APPROVED: Scope Checked 表仅 0 行 < 目标 SC 数 11，判 degraded"
+  },
+  "residual_risk": [],
+  "timestamp": "2026-06-14T14:37:31Z"
+}

@@ -24,9 +24,10 @@ REVIEW_FOCUS: `orchestrator 状态外置设计(F7); rate_limit/quarantine 逻辑
   - verify (method: test): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && python -m pytest tests/quality/test_intake_orchestrator.py -q -k "article_id or idempotent"`
   - expect: exit 0; "同源同日两篇产 2 个不同文件名；重跑同 URL 仅 1 个文件"
 
-- [ ] SC-7（orchestrator dry-run）: CLI --dry-run 无错退出；stdout 含 discovered/skipped/archived 计数；不写任何 raw 文件
-  - verify (method: command): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && PYTHONPATH=src python -m akb2.quality.intake.orchestrator --dry-run --limit 3 --sources-config config/main_sources.yaml && echo PASS`
-  - expect: PASS; stdout 包含 "discovered=" "skipped=" "archived=" 三个字段且 archived=0
+- [ ] SC-7（orchestrator dry-run）: CLI --dry-run 无错退出；stdout 含 discovered/skipped/archived 计数；不写任何 raw 文件（archived=0）；不打真网（httpx/scrapling mock fail-on-call）
+  - verify (method: command): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && PYTHONPATH=src python -m akb2.quality.intake.orchestrator --dry-run --limit 3 --sources-config config/main_sources.yaml 2>&1 | tee /tmp/dry-run-out.txt && grep -q 'archived=0' /tmp/dry-run-out.txt && echo PASS`
+  - verify (method: test): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && python -m pytest tests/quality/test_intake_orchestrator.py -q -k "dry_run_no_network or no_network_no_raw"`
+  - expect: PASS + exit 0; archived=0；`test_dry_run_no_network_no_raw` 网络调用时失败、正常通过
 
 - [ ] SC-8（intake state ledger）: ledger 含 run_id/source_slug/article_id/status；rate_limit 超限 skip；quarantine 命中不写 raw
   - verify (method: test): `cd "/Users/praise/AI-Agent/Claude/projects/Project AKB2" && python -m pytest tests/quality/test_intake_orchestrator.py -q -k "rate_limit or quarantine or ledger"`

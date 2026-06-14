@@ -37,7 +37,7 @@ Step.1
   WHERE: src/akb2/quality/intake/source_validator.py（_validate_source_live:67）
   WHAT:  真 trial-fetch（httpx）；必填字段（feed/url/reachable/latest_post/trial_fetch）；以 run_id 原子写 sources-ledger.jsonl（写临时文件再 rename，非 append）；失败记录保留
   WHY:   F6 live 是 skeleton；P3 append 混旧记录
-  VERIFY: AKB2_LIVE_VALIDATE=1 PYTHONPATH=src python -m akb2.quality.intake.source_validator --live --out reports/source-validation/sources-ledger.jsonl && python -c "import json,yaml; cfg=yaml.safe_load(open('config/main_sources.yaml'))['sources']; c_urls={s.get('feed_url') or s.get('listing_url') for s in cfg}-{None,''}; rs=[json.loads(l) for l in open('reports/source-validation/sources-ledger.jsonl')]; assert len(rs)==76; u={r['url'] for r in rs}; assert u==c_urls; ok=sum(1 for r in rs if r.get('reachable')); assert ok>=70; run_ids={r.get('run_id') for r in rs}; assert len(run_ids)==1; print('PASS')"
+  VERIFY: AKB2_LIVE_VALIDATE=1 PYTHONPATH=src python -m akb2.quality.intake.source_validator --live --out reports/source-validation/sources-ledger.jsonl && python -c "import json,yaml; cfg=yaml.safe_load(open('config/main_sources.yaml'))['sources']; c_urls={s.get('feed_url') or s.get('listing_url') for s in cfg}-{None,''}; rs=[json.loads(l) for l in open('reports/source-validation/sources-ledger.jsonl')]; assert len(rs)==76; u={r['url'] for r in rs}; assert u==c_urls; ok=sum(1 for r in rs if r.get('reachable')); assert ok>=70; ok_fields=sum(1 for r in rs if r.get('reachable') and r.get('trial_fetch') and r.get('latest_post')); assert ok_fields>=60,f'reachable+nonempty={ok_fields}<60'; run_ids={r.get('run_id') for r in rs}; assert len(run_ids)==1; print('PASS')"
 
 Step.2
   WHERE: tests/quality/test_source_validator.py（新建）

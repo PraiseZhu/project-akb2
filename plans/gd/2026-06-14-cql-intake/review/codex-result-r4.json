@@ -1,0 +1,55 @@
+{
+  "template_kind": "gd-plan-review",
+  "reviewer": "codex",
+  "review_target": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-14-cql-intake/master-plan.md",
+  "review_kind": "plan",
+  "review_run_status": "completed",
+  "gd_review_decision": "REQUIRES_CHANGES",
+  "scope_checked": [
+    {
+      "facet": "raw markdown structure",
+      "result": "pass",
+      "evidence": "writer-validated; verdict=REQUIRES_CHANGES"
+    }
+  ],
+  "findings": [
+    {
+      "severity": "P2",
+      "title": "Step 任务包缺少 /gd 必填契约字段",
+      "sc_refs": [
+        "SC-11"
+      ],
+      "evidence": "`plans/gd/2026-06-14-cql-intake/master-plan.md:91` 表头仅含 owned_paths/blocked_by；`:123-187` 详细块仅含 WHERE/WHAT/WHY/VERIFY。",
+      "impact": "后续任务包生成、并行/依赖校验和 anti-fill 审查缺少结构化输入，可能继续产出不可验证任务包。",
+      "required_fix": "给 Step-1~6 各补完整字段：`owned_paths`、`forbidden_paths`、`blocked_by`、`can_parallel_with`、`required_context`、`deliverables`、`verify`。",
+      "verify": "`rg -n \"forbidden_paths|can_parallel_with|required_context|deliverables\" plans/gd/2026-06-14-cql-intake/master-plan.md` 可逐 Step 命中。"
+    },
+    {
+      "severity": "P2",
+      "title": "执行路径校验命令相对路径不可运行",
+      "sc_refs": [
+        "SC-11"
+      ],
+      "evidence": "`plans/gd/2026-06-14-cql-intake/master-plan.md:196`；实测 `relative_Project_GD_exists=False`，`sibling_Project_GD_exists=True`。",
+      "impact": "按计划执行会在模板校验阶段失败，阻断后续 review/执行。",
+      "required_fix": "将校验脚本路径改成绝对路径或 `../Project GD/scripts/gd-validate-review2-plan-target.py`，并保留 AKB2 内目标路径。",
+      "verify": "修正后运行该命令，输出 `PLAN_TEMPLATE_STATUS: pass`。"
+    },
+    {
+      "severity": "P2",
+      "title": "SC-7 未验证 dry-run 不打真网",
+      "sc_refs": [
+        "SC-7"
+      ],
+      "evidence": "`plans/gd/2026-06-14-cql-intake/master-plan.md:67-69`。",
+      "impact": "dry-run 即使实际访问网络，也可能通过当前验收，核心行为无法判断成功。",
+      "required_fix": "在 SC-7 verify 增加测试：patch/mock `httpx`、`scrapling` 等网络入口为 fail-on-call，并断言 raw 目录无新增文件。",
+      "verify": "新增/指定测试如 `test_dry_run_no_network_no_raw`，命中网络调用时失败，正常 dry-run 时通过。"
+    }
+  ],
+  "merge_notes": {
+    "conflict_with_other_reviewer": false
+  },
+  "residual_risk": [],
+  "timestamp": "2026-06-14T14:29:27Z"
+}
