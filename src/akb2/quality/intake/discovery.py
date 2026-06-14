@@ -322,7 +322,9 @@ def _fetch_listing_via_scrapling(
 
     base = listing_url
     abs_urls: list[str] = []
-    listing_domain = urlparse(listing_url).netloc
+    _parsed_listing = urlparse(listing_url)
+    listing_domain = _parsed_listing.netloc
+    listing_path = _parsed_listing.path.rstrip("/")
 
     for href in raw_hrefs:
         if href.startswith("#") or href.startswith("mailto:") or href.startswith("javascript:"):
@@ -336,7 +338,7 @@ def _fetch_listing_via_scrapling(
             continue
         path = parsed.path.rstrip("/")
         # 路径深度 >= 1（排除列表页本身）
-        if not path or path == urlparse(listing_url).path.rstrip("/"):
+        if not path or path == listing_path:
             continue
         abs_urls.append(abs_url)
 

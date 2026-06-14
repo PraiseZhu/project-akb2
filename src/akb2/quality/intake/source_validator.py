@@ -42,66 +42,57 @@ def _load_sources(config_path: str) -> list[dict[str, Any]]:
     return data["sources"]
 
 
-def _validate_source_dry(source: dict[str, Any], run_id: str) -> dict[str, Any]:
-    """dry-run 模式：生成占位验证记录。
-
-    不执行真实网络请求，仅验证配置结构完整性。
-    """
-    slug = source.get("slug", "unknown")
+def _make_base_record(source: dict[str, Any], run_id: str, method: str) -> dict[str, Any]:
+    """构建源验证记录的公共骨架，dry/live 两路共用。"""
     feed_url = source.get("feed_url", source.get("listing_url", ""))
-    url = source.get("listing_url", feed_url)
-
     return {
         "run_id": run_id,
-        "slug": slug,
-        "url": url,
+        "slug": source.get("slug", "unknown"),
+        "url": source.get("listing_url", feed_url),
         "feed": feed_url,
-        "reachable": False,  # dry-run 不真抓
+        "reachable": False,
         "latest_post": "",
         "trial_fetch": "",
         "trial_fetch_status": "not_run",
         "status": source.get("status", "trial"),
         "category": source.get("category", "unknown"),
         "validated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "method": "dry-run",
+        "method": method,
         "notes": source.get("notes", ""),
     }
 
 
-def _extract_latest_url(feed_text: str) -> str:
-    """从 feed XML 文本中提取最新文章 URL。
+def _validate_source_dry(source: dict[str, Any], run_id: str) -> dict[str, Any]:
+    """dry-run 模式：生成占位验证记录（不执行真实网络请求）。"""
+    return _make_base_record(source, run_id, "dry-run")
 
-    优先提取 RSS <item><link> 或 Atom <entry><link href="...">，
-    返回第一个非空匹配值，失败返回空串。
-    """
+
+_ATOM_LINK_RE = re.compile(r'<link[^>]+href=["\']([^"\']+)["\']', re.IGNORECASE)
+_RSS_ITEM_RE = re.compile(
+    r"<item[^>]*>.*?<link[^>]*>([^<]+)</link>", re.DOTALL | re.IGNORECASE
+)
+_GENERIC_LINK_RE = re.compile(
+    r"<link[^>]*>\s*(https?://[^\s<]+)\s*</link>", re.IGNORECASE
+)
+
+
+def _extract_latest_url(feed_text: str) -> str:
+    """从 feed XML 文本中提取最新文章 URL。"""
     if not feed_text:
         return ""
-
-    # Atom: <link href="https://..." />
-    atom_match = re.search(
-        r'<link[^>]+href=["\']([^"\']+)["\']', feed_text, re.IGNORECASE
-    )
-    if atom_match:
-        url = atom_match.group(1).strip()
+    m = _ATOM_LINK_RE.search(feed_text)
+    if m:
+        url = m.group(1).strip()
         if url.startswith("http"):
             return url
-
-    # RSS: <item>...<link>https://...</link>
-    rss_match = re.search(
-        r"<item[^>]*>.*?<link[^>]*>([^<]+)</link>", feed_text, re.DOTALL | re.IGNORECASE
-    )
-    if rss_match:
-        url = rss_match.group(1).strip()
+    m = _RSS_ITEM_RE.search(feed_text)
+    if m:
+        url = m.group(1).strip()
         if url.startswith("http"):
             return url
-
-    # 通用 <link>...</link>（部分 RSS 在 channel 外）
-    generic_match = re.search(
-        r"<link[^>]*>\s*(https?://[^\s<]+)\s*</link>", feed_text, re.IGNORECASE
-    )
-    if generic_match:
-        return generic_match.group(1).strip()
-
+    m = _GENERIC_LINK_RE.search(feed_text)
+    if m:
+        return m.group(1).strip()
     return ""
 
 
@@ -115,27 +106,10 @@ def _validate_source_live(source: dict[str, Any], run_id: str) -> dict[str, Any]
     """
     import httpx
 
-    slug = source.get("slug", "unknown")
-    feed_url = source.get("feed_url", source.get("listing_url", ""))
-    url = source.get("listing_url", feed_url)
-
-    record: dict[str, Any] = {
-        "run_id": run_id,
-        "slug": slug,
-        "url": url,
-        "feed": feed_url,
-        "reachable": False,
-        "latest_post": "",
-        "trial_fetch": "",
-        "trial_fetch_status": "not_run",
-        "status": source.get("status", "trial"),
-        "category": source.get("category", "unknown"),
-        "validated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "method": "live",
-        "notes": source.get("notes", ""),
-        "error": "",
-    }
-
+    record: dict[str, Any] = _make_base_record(source, run_id, "live")
+    record["error"] = ""
+    feed_url = record["feed"]
+    url = record["url"]
     fetch_target = feed_url or url
     if not fetch_target:
         record["error"] = "no_url"

@@ -564,8 +564,8 @@ class TestArchiveFromExtractResult:
         assert "Metadata Publisher" in raw_content
         # slug 来自 metadata
         assert "metadata-slug" in raw_content
-        # article_id 来自 content_hash[:12]
-        assert "abc123def456" in Path(result.output_path).name
+        # filename 含 article_id（URL-based sha256[:12]）
+        assert "--raw--" in Path(result.output_path).name
 
     def test_archive_from_extract_result_metadata_author_fallback(
         self, sample_article_md: str, temp_output_dir: Path

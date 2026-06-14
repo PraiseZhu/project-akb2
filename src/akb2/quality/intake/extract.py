@@ -117,13 +117,7 @@ def _count_words(text: str) -> int:
 
 def _validate_metadata(result: ExtractResult) -> bool:
     """验证元数据 4 件齐。"""
-    fields = {
-        "title": result.title,
-        "author": result.author,
-        "published": result.published,
-        "url": result.url,
-    }
-    return all(v for v in fields.values())
+    return all([result.title, result.author, result.published, result.url])
 
 
 def _apply_feed_fallback(
@@ -376,8 +370,9 @@ def extract_content(
 
     # 分支 2: defuddle 优先
     if html is not None:
-        # 检测反爬/JS
-        if not _detect_anti_bot(html):
+        # 检测反爬/JS（结果复用到分支 3）
+        is_anti_bot = _detect_anti_bot(html)
+        if not is_anti_bot:
             extracted = _extract_via_defuddle(url, html)
             if extracted:
                 wc = extracted.get("word_count", 0)
@@ -403,7 +398,7 @@ def extract_content(
                     result.error = "defuddle content too short"
 
         # 分支 3: defuddle 失败/反爬 → Scrapling
-        use_browser = _detect_anti_bot(html) if html else False
+        use_browser = is_anti_bot
         extracted = _extract_via_scrapling(url, html, browser_mode=use_browser)
         if extracted:
             wc = extracted.get("word_count", 0)
@@ -448,12 +443,9 @@ def extract_content(
     return result
 
 
-def validate_extraction_success(result: ExtractResult) -> bool:
-    """硬判定：正文字数达标 + 元数据 4 件齐。
 
-    黄金样张步 1 标准 3: 抓取失败显式报错，不静默跳过。
-    成功 = 字数 >= MIN_CONTENT_LENGTH AND title/author/published/url 全部非空。
-    """
+def validate_extraction_success(result: ExtractResult) -> bool:
+    """return result.extraction_success (convenience alias used in tests)."""
     return result.extraction_success
 
 

@@ -295,7 +295,7 @@ def archive_raw(
     content: str,
     published_at: str = "",
     publisher: str = "",
-    fetched_via: str = "defuddle",
+    fetched_via: str = "unknown",
     output_dir: str | Path | None = None,
     failures_path: str | None = None,
     anchors: dict[str, str] | None = None,
@@ -477,11 +477,6 @@ def archive_from_extract_result(
     if not published_at and source_metadata is not None and source_metadata.feed_published:
         published_at = source_metadata.feed_published
 
-    # article_id 优先从 source_metadata.content_hash[:12] 取，其次 compute_article_id(url)
-    article_id: str | None = None
-    if source_metadata is not None and source_metadata.content_hash:
-        article_id = source_metadata.content_hash[:12]
-
     return archive_raw(
         slug=slug,
         url=extract_result.url,
@@ -494,5 +489,4 @@ def archive_from_extract_result(
         output_dir=output_dir,
         failures_path=failures_path,
         date_str=date_str,
-        article_id=article_id,
     )
