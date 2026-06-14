@@ -31,6 +31,20 @@ MAX_FEED_ENTRIES = 100  # 单次 feed 解析最多取条目数
 FEED_TIMEOUT_SEC = 30  # feed 请求超时
 USER_AGENT = "AKB2-ContentQuality/1.0 (RSS/Atom discovery; +https://akb2.local)"
 
+# Dublin Core namespace — 用于 RSS <dc:creator> 抽取
+_DC_NS = "http://purl.org/dc/elements/1.1/"
+_DC_CREATOR_TAG = f"{{{_DC_NS}}}creator"  # "{...}creator" 预格式化，避免循环内重复分配
+
+
+# ---------------------------------------------------------------------------
+# 辅助函数
+# ---------------------------------------------------------------------------
+
+
+def _el_text(el: ElementTree.Element | None) -> str:
+    """安全取 XML 元素的 text，strip 后返回；None 元素或空 text 返回空串。"""
+    return (el.text or "").strip() if el is not None else ""
+
 # ---------------------------------------------------------------------------
 # 数据类
 # ---------------------------------------------------------------------------
@@ -46,6 +60,7 @@ class DiscoveredArticle:
     source_slug: str
     published_at: str | None  # ISO-8601 or None
     feed_title: str | None  # 来源 feed 标题
+    author: str = ""  # 来自 RSS <dc:creator>/<author> 或 Atom <author><name>
 
 
 @dataclass
@@ -94,15 +109,12 @@ def _parse_rss_feed(xml_text: str) -> list[dict[str, str]]:
     entries: list[dict[str, str]] = []
     for item in channel.findall("item"):
         entry: dict[str, str] = {}
-        title_el = item.find("title")
-        link_el = item.find("link")
-        desc_el = item.find("description")
-        pubdate_el = item.find("pubDate")
-
-        entry["title"] = (title_el.text or "").strip() if title_el is not None else ""
-        entry["link"] = (link_el.text or "").strip() if link_el is not None else ""
-        entry["description"] = (desc_el.text or "").strip() if desc_el is not None else ""
-        entry["pubDate"] = (pubdate_el.text or "").strip() if pubdate_el is not None else ""
+        entry["title"] = _el_text(item.find("title"))
+        entry["link"] = _el_text(item.find("link"))
+        entry["description"] = _el_text(item.find("description"))
+        entry["pubDate"] = _el_text(item.find("pubDate"))
+        # author: dc:creator 优先，次选 plain <author>
+        entry["author"] = _el_text(item.find(_DC_CREATOR_TAG)) or _el_text(item.find("author"))
         entries.append(entry)
 
     return entries[:MAX_FEED_ENTRIES]
@@ -167,10 +179,12 @@ def _parse_atom_feed(xml_text: str) -> list[dict[str, str]]:
 
         # published / updated
         for date_tag in ("published", "updated"):
-            dt_el = _find_child(entry, date_tag)
-            entry_data[date_tag] = (
-                (dt_el.text or "").strip() if dt_el is not None else ""
-            )
+            entry_data[date_tag] = _el_text(_find_child(entry, date_tag))
+
+        # author: <author><name>...</name></author>
+        author_el = _find_child(entry, "author")
+        name_el = _find_child(author_el, "name") if author_el is not None else None
+        entry_data["author"] = _el_text(name_el)
 
         entries.append(entry_data)
 
@@ -458,6 +472,7 @@ def discover_articles(
                     source_slug=slug,
                     published_at=pub_date if pub_date else None,
                     feed_title=None,
+                    author=entry.get("author", ""),
                 )
             )
 

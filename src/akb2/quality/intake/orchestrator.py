@@ -215,7 +215,7 @@ def _process_article(
         source_slug=article.source_slug,
         source_publisher=source.get("domain", ""),
         feed_title=article.title,
-        feed_author="",
+        feed_author=article.author or "",
         feed_published=article.published_at or "",
         url=article.url,
         content_hash=article.content_hash,
@@ -302,7 +302,9 @@ def run_intake(
         limit: 最多处理文章总数（0=不限）
 
     Returns:
-        {"discovered": N, "skipped": M, "archived": K} 统计字典
+        {"discovered": N, "skipped": M, "archived": K, "discovery_errors": E} 统计字典。
+        discovery_errors 为发现层网络/解析失败的源数（死链、HTTP 4xx、feed 解析错）；
+        非零时 CLI 在汇总行追加 discovery_errors=E 提示。
     """
     run_id = str(uuid.uuid4())
     logger.info("Intake run started run_id=%s dry_run=%s limit=%d", run_id, dry_run, limit)
@@ -323,6 +325,7 @@ def run_intake(
     total_skipped = 0
     total_archived = 0
     total_processed = 0  # 已处理（不含 skipped_seen）
+    total_discovery_errors = 0  # 发现层错误计数（死链/网络失败）
 
     # 每源当日产量追踪（用于 quarantine 计算）
     source_daily_counts: dict[str, int] = {}
@@ -341,6 +344,7 @@ def run_intake(
             logger.warning(
                 "Discovery error for source=%s: %s", slug, discover_result.error
             )
+            total_discovery_errors += 1
             # listing 模式未实现，skip 此源但不报致命错误
             if discover_result.method in ("listing", "none"):
                 continue
@@ -404,6 +408,7 @@ def run_intake(
         "discovered": total_discovered,
         "skipped": total_skipped,
         "archived": total_archived,
+        "discovery_errors": total_discovery_errors,
     }
     logger.info("Intake run complete: %s", stats)
     return stats
@@ -490,12 +495,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
-    # SC-7: stdout 含 discovered=/skipped=/archived= 计数
-    print(
+    # SC-7: stdout 含 discovered=/skipped=/archived= 计数；discovery_errors 非零时明示死链/网络失败
+    line = (
         f"discovered={stats['discovered']} "
         f"skipped={stats['skipped']} "
         f"archived={stats['archived']}"
     )
+    if stats["discovery_errors"]:
+        line += f" discovery_errors={stats['discovery_errors']}"
+    print(line)
     return 0
 
 

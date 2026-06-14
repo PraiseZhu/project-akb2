@@ -17,7 +17,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import logging
 import re
@@ -28,10 +27,18 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from akb2.quality.intake import _check_tool_available
+
 if TYPE_CHECKING:
     from src.akb2.quality.intake.models import ExtractionContext  # noqa: F401
 
 logger = logging.getLogger(__name__)
+
+
+def _docling_probe() -> None:
+    """运行时探针：实例化 DocumentConverter 验证 docling 真实可用。"""
+    from docling.document_converter import DocumentConverter
+    DocumentConverter()
 
 # ---------------------------------------------------------------------------
 # 具名常量
@@ -219,8 +226,7 @@ def _extract_via_scrapling(
 
     返回空 dict 表示抽取失败。
     """
-    if importlib.util.find_spec("scrapling") is None:
-        logger.warning("scrapling not available, falling back")
+    if not _check_tool_available("scrapling", logger=logger):
         return {}
 
     try:
@@ -262,8 +268,7 @@ def _extract_via_docling(url: str, file_bytes: bytes | None = None) -> dict[str,
 
     返回空 dict 表示抽取失败。
     """
-    if importlib.util.find_spec("docling") is None:
-        logger.warning("docling not available, falling back")
+    if not _check_tool_available("docling", probe=_docling_probe, logger=logger):
         return {}
 
     if not file_bytes:
