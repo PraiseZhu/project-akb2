@@ -10,6 +10,11 @@
     - key 从环境变量获取，缺失即抛 RouterConfigError（宪法 P7）
     - 预算具名常量: MAX_CALLS_PER_ARTICLE=5, TIMEOUT_S=120（宪法 P4）
 
+端点/模型环境覆盖（走 OpenAI 兼容代理网关，缺省回退官方端点）:
+    - DEEPSEEK_BASE_URL / DEEPSEEK_MODEL_ID
+    - OPENAI_BASE_URL / OPENAI_MODEL_ID
+    - GEMINI_BASE_URL / GEMINI_MODEL_ID
+
 公开接口:
     route_llm(model_family, messages, response_schema=None) -> LLMResponse
     LLMResponse = dataclass(content, model_used, calls_used)
@@ -34,21 +39,29 @@ TIMEOUT_S: float = 120.0
 # 模型家族 → 环境变量 / 端点映射
 # ---------------------------------------------------------------------------
 
+# 每家含 env_key（API key 环境变量）+ base_url/model_id 的环境覆盖变量与官方默认。
+# 默认走官方端点；设了对应 *_BASE_URL / *_MODEL_ID 环境变量则覆盖（用于走 OpenAI 兼容代理网关）。
 _MODEL_CONFIG: dict[str, dict[str, str]] = {
     "deepseek-v4-pro": {
         "env_key": "DEEPSEEK_API_KEY",
-        "base_url": "https://api.deepseek.com/v1",
-        "model_id": "deepseek-v4-pro",
+        "base_url_env": "DEEPSEEK_BASE_URL",
+        "base_url_default": "https://api.deepseek.com/v1",
+        "model_id_env": "DEEPSEEK_MODEL_ID",
+        "model_id_default": "deepseek-v4-pro",
     },
     "gpt-5.4": {
         "env_key": "OPENAI_API_KEY",
-        "base_url": "https://api.openai.com/v1",
-        "model_id": "gpt-5.4",
+        "base_url_env": "OPENAI_BASE_URL",
+        "base_url_default": "https://api.openai.com/v1",
+        "model_id_env": "OPENAI_MODEL_ID",
+        "model_id_default": "gpt-5.4",
     },
     "gemini-flash": {
         "env_key": "GEMINI_API_KEY",
-        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-        "model_id": "gemini-2.5-flash",
+        "base_url_env": "GEMINI_BASE_URL",
+        "base_url_default": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "model_id_env": "GEMINI_MODEL_ID",
+        "model_id_default": "gemini-2.5-flash",
     },
 }
 
@@ -95,7 +108,15 @@ def _validate_model_family(model_family: str) -> dict[str, str]:
             f"不支持的模型家族: {model_family}。"
             f" 支持: {', '.join(sorted(_MODEL_CONFIG))}"
         )
-    return _MODEL_CONFIG[model_family]
+    cfg = _MODEL_CONFIG[model_family]
+    # base_url / model_id 支持环境变量覆盖（走代理网关），缺省回退官方端点。
+    base_url = os.environ.get(cfg["base_url_env"], "").strip() or cfg["base_url_default"]
+    model_id = os.environ.get(cfg["model_id_env"], "").strip() or cfg["model_id_default"]
+    return {
+        "env_key": cfg["env_key"],
+        "base_url": base_url,
+        "model_id": model_id,
+    }
 
 
 def _get_api_key(env_key: str) -> str:
