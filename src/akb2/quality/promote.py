@@ -619,32 +619,52 @@ def _add_maintenance_record(
         file_path.write_text("\n".join(lines), encoding="utf-8")
         return
 
-    # 检查是否超过 5 条
+    # 检查是否超过 5 条：超了先合并已有同日重复条目腾出空间（黄金样张坑 4），再追加新行
     if len(table_rows) >= 5:
-        # 合并同日条目
-        same_day_rows = [
-            (idx, row) for idx, row in table_rows
-            if row.startswith(f"| {date_str} ")
-        ]
-        if same_day_rows:
-            # 合并：保留第一条，后续的合并到第一条
-            first_idx, first_row = same_day_rows[0]
-            merged_detail_parts = []
-            for _, row in same_day_rows:
-                parts = row.split("|")
-                if len(parts) >= 4:
-                    merged_detail_parts.append(parts[3].strip())
-            merged_detail = "; ".join(merged_detail_parts + [detail])
-            merged_row = f"| {date_str} | {action} (merged) | {merged_detail} |"
-            lines[first_idx] = merged_row
-            # 删除其他同日行
-            for idx, _ in reversed(same_day_rows[1:]):
-                lines.pop(idx)
-            file_path.write_text("\n".join(lines), encoding="utf-8")
-            return
+        # 按日期分组现有行（保持出现顺序）
+        date_groups: dict[str, list[tuple[int, str]]] = {}
+        date_order: list[str] = []
+        for idx, row in table_rows:
+            parts = row.split("|")
+            row_date = parts[1].strip() if len(parts) >= 2 else ""
+            if row_date not in date_groups:
+                date_groups[row_date] = []
+                date_order.append(row_date)
+            date_groups[row_date].append((idx, row))
 
-    # 正常追加
-    insert_idx = table_rows[-1][0] + 1
+        # 找第一个有 >1 行的同日组并合并（保留首行，详情串联，标记 (merged)）
+        for row_date in date_order:
+            group = date_groups[row_date]
+            if len(group) <= 1:
+                continue
+            first_idx, first_row = group[0]
+            first_parts = first_row.split("|")
+            first_action = first_parts[2].strip() if len(first_parts) >= 3 else ""
+            detail_parts = []
+            for _, row in group:
+                parts = row.split("|")
+                if len(parts) >= 4 and parts[3].strip():
+                    detail_parts.append(parts[3].strip())
+            merged_detail = "; ".join(detail_parts)
+            lines[first_idx] = f"| {row_date} | {first_action} (merged) | {merged_detail} |"
+            # 删除该组其余行（倒序 pop 防索引漂移）
+            for idx, _ in reversed(group[1:]):
+                lines.pop(idx)
+            break
+
+    # 追加新行：合并后重新定位维护记录表尾（索引可能已漂移）
+    insert_idx = None
+    in_maint = False
+    for i, line in enumerate(lines):
+        if line.startswith("## 维护记录"):
+            in_maint = True
+            continue
+        if in_maint and line.startswith("## "):
+            break
+        if in_maint and line.startswith("| "):
+            insert_idx = i + 1
+    if insert_idx is None:
+        insert_idx = len(lines)
     lines.insert(insert_idx, new_row)
     file_path.write_text("\n".join(lines), encoding="utf-8")
 
