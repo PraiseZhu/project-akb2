@@ -88,7 +88,8 @@ def load_seen_article_ids(state_file: str | Path) -> set[str]:
             try:
                 record = json.loads(line)
                 article_id = record.get("article_id")
-                if article_id:
+                # 只有终态 archived 才阻止重试（failed/skipped_* 允许下次重处理）
+                if article_id and record.get("status") == "archived":
                     seen.add(article_id)
             except json.JSONDecodeError:
                 logger.warning("Malformed ledger line, skipping: %s", line[:80])
@@ -150,6 +151,7 @@ def _process_article(
     source_daily_count: int,
     quarantine_triggered: bool,
     dry_run: bool,
+    failures_path: str | Path | None = None,
 ) -> str:
     """处理单篇文章，返回 status 字符串。
 
@@ -244,6 +246,7 @@ def _process_article(
         extract_result=extract_result,
         output_dir=output_dir,
         source_metadata=ctx,
+        failures_path=str(failures_path) if failures_path else None,
     )
 
     if archive_result.success:
@@ -286,6 +289,7 @@ def run_intake(
     output_dir: str | Path = DEFAULT_OUTPUT_DIR,
     dry_run: bool = False,
     limit: int = 0,
+    failures_path: str | Path | None = None,
 ) -> dict[str, int]:
     """执行一次完整的 intake 流程。
 
@@ -294,6 +298,7 @@ def run_intake(
         state_file: intake-state.jsonl 路径
         output_dir: raw 归档输出目录
         dry_run: 不写任何文件，仅统计
+        failures_path: 归档失败签名 jsonl 路径（None 时不写签名）
         limit: 最多处理文章总数（0=不限）
 
     Returns:
@@ -327,7 +332,7 @@ def run_intake(
 
         # 发现文章（RSS feed；feed_content=None 表示真实抓取）
         try:
-            discover_result = discover_articles(source, ledger_path=state_file)
+            discover_result = discover_articles(source, ledger_path=state_file, dry_run=dry_run)
         except Exception as exc:
             logger.warning("Discovery failed for source=%s: %s", slug, exc)
             continue
@@ -373,6 +378,7 @@ def run_intake(
                 source_daily_count=source_run_count,
                 quarantine_triggered=quarantine_triggered,
                 dry_run=dry_run,
+                failures_path=failures_path,
             )
 
             if status == "skipped_seen":
@@ -445,6 +451,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"raw 归档输出目录（默认 {DEFAULT_OUTPUT_DIR}）",
     )
     parser.add_argument(
+        "--failures-path",
+        default=None,
+        metavar="PATH",
+        help="归档失败签名 jsonl 路径（不传则不写签名）",
+    )
+    parser.add_argument(
         "--log-level",
         default="WARNING",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -471,6 +483,7 @@ def main(argv: list[str] | None = None) -> int:
             output_dir=args.output_dir,
             dry_run=args.dry_run,
             limit=args.limit,
+            failures_path=args.failures_path,
         )
     except Exception as exc:
         logger.error("Intake run failed: %s", exc)

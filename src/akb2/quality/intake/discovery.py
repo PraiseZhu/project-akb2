@@ -378,13 +378,15 @@ def discover_articles(
     source: dict[str, Any],
     ledger_path: str | Path,
     feed_content: str | None = None,
+    dry_run: bool = False,
 ) -> DiscoverResult:
     """对单个源执行发现轮询。
 
     Args:
         source: 源配置 dict（含 slug/domain/feed_url/listing_url/rate_limit）
         ledger_path: jsonl 账本路径（用于去重扫描）
-        feed_content: 注入的 feed XML 文本（测试用；为 None 时实际抓取）
+        feed_content: 注入的 feed XML 文本（测试用；为 None 时真实 httpx 抓取）
+        dry_run: True 时跳过真实网络请求，返回空 DiscoverResult
 
     Returns:
         DiscoverResult 含发现的文章列表与统计信息。
@@ -396,7 +398,30 @@ def discover_articles(
     result = DiscoverResult(source_slug=slug)
 
     # 路径 1: RSS/Atom feed
-    if feed_url and feed_content is not None:
+    if feed_url:
+        # 无注入内容时真实抓取；dry_run 时跳过
+        if feed_content is None:
+            if dry_run:
+                result.method = "feed"
+                result.feed_url_used = feed_url
+                return result  # dry_run: 不发真网，返回空列表
+            try:
+                import httpx
+                resp = httpx.get(
+                    feed_url,
+                    timeout=15,
+                    follow_redirects=True,
+                    headers={"User-Agent": "AKB2-FeedFetcher/1.0"},
+                )
+                if resp.status_code >= 400:
+                    result.method = "feed"
+                    result.error = f"Feed HTTP {resp.status_code}: {feed_url}"
+                    return result
+                feed_content = resp.text
+            except Exception as exc:
+                result.method = "feed"
+                result.error = f"Feed fetch failed: {exc}"
+                return result
         result.method = "feed"
         result.feed_url_used = feed_url
         try:
