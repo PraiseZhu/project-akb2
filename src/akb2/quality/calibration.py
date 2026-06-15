@@ -222,7 +222,7 @@ def _fetch_url_content(url: str, config: dict[str, Any]) -> str | None:
         import subprocess
 
         result = subprocess.run(
-            ["defuddle", url],
+            ["defuddle", "parse", url],
             capture_output=True,
             text=True,
             timeout=60,
