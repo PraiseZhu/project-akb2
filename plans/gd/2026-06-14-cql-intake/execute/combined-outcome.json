@@ -112,8 +112,8 @@
         },
         {
           "sc_ref": "SC-10",
-          "status": "pass",
-          "evidence": "抓取工具阶梯升级 + 17 源 feed URL 修正后重测:\nAKB2_LIVE_VALIDATE=1 python -m akb2.quality.intake.source_validator --live\n结果: reachable(httpx 直达)=69/76, +needs_browser 1 = 有效可达 70/76\nworking_strategy 分布: ua_original_feed=44(含修正的17源) / listing_reachable=22 / alternate_feed_path=3 / browser_needed=1 / dead=6\n达到 SC-10 阈值 reachable>=70(含 browser)。\n对比修复前(弱 validator 单一UA+单一feedURL): 仅 32/76 —— 之前的44死链是工具不匹配的误判,非真死。\n残留: 3 硬死(eric-elliott 402/meta-ai 400/shadcn 404) + 3 间歇(netflix/ryan-carniato/mistral, error/timeout, 探针用连接池能达)。\n",
+          "status": "fail",
+          "evidence": "抓取工具阶梯升级 + 17 源 feed URL 修正后两次完整重测(结果一致，非 flaky):\nreachable(httpx 直达)=69/76 稳定，+needs_browser 1 = 有效可达 70/76。\nstrategy: ua_original_feed=44(含修正17源)/listing_reachable=22/alternate_feed_path=3/browser_needed=1/dead=6。\n\n严格断言 sum(reachable)>=70 按 69 → FAIL(差 1)，诚实不报 pass。\n但实质大幅改善: 修复前弱 validator 仅 32/76，'44 死链'为工具不匹配误判。\n- 3 硬死: eric-elliott(402)/meta-ai-blog(400)/shadcn-blog(404)\n- 3 限流: netflix/ryan-carniato/mistral —— 探针(连接池)可达，validator 顺序快请求被节流(error/timeout)，非真死\n- 1 浏览器: sarah-drasner(403, scrapling StealthyFetcher 可取)\n跨 >=70 的最小修复: validator 加 inter-request 延迟 / 3 限流源归类 browser_needed。",
           "not_run_reason": ""
         }
       ],
