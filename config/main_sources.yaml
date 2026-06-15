@@ -47,7 +47,7 @@ sources:
 
   - slug: addy-osmani
     domain: addyosmani.com
-    feed_url: https://addyosmani.com/blog/feed.xml
+    feed_url: https://addyosmani.com/feed.xml
     listing_url: https://addyosmani.com/blog
     rate_limit: 3600
     status: trial
@@ -65,7 +65,7 @@ sources:
 
   - slug: steipete
     domain: steipete.me
-    feed_url: https://steipete.me/feed.xml
+    feed_url: https://steipete.me/rss.xml
     listing_url: https://steipete.me
     rate_limit: 3600
     status: trial
@@ -74,7 +74,7 @@ sources:
 
   - slug: lilian-weng
     domain: lilianweng.github.io
-    feed_url: https://lilianweng.github.io/feed.xml
+    feed_url: https://lilianweng.github.io/index.xml
     listing_url: https://lilianweng.github.io
     rate_limit: 3600
     status: trial
@@ -92,7 +92,7 @@ sources:
 
   - slug: eugene-yan
     domain: eugeneyan.com
-    feed_url: https://eugeneyan.com/feed.xml
+    feed_url: https://eugeneyan.com/rss
     listing_url: https://eugeneyan.com
     rate_limit: 3600
     status: trial
@@ -101,7 +101,7 @@ sources:
 
   - slug: hamel-husain
     domain: hamel.dev
-    feed_url: https://hamel.dev/feed.xml
+    feed_url: https://hamel.dev/index.xml
     listing_url: https://hamel.dev
     rate_limit: 3600
     status: trial
@@ -110,7 +110,7 @@ sources:
 
   - slug: langchain-blog
     domain: blog.langchain.dev
-    feed_url: https://blog.langchain.dev/feed
+    feed_url: https://blog.langchain.dev/rss.xml
     listing_url: https://blog.langchain.dev
     rate_limit: 3600
     status: trial
@@ -227,7 +227,7 @@ sources:
 
   - slug: lost-garden
     domain: lostgarden.com
-    feed_url: https://lostgarden.com/feed.xml
+    feed_url: https://lostgarden.com/feed/
     listing_url: https://lostgarden.com
     rate_limit: 3600
     status: trial
@@ -429,7 +429,7 @@ sources:
 
   - slug: css-irl
     domain: css-irl.info
-    feed_url: https://css-irl.info/feed.xml
+    feed_url: https://css-irl.info/rss.xml
     listing_url: https://css-irl.info
     rate_limit: 3600
     status: trial
@@ -456,7 +456,7 @@ sources:
 
   - slug: max-stoiber
     domain: mxstbr.com
-    feed_url: https://mxstbr.com/feed.xml
+    feed_url: https://mxstbr.com/rss
     listing_url: https://mxstbr.com
     rate_limit: 3600
     status: trial
@@ -492,7 +492,7 @@ sources:
 
   - slug: una-kravets
     domain: una.im
-    feed_url: https://una.im/feed.xml
+    feed_url: https://una.im/rss.xml
     listing_url: https://una.im
     rate_limit: 3600
     status: trial
@@ -613,7 +613,7 @@ sources:
 
   - slug: astro-blog
     domain: astro.build
-    feed_url: https://astro.build/blog/feed.xml
+    feed_url: https://astro.build/rss.xml
     listing_url: https://astro.build/blog
     rate_limit: 3600
     status: trial
@@ -622,7 +622,7 @@ sources:
 
   - slug: supabase-blog
     domain: supabase.com
-    feed_url: https://supabase.com/blog/feed
+    feed_url: https://supabase.com/feed.xml
     listing_url: https://supabase.com/blog
     rate_limit: 3600
     status: trial
@@ -631,7 +631,7 @@ sources:
 
   - slug: planetscale-blog
     domain: planetscale.com
-    feed_url: https://planetscale.com/blog/feed
+    feed_url: https://planetscale.com/blog/rss.xml
     listing_url: https://planetscale.com/blog
     rate_limit: 3600
     status: trial
@@ -640,7 +640,7 @@ sources:
 
   - slug: svelte-blog
     domain: svelte.dev
-    feed_url: https://svelte.dev/blog/feed.xml
+    feed_url: https://svelte.dev/blog/rss.xml
     listing_url: https://svelte.dev/blog
     rate_limit: 3600
     status: trial
@@ -658,7 +658,7 @@ sources:
 
   - slug: cursor-blog
     domain: cursor.com
-    feed_url: https://cursor.com/blog/feed
+    feed_url: https://cursor.com/atom.xml
     listing_url: https://cursor.com/blog
     rate_limit: 3600
     status: trial
@@ -667,7 +667,7 @@ sources:
 
   - slug: replit-blog
     domain: blog.replit.com
-    feed_url: https://blog.replit.com/feed
+    feed_url: https://blog.replit.com/feed.xml
     listing_url: https://blog.replit.com
     rate_limit: 3600
     status: trial
@@ -676,7 +676,7 @@ sources:
 
   - slug: bun-blog
     domain: bun.sh
-    feed_url: https://bun.sh/blog/feed.xml
+    feed_url: https://bun.sh/rss.xml
     listing_url: https://bun.sh/blog
     rate_limit: 3600
     status: trial

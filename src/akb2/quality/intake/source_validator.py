@@ -54,6 +54,9 @@ def _make_base_record(source: dict[str, Any], run_id: str, method: str) -> dict[
         "latest_post": "",
         "trial_fetch": "",
         "trial_fetch_status": "not_run",
+        "working_strategy": "not_run",
+        "working_url": "",
+        "needs_browser": False,
         "status": source.get("status", "trial"),
         "category": source.get("category", "unknown"),
         "validated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -74,6 +77,33 @@ _RSS_ITEM_RE = re.compile(
 _GENERIC_LINK_RE = re.compile(
     r"<link[^>]*>\s*(https?://[^\s<]+)\s*</link>", re.IGNORECASE
 )
+
+# 真实浏览器 UA — 多数站点对默认/爬虫 UA 返回 403/404，对浏览器 UA 正常响应
+_REALISTIC_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+_LIVE_HEADERS = {
+    "User-Agent": _REALISTIC_UA,
+    "Accept": (
+        "application/rss+xml, application/atom+xml, application/xml, "
+        "text/xml, text/html;q=0.9, */*;q=0.8"
+    ),
+}
+# 候选 feed 路径 — 配置的 feed_url 失效时按域名根/listing 目录试这些标准路径
+_FEED_PATH_CANDIDATES = (
+    "/feed.xml", "/rss.xml", "/atom.xml", "/index.xml",
+    "/feed", "/rss", "/feed/", "/blog/feed.xml", "/blog/rss.xml",
+)
+_LIVE_TIMEOUT = 10
+
+
+def _looks_like_feed(text: str) -> bool:
+    """粗判响应体是否为 RSS/Atom feed（区分真 feed 与 404/HTML 页）。"""
+    head = text[:1500].lower()
+    return any(
+        t in head for t in ("<rss", "<feed", "<?xml", "<atom", "rss version", "xmlns")
+    )
 
 
 def _extract_latest_url(feed_text: str) -> str:
@@ -96,47 +126,125 @@ def _extract_latest_url(feed_text: str) -> str:
     return ""
 
 
-def _validate_source_live(source: dict[str, Any], run_id: str) -> dict[str, Any]:
-    """真网验证：feed 可达性 + 最近发文 URL + 记录试抓。
+def _try_feed(url: str) -> tuple[int, bool, str, str]:
+    """试抓一个 URL（模块级 httpx.get，便于测试 patch）。
 
-    使用 httpx 进行真实网络请求（timeout=10s）。
-    reachable: 2xx 状态码 → True。
-    latest_post: 从 feed 响应解析第一个文章 URL。
-    trial_fetch: 与 latest_post 相同（记录试抓目标 URL）。
+    返回 (status_code, is_feed, text, error_kind)。
+    error_kind ∈ {"", "timeout", "error"}；正常响应为 ""，异常时 status=-1。
     """
     import httpx
 
+    try:
+        resp = httpx.get(
+            url, timeout=_LIVE_TIMEOUT, follow_redirects=True, headers=_LIVE_HEADERS
+        )
+        text = resp.text
+        return resp.status_code, (resp.status_code < 400 and _looks_like_feed(text)), text, ""
+    except httpx.TimeoutException:
+        return -1, False, "", "timeout"
+    except Exception:
+        return -1, False, "", "error"
+
+
+def _feed_path_candidates(feed_url: str, listing_url: str) -> list[str]:
+    """基于 feed/listing 的域名根，生成候选 feed URL 列表（去重，排除原 feed）。"""
+    from urllib.parse import urlparse
+
+    bases: list[str] = []
+    for src in (feed_url, listing_url):
+        if src:
+            p = urlparse(src)
+            root = f"{p.scheme}://{p.netloc}"
+            if root and root not in bases:
+                bases.append(root)
+    cands: list[str] = []
+    for base in bases:
+        for path in _FEED_PATH_CANDIDATES:
+            u = base + path
+            if u != feed_url and u not in cands:
+                cands.append(u)
+    return cands
+
+
+def _validate_source_live(source: dict[str, Any], run_id: str) -> dict[str, Any]:
+    """真网验证（抓取工具阶梯，匹配每源合适策略 + 反爬 UA）。
+
+    阶梯（任一命中即停，记录 working_strategy/working_url）:
+        1. ua_original_feed   — 真实浏览器 UA 抓配置的 feed_url，是有效 feed
+        2. alternate_feed_path — 原 feed 失效时，按标准路径(/feed.xml /rss.xml 等)探测
+        3. listing_reachable   — 无可用 feed，但 listing 页 2xx（可走列表抓取）
+        4. browser_needed      — 全部 403（Cloudflare/反爬），需 scrapling 浏览器
+        5. dead                — 非 403 的硬失败（402/404/400/连接失败）
+
+    reachable=True 涵盖 1-3（httpx 可直达）；browser_needed 单独标记
+    （需浏览器层，reachable=False 但 needs_browser=True，非真死）。
+    """
     record: dict[str, Any] = _make_base_record(source, run_id, "live")
     record["error"] = ""
-    feed_url = record["feed"]
-    url = record["url"]
-    fetch_target = feed_url or url
-    if not fetch_target:
+    record["working_strategy"] = "dead"
+    record["working_url"] = ""
+    record["needs_browser"] = False
+
+    feed_url = source.get("feed_url", "")
+    listing_url = source.get("listing_url", "")
+    if not feed_url and not listing_url:
         record["error"] = "no_url"
         return record
 
-    try:
-        headers = {
-            "User-Agent": "AKB2-SourceValidator/1.0 (feed reachability check; +https://akb2.local)"
-        }
-        resp = httpx.get(fetch_target, timeout=10, follow_redirects=True, headers=headers)
-        reachable = resp.status_code < 400
-        record["reachable"] = reachable
-        record["trial_fetch_status"] = f"http_{resp.status_code}"
-
-        if reachable:
-            feed_text = resp.text
-            latest = _extract_latest_url(feed_text)
+    # 阶梯 1: 原 feed + 真实 UA（trial_fetch_status 锚定首次尝试，保留 timeout 语义）
+    if feed_url:
+        status, is_feed, text, err = _try_feed(feed_url)
+        if err:
+            record["trial_fetch_status"] = err
+            record["error"] = err
+        else:
+            record["trial_fetch_status"] = f"http_{status}"
+        if is_feed:
+            record["reachable"] = True
+            record["working_strategy"] = "ua_original_feed"
+            record["working_url"] = feed_url
+            latest = _extract_latest_url(text)
             record["latest_post"] = latest
             record["trial_fetch"] = latest
+            return record
+        if status == 403:
+            record["needs_browser"] = True
 
-    except httpx.TimeoutException:
-        record["error"] = "timeout"
-        record["trial_fetch_status"] = "timeout"
-    except Exception as exc:
-        record["error"] = str(exc)[:200]
-        record["trial_fetch_status"] = "error"
+    # 阶梯 2: 候选 feed 路径
+    for cand in _feed_path_candidates(feed_url, listing_url):
+        status, is_feed, text, _err = _try_feed(cand)
+        if is_feed:
+            record["reachable"] = True
+            record["working_strategy"] = "alternate_feed_path"
+            record["working_url"] = cand
+            record["trial_fetch_status"] = f"http_{status}"
+            record["error"] = ""
+            latest = _extract_latest_url(text)
+            record["latest_post"] = latest
+            record["trial_fetch"] = latest
+            return record
+        if status == 403:
+            record["needs_browser"] = True
 
+    # 阶梯 3: listing 页可达性（无 feed 但页面 2xx → 可走列表抓取）
+    if listing_url:
+        status, _is_feed, _text, _err = _try_feed(listing_url)
+        if 0 < status < 400:
+            record["reachable"] = True
+            record["working_strategy"] = "listing_reachable"
+            record["working_url"] = listing_url
+            record["trial_fetch_status"] = f"http_{status}"
+            record["error"] = ""
+            return record
+        if status == 403:
+            record["needs_browser"] = True
+
+    # 阶梯 4-5: 全部 httpx 失败
+    if record["needs_browser"]:
+        record["working_strategy"] = "browser_needed"
+        record["error"] = "all httpx strategies 403 — needs scrapling browser"
+    elif not record.get("error"):
+        record["error"] = "no reachable feed/listing"
     return record
 
 

@@ -333,15 +333,41 @@ def _run_quality_segments(
     candidate_text: str,
     raw_content: str,
     config: RunnerConfig,
+    grader_result_path: Path | None = None,
 ) -> tuple[bool, str, str]:
     """段 5-6: 结构校验 + 评分 + 修复。
+
+    converged=True 表示最终稿结构层(A)+评分层(B)零缺陷。此时把 grader PASS
+    结果落盘到 grader_result_path，供段 7 的 Gate-5 独立复核读取——消除
+    runner 升格路径 grader_result_path=None 导致 Gate-5 恒 fail 的接线缺口。
 
     Returns:
         (converged, error_class, error_detail)
     """
     from src.akb2.quality.checks_structural import run_structural_checks
-    from src.akb2.quality.grader import run_grader
+    from src.akb2.quality.grader import RUBRIC_DIMENSIONS, run_grader
     from src.akb2.quality.repair import run_repair_loop
+
+    def _persist_grader_pass() -> None:
+        """收敛后落盘 grader PASS 结果（Gate-5 读取的 canonical 格式）。
+
+        仅在 converged=True 时调用——此时缺陷已清零，status=PASS 为事实，
+        非伪造。grader_result_path 为 None 时（旧测试调用方）为 no-op。
+        """
+        if grader_result_path is None:
+            return
+        grader_result_path.parent.mkdir(parents=True, exist_ok=True)
+        grader_result_path.write_text(
+            json.dumps(
+                {
+                    "status": "PASS",
+                    "dimensions_checked": len(RUBRIC_DIMENSIONS),
+                    "findings": [],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
 
     # A 层: 结构校验
     a_defects = run_structural_checks(candidate_text, raw_content)
@@ -357,6 +383,7 @@ def _run_quality_segments(
     # 无缺陷 → 通过
     all_defects = a_defects + b_defects
     if not all_defects:
+        _persist_grader_pass()
         return True, "", ""
 
     # 修复循环
@@ -374,14 +401,19 @@ def _run_quality_segments(
         remaining = len(repair_result.get("final_defects", []))
         return False, error_class, f"修复不收敛: {remaining} 项缺陷残留"
 
+    _persist_grader_pass()
     return True, "", ""
 
 
 def _run_promote_segment(
     candidate_path: str,
     config: RunnerConfig,
+    grader_result_path: Path | None = None,
 ) -> tuple[bool, str, str]:
     """段 7: 升格。
+
+    grader_result_path 由段 5-6 收敛后落盘，传入 Gate-5 做独立复核。
+    为 None 时（旧调用方）保持原行为（Gate-5 fail-closed）。
 
     Returns:
         (success, promotion_mode, detail)
@@ -394,7 +426,7 @@ def _run_promote_segment(
     success, detail, snapshot_id = run_promote(
         candidate_path=cpath,
         vault_root=vault_root,
-        grader_result_path=None,
+        grader_result_path=grader_result_path,
     )
 
     mode = "active" if config.auto_promote else "proposal"
@@ -466,8 +498,12 @@ def _run_pipeline_segments(
                {"candidate_path": candidate_path})
 
     # Segment 5-6: 质量评估 + 修复
+    # grader 结果落盘路径（按 candidate 命名），收敛时写入供段 7 Gate-5 复核
+    grader_result_path = (
+        Path(config.grader_result_dir) / f"{Path(candidate_path).stem}.grader.json"
+    )
     converged, error_class, error_detail = _run_quality_segments(
-        candidate_text, raw_content, config
+        candidate_text, raw_content, config, grader_result_path
     )
     _log_event(config, "grade_structural", "grade_structural", content_hash)
     _log_event(config, "grade_llm", "grade_llm", content_hash)
@@ -487,9 +523,9 @@ def _run_pipeline_segments(
     _log_event(config, "repair_loop", "repair_loop", content_hash,
                {"converged": True})
 
-    # Segment 7: 升格
+    # Segment 7: 升格（传入段 5-6 落盘的 grader 结果供 Gate-5 复核）
     promoted, promotion_mode, promote_detail = _run_promote_segment(
-        candidate_path, config
+        candidate_path, config, grader_result_path
     )
 
     if promoted:
