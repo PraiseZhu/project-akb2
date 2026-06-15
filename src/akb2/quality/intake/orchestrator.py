@@ -337,7 +337,10 @@ def run_intake(
         try:
             discover_result = discover_articles(source, ledger_path=state_file, dry_run=dry_run)
         except Exception as exc:
+            # 发现层抛异常（网络层故障等）同样是死链/失败的一种形态，
+            # 必须计入 discovery_errors，否则保留一条静默失败路径（codex HIGH-1）。
             logger.warning("Discovery failed for source=%s: %s", slug, exc)
+            total_discovery_errors += 1
             continue
 
         if discover_result.error:
@@ -504,6 +507,17 @@ def main(argv: list[str] | None = None) -> int:
     if stats["discovery_errors"]:
         line += f" discovery_errors={stats['discovery_errors']}"
     print(line)
+
+    # 失败可见（宪法 P4 / codex HIGH-2）：本次 run 零产出且发现层有错误
+    # （典型为所有源死链）→ 返回非零，避免自动化把"全源死链"判成成功。
+    # 正常 run（discovered>0）或"无新内容但无错误"（errors==0）不触发。
+    if stats["discovered"] == 0 and stats["discovery_errors"] > 0:
+        print(
+            f"INTAKE_RUN_DEGRADED: discovered=0 但有 {stats['discovery_errors']} "
+            "个发现层错误（疑似源全部不可达）",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 

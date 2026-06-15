@@ -651,3 +651,201 @@ def test_feed_discovery_dry_run_skips_httpx(tmp_path):
     mock_get.assert_not_called()
     assert result.method == "feed"
     assert result.articles == []
+
+
+# ---------------------------------------------------------------------------
+# P0 回归：feed author 接线（DiscoveredArticle.author → ExtractionContext.feed_author）
+# ---------------------------------------------------------------------------
+
+
+def test_feed_author_wired_to_extraction_context(tmp_path):
+    """P0 回归：orchestrator 把 article.author 接到 ExtractionContext.feed_author。
+
+    守护 fix b0c6182 的根因修复 —— 抽取器拿不到 author 时从 feed dc:creator 兜底，
+    文章才不会因 author 空被元数据闸门 fail-closed 拦掉（曾导致 archived=0 管线零出货）。
+    缺这条断言时，把 feed_author 写死 '' 仍会让全套测试通过，bug 无声复发。
+    """
+    from src.akb2.quality.intake.discovery import DiscoveredArticle, DiscoverResult
+
+    art = DiscoveredArticle(
+        url="https://example.com/a",
+        title="A",
+        content_hash="aabbcc112233",
+        source_slug="test-source",
+        published_at="2026-06-14",
+        feed_title="A",
+        author="Addy Osmani",
+    )
+    disc = DiscoverResult(source_slug="test-source", articles=[art], method="feed")
+
+    captured = {}
+
+    def fake_extract(url, extraction_config=None):
+        captured["ctx"] = extraction_config  # 抓住 orchestrator 构造的 ExtractionContext
+        r = MagicMock()
+        r.extraction_success = False  # 提前止步，只验接线
+        r.error = "stop-after-wiring"
+        return r
+
+    sources_config = _write_sources_yaml(tmp_path)
+    with (
+        patch("src.akb2.quality.intake.orchestrator.discover_articles", return_value=disc),
+        patch("src.akb2.quality.intake.orchestrator.extract_content", side_effect=fake_extract),
+    ):
+        run_intake(
+            sources_config=sources_config,
+            state_file=tmp_path / "s.jsonl",
+            output_dir=tmp_path / "raw",
+            dry_run=False,
+            limit=0,
+        )
+
+    assert captured["ctx"].feed_author == "Addy Osmani", (
+        f"author 应接线到 ExtractionContext.feed_author，实得 {captured['ctx'].feed_author!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# P1 回归：发现层 error 可见化（discovery_errors 计数，不静默吞死链）
+# ---------------------------------------------------------------------------
+
+
+def test_discovery_error_counted_not_silent(tmp_path):
+    """P1 回归：发现层 error（死链/HTTP 4xx）计入 stats['discovery_errors']。
+
+    守护 fix b0c6182 —— 死链此前被静默 continue，archived 不变、无人知情。
+    缺这条断言时，去掉计数器仍会让全套测试通过，死链回到静默漏采。
+    """
+    from src.akb2.quality.intake.discovery import DiscoverResult
+
+    sources_config = _write_sources_yaml(tmp_path)
+    err_result = DiscoverResult(
+        source_slug="test-source",
+        method="feed",
+        error="Feed HTTP 404: https://example.com/feed.xml",
+    )
+    with patch(
+        "src.akb2.quality.intake.orchestrator.discover_articles",
+        return_value=err_result,
+    ):
+        stats = run_intake(
+            sources_config=sources_config,
+            state_file=tmp_path / "s.jsonl",
+            output_dir=tmp_path / "raw",
+            dry_run=False,
+            limit=0,
+        )
+
+    assert stats["discovery_errors"] == 1, f"死链应计入 discovery_errors，实得 {stats}"
+    assert stats["archived"] == 0
+
+
+def test_discovery_exception_also_counted(tmp_path):
+    """codex HIGH-1 回归：discover_articles 抛异常（网络故障）也计入 discovery_errors。
+
+    死链有两种形态：①返回带 error 的 DiscoverResult ②直接抛异常。
+    早期修复只计了①，②被 except 静默 continue。缺这条断言时，异常路径会无声漏采。
+    """
+    sources_config = _write_sources_yaml(tmp_path)
+    with patch(
+        "src.akb2.quality.intake.orchestrator.discover_articles",
+        side_effect=ConnectionError("DNS resolution failed"),
+    ):
+        stats = run_intake(
+            sources_config=sources_config,
+            state_file=tmp_path / "s.jsonl",
+            output_dir=tmp_path / "raw",
+            dry_run=False,
+            limit=0,
+        )
+    assert stats["discovery_errors"] == 1, f"发现层异常应计入 discovery_errors，实得 {stats}"
+    assert stats["archived"] == 0
+
+
+def test_cli_exit_nonzero_when_all_sources_dead(tmp_path, capsys):
+    """codex HIGH-2 回归：零产出 + 有发现层错误 → CLI 返回非零（失败可见，宪法 P4）。
+
+    避免自动化把"所有源死链"判成成功。正常 run（discovered>0）不受影响（见 test_stdout_format）。
+    """
+    from src.akb2.quality.intake.discovery import DiscoverResult
+    from src.akb2.quality.intake.orchestrator import main
+
+    sources_config = _write_sources_yaml(tmp_path)
+    dead = DiscoverResult(source_slug="test-source", method="feed", error="Feed HTTP 404")
+    with patch(
+        "src.akb2.quality.intake.orchestrator.discover_articles",
+        return_value=dead,
+    ):
+        exit_code = main(
+            argv=[
+                "--sources-config", str(sources_config),
+                "--state-file", str(tmp_path / "s.jsonl"),
+                "--output-dir", str(tmp_path / "raw"),
+            ]
+        )
+    captured = capsys.readouterr()
+    assert exit_code == 1, f"全源死链应返回非零，实得 {exit_code}"
+    assert "discovery_errors=1" in captured.out, f"stdout 应明示 discovery_errors：{captured.out!r}"
+    assert "DEGRADED" in captured.err, f"stderr 应有 DEGRADED 告警：{captured.err!r}"
+
+
+def test_p0_empty_author_fallback_enables_archive(tmp_path):
+    """codex MEDIUM-4 回归：抽取器 author 空 → feed_author fallback → 归档成功（P0 闭环端到端）。
+
+    P0 零出货的真正证明：抽取器拿到长正文但 author 空，若无 feed fallback 会被元数据闸门
+    fail-closed（archived=0）。本测走真实 extract_content fallback 链 + 真实 orchestrator
+    归档（仅 mock 抽取器层与 httpx），断言 archived==1 且 raw frontmatter author 非空。
+    """
+    from src.akb2.quality.intake.discovery import DiscoveredArticle, DiscoverResult
+
+    # 发现层带 author（模拟 dc:creator 已提取）
+    art = DiscoveredArticle(
+        url="https://example.com/post",
+        title="Real Post",
+        content_hash="d" * 12,
+        source_slug="test-source",
+        published_at="2026-06-14",
+        feed_title="Real Post",
+        author="Addy Osmani",
+    )
+    disc = DiscoverResult(source_slug="test-source", articles=[art], method="feed")
+
+    # 抽取器：长正文但 author 空（真实场景：blog 正文抓到了，作者元数据缺失）
+    # 正文需多段落（≥5），raw 归档才能注入 REQUIRED_ANCHORS（A/E/H/M/Z 按段落分布）。
+    multi_para = "\n\n".join(f"Section {i}: " + "word " * 60 for i in range(6))
+    fake_resp = MagicMock()
+    fake_resp.text = "<html><body>" + multi_para + "</body></html>"
+    fake_resp.status_code = 200
+    fake_resp.headers = {"content-type": "text/html"}
+    defuddle_out = {
+        "title": "Real Post",
+        "author": "",  # ← 抽取器拿不到 author
+        "published": "2026-06-14",
+        "content": multi_para,
+        "word_count": 360,
+    }
+
+    sources_config = _write_sources_yaml(tmp_path)
+    output_dir = tmp_path / "raw"
+    with (
+        patch("src.akb2.quality.intake.orchestrator.discover_articles", return_value=disc),
+        patch("httpx.get", return_value=fake_resp),
+        patch(
+            "src.akb2.quality.intake.extract._extract_via_defuddle",
+            return_value=defuddle_out,
+        ),
+    ):
+        stats = run_intake(
+            sources_config=sources_config,
+            state_file=tmp_path / "s.jsonl",
+            output_dir=output_dir,
+            dry_run=False,
+            limit=0,
+        )
+
+    assert stats["archived"] == 1, (
+        f"author 空但 feed fallback 应使文章归档成功（P0 闭环），实得 {stats}"
+    )
+    raw_files = list(output_dir.glob("*.md"))
+    assert len(raw_files) == 1, f"应产 1 个 raw 文件，实得 {raw_files}"
+    assert "Addy Osmani" in raw_files[0].read_text(), "raw frontmatter 应含 fallback 来的 author"

@@ -136,6 +136,87 @@ class TestFeedParsing:
 
 
 # ---------------------------------------------------------------------------
+# author 提取（P0 回归守护）
+# ---------------------------------------------------------------------------
+
+
+class TestAuthorExtraction:
+    """P0 回归：feed author 提取。
+
+    守护 fix b0c6182 —— 发现层把 author 从 feed 抽出，供 orchestrator 接线到
+    ExtractionContext.feed_author（元数据闸门 fallback 的来源）。此前抽取器拿不到
+    author 时文章被 fail-closed 拦掉，管线零出货。缺这组断言时，删掉 author 解析逻辑
+    全套测试仍会通过 —— bug 无声复发。用内联 XML 自包含，不依赖共享 fixture。
+    """
+
+    def test_rss_dc_creator_preferred(self):
+        """RSS <dc:creator> 优先提取为 author。"""
+        rss = (
+            '<?xml version="1.0"?>'
+            '<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/">'
+            "<channel><title>Blog</title>"
+            '<item><title>A</title><link>https://b.com/a</link>'
+            "<dc:creator>Addy Osmani</dc:creator></item>"
+            "</channel></rss>"
+        )
+        assert parse_feed(rss)[0]["author"] == "Addy Osmani"
+
+    def test_rss_plain_author_fallback(self):
+        """无 dc:creator 时退回 plain <author>。"""
+        rss = (
+            '<?xml version="1.0"?>'
+            '<rss version="2.0"><channel><title>Blog</title>'
+            '<item><title>B</title><link>https://b.com/b</link>'
+            "<author>jane@x.com (Jane)</author></item>"
+            "</channel></rss>"
+        )
+        assert parse_feed(rss)[0]["author"] == "jane@x.com (Jane)"
+
+    def test_rss_no_author_yields_empty(self):
+        """无任何 author 元素 → 空字符串（不抛错）。"""
+        rss = (
+            '<?xml version="1.0"?>'
+            '<rss version="2.0"><channel><title>Blog</title>'
+            "<item><title>C</title><link>https://b.com/c</link></item>"
+            "</channel></rss>"
+        )
+        assert parse_feed(rss)[0]["author"] == ""
+
+    def test_atom_author_name(self):
+        """Atom <author><name> 提取为 author。"""
+        atom = (
+            '<?xml version="1.0"?>'
+            '<feed xmlns="http://www.w3.org/2005/Atom">'
+            "<entry><title>P</title>"
+            '<link href="https://b.com/x"/>'
+            "<author><name>Dan Abramov</name></author></entry>"
+            "</feed>"
+        )
+        assert parse_feed(atom)[0]["author"] == "Dan Abramov"
+
+    def test_discovered_article_carries_author(self, temp_ledger_path: Path):
+        """discover_articles 把 author 填进 DiscoveredArticle。"""
+        rss = (
+            '<?xml version="1.0"?>'
+            '<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/">'
+            "<channel><title>Blog</title>"
+            '<item><title>A</title><link>https://b.com/a</link>'
+            "<dc:creator>Sarah Drasner</dc:creator></item>"
+            "</channel></rss>"
+        )
+        source = {
+            "slug": "blog",
+            "domain": "b.com",
+            "feed_url": "https://b.com/feed",
+            "rate_limit": 3600,
+            "status": "trial",
+        }
+        result = discover_articles(source, temp_ledger_path, feed_content=rss)
+        assert len(result.articles) == 1
+        assert result.articles[0].author == "Sarah Drasner"
+
+
+# ---------------------------------------------------------------------------
 # 发现主流程
 # ---------------------------------------------------------------------------
 
