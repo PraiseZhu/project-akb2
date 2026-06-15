@@ -133,9 +133,14 @@ def _apply_feed_fallback(
 
     fallback 顺序（四个字段独立判断）:
         title     ← result.title     or context.feed_title
-        author    ← result.author    or context.feed_author
+        author    ← result.author    or context.feed_author or context.source_publisher
         published ← result.published or context.feed_published
         publisher ← result.raw_metadata["publisher"] or context.source_publisher
+
+    author 语义为"可归属主体"而非"个人署名"：抽取器/feed 都拿不到作者时，
+    回退到来源机构名（source_publisher）并标记 author_source=publisher_fallback，
+    供 provenance 区分机构归属与个人署名。仅当连 publisher 都无时 author 才留空
+    （→ _validate_metadata fail-closed）。
 
     此函数在 _validate_metadata 之前调用，仅补充空字段，不覆盖已有值。
     context 为 None 时本函数为 no-op。
@@ -145,8 +150,13 @@ def _apply_feed_fallback(
 
     if not result.title and context.feed_title:
         result.title = context.feed_title
-    if not result.author and context.feed_author:
-        result.author = context.feed_author
+    # author: extracted → feed_author → publisher（可归属主体，非个人署名硬性）
+    if not result.author:
+        if context.feed_author:
+            result.author = context.feed_author
+        elif context.source_publisher:
+            result.author = context.source_publisher
+            result.raw_metadata["author_source"] = "publisher_fallback"
     if not result.published and context.feed_published:
         result.published = context.feed_published
     # publisher 存入 raw_metadata 供下游消费
@@ -238,19 +248,26 @@ def _extract_via_scrapling(
 
             page = Fetcher().fetch(url)
 
-        # Scrapling page 对象：.html_content 或 .body 含原始 HTML；
-        # .get_best_summary() / .title 等提供元数据。
-        raw_html: str = getattr(page, "html_content", None) or str(page.body or "")
-        title: str = str(getattr(page, "title", "") or "")
-        content: str = raw_html
-        word_count: int = _count_words(raw_html)
+        # Scrapling 只负责"绕反爬拿渲染后的 HTML"；抽取交给 defuddle。
+        rendered_html: str = getattr(page, "html_content", None) or str(page.body or "")
+        if not rendered_html.strip():
+            return {}
 
+        # 转交 defuddle：出干净 markdown 正文 + 从 meta/JSON-LD 抽 title/author/published。
+        # 解决 scrapling 原先返回脏 HTML + author/published 恒空的问题。
+        extracted = _extract_via_defuddle(url, html=rendered_html)
+        if extracted and extracted.get("content"):
+            return extracted
+
+        # defuddle 无法从渲染 HTML 抽取时兜底：用 scrapling 自身 title + 渲染 HTML。
+        # content 仍为未清洗 HTML，下游 word_count/质量判定可识别。
+        title: str = str(getattr(page, "title", "") or "")
         return {
             "title": title,
             "author": "",
             "published": "",
-            "content": content,
-            "word_count": word_count,
+            "content": rendered_html,
+            "word_count": _count_words(rendered_html),
         }
 
     except Exception as exc:

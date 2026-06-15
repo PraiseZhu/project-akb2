@@ -489,6 +489,41 @@ class TestExtractViaScrapling:
 
         assert result == {}, "异常时应降级返回空 dict"
 
+    def test_scrapling_delegates_extraction_to_defuddle(self):
+        """G2 守护：scrapling 只负责抓渲染 HTML，抽取转交 defuddle。
+        scrapling 抓到 HTML 后必须调 _extract_via_defuddle 出干净 markdown +
+        元数据，而非自己返回原始 HTML / 写死空 author。缺这条时回退到旧的
+        '返回脏 HTML + author 恒空'，Cloudflare 源入库内容是脏的且无作者。
+        """
+        from unittest.mock import MagicMock, patch
+
+        from src.akb2.quality.intake import extract as extract_mod
+        from src.akb2.quality.intake.extract import _extract_via_scrapling
+
+        mock_page = MagicMock()
+        mock_page.html_content = "<html><body><article>real rendered html</article></body></html>"
+        mock_page.title = "scrapling raw title"
+
+        clean = {
+            "title": "Clean Title From Defuddle",
+            "author": "Jane Doe",
+            "published": "2026-06-01",
+            "content": "# Clean markdown body",
+            "word_count": 500,
+        }
+        original = extract_mod._extract_via_defuddle
+        try:
+            extract_mod._extract_via_defuddle = lambda url, html=None: clean
+            with patch("scrapling.StealthyFetcher") as MockStealthy:
+                MockStealthy.return_value.fetch.return_value = mock_page
+                result = _extract_via_scrapling("https://cf.example/a", browser_mode=True)
+        finally:
+            extract_mod._extract_via_defuddle = original
+
+        assert result.get("title") == "Clean Title From Defuddle", "应用 defuddle 抽取结果"
+        assert result.get("author") == "Jane Doe", "author 应来自 defuddle，非写死空串"
+        assert "# Clean markdown" in result.get("content", ""), "content 应是 defuddle markdown"
+
 
 # ---------------------------------------------------------------------------
 # SC-4: _extract_via_docling 真实调用（mock DocumentConverter）

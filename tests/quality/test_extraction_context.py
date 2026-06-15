@@ -173,6 +173,47 @@ class TestFeedMetadataFallbacks:
 
         assert result.raw_metadata.get("publisher") == "Context Publisher"
 
+    def test_author_falls_back_to_publisher_when_byline_missing(self):
+        """G3 守护：抽取器和 feed 都无 author 时，回退 source_publisher 作"可归属主体"，
+        并标记 author_source=publisher_fallback。守护"公司博客无个人署名仍能入库"。
+        缺这条时删掉 publisher 兜底逻辑，openai 类无署名源会全被 fail-closed 拦掉。
+        """
+        from src.akb2.quality.intake import extract as extract_mod
+
+        original = extract_mod._extract_via_defuddle
+
+        def no_author_defuddle(url, html=None):
+            return {
+                "title": "OpenAI Academy Courses",
+                "author": "",  # 页面无个人署名
+                "published": "2026-05-22",
+                "content": _LONG_HTML,
+                "word_count": 250,
+            }
+
+        # feed 也无 author（公司博客 feed 普遍如此），只有机构 publisher
+        ctx = _make_context(
+            feed_title="",
+            feed_author="",
+            feed_published="",
+            source_publisher="openai.com",
+        )
+        try:
+            extract_mod._extract_via_defuddle = no_author_defuddle
+            result = extract_content(
+                url="https://openai.com/index/academy-courses",
+                html=_LONG_HTML,
+                extraction_config=ctx,
+            )
+        finally:
+            extract_mod._extract_via_defuddle = original
+
+        assert result.extraction_success, f"应成功（机构兜底），error={result.error}"
+        assert result.author == "openai.com", "author 应回退到 source_publisher"
+        assert result.raw_metadata.get("author_source") == "publisher_fallback", (
+            "必须标记 author_source 供 provenance 区分机构归属 vs 个人署名"
+        )
+
 
 # ---------------------------------------------------------------------------
 # SC-1 用例 3: 四者皆缺 → fail-closed，不产 raw
