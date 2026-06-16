@@ -871,6 +871,10 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         help="轮询间隔（秒，默认 300）",
     )
+    parser.add_argument(
+        "--staging-dir",
+        help="staging 根目录（测试隔离用；显式传入优先于 vault.toml 的 get_staging_root）",
+    )
 
     args = parser.parse_args(argv)
 
@@ -891,13 +895,16 @@ def main(argv: list[str] | None = None) -> int:
     if not raw_dir:
         raw_dir = os.path.join(vault_root, "raw")
 
-    # 解析 staging dir
-    try:
-        from src.akb2.loops.paths import get_staging_root
+    # 解析 staging dir：显式 --staging-dir 优先（测试隔离），否则 vault.toml 的 get_staging_root
+    if args.staging_dir:
+        staging_dir = args.staging_dir
+    else:
+        try:
+            from src.akb2.loops.paths import get_staging_root
 
-        staging_dir = str(get_staging_root())
-    except Exception:
-        staging_dir = os.path.join(vault_root, "staging")
+            staging_dir = str(get_staging_root())
+        except Exception:
+            staging_dir = os.path.join(vault_root, "staging")
 
     auto_promote = os.environ.get("AKB2_AUTO_PROMOTE", "0") == "1"
     poll_interval = args.poll_interval or int(
