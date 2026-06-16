@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -125,18 +126,24 @@ def run_admission(
 
         route_llm_fn = _default
 
+    # 剥离 raw 样板（frontmatter + §锚点目录 TOC），让三判定看正文而非元数据骨架。
+    # 此前直接判 raw_content：4000 字窗口被 ~960 字 frontmatter+26 行锚点目录稀释，
+    # how-to 实质被挤出视野 → gemini 判"introductory/conceptual" 误拒（含黄金样张）。
+    # 实测：同篇去样板后 how_tendency 由 FAIL→PASS。
+    body = _strip_raw_boilerplate(raw_content)
+
     checks: list[AdmissionCheck] = []
 
     # 1. 主题相关性
-    topic_check = _check_topic_relevance(raw_content, route_llm_fn)
+    topic_check = _check_topic_relevance(body, route_llm_fn)
     checks.append(topic_check)
 
     # 2. How 倾向
-    how_check = _check_how_tendency(raw_content, route_llm_fn)
+    how_check = _check_how_tendency(body, route_llm_fn)
     checks.append(how_check)
 
     # 3. 新颖度
-    novelty_check = _check_novelty(raw_content, wiki_references, route_llm_fn)
+    novelty_check = _check_novelty(body, wiki_references, route_llm_fn)
     checks.append(novelty_check)
 
     all_passed = all(c.passed for c in checks)
@@ -150,6 +157,43 @@ def run_admission(
         _log_rejection(raw_path, checks, ledger_path)
 
     return AdmissionResult(passed=all_passed, checks=checks, reason=reason)
+
+
+# ---------------------------------------------------------------------------
+# raw 样板剥离
+# ---------------------------------------------------------------------------
+
+# 正文起始锚点：raw_archiver 写入 §A_CONTENT_START（或 §X_CONTENT_START）标记正文开端
+_CONTENT_START_RE = re.compile(r"§[A-Z]_CONTENT_START")
+
+
+def _strip_raw_boilerplate(raw_content: str) -> str:
+    """剥离 raw 文件的 frontmatter + 锚点目录样板，返回正文供准入判定。
+
+    raw 文件结构：`---frontmatter---` + `## 锚点目录`(26 行 §A-§Z TOC) + `§A_CONTENT_START` + 正文。
+    准入三判定应基于正文；直接判全文会让 4000 字窗口被元数据+TOC 稀释，
+    how-to 实质被挤出 → 误拒（实测黄金样张同篇去样板后 how_tendency FAIL→PASS）。
+
+    剥离策略（fail-safe：剥空时回退原文，不让格式异常的 raw 直接判空）：
+        1. 去开头 `---...---` frontmatter 块
+        2. 从首个 `§X_CONTENT_START` 锚点起截取正文（跳过 ## 锚点目录 TOC）
+    """
+    text = raw_content
+
+    # 1. 剥 frontmatter
+    lstripped = text.lstrip()
+    if lstripped.startswith("---"):
+        end = lstripped.find("\n---", 3)
+        if end != -1:
+            text = lstripped[end + 4 :]
+
+    # 2. 从正文起始锚点截取（跳过锚点目录 TOC）
+    m = _CONTENT_START_RE.search(text)
+    if m:
+        text = text[m.start() :]
+
+    stripped = text.strip()
+    return stripped if stripped else raw_content
 
 
 # ---------------------------------------------------------------------------
