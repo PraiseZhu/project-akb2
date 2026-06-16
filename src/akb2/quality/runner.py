@@ -334,7 +334,7 @@ def _run_quality_segments(
     raw_content: str,
     config: RunnerConfig,
     grader_result_path: Path | None = None,
-) -> tuple[bool, str, str]:
+) -> tuple[bool, str, str, dict[str, Any]]:
     """段 5-6: 结构校验 + 评分 + 修复。
 
     converged=True 表示最终稿结构层(A)+评分层(B)零缺陷。此时把 grader PASS
@@ -342,11 +342,26 @@ def _run_quality_segments(
     runner 升格路径 grader_result_path=None 导致 Gate-5 恒 fail 的接线缺口。
 
     Returns:
-        (converged, error_class, error_detail)
+        (converged, error_class, error_detail, quality_meta)
+        quality_meta: {
+            a_defect_count, a_defect_summary,
+            b_defect_count, b_defect_summary,
+            repair_rounds, final_defects_summary
+        }
     """
     from src.akb2.quality.checks_structural import run_structural_checks
     from src.akb2.quality.grader import RUBRIC_DIMENSIONS, run_grader
     from src.akb2.quality.repair import run_repair_loop
+
+    def _defect_summary(defects: list[Any]) -> list[dict[str, str]]:
+        return [
+            {
+                "dimension": getattr(d, "dimension", ""),
+                "location": getattr(d, "location", ""),
+                "defect": getattr(d, "defect", ""),
+            }
+            for d in defects
+        ]
 
     def _persist_grader_pass() -> None:
         """收敛后落盘 grader PASS 结果（Gate-5 读取的 canonical 格式）。
@@ -373,18 +388,43 @@ def _run_quality_segments(
     a_defects = run_structural_checks(candidate_text, raw_content)
     if a_defects:
         a_dimensions = {d.dimension for d in a_defects}
-        return False, "structural_fail", f"A 层缺陷: {a_dimensions}"
+        meta: dict[str, Any] = {
+            "a_defect_count": len(a_defects),
+            "a_defect_summary": _defect_summary(a_defects),
+            "b_defect_count": 0,
+            "b_defect_summary": [],
+            "repair_rounds": 0,
+            "final_defects_summary": _defect_summary(a_defects),
+        }
+        return False, "structural_fail", f"A 层缺陷: {a_dimensions}", meta
 
     # B 层: LLM 评分
     b_defects, model_used, suspended = run_grader(candidate_text)
     if suspended:
-        return False, "grader_all_down", "评分器双不可用，稿件挂起"
+        meta = {
+            "a_defect_count": 0, "a_defect_summary": [],
+            "b_defect_count": 0, "b_defect_summary": [],
+            "repair_rounds": 0, "final_defects_summary": [],
+        }
+        return False, "grader_all_down", "评分器双不可用，稿件挂起", meta
 
     # 无缺陷 → 通过
     all_defects = a_defects + b_defects
     if not all_defects:
         _persist_grader_pass()
-        return True, "", ""
+        meta = {
+            "a_defect_count": 0, "a_defect_summary": [],
+            "b_defect_count": 0, "b_defect_summary": [],
+            "repair_rounds": 0, "final_defects_summary": [],
+        }
+        return True, "", "", meta
+
+    meta_b: dict[str, Any] = {
+        "a_defect_count": len(a_defects),
+        "a_defect_summary": _defect_summary(a_defects),
+        "b_defect_count": len(b_defects),
+        "b_defect_summary": _defect_summary(b_defects),
+    }
 
     # 修复循环
     repair_result = run_repair_loop(
@@ -394,15 +434,23 @@ def _run_quality_segments(
         failures_path=config.failures_path,
     )
 
+    repair_rounds = repair_result.get("rounds", 0)
+    final_defects = repair_result.get("final_defects", [])
+    meta_final: dict[str, Any] = {
+        **meta_b,
+        "repair_rounds": repair_rounds,
+        "final_defects_summary": _defect_summary(final_defects),
+    }
+
     if not repair_result["converged"]:
         error_class = repair_result.get(
             "failure_signature", "distill_no_converge"
         )
-        remaining = len(repair_result.get("final_defects", []))
-        return False, error_class, f"修复不收敛: {remaining} 项缺陷残留"
+        remaining = len(final_defects)
+        return False, error_class, f"修复不收敛: {remaining} 项缺陷残留", meta_final
 
     _persist_grader_pass()
-    return True, "", ""
+    return True, "", "", meta_final
 
 
 def _run_promote_segment(
@@ -502,15 +550,28 @@ def _run_pipeline_segments(
     grader_result_path = (
         Path(config.grader_result_dir) / f"{Path(candidate_path).stem}.grader.json"
     )
-    converged, error_class, error_detail = _run_quality_segments(
+    converged, error_class, error_detail, quality_meta = _run_quality_segments(
         candidate_text, raw_content, config, grader_result_path
     )
-    _log_event(config, "grade_structural", "grade_structural", content_hash)
-    _log_event(config, "grade_llm", "grade_llm", content_hash)
+    # P2: rounds 回填真实 repair 轮数（修复原恒为 0 的报告 bug）
+    rounds = quality_meta.get("repair_rounds", 0) if quality_meta else 0
+
+    # P1: grade 事件携带缺陷详情（修复原 {} 空落账）
+    _log_event(config, "grade_structural", "grade_structural", content_hash,
+               {"defect_count": quality_meta.get("a_defect_count", 0),
+                "defects": quality_meta.get("a_defect_summary", [])} if quality_meta else {})
+    _log_event(config, "grade_llm", "grade_llm", content_hash,
+               {"defect_count": quality_meta.get("b_defect_count", 0),
+                "defects": quality_meta.get("b_defect_summary", [])} if quality_meta else {})
 
     if not converged:
+        final_defects_summary = (
+            quality_meta.get("final_defects_summary", []) if quality_meta else []
+        )
         _log_event(config, "abort", "repair_loop", content_hash,
-                   {"error_class": error_class, "error": error_detail})
+                   {"error_class": error_class, "error": error_detail,
+                    "repair_rounds": rounds,
+                    "final_defects": final_defects_summary})
         return {
             "converged": False,
             "rounds": rounds,
@@ -521,7 +582,7 @@ def _run_pipeline_segments(
         }
 
     _log_event(config, "repair_loop", "repair_loop", content_hash,
-               {"converged": True})
+               {"converged": True, "repair_rounds": rounds})
 
     # Segment 7: 升格（传入段 5-6 落盘的 grader 结果供 Gate-5 复核）
     promoted, promotion_mode, promote_detail = _run_promote_segment(

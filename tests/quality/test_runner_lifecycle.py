@@ -233,6 +233,8 @@ class TestRunnerLifelineSegments:
                         False,
                         "distill_no_converge",
                         "3 轮修复不收敛",
+                        {"repair_rounds": 3, "a_defect_count": 0, "a_defect_summary": [],
+                         "b_defect_count": 3, "b_defect_summary": [], "final_defects_summary": []},
                     )
                     result = _run_pipeline_segments(
                         str(f), str(f.read_text(encoding="utf-8")), config
@@ -269,7 +271,11 @@ class TestRunnerLifelineSegments:
                 with mock.patch(
                     "src.akb2.quality.runner._run_quality_segments"
                 ) as mock_quality:
-                    mock_quality.return_value = (True, "", "")
+                    mock_quality.return_value = (
+                        True, "", "",
+                        {"repair_rounds": 0, "a_defect_count": 0, "a_defect_summary": [],
+                         "b_defect_count": 0, "b_defect_summary": [], "final_defects_summary": []},
+                    )
                     with mock.patch(
                         "src.akb2.quality.runner._run_promote_segment"
                     ) as mock_promote:

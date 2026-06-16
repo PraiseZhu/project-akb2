@@ -391,6 +391,52 @@ def extract_success_response() -> dict[str, Any]:
                     "harness-engineering",
                     "agent-collaboration",
                 ],
+                "tldr": (
+                    "Loop engineering is designing bounded, convergent, observable AI agent loops "
+                    "instead of prompting agents directly."
+                ),
+                "argumentation": [
+                    {
+                        "claim_anchor": "§A",
+                        "explanation": (
+                            "The practice shifts the human role from prompt-author to loop-designer, "
+                            "enabling scalable automation via observable, convergent pipelines."
+                        ),
+                    },
+                    {
+                        "claim_anchor": "§B",
+                        "explanation": (
+                            "Five components form the minimal viable loop: each is independently testable "
+                            "and replaceable, satisfying the bounded-automation principle."
+                        ),
+                    },
+                    {
+                        "claim_anchor": "§C",
+                        "explanation": (
+                            "Targeted repair of specific defects avoids full restart costs and preserves "
+                            "already-converged sections, a key efficiency gain over naive retry."
+                        ),
+                    },
+                ],
+                "applicability_boundary": (
+                    "Applies to multi-step AI pipelines with measurable quality outputs. "
+                    "Not suitable for one-shot queries or pipelines without a quality gate. "
+                    "Requires a reliable ledger store and idempotent work units."
+                ),
+                "graph_edges": [
+                    {
+                        "concept": "harness-engineering",
+                        "relation_type": "part_of",
+                        "strength": "strong",
+                        "evidence": "loop sits one floor above the harness (original text)",
+                    },
+                    {
+                        "concept": "agent-collaboration",
+                        "relation_type": "requires",
+                        "strength": "medium",
+                        "evidence": "multi-agent loops require coordination primitives",
+                    },
+                ],
             },
             model_used="deepseek-v4-pro",
             calls_used=1,
@@ -429,6 +475,12 @@ def extract_fail_missing_anchor_response() -> dict[str, Any]:
                 "how_steps": [],
                 "params": {},
                 "referenced_concepts": [],
+                "tldr": "A short summary that is long enough to pass the minimum length check.",
+                "argumentation": [],
+                "applicability_boundary": (
+                    "Applies when there is at least one claim. Not applicable to empty content."
+                ),
+                "graph_edges": [],
             },
             model_used="deepseek-v4-pro",
             calls_used=1,

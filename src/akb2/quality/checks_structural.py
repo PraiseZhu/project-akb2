@@ -375,7 +375,8 @@ def check_a3_raw_anchors(text: str, raw_content: str | None = None) -> list[Defe
     referenced_anchors = set(anchor_pattern.findall(body))
 
     # 提取 raw 文件中所有 §X 锚点
-    raw_anchor_pattern = re.compile(r"^#\s+(§[A-Z])", re.MULTILINE)
+    # 兼容两种格式: markdown heading ("# §A") 和 defuddle 纯文本锚点 ("§A_CONTENT_START")
+    raw_anchor_pattern = re.compile(r"(?:^#\s+|^)(§[A-Z])(?:[_A-Z]|\s|$)", re.MULTILINE)
     raw_anchors = set(raw_anchor_pattern.findall(raw_content))
 
     for anchor in referenced_anchors:

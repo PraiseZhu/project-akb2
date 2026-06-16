@@ -129,63 +129,57 @@ class TestExtractRetry:
 class TestValidateExtractOutput:
     """抽取输出校验函数。"""
 
+    # 完整合法 fixture（含扩展后的 4 个新字段）
+    _VALID_DATA: dict = {
+        "claims": [{"text": "test claim", "anchor": "§A", "provenance": "source_grounded"}],
+        "how_steps": ["step 1"],
+        "params": {"key": "value"},
+        "referenced_concepts": ["concept-1"],
+        "tldr": "A clear synthesis of the main insight spanning at least twenty characters.",
+        "argumentation": [{"claim_anchor": "§A", "explanation": "Evidence supports this claim."}],
+        "applicability_boundary": (
+            "Applies to production pipelines with observable quality gates. "
+            "Not suitable for one-shot tasks."
+        ),
+        "graph_edges": [
+            {"concept": "concept-1", "relation_type": "related", "strength": "medium",
+             "evidence": "mentioned in text"}
+        ],
+    }
+
     def test_valid_output_passes(self):
-        """合法输出通过校验。"""
-        data = {
-            "claims": [
-                {
-                    "text": "test claim",
-                    "anchor": "§A",
-                    "provenance": "source_grounded",
-                }
-            ],
-            "how_steps": ["step 1"],
-            "params": {"key": "value"},
-            "referenced_concepts": ["concept-1"],
-        }
-        _validate_extract_output(data)  # 不应抛异常
+        """合法输出通过校验（含扩展后 4 个新字段）。"""
+        _validate_extract_output(self._VALID_DATA)  # 不应抛异常
 
     def test_empty_claims_raises(self):
         """空 claims 抛 ValueError。"""
-        data = {
-            "claims": [],
-            "how_steps": [],
-            "params": {},
-            "referenced_concepts": [],
-        }
+        data = {**self._VALID_DATA, "claims": []}
         with pytest.raises(ValueError, match="claims 为空|should be non-empty"):
             _validate_extract_output(data)
 
     def test_invalid_anchor_format_raises(self):
         """非 §X 格式的 anchor 抛 ValueError。"""
-        data = {
-            "claims": [
-                {
-                    "text": "test",
-                    "anchor": "bad-anchor",
-                    "provenance": "source_grounded",
-                }
-            ],
-            "how_steps": [],
-            "params": {},
-            "referenced_concepts": [],
-        }
+        bad_claim = {"text": "test", "anchor": "bad-anchor", "provenance": "source_grounded"}
+        data = {**self._VALID_DATA, "claims": [bad_claim]}
         with pytest.raises(ValueError, match="anchor 格式无效"):
             _validate_extract_output(data)
 
     def test_invalid_provenance_raises(self):
         """非法 provenance 抛 ValueError。"""
-        data = {
-            "claims": [
-                {
-                    "text": "test",
-                    "anchor": "§A",
-                    "provenance": "unknown_type",
-                }
-            ],
-            "how_steps": [],
-            "params": {},
-            "referenced_concepts": [],
-        }
+        bad_claim = {"text": "test", "anchor": "§A", "provenance": "unknown_type"}
+        data = {**self._VALID_DATA, "claims": [bad_claim]}
         with pytest.raises(ValueError, match="provenance 无效|is not one of"):
+            _validate_extract_output(data)
+
+    def test_missing_tldr_raises(self):
+        """缺 tldr 或过短抛 ValueError（SC-1: 新增字段非空校验）。"""
+        data = {**self._VALID_DATA, "tldr": "too short"}
+        # jsonschema 的 minLength 报 "is too short"，代码层报 "tldr 过短"，两者均合法
+        with pytest.raises(ValueError, match="tldr|too short"):
+            _validate_extract_output(data)
+
+    def test_missing_applicability_boundary_raises(self):
+        """缺 applicability_boundary 或过短抛 ValueError（SC-1: 新增字段非空校验）。"""
+        data = {**self._VALID_DATA, "applicability_boundary": "short"}
+        with pytest.raises(ValueError, match="applicability_boundary|too short"):
             _validate_extract_output(data)

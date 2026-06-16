@@ -76,8 +76,47 @@ _EXTRACT_SCHEMA: dict[str, Any] = {
             "items": {"type": "string"},
             "minItems": 0,
         },
+        "tldr": {
+            "type": "string",
+            "minLength": 20,
+        },
+        "argumentation": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "claim_anchor": {"type": "string"},
+                    "explanation": {"type": "string", "minLength": 10},
+                },
+                "required": ["claim_anchor", "explanation"],
+                "additionalProperties": False,
+            },
+            "minItems": 0,
+        },
+        "applicability_boundary": {
+            "type": "string",
+            "minLength": 20,
+        },
+        "graph_edges": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "concept": {"type": "string"},
+                    "relation_type": {"type": "string"},
+                    "strength": {"type": "string", "enum": ["strong", "medium", "weak"]},
+                    "evidence": {"type": "string", "minLength": 5},
+                },
+                "required": ["concept", "relation_type", "strength", "evidence"],
+                "additionalProperties": False,
+            },
+            "minItems": 0,
+        },
     },
-    "required": ["claims", "how_steps", "params", "referenced_concepts"],
+    "required": [
+        "claims", "how_steps", "params", "referenced_concepts",
+        "tldr", "argumentation", "applicability_boundary", "graph_edges",
+    ],
     "additionalProperties": False,
 }
 
@@ -157,9 +196,22 @@ def extract_claims(
                 " + provenance(来源类型)\n"
                 "   - provenance 只能是 source_grounded(原文支撑) 或 akb_interpretation(库内解读)\n"
                 "   - 每个 anchor 必须对应原文中的锚点标记\n"
-                "2. how_steps: 可执行步骤/代码/工作流（字符串数组）\n"
+                "   - akb_interpretation 占比必须 ≤40%"
+                "（可直接引用原文的必须用 source_grounded）\n"
+                "2. how_steps: 可执行步骤（字符串数组），每条含具体命令/函数名/配置键/参数值，"
+                "可直接复制执行，禁止概念性建议\n"
                 "3. params: 参数/配置/选项（自由 key-value）\n"
-                "4. referenced_concepts: 引用的概念名（字符串数组）\n\n"
+                "4. referenced_concepts: 引用的概念名（字符串数组）\n"
+                "5. tldr: 一句话核心洞察摘要（≥20字），综合全文主旨，不是论点复制\n"
+                "6. argumentation: 每条 claim 对应的论证说明数组，"
+                "每项含 claim_anchor(对应 claims 的 anchor，如 §A) + "
+                "explanation(≥10字，说明该论点的论据、背景或意义)\n"
+                "7. applicability_boundary: 该知识适用的场景边界（≥20字，"
+                "含适用场景、不适用场景和约束条件）\n"
+                "8. graph_edges: 与相关概念的图谱关系数组，每项含 "
+                "concept(概念名) + relation_type(如 related/part_of/extends/requires) + "
+                "strength(strong=原文明示/medium=场景应用/weak=推测关联) + "
+                "evidence(≥5字，引用原文依据；strong 必须有原文原句)\n\n"
                 "输出必须严格符合 JSON schema，不要有任何额外文本。"
             ),
         },
@@ -265,6 +317,18 @@ def _validate_extract_output(data: dict[str, Any]) -> None:
             raise ValueError(
                 f"claim[{i}] provenance 无效: {prov!r}"
             )
+
+    # 4. 新增字段非空校验
+    tldr = data.get("tldr", "")
+    if not tldr or len(tldr.strip()) < 20:
+        raise ValueError(f"tldr 过短或为空（当前 {len(tldr.strip())} 字，要求 ≥20 字）")
+
+    applicability_boundary = data.get("applicability_boundary", "")
+    if not applicability_boundary or len(applicability_boundary.strip()) < 20:
+        actual_len = len(applicability_boundary.strip())
+        raise ValueError(
+            f"applicability_boundary 过短或为空（当前 {actual_len} 字，要求 ≥20 字）"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -501,9 +565,9 @@ def _generate_questions(
 def _build_body(
     extract_data: dict[str, Any],
     raw_path: str,
-    route_llm_fn: Any,
+    route_llm_fn: Any,  # 保留参数兼容接口，_build_body 是确定性脚本，不调 LLM
 ) -> str:
-    """构建 10 节正文。
+    """构建 10 节正文（确定性脚本，只填 extract_data 槽位，不调 LLM）。
 
     10 节模板:
         1. TLDR
@@ -511,7 +575,7 @@ def _build_body(
         3. 入选理由
         4. 证据地图
         5. 核心论点
-        6. 论证与解释
+        6. 论证与解释（含操作步骤）
         7. 适用边界
         8. 图谱关系
         9. Future Questions
@@ -521,20 +585,84 @@ def _build_body(
     how_steps = extract_data.get("how_steps", [])
     concepts = extract_data.get("referenced_concepts", [])
 
-    # 构建 claims 文本（带锚点）
+    # 新增字段槽位（段 1 抽取 LLM 已产出，此处仅读取）
+    tldr = (extract_data.get("tldr") or "").strip()
+    if not tldr:
+        tldr = claims[0]["text"] if claims else "（摘要待补充）"
+
+    argumentation: list[dict[str, Any]] = extract_data.get("argumentation") or []
+    applicability_boundary = (extract_data.get("applicability_boundary") or "").strip()
+    if not applicability_boundary:
+        applicability_boundary = "（适用边界待补充）"
+    graph_edges: list[dict[str, Any]] = extract_data.get("graph_edges") or []
+
+    # 关键发现：带 [raw §X] 锚点+provenance 的证据格式（rubric: 论断锚定率要求 [raw §X] 格式）
     claims_text = "\n".join(
-        f"- [{c['anchor']}] ({c['provenance']}) {c['text']}"
+        f"- [raw {c['anchor']}] ({c['provenance']}) {c['text']}"
         for c in claims
     )
 
-    _how_text = "\n".join(f"- {s}" for s in how_steps) if how_steps else "（无）"
-    concepts_text = ", ".join(concepts) if concepts else "（待补充）"
+    # 核心论点：带 [raw §X] 锚点+provenance，与关键发现区分（编号列表格式）
+    # rubric 解读分离: 每条论点必须标注 provenance；论断锚定率: 必须带 [raw §X]
+    core_claims_text = "\n".join(
+        f"{i}. [raw {c['anchor']}] ({c['provenance']}) {c['text']}"
+        for i, c in enumerate(claims, 1)
+    )
 
-    # 证据地图（含未覆盖列）
+    # TLDR：从 top-3 claims 构建（每句含 [raw §X] 锚点；rubric: TLDR 密度 ≤3 句含锚点）
+    tldr_sentences = [
+        f"{c['text']} [raw {c['anchor']}]."
+        for c in claims[:3]
+    ]
+    tldr = " ".join(tldr_sentences) if tldr_sentences else tldr
+
+    # 论证与解释：argumentation 字段逐条展开
+    arg_map: dict[str, str] = {
+        a.get("claim_anchor", ""): a.get("explanation", "")
+        for a in argumentation
+        if a.get("claim_anchor") and a.get("explanation")
+    }
+    if argumentation:
+        arg_items = [
+            f"**[raw {a['claim_anchor']}]** {a['explanation']}"
+            for a in argumentation
+            if a.get("claim_anchor") and a.get("explanation")
+        ]
+        arg_text = "\n\n".join(arg_items) if arg_items else core_claims_text
+    else:
+        arg_text = core_claims_text
+
+    # 操作步骤（how_steps 原先定义但从未出现在正文）
+    how_text = (
+        "\n".join(f"{i}. {s}" for i, s in enumerate(how_steps, 1))
+        if how_steps
+        else "（原文无明确操作步骤）"
+    )
+
+    # 证据地图："未覆盖"列（rubric: 证据诚实要求该列名 + 至少 1 行有内容）
+    # 用 argumentation explanation 作为"未覆盖/待深化"的提示
     evidence_rows = "\n".join(
-        f"| {c['anchor']} | {c['text'][:60]}... | {c['provenance']} | 待补充 |"
+        f"| {c['anchor']} | {c['text'][:60]}... | {c['provenance']} "
+        f"| {arg_map.get(c['anchor'], '待深化')[:60]} |"
         for c in claims
     )
+
+    # 图谱关系：graph_edges 字段填充（有则用，无则 fallback 到概念名）
+    if graph_edges:
+        graph_rows = "\n".join(
+            f"| {e['concept']} | {e['relation_type']} | {e['strength']} "
+            f"| {e.get('evidence', '')[:80]} |"
+            for e in graph_edges
+        )
+    elif concepts:
+        graph_rows = "\n".join(
+            f"| {c} | related | medium | 见原文概念引用 |"
+            for c in concepts
+        )
+    else:
+        graph_rows = "| （无相关概念） | — | — | — |"
+
+    concepts_text = ", ".join(concepts) if concepts else "（见图谱关系）"
 
     from datetime import UTC, datetime
 
@@ -542,7 +670,7 @@ def _build_body(
 
     body = f"""## TLDR
 
-{claims[0]['text'] if claims else '（待补充）'}
+{tldr}
 
 ## 关键发现
 
@@ -551,6 +679,7 @@ def _build_body(
 ## 入选理由
 
 本文提供 {len(claims)} 条核心论点和 {len(how_steps)} 条可执行步骤，涉及概念: {concepts_text}。
+相对既有 AKB 知识库，以上概念为新增或更深层级的 How 覆盖。
 
 ## 证据地图
 
@@ -560,22 +689,25 @@ def _build_body(
 
 ## 核心论点
 
-{claims_text}
+{core_claims_text}
 
 ## 论证与解释
 
-{claims_text}
+{arg_text}
+
+### 操作步骤
+
+{how_text}
 
 ## 适用边界
 
-（待后续 gate 评估补充）
+{applicability_boundary}
 
 ## 图谱关系
 
 | 概念 | 关系类型 | 强度 | 证据 |
 |------|---------|------|------|
-{chr(10).join(f'| {c} | related | medium | 待 gate 评估 |'
-                     for c in concepts) if concepts else '| （待补充） | | | |'}
+{graph_rows}
 
 ## Future Questions
 
