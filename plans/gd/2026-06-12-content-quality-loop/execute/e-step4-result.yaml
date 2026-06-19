@@ -1,0 +1,92 @@
+# Step-4 Execution Result
+# TASK_GOAL: 交付三层质量评估与修复闭环
+# GD_STANDARD: Project GD/prompts/gd-review-standard.md
+# REVIEW_DOMAIN: ai_infra
+
+result: PASS
+timestamp: "2026-06-13T00:00:00Z"
+agent: child_executor (Claude)
+step: step-4-quality-repair
+
+success_criteria:
+  SC-4.1:
+    status: pass
+    description: "A 层 6 检查对正负 fixture 判定正确，输出与 B 层同构的缺陷清单"
+    verify: "pytest tests/quality/test_checks_structural.py -q"
+    actual: "34 passed in 0.08s"
+
+  SC-4.2:
+    status: pass
+    description: "B 层 10 维量规输出 JSON 缺陷清单，每条含 {dimension, location, defect, suggestion}"
+    verify: "pytest tests/quality/test_grader.py -q"
+    actual: "11 passed in 0.09s"
+
+  SC-4.3:
+    status: pass
+    description: "反填表用例——A 层全过、B 层必须打回"
+    verify: "pytest tests/quality/test_grader_antifill.py -q"
+    actual: "4 passed in 0.09s"
+
+  SC-4.4:
+    status: pass
+    description: "修复循环——定点修复→diff 校验→A+B 复检→不收敛签名落盘"
+    verify: "pytest tests/quality/test_repair_loop.py -q"
+    actual: "11 passed in 0.09s"
+
+  SC-4.5:
+    status: pass
+    description: "执行顺序与兜底——A 不过不调 B；GPT-5.4 不可用切 gemini-flash；双不可用挂起"
+    verify: "pytest tests/quality/test_grader_fallback.py tests/quality/test_checks_order.py -q"
+    actual: "10 passed in 0.09s"
+
+  SC-4.6:
+    status: pass
+    description: "工程门——本 step owned 范围测试与 lint 全绿"
+    verify: "pytest + ruff check"
+    actual: "70 passed, ruff 0 issues"
+
+deliverables:
+  - path: src/akb2/quality/checks_structural.py
+    description: "A 层 6 检查（纯代码，零 LLM）: A1 10节齐/A2 frontmatter/A3 raw锚点/A4 图谱边/A5 wikilink/A6 维护记录≤5"
+    lines: ~620
+
+  - path: src/akb2/quality/grader.py
+    description: "B 层 10 维量规评分器，经 llm_router 调 GPT-5.4，gemini-flash 兜底"
+    lines: ~352
+
+  - path: src/akb2/quality/repair.py
+    description: "定点修复循环: 模板化指令→DeepSeek 定点重写→diff 校验→A+B 复检，MAX_REPAIR_ROUNDS=3"
+    lines: ~363
+
+  - path: skillpack/quality/rubric/10-dimensions.md
+    description: "10 维量规版本化文本 v1.0.0"
+
+  - path: tests/quality/test_checks_structural.py
+    description: "A 层 6 检查正负 fixture (34 tests)"
+
+  - path: tests/quality/test_checks_order.py
+    description: "A→B 成本递增顺序担保 (4 tests)"
+
+  - path: tests/quality/test_grader.py
+    description: "B 层 10 维量规 + 定位化缺陷清单 (11 tests)"
+
+  - path: tests/quality/test_grader_antifill.py
+    description: "反填表用例（10 节全齐但空洞→B 必打回）(4 tests)"
+
+  - path: tests/quality/test_grader_fallback.py
+    description: "GPT-5.4 不可用→gemini-flash 兜底→双不可用挂起 (6 tests)"
+
+  - path: tests/quality/test_repair_loop.py
+    description: "修复循环 + diff 校验 + 不收敛签名落盘 (11 tests)"
+
+constraints_verified:
+  - "A→B 成本递增顺序（FR-005）: A 全过才调 B，test_checks_order 断言"
+  - "缺陷清单可定位（FR-006）: 缺 location 整批拒收，test_grader 断言"
+  - "maker/checker 异族分离（P7）: A 纯代码 / B GPT-5.4 / 兜底 gemini-flash"
+  - "修复循环有界（P1/P4）: MAX_REPAIR_ROUNDS=3 具名常量"
+  - "未点名小节逐字节不变: diff 校验，test_repair_loop 断言"
+  - "反填表用例: 10节全齐但空洞→B 必打回，test_grader_antifill 断言"
+  - "全 fixture LLM 响应，不打真 API"
+
+residual_risks:
+  - "none"

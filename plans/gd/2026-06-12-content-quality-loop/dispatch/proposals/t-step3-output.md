@@ -1,0 +1,5 @@
+<!-- gd-child-plan-proposal-json:start -->
+```json
+{"proposal_id": "akb2-cql-plan-dispatch-v2-t-step3-w2a1", "parent_dispatch_id": "akb2-cql-plan-dispatch-v2", "parent_track_id": "t-step3", "agent_role": "child_planner", "output_status": "completed", "summary_cn": "step-3 草稿完成:准入三硬判定+llm_router+两段式提炼+skillpack 量规包,7 条 SC 全带可执行 verify,负样本拒收承载 master SC-2", "task_packets": [{"task_id": "step3-admission-distill", "owned_paths": ["src/akb2/quality/admission.py", "src/akb2/quality/distill.py", "src/akb2/quality/llm_router.py", "skillpack/quality/", "tests/quality/test_admission*.py", "tests/quality/test_distill*.py"], "required_context": ["plans/gd/2026-06-12-content-quality-loop/master-plan.md", "docs/main-pipeline-golden-sample.md", "docs/constitution.md", "schema/loop-ledger.schema.json", "schema/failure-signature.schema.json"]}], "sc_refs": ["SC-2"], "verify": [{"sc_ref": "SC-2", "method": "test", "cmd": "python3 -m pytest tests/quality/test_admission_negative.py -q"}], "blocked_reason": null}
+```
+<!-- gd-child-plan-proposal-json:end -->

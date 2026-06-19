@@ -1,0 +1,56 @@
+{
+  "stage": "review_plan",
+  "run_mode": "live",
+  "target": "plans/gd/2026-06-12-content-quality-loop/",
+  "review_kind": "plan",
+  "rounds_completed": 3,
+  "auto_fix_exhausted": true,
+  "final_decision": "REQUIRES_CHANGES",
+  "outstanding_p1_count": 1,
+  "outstanding_finding": {
+    "id": "F-R3-C1",
+    "severity": "P1",
+    "title": "SC-3 校准报告路径未纳入 step-6 owned_paths 与全局修改边界",
+    "required_fix": "master-plan §5 step-6 owned_paths + §6 修改清单 + step-6 §7 owned_paths 均补入 reports/calibration/**",
+    "verify": "grep -n 'reports/calibration' master-plan.md 命中三处（SC-3 verify + step-6 owned_paths + §6 修改清单）"
+  },
+  "jobs": [
+    {
+      "round": 1,
+      "child": "claude",
+      "result_path": "review/child-1-claude/claude-review.md",
+      "result_hash": "5198ee8d91af0de8b7e05ca1dcd809b0018be477fa688793ae32377b7ba9821a",
+      "status": "completed",
+      "decision": "REQUIRES_CHANGES"
+    },
+    {
+      "round": 1,
+      "child": "codex",
+      "result_path": "review/child-2-codex/codex-mapped.json",
+      "result_hash": "2cb1f37a18d2997ded655430724d9e36e8e45ada4b08cb36e5b941048afff8b2",
+      "status": "completed",
+      "decision": "REQUIRES_CHANGES"
+    },
+    {
+      "round": 3,
+      "child": "claude",
+      "result_path": "review/child-1-claude/claude-review-r3.md",
+      "result_hash": "1926348f6257fd6efcc686b9c70c623fdb492f492e7026c3a66d2757c56b5bd7",
+      "status": "completed",
+      "decision": "APPROVED"
+    },
+    {
+      "round": 3,
+      "child": "codex",
+      "result_path": "review/child-2-codex/round3/codex-mapped-r3.json",
+      "result_hash": "71353697de9e1cc3b439ff30fb63ae8b14e29c3f69f2b5da1e78f9b4372b2425",
+      "status": "completed",
+      "decision": "REQUIRES_CHANGES"
+    }
+  ],
+  "main_agent_merge": {
+    "merge_report_path": "review/loop-report.md",
+    "merged_decision": "REQUIRES_CHANGES",
+    "closure_status": "auto_fix_exhausted"
+  }
+}

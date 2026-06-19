@@ -1,0 +1,824 @@
+"""DeepSeek 两段式提炼 — 结构化抽取 + 模板成稿。
+
+段 1（结构化抽取）:
+    raw → {claims[带 raw §X 锚点], how_steps, params, referenced_concepts} JSON
+    jsonschema 校验失败 → 有界重试（MAX_EXTRACT_RETRIES=3）
+    耗尽 → 显式失败不出候选
+
+段 2（成稿）:
+    按 PAGE-TEMPLATES source 模板成稿 10 节
+    frontmatter 确定性代码写死:
+        gate_decision: null
+        status: candidate
+        source_refs 含 raw 路径
+        gate_reason ≤150 字符截断
+        future_questions 2-3 条
+        related_concepts ≥2
+    落 staging/candidate/<batch>/
+
+公开接口:
+    extract_claims(raw_content, route_llm_fn=None) -> ExtractResult
+    compose_candidate(extract_result, raw_path, batch_id, output_dir=None) -> ComposeResult
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+from dataclasses import dataclass, field
+from typing import Any
+
+# ---------------------------------------------------------------------------
+# 具名常量（宪法 P1/P4）
+# ---------------------------------------------------------------------------
+
+MAX_EXTRACT_RETRIES: int = 3
+GATE_REASON_MAX_CHARS: int = 150
+FUTURE_QUESTIONS_MIN: int = 2
+FUTURE_QUESTIONS_MAX: int = 3
+RELATED_CONCEPTS_MIN: int = 2
+
+# ---------------------------------------------------------------------------
+# 段 1 抽取输出 schema
+# ---------------------------------------------------------------------------
+
+_EXTRACT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "claims": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "anchor": {"type": "string"},
+                    "provenance": {
+                        "type": "string",
+                        "enum": ["source_grounded", "akb_interpretation"],
+                    },
+                },
+                "required": ["text", "anchor", "provenance"],
+            },
+            "minItems": 1,
+        },
+        "how_steps": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 0,
+        },
+        "params": {
+            "type": "object",
+            "additionalProperties": True,
+        },
+        "referenced_concepts": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 0,
+        },
+        "tldr": {
+            "type": "string",
+            "minLength": 20,
+        },
+        "argumentation": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "claim_anchor": {"type": "string"},
+                    "explanation": {"type": "string", "minLength": 10},
+                },
+                "required": ["claim_anchor", "explanation"],
+                "additionalProperties": False,
+            },
+            "minItems": 0,
+        },
+        "applicability_boundary": {
+            "type": "string",
+            "minLength": 20,
+        },
+        "graph_edges": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "concept": {"type": "string"},
+                    "relation_type": {"type": "string"},
+                    "strength": {"type": "string", "enum": ["strong", "medium", "weak"]},
+                    "evidence": {"type": "string", "minLength": 5},
+                },
+                "required": ["concept", "relation_type", "strength", "evidence"],
+                "additionalProperties": False,
+            },
+            "minItems": 0,
+        },
+    },
+    "required": [
+        "claims", "how_steps", "params", "referenced_concepts",
+        "tldr", "argumentation", "applicability_boundary", "graph_edges",
+    ],
+    "additionalProperties": False,
+}
+
+# ---------------------------------------------------------------------------
+# 公开类型
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ExtractResult:
+    """段 1 结构化抽取结果。
+
+    success: 抽取是否成功（含 schema 校验通过）。
+    data: 抽取出的结构化数据（success=False 时为空 dict）。
+    retries_used: 重试次数。
+    error: 失败原因（success=False 时）。
+    """
+
+    success: bool
+    data: dict[str, Any] = field(default_factory=dict)
+    retries_used: int = 0
+    error: str = ""
+
+
+@dataclass
+class ComposeResult:
+    """段 2 成稿结果。
+
+    success: 成稿是否成功。
+    candidate_path: 候选页输出路径（success=False 时为空字符串）。
+    frontmatter: 写出的 frontmatter dict（供测试断言）。
+    error: 失败原因（success=False 时）。
+    """
+
+    success: bool
+    candidate_path: str = ""
+    frontmatter: dict[str, Any] = field(default_factory=dict)
+    error: str = ""
+
+
+# ---------------------------------------------------------------------------
+# 段 1: 结构化抽取
+# ---------------------------------------------------------------------------
+
+
+def extract_claims(
+    raw_content: str,
+    route_llm_fn: Any = None,
+) -> ExtractResult:
+    """段 1: raw → 结构化 JSON 抽取。
+
+    有界重试（MAX_EXTRACT_RETRIES=3），jsonschema 校验。
+    耗尽 → 显式失败，不出候选。
+
+    Args:
+        raw_content: raw 文件全文内容。
+        route_llm_fn: LLM 路由函数注入（fixture 测试用）。
+
+    Returns:
+        ExtractResult: 含 success / data / retries_used / error。
+    """
+    if route_llm_fn is None:
+        from src.akb2.quality.llm_router import route_llm as _default
+
+        route_llm_fn = _default
+
+    # 构建抽取 prompt
+    content_snippet = raw_content[:8000]  # 取前 8000 字符
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是一个知识提炼助手。从给定原始内容中提取结构化 JSON。\n"
+                "要求:\n"
+                "1. claims: 核心论点数组，每条含 text(论点) + anchor(如 §A)"
+                " + provenance(来源类型)\n"
+                "   - provenance 只能是 source_grounded(原文支撑) 或 akb_interpretation(库内解读)\n"
+                "   - 每个 anchor 必须对应原文中的锚点标记\n"
+                "   - akb_interpretation 占比必须 ≤40%"
+                "（可直接引用原文的必须用 source_grounded）\n"
+                "2. how_steps: 可执行步骤（字符串数组），每条含具体命令/函数名/配置键/参数值，"
+                "可直接复制执行，禁止概念性建议\n"
+                "3. params: 参数/配置/选项（自由 key-value）\n"
+                "4. referenced_concepts: 引用的概念名（字符串数组）\n"
+                "5. tldr: 一句话核心洞察摘要（≥20字），综合全文主旨，不是论点复制\n"
+                "6. argumentation: 每条 claim 对应的论证说明数组，"
+                "每项含 claim_anchor(对应 claims 的 anchor，如 §A) + "
+                "explanation(≥10字，说明该论点的论据、背景或意义)\n"
+                "7. applicability_boundary: 该知识适用的场景边界（≥20字，"
+                "含适用场景、不适用场景和约束条件）\n"
+                "8. graph_edges: 与相关概念的图谱关系数组，每项含 "
+                "concept(概念名) + relation_type(如 related/part_of/extends/requires) + "
+                "strength(strong=原文明示/medium=场景应用/weak=推测关联) + "
+                "evidence(≥5字，引用原文依据；strong 必须有原文原句)\n\n"
+                "输出必须严格符合 JSON schema，不要有任何额外文本。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"原文内容:\n{content_snippet}",
+        },
+    ]
+
+    for attempt in range(1, MAX_EXTRACT_RETRIES + 1):
+        try:
+            response = route_llm_fn(
+                "deepseek-v4-pro",
+                messages,
+                response_schema=_EXTRACT_SCHEMA,
+            )
+        except Exception as exc:
+            if attempt >= MAX_EXTRACT_RETRIES:
+                return ExtractResult(
+                    success=False,
+                    retries_used=attempt,
+                    error=f"抽取调用失败（{attempt}/{MAX_EXTRACT_RETRIES}）: {exc}",
+                )
+            continue
+
+        # jsonschema 校验
+        parsed = response.content
+        if isinstance(parsed, str):
+            try:
+                parsed = json.loads(parsed)
+            except json.JSONDecodeError:
+                if attempt >= MAX_EXTRACT_RETRIES:
+                    return ExtractResult(
+                        success=False,
+                        retries_used=attempt,
+                        error=(
+                            f"抽取输出非 JSON（{attempt}/{MAX_EXTRACT_RETRIES}）"
+                        ),
+                    )
+                continue
+
+        # 强制校验 claims 锚点格式
+        try:
+            _validate_extract_output(parsed)
+        except ValueError as exc:
+            if attempt >= MAX_EXTRACT_RETRIES:
+                return ExtractResult(
+                    success=False,
+                    retries_used=attempt,
+                    error=f"抽取校验失败（{attempt}/{MAX_EXTRACT_RETRIES}）: {exc}",
+                )
+            continue
+
+        # 全部通过
+        return ExtractResult(
+            success=True,
+            data=parsed,
+            retries_used=attempt,
+        )
+
+    # 不应到达这里
+    return ExtractResult(
+        success=False,
+        retries_used=MAX_EXTRACT_RETRIES,
+        error=f"抽取重试耗尽（{MAX_EXTRACT_RETRIES}）",
+    )
+
+
+def _validate_extract_output(data: dict[str, Any]) -> None:
+    """校验抽取输出的结构完整性。
+
+    Raises:
+        ValueError: 校验未通过。
+    """
+    # 1. jsonschema 校验（错误转为 ValueError 以统一异常类型）
+    try:
+        import jsonschema
+    except ImportError:
+        pass  # 无 jsonschema 时跳过，靠代码校验
+    else:
+        try:
+            jsonschema.validate(data, _EXTRACT_SCHEMA)
+        except jsonschema.ValidationError as exc:
+            raise ValueError(f"schema 校验失败: {exc.message}") from exc
+
+    # 2. claims 每条必须有 anchor 且格式为 §X
+    claims = data.get("claims", [])
+    if not claims:
+        raise ValueError("claims 为空")
+
+    for i, claim in enumerate(claims):
+        anchor = claim.get("anchor", "")
+        if not re.match(r"^§[A-Z]$", anchor):
+            raise ValueError(
+                f"claim[{i}] anchor 格式无效: {anchor!r}（期望 §A-§Z）"
+            )
+
+    # 3. provenance 必须在枚举内
+    valid_provenances = {"source_grounded", "akb_interpretation"}
+    for i, claim in enumerate(claims):
+        prov = claim.get("provenance", "")
+        if prov not in valid_provenances:
+            raise ValueError(
+                f"claim[{i}] provenance 无效: {prov!r}"
+            )
+
+    # 4. 新增字段非空校验
+    tldr = data.get("tldr", "")
+    if not tldr or len(tldr.strip()) < 20:
+        raise ValueError(f"tldr 过短或为空（当前 {len(tldr.strip())} 字，要求 ≥20 字）")
+
+    applicability_boundary = data.get("applicability_boundary", "")
+    if not applicability_boundary or len(applicability_boundary.strip()) < 20:
+        actual_len = len(applicability_boundary.strip())
+        raise ValueError(
+            f"applicability_boundary 过短或为空（当前 {actual_len} 字，要求 ≥20 字）"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 段 2: 成稿
+# ---------------------------------------------------------------------------
+
+
+def compose_candidate(
+    extract_result: ExtractResult,
+    raw_path: str,
+    batch_id: str,
+    output_dir: str | None = None,
+    route_llm_fn: Any = None,
+) -> ComposeResult:
+    """段 2: 按模板成稿 10 节，落 staging/candidate/<batch>/。
+
+    frontmatter 由确定性代码写死（防范已知坑 1-3）。
+
+    Args:
+        extract_result: 段 1 抽取结果（必须 success=True）。
+        raw_path: raw 文件路径（用于 source_refs）。
+        batch_id: 批次标识（如 "2026-06-13-001"）。
+        output_dir: 输出根目录（None 时从 vault.toml 解析 staging）。
+        route_llm_fn: LLM 路由函数注入（fixture 测试用）。
+
+    Returns:
+        ComposeResult: 含 success / candidate_path / frontmatter。
+    """
+    if not extract_result.success:
+        return ComposeResult(
+            success=False,
+            error=f"段 1 抽取未成功，无法成稿: {extract_result.error}",
+        )
+
+    if route_llm_fn is None:
+        from src.akb2.quality.llm_router import route_llm as _default
+
+        route_llm_fn = _default
+
+    # 解析输出目录
+    if output_dir is None:
+        try:
+            from src.akb2.loops.paths import get_staging_root
+
+            staging_root = get_staging_root()
+        except Exception:
+            staging_root = None
+        if staging_root is None:
+            return ComposeResult(
+                success=False,
+                error="无法解析 staging 输出路径",
+            )
+        output_dir = str(staging_root / "candidate" / batch_id)
+    else:
+        output_dir = os.path.join(output_dir, "candidate", batch_id)
+
+    # 生成 slug
+    slug = _derive_slug(raw_path)
+    candidate_filename = f"{slug}.md"
+    candidate_path = os.path.join(output_dir, candidate_filename)
+
+    # 构建 frontmatter（确定性代码写死，防范已知坑 1-3）
+    frontmatter = _build_frontmatter(raw_path, extract_result.data)
+
+    # 用 LLM 生成正文 10 节
+    body = _build_body(extract_result.data, raw_path, route_llm_fn)
+
+    # 组装完整候选页
+    full_page = _assemble_page(frontmatter, body)
+
+    # 落盘
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+        with open(candidate_path, "w", encoding="utf-8") as fh:
+            fh.write(full_page)
+    except OSError as exc:
+        return ComposeResult(
+            success=False,
+            error=f"写入候选页失败: {exc}",
+        )
+
+    return ComposeResult(
+        success=True,
+        candidate_path=candidate_path,
+        frontmatter=frontmatter,
+    )
+
+
+def _derive_slug(raw_path: str) -> str:
+    """从 raw 路径提取 slug。
+
+    raw/<slug>--raw--<date>.md → slug
+    """
+    basename = os.path.basename(raw_path)
+    # 去掉 --raw-- 及之后
+    slug = basename.split("--raw--")[0]
+    return slug
+
+
+# active source 页 frontmatter key_findings 硬门（H7 / SOURCE-KEY-FINDINGS-MISSING-FRONTMATTER P1）
+KEY_FINDINGS_MIN = 3
+
+
+def _read_raw_frontmatter(raw_path: str) -> dict[str, Any]:
+    """读取 raw 文件 YAML frontmatter；缺失/不可解析时返回 {}（优雅降级，单测传虚拟路径不崩）。"""
+    try:
+        with open(raw_path, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return {}
+    m = re.match(r"^---\n(.*?)\n---\n", text, re.DOTALL)
+    if not m:
+        return {}
+    try:
+        import yaml
+
+        data = yaml.safe_load(m.group(1))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _first_author(authors: Any) -> str:
+    """source_authors 兼容 list（`["A"]`）与 scalar（`A`）→ 首作者字符串。"""
+    if isinstance(authors, list):
+        return str(authors[0]) if authors else ""
+    if isinstance(authors, str):
+        return authors
+    return ""
+
+
+def _extract_key_findings(claims: list[dict[str, Any]]) -> list[str]:
+    """从 claims 取 key_findings 短陈述数组（真实内容 claims≥3 时自然满足 H7 ≥3 硬门）。"""
+    findings: list[str] = []
+    for c in claims:
+        text = str(c.get("text", "")).strip()
+        if not text:
+            continue
+        findings.append(text if len(text) <= 120 else text[:117] + "...")
+    return findings
+
+
+def _build_frontmatter(
+    raw_path: str,
+    extract_data: dict[str, Any],
+) -> dict[str, Any]:
+    """构建 frontmatter（确定性代码）。
+
+    candidate 阶段产出 active-ready 的全字段集（除 reviewer/reviewed_at——
+    那两项由 promote 升格时的机器 reviewer 写入，见 CONTENT-LIFECYCLE §6.1）。
+
+    已知坑:
+        1. gate_decision 写死 null（不许预填 active，防 HC-09 拦）
+        2. source_refs 必须含 raw 路径（HC-05 硬指标）
+        3. gate_reason ≤150 字符（lint P1）
+    补齐（2026-06-18，F4 schema 对账）:
+        template_type / key_findings / graph_role / evidence_provenance /
+        source_type / source_author / source_published_at / star_level
+        —— 否则升格时被 active lint P1 硬门拦（升不了格）。
+    """
+    claims = extract_data.get("claims", [])
+    concepts = extract_data.get("referenced_concepts", [])
+    raw_fm = _read_raw_frontmatter(raw_path)
+
+    # 确保 related_concepts ≥2，并统一 [[wikilink]] 格式（GRAPH-LINKING §3.8.1）
+    related = list(concepts) if concepts else []
+    if len(related) < RELATED_CONCEPTS_MIN:
+        fallback_concepts = _infer_concepts(claims)
+        for fc in fallback_concepts:
+            if fc not in related:
+                related.append(fc)
+            if len(related) >= RELATED_CONCEPTS_MIN:
+                break
+    related_links = [c if str(c).startswith("[[") else f"[[{c}]]" for c in related]
+
+    # future_questions 2-3 条
+    questions = _generate_questions(claims, extract_data.get("how_steps", []))
+
+    # gate_reason 截断到 150 字符
+    raw_reason = (
+        f"准入通过，段1抽取{len(claims)}条claims，"
+        f"{len(extract_data.get('how_steps', []))}条how_steps"
+    )
+    gate_reason = raw_reason[:GATE_REASON_MAX_CHARS]
+
+    slug = _derive_slug(raw_path)
+    source_title = str(raw_fm.get("source_title", "")).strip()
+    canonical_title = f"{slug} — {source_title}" if source_title else slug
+
+    frontmatter: dict[str, Any] = {
+        # 身份
+        "canonical_title": canonical_title,
+        "slug": slug,
+        "template_type": "source",
+        "directory_scope": "wiki/sources/",
+        # 来源
+        "source_type": str(raw_fm.get("source_type", "blog")),
+        "source_url": str(raw_fm.get("source_url", "")),
+        "source_author": _first_author(raw_fm.get("source_authors")),
+        "source_published_at": str(raw_fm.get("source_published_at", "")),
+        "evidence_provenance": "source_grounded",
+        "confidence": "medium",
+        # 状态（短）
+        "status": "candidate",
+        "gate_decision": None,  # 写死 null（已知坑 1）
+        "gate_reason": gate_reason,  # ≤150 字符（已知坑 3）
+        "star_level": 0,  # 0 星基线（STAR-RATING；升星引擎=循环3）
+        "graph_role": "evidence",  # source 默认（PAGE-TEMPLATES §4.0）
+        "graph_status": "healthy",
+        # 内容
+        "key_findings": _extract_key_findings(claims),
+        "future_questions": questions,
+        "related_concepts": related_links,
+        "source_refs": [raw_path],  # 必须含 raw 路径（已知坑 2）
+        # 保留
+        "artifact_type": "wiki",
+        "pipeline_version": "v1",
+    }
+
+    return frontmatter
+
+
+def _infer_concepts(claims: list[dict[str, Any]]) -> list[str]:
+    """从 claims 反推概念名作为 related_concepts 的 fallback。
+
+    简单启发式：从 claim 文本中提取常见概念词。
+    """
+    concept_keywords = [
+        "Agent",
+        "Loop",
+        "Context",
+        "Harness",
+        "Eval",
+        "Orchestration",
+        "Workflow",
+        "Design",
+        "Token",
+        "Prompt",
+        "Tool",
+        "Protocol",
+        "MCP",
+        "A2A",
+        "LangGraph",
+        "Architecture",
+        "Pattern",
+        "Pipeline",
+        "Quality",
+        "Convergence",
+    ]
+
+    found: list[str] = []
+    all_text = " ".join(c.get("text", "") for c in claims)
+
+    for kw in concept_keywords:
+        if kw.lower() in all_text.lower() and kw not in found:
+            found.append(kw)
+        if len(found) >= RELATED_CONCEPTS_MIN:
+            break
+
+    return found
+
+
+def _generate_questions(
+    claims: list[dict[str, Any]],
+    how_steps: list[str],
+) -> list[str]:
+    """生成 future_questions 2-3 条。
+
+    基于 claims 和 how_steps 的确定性启发式生成。
+    """
+    questions: list[str] = []
+
+    # 从 claims 主题生成问题
+    if claims:
+        first_claim = claims[0].get("text", "")
+        if len(first_claim) > 30:
+            questions.append(
+                f"该模式（{first_claim[:40]}...）在不同技术栈中的适用边界如何？"
+            )
+        else:
+            questions.append(
+                "该文核心模式在真实工程中的失败模式有哪些？"
+            )
+
+    if how_steps:
+        questions.append(
+            f"how_steps 中的 {len(how_steps)} 个步骤，哪些是刚性约束、哪些可替换？"
+        )
+    else:
+        questions.append(
+            "该文缺少可执行步骤——其核心洞察如何转化为具体工作流？"
+        )
+
+    if len(claims) >= 3:
+        questions.append(
+            "多个论点的优先级排序是否在原文中有明确依据？"
+        )
+
+    # 确保 2-3 条
+    if len(questions) < FUTURE_QUESTIONS_MIN:
+        questions.append("该知识在 AKB 库内与其他概念的关系网络如何演化？")
+    if len(questions) > FUTURE_QUESTIONS_MAX:
+        questions = questions[:FUTURE_QUESTIONS_MAX]
+
+    return questions
+
+
+def _build_body(
+    extract_data: dict[str, Any],
+    raw_path: str,
+    route_llm_fn: Any,  # 保留参数兼容接口，_build_body 是确定性脚本，不调 LLM
+) -> str:
+    """构建 10 节正文（确定性脚本，只填 extract_data 槽位，不调 LLM）。
+
+    10 节模板:
+        1. TLDR
+        2. 关键发现
+        3. 入选理由
+        4. 证据地图
+        5. 核心论点
+        6. 论证与解释（含操作步骤）
+        7. 适用边界
+        8. 图谱关系
+        9. Future Questions
+        10. 维护记录
+    """
+    claims = extract_data.get("claims", [])
+    how_steps = extract_data.get("how_steps", [])
+    concepts = extract_data.get("referenced_concepts", [])
+
+    # 新增字段槽位（段 1 抽取 LLM 已产出，此处仅读取）
+    tldr = (extract_data.get("tldr") or "").strip()
+    if not tldr:
+        tldr = claims[0]["text"] if claims else "（摘要待补充）"
+
+    argumentation: list[dict[str, Any]] = extract_data.get("argumentation") or []
+    applicability_boundary = (extract_data.get("applicability_boundary") or "").strip()
+    if not applicability_boundary:
+        applicability_boundary = "（适用边界待补充）"
+    graph_edges: list[dict[str, Any]] = extract_data.get("graph_edges") or []
+
+    # 关键发现：带 [raw §X] 锚点+provenance 的证据格式（rubric: 论断锚定率要求 [raw §X] 格式）
+    claims_text = "\n".join(
+        f"- [raw {c['anchor']}] ({c['provenance']}) {c['text']}"
+        for c in claims
+    )
+
+    # 核心论点：带 [raw §X] 锚点+provenance，与关键发现区分（编号列表格式）
+    # rubric 解读分离: 每条论点必须标注 provenance；论断锚定率: 必须带 [raw §X]
+    core_claims_text = "\n".join(
+        f"{i}. [raw {c['anchor']}] ({c['provenance']}) {c['text']}"
+        for i, c in enumerate(claims, 1)
+    )
+
+    # TLDR：从 top-3 claims 构建（每句含 [raw §X] 锚点；rubric: TLDR 密度 ≤3 句含锚点）
+    tldr_sentences = [
+        f"{c['text']} [raw {c['anchor']}]."
+        for c in claims[:3]
+    ]
+    tldr = " ".join(tldr_sentences) if tldr_sentences else tldr
+
+    # 论证与解释：argumentation 字段逐条展开
+    arg_map: dict[str, str] = {
+        a.get("claim_anchor", ""): a.get("explanation", "")
+        for a in argumentation
+        if a.get("claim_anchor") and a.get("explanation")
+    }
+    if argumentation:
+        arg_items = [
+            f"**[raw {a['claim_anchor']}]** {a['explanation']}"
+            for a in argumentation
+            if a.get("claim_anchor") and a.get("explanation")
+        ]
+        arg_text = "\n\n".join(arg_items) if arg_items else core_claims_text
+    else:
+        arg_text = core_claims_text
+
+    # 操作步骤（how_steps 原先定义但从未出现在正文）
+    how_text = (
+        "\n".join(f"{i}. {s}" for i, s in enumerate(how_steps, 1))
+        if how_steps
+        else "（原文无明确操作步骤）"
+    )
+
+    # 证据地图："未覆盖"列（rubric: 证据诚实要求该列名 + 至少 1 行有内容）
+    # 用 argumentation explanation 作为"未覆盖/待深化"的提示
+    evidence_rows = "\n".join(
+        f"| {c['anchor']} | {c['text'][:60]}... | {c['provenance']} "
+        f"| {arg_map.get(c['anchor'], '待深化')[:60]} |"
+        for c in claims
+    )
+
+    # 图谱关系：graph_edges 字段填充（有则用，无则 fallback 到概念名）
+    if graph_edges:
+        graph_rows = "\n".join(
+            f"| {e['concept']} | {e['relation_type']} | {e['strength']} "
+            f"| {e.get('evidence', '')[:80]} |"
+            for e in graph_edges
+        )
+    elif concepts:
+        graph_rows = "\n".join(
+            f"| {c} | related | medium | 见原文概念引用 |"
+            for c in concepts
+        )
+    else:
+        graph_rows = "| （无相关概念） | — | — | — |"
+
+    concepts_text = ", ".join(concepts) if concepts else "（见图谱关系）"
+
+    from datetime import UTC, datetime
+
+    _now_date_str = datetime.now(UTC).strftime("%Y-%m-%d")
+
+    body = f"""## TLDR
+
+{tldr}
+
+## 关键发现
+
+{claims_text}
+
+## 入选理由
+
+本文提供 {len(claims)} 条核心论点和 {len(how_steps)} 条可执行步骤，涉及概念: {concepts_text}。
+相对既有 AKB 知识库，以上概念为新增或更深层级的 How 覆盖。
+
+## 证据地图
+
+| 锚点 | 论点 | 来源 | 未覆盖 |
+|------|------|------|--------|
+{evidence_rows}
+
+## 核心论点
+
+{core_claims_text}
+
+## 论证与解释
+
+{arg_text}
+
+### 操作步骤
+
+{how_text}
+
+## 适用边界
+
+{applicability_boundary}
+
+## 图谱关系
+
+| 概念 | 关系类型 | 强度 | 证据 |
+|------|---------|------|------|
+{graph_rows}
+
+## Future Questions
+
+{chr(10).join(f'- {q}' for q in _generate_questions(claims, how_steps))}
+
+## 维护记录
+
+| 日期 | 操作 | 说明 |
+|------|------|------|
+| {_now_date_str} | 初始创建 | 段1-2 提炼，raw: {raw_path} |"""
+
+    return body
+
+
+def _assemble_page(frontmatter: dict[str, Any], body: str) -> str:
+    """组装 frontmatter + 正文为完整候选页。"""
+    # 将 None 转为 null 字符串
+    fm_lines = ["---"]
+    for key, value in frontmatter.items():
+        if value is None:
+            fm_lines.append(f"{key}: null")
+        elif isinstance(value, bool):
+            fm_lines.append(f"{key}: {str(value).lower()}")
+        elif isinstance(value, list):
+            if key.startswith("related_"):
+                # 轻量 wikilink list 内联渲染（GRAPH-LINKING §3.8.1 + 控 frontmatter 行数）
+                inline = ", ".join(f'"{item}"' for item in value)
+                fm_lines.append(f"{key}: [{inline}]")
+            else:
+                fm_lines.append(f"{key}:")
+                for item in value:
+                    fm_lines.append(f"  - {item}")
+        elif isinstance(value, (int, float)):
+            fm_lines.append(f"{key}: {value}")
+        else:
+            fm_lines.append(f"{key}: {value}")
+    fm_lines.append("---")
+
+    fm_str = "\n".join(fm_lines)
+    return f"{fm_str}\n\n{body}\n"

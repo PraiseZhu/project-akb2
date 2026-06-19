@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.0",
+  "stage": "plan",
+  "parent_run_id": "akb2-cql-plan-dispatch-v2",
+  "batch_id": "plan-drafting-w1",
+  "recorded_at": "2026-06-12T11:44:18Z",
+  "child_agent_count": 2,
+  "max_parallel": 2,
+  "child_jobs": [
+    {
+      "job_id": "t-step1",
+      "result_path": "plans/gd/2026-06-12-content-quality-loop/dispatch/proposals/t-step1-output.md",
+      "result_hash": "53ddd9313400b75f12689cdffc8f8215e5d3873ed01d7aa9f2c05f4e4ef3fe5f",
+      "status": "completed"
+    },
+    {
+      "job_id": "t-step2",
+      "result_path": "plans/gd/2026-06-12-content-quality-loop/dispatch/proposals/t-step2-output.md",
+      "result_hash": "8aa9d96cf471ddc77c8990bdbb345b04b38183faff470ea2de84bf79a57ebdf2",
+      "status": "completed"
+    }
+  ],
+  "main_agent_merge": {
+    "merge_report_path": "plans/gd/2026-06-12-content-quality-loop/dispatch/merge-report.md",
+    "merge_report_hash": "90d3e199000e03e5ddfa5deb28e1f306a1a29e8797c7c8dd90a525274dbeee4f",
+    "final_decision": "APPROVED",
+    "blocking_buckets": []
+  }
+}

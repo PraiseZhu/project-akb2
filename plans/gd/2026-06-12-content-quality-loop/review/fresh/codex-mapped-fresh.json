@@ -1,0 +1,55 @@
+{
+  "template_kind": "gd-plan-review",
+  "reviewer": "codex",
+  "review_target": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-12-content-quality-loop/master-plan.md",
+  "review_kind": "plan",
+  "review_run_status": "completed",
+  "gd_review_decision": "REQUIRES_CHANGES",
+  "scope_checked": [
+    {
+      "facet": "raw markdown structure",
+      "result": "pass",
+      "evidence": "writer-validated; verdict=REQUIRES_CHANGES"
+    }
+  ],
+  "findings": [
+    {
+      "severity": "P2",
+      "title": "校准出厂 SC 缺少样本数与修复轮断言",
+      "sc_refs": [
+        "SC-3"
+      ],
+      "evidence": "plans/gd/2026-06-12-content-quality-loop/master-plan.md:50-52",
+      "impact": "少量样本、缺失 2 个负样本、或超过 3 修复轮的实现仍可能打印 PASS，出厂目标无法判断。",
+      "required_fix": "在 SC-3 verify 中补 `total==20`、`negative_count==2`、所有正样本 `repair_rounds<=3` 的 JSON 断言。",
+      "verify": "执行 SC-3 命令时，缺样本或修复轮超限会非零退出；合格报告打印 PASS。"
+    },
+    {
+      "severity": "P2",
+      "title": "76 源验收未断言源清单数量",
+      "sc_refs": [
+        "SC-8"
+      ],
+      "evidence": "plans/gd/2026-06-12-content-quality-loop/master-plan.md:65-67",
+      "impact": "若 `config/main_sources.yaml` 只生成 70 个源且 ledger 对齐，SC-8 仍可能通过，用户目标“76 源逐源验证”未达成。",
+      "required_fix": "在 SC-8 verify 中补 `assert len(sources)==76` 与 `assert len(ledger_ids)==76`。",
+      "verify": "删除任一 source 后执行 SC-8 命令必须失败并输出缺失数量；完整 76 源才 PASS。"
+    },
+    {
+      "severity": "P2",
+      "title": "Task packet 完整字段声明与 step 文件不一致",
+      "sc_refs": [
+        "SC-6"
+      ],
+      "evidence": "plans/gd/2026-06-12-content-quality-loop/master-plan.md:84；plans/gd/2026-06-12-content-quality-loop/step-1-loop7-skeleton.md:126-129；plans/gd/2026-06-12-content-quality-loop/step-3-admission-distill.md:110-119",
+      "impact": "后续 /gd dispatch 或执行审查无法按统一 task packet contract 判断边界、产物和验证，anti-fill 检查会漏判。",
+      "required_fix": "为每个 step §7 补齐标准字段名：`owned_paths`、`forbidden_paths`、`blocked_by`、`can_parallel_with`、`required_context`、`deliverables`、`verify`。",
+      "verify": "对 step-1~6 逐文件 grep 上述字段均存在，且 `verify` 含命令/路径/输出断言。"
+    }
+  ],
+  "merge_notes": {
+    "conflict_with_other_reviewer": false
+  },
+  "residual_risk": [],
+  "timestamp": "2026-06-12T12:29:54Z"
+}

@@ -1,0 +1,23 @@
+{
+  "bridge_status": "completed",
+  "transport_status": "completed",
+  "gd_review_decision": "REQUIRES_CHANGES",
+  "reviewer": "codex",
+  "review_kind": "plan",
+  "review_run_status": "completed",
+  "target": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-12-content-quality-loop/master-plan.md",
+  "target_hash": "9bf62f5bbbbbde2ec77e3cd934ab32eefaf5ba9092d6d56453c4dad419f882c1",
+  "capsule_hash": "1ff56c51a5c9abca90883fd82536cd2c4be2d97c167ff02d7292ee0b7bbbd222",
+  "queue_job_id": "adhoc-adhoc-47de1d56cf2d3c92",
+  "raw_result_path": "/Users/praise/.claude/review-baselines/gd-plan-master-plan-md-0e9e95b3bad0/result-20260612T134216Z.md",
+  "mapped_result_path": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-12-content-quality-loop/review/final/codex-mapped-final.json",
+  "findings_count": 1,
+  "findings_summary": [
+    {
+      "severity": "P2",
+      "sc_refs": ["SC-8"],
+      "title": "SC-8 逐源验证缺少覆盖集合断言"
+    }
+  ],
+  "timestamp": "2026-06-12T13:44:30Z"
+}

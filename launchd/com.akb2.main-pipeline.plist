@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  AKB2 主链路 quality runner — 24h 常驻串行单工 daemon
+
+  ==== 安装命令 ====
+  # 方式 1 (macOS 14+): launchctl bootstrap
+  launchctl bootstrap gui/$(id -u) /Users/praise/AI-Agent/Claude/projects/Project\ AKB2/launchd/com.akb2.main-pipeline.plist
+
+  # 方式 2 (旧版 macOS): launchctl load
+  launchctl load /Users/praise/AI-Agent/Claude/projects/Project\ AKB2/launchd/com.akb2.main-pipeline.plist
+
+  # 卸载
+  launchctl bootout gui/$(id -u)/com.akb2.main-pipeline
+  # 或: launchctl unload /Users/praise/AI-Agent/Claude/projects/Project\ AKB2/launchd/com.akb2.main-pipeline.plist
+
+  # 查看状态
+  launchctl list | grep com.akb2.main-pipeline
+
+  ==== 三链路触发时间对照表 (CST, UTC+8) ====
+  | 链路              | Label                           | 触发时间 (CST) | 触发时间 (UTC) | AVOID_WINDOW (UTC ±15min) |
+  |-------------------|---------------------------------|----------------|----------------|---------------------------|
+  | github_briefing   | com.akb2.github_briefing        | 05:30          | 21:30 (前日)   | 21:15 - 21:45             |
+  | briefing          | com.akb2.briefing               | 07:30          | 23:30 (前日)   | 23:15 - 23:45             |
+  | feishu-sync       | com.akb2.feishu-sync            | 10:00          | 02:00          | 01:45 - 02:15             |
+  | main-pipeline     | com.akb2.main-pipeline          | 常驻 (KeepAlive)| N/A           | 三窗口内暂停取新队列      |
+
+  避让规则: 在以上三个 AVOID_WINDOW 内，runner 暂停从 raw 目录取新队列，
+  但在处理中的单篇做完不中断。
+
+  ==== 环境变量 ====
+  AKB2_AUTO_PROMOTE=1  — 出厂形态，启用自动升格（五闸通过即入 active）
+  PYTHONPATH           — 指向 src/ 目录
+  AKB2_VAULT_ROOT      — vault AKB2.0 根目录（从 vault.toml 解析的绝对路径）
+
+  ==== 日志 ====
+  stdout/stderr 重定向到 logs/akb2-quality-runner.log
+
+  ==== 注意事项 ====
+  - 本 plist 产出但不自动加载（宪法禁止 agent 自行注册触发器）
+  - 加载前确认: Python ≥ 3.11、defuddle/scrapling 已装、LLM API key 已设
+  - 跑飞保护: 单实例锁 (scripts/akb2-main-pipeline.sh)，无 while True 内层无限
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.akb2.main-pipeline</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/praise/AI-Agent/Claude/projects/Project AKB2/scripts/akb2-main-pipeline.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/praise/AI-Agent/Claude/projects/Project AKB2</string>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/praise/AI-Agent/Claude/projects/Project AKB2/logs/akb2-quality-runner.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/praise/AI-Agent/Claude/projects/Project AKB2/logs/akb2-quality-runner.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>AKB2_AUTO_PROMOTE</key>
+        <string>1</string>
+        <key>AKB2_AMENDMENT_APPLIED</key>
+        <string>1</string>
+        <key>PYTHONPATH</key>
+        <string>/Users/praise/AI-Agent/Claude/projects/Project AKB2/src</string>
+        <key>PATH</key>
+        <string>/Users/praise/.pyenv/shims:/Users/praise/.pyenv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>AKB2_VAULT_ROOT</key>
+        <string>/Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0</string>
+    </dict>
+</dict>
+</plist>

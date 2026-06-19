@@ -1,0 +1,15 @@
+{
+  "run_id": "adhoc-139aa836896f7694",
+  "queue_job_id": "adhoc-adhoc-139aa836896f7694",
+  "target_role": "master_plan",
+  "target_hash": "9a75316e1e7faa1aa08adcfbe855c768ac76a8d53edfdd82955f60f129eaabbe",
+  "capsule_hash": "8d2b03a21688df879652da190edcc3fe1de3a7aa110b5c6c549f4bf78dde22b6",
+  "bridge_status": "completed",
+  "gd_review_decision": "REQUIRES_CHANGES",
+  "mapped_result": "plans/gd/2026-06-12-content-quality-loop/review/final2/codex/codex-mapped-final2.json",
+  "transport_result": "/Users/praise/.claude/review-baselines/gd-plan-master-plan-md-a598959d6bdf/result-20260612T145351Z.md",
+  "raw_size_bytes": 1621,
+  "scope_rows": 1,
+  "findings_count": 1,
+  "timestamp": "2026-06-12T14:56:05Z"
+}

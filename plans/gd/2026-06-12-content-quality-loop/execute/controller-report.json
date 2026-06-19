@@ -1,0 +1,272 @@
+{
+  "schema_version": "1.2",
+  "controller_id": "akb2-cql-execute-controller-v1",
+  "dispatch_id": "akb2-cql-execute-dispatch-v1",
+  "run_mode": "live",
+  "started_at": "2026-06-13T00:15:00Z",
+  "finished_at": "2026-06-13T01:35:00Z",
+  "updated_at": "2026-06-13T05:05:00Z",
+  "patch_note": "F-1/F-2 fix 2026-06-13: final_decision corrected to APPROVED_BUILD_ONLY; SC-8 corrected to not_run; sc_not_run_list added",
+  "aggregate_path": "plans/gd/2026-06-12-content-quality-loop/execute/controller-report.json",
+  "manifest_path": "plans/gd/2026-06-12-content-quality-loop/execute/execute_dispatch_map.json",
+  "verification_scope": "build_only",
+  "sc_not_run_list": [
+    "SC-3",
+    "SC-8",
+    "SC-9",
+    "SC-6.2-exec",
+    "SC-6.4",
+    "SC-6.9",
+    "SC-6.10"
+  ],
+  "sc_not_run_count": 7,
+  "primary_gate": {
+    "verdict": "APPROVED_BUILD_ONLY",
+    "blocking": false
+  },
+  "secondary_gate": {
+    "verdict": "APPROVED_BUILD_ONLY",
+    "blocking": false
+  },
+  "gate_consistent": true,
+  "dirty_detected": true,
+  "dirty_files_count": 8,
+  "dirty_files_note": "8 plan/test files modified after execution (F-1~F-5 + F-new-1~4 alignment fixes); not committed per hard_stop rule",
+  "jobs": [
+    {
+      "queue_job_id": "e-step1",
+      "target_role": "step-1-loop7-skeleton",
+      "primary_target": "plans/gd/2026-06-12-content-quality-loop/step-1-loop7-skeleton.md",
+      "bridge_exit": 0,
+      "bridge_stderr_path": "n/a",
+      "bridge_stderr_summary": "agent_exec completed",
+      "raw_verdict": "APPROVED",
+      "mapped_status": "APPROVED",
+      "aggregate_bucket": "approved"
+    },
+    {
+      "queue_job_id": "e-step2",
+      "target_role": "step-2-intake-raw",
+      "primary_target": "plans/gd/2026-06-12-content-quality-loop/step-2-intake-raw.md",
+      "bridge_exit": 0,
+      "bridge_stderr_path": "n/a",
+      "bridge_stderr_summary": "agent_exec completed",
+      "raw_verdict": "APPROVED",
+      "mapped_status": "APPROVED",
+      "aggregate_bucket": "approved"
+    },
+    {
+      "queue_job_id": "e-step3",
+      "target_role": "step-3-admission-distill",
+      "primary_target": "plans/gd/2026-06-12-content-quality-loop/step-3-admission-distill.md",
+      "bridge_exit": 0,
+      "bridge_stderr_path": "n/a",
+      "bridge_stderr_summary": "agent_exec completed",
+      "raw_verdict": "APPROVED",
+      "mapped_status": "APPROVED",
+      "aggregate_bucket": "approved"
+    },
+    {
+      "queue_job_id": "e-step4",
+      "target_role": "step-4-quality-repair",
+      "primary_target": "plans/gd/2026-06-12-content-quality-loop/step-4-quality-repair.md",
+      "bridge_exit": 0,
+      "bridge_stderr_path": "n/a",
+      "bridge_stderr_summary": "agent_exec completed",
+      "raw_verdict": "APPROVED",
+      "mapped_status": "APPROVED",
+      "aggregate_bucket": "approved"
+    },
+    {
+      "queue_job_id": "e-step5",
+      "target_role": "step-5-promote",
+      "primary_target": "plans/gd/2026-06-12-content-quality-loop/step-5-promote.md",
+      "bridge_exit": 0,
+      "bridge_stderr_path": "n/a",
+      "bridge_stderr_summary": "agent_exec completed",
+      "raw_verdict": "APPROVED",
+      "mapped_status": "APPROVED",
+      "aggregate_bucket": "approved"
+    },
+    {
+      "queue_job_id": "e-step6",
+      "target_role": "step-6-runner-calibration",
+      "primary_target": "plans/gd/2026-06-12-content-quality-loop/step-6-runner-calibration.md",
+      "bridge_exit": 0,
+      "bridge_stderr_path": "n/a",
+      "bridge_stderr_summary": "agent_exec completed",
+      "raw_verdict": "APPROVED",
+      "mapped_status": "APPROVED",
+      "aggregate_bucket": "approved"
+    }
+  ],
+  "batch_ledgers": [
+    {
+      "batch_id": "batch-akb2-cql-execute-dispatch-v1-wave-e1",
+      "wave_ref": "e1",
+      "path": "plans/gd/2026-06-12-content-quality-loop/execute/batch-e1.json",
+      "hash": "sha256:batch-e1",
+      "status": "completed"
+    },
+    {
+      "batch_id": "batch-akb2-cql-execute-dispatch-v1-wave-e2",
+      "wave_ref": "e2",
+      "path": "plans/gd/2026-06-12-content-quality-loop/execute/batch-e2.json",
+      "hash": "sha256:batch-e2",
+      "status": "completed"
+    },
+    {
+      "batch_id": "batch-akb2-cql-execute-dispatch-v1-wave-e3",
+      "wave_ref": "e3",
+      "path": "plans/gd/2026-06-12-content-quality-loop/execute/batch-e3.json",
+      "hash": "sha256:batch-e3",
+      "status": "completed"
+    },
+    {
+      "batch_id": "batch-akb2-cql-execute-dispatch-v1-wave-e4",
+      "wave_ref": "e4",
+      "path": "plans/gd/2026-06-12-content-quality-loop/execute/batch-e4.json",
+      "hash": "sha256:batch-e4",
+      "status": "completed"
+    }
+  ],
+  "suite_target_closure": [],
+  "child_agent_count": 5,
+  "max_parallel": 2,
+  "waves_executed": 4,
+  "waves": [
+    {
+      "wave_id": "e1",
+      "child_agent_count": 1,
+      "jobs": [
+        {
+          "job_id": "e-step1",
+          "agent_id": "ac00087d7c2b37ef5",
+          "status": "completed",
+          "result_path": "plans/gd/2026-06-12-content-quality-loop/execute/e-step1-result.yaml",
+          "sc_pass": 6,
+          "sc_fail": 0
+        }
+      ],
+      "merge_decision": "proceed_to_e2"
+    },
+    {
+      "wave_id": "e2",
+      "child_agent_count": 2,
+      "max_parallel_used": 2,
+      "jobs": [
+        {
+          "job_id": "e-step2",
+          "agent_id": "a413fd15aa8bf64f3",
+          "status": "completed",
+          "result_path": "plans/gd/2026-06-12-content-quality-loop/execute/e-step2-result.yaml",
+          "sc_pass": 5,
+          "sc_fail": 0,
+          "sc_not_run": 1
+        },
+        {
+          "job_id": "e-step3",
+          "agent_id": "aee42e5165d42447b",
+          "status": "completed",
+          "result_path": "plans/gd/2026-06-12-content-quality-loop/execute/e-step3-result.yaml",
+          "sc_pass": 7,
+          "sc_fail": 0
+        }
+      ],
+      "merge_decision": "proceed_to_e3"
+    },
+    {
+      "wave_id": "e3",
+      "child_agent_count": 2,
+      "max_parallel_used": 2,
+      "jobs": [
+        {
+          "job_id": "e-step4",
+          "agent_id": "a6d2e238066235630",
+          "status": "completed",
+          "result_path": "plans/gd/2026-06-12-content-quality-loop/execute/e-step4-result.yaml",
+          "sc_pass": 6,
+          "sc_fail": 0
+        },
+        {
+          "job_id": "e-step5",
+          "agent_id": "ae2dd5c611b2c140a",
+          "status": "completed",
+          "result_path": "plans/gd/2026-06-12-content-quality-loop/execute/e-step5-result.yaml",
+          "sc_pass": 5,
+          "sc_fail": 0
+        }
+      ],
+      "merge_decision": "proceed_to_e4"
+    },
+    {
+      "wave_id": "e4",
+      "child_agent_count": 1,
+      "jobs": [
+        {
+          "job_id": "e-step6",
+          "agent_id": "af1d6791824be294c",
+          "status": "completed",
+          "result_path": "plans/gd/2026-06-12-content-quality-loop/execute/e-step6-result.yaml",
+          "sc_pass": 7,
+          "sc_fail": 0,
+          "sc_not_run": 4,
+          "sc_not_run_note": "SC-6.2-execution-gate/SC-6.4/SC-6.9/SC-6.10; F-r5-1 fix 2026-06-13"
+        }
+      ],
+      "merge_decision": "closure_ready"
+    }
+  ],
+  "final_decision": "APPROVED_BUILD_ONLY",
+  "final_decision_note": "Build-period SCs all pass. Execution-period SCs (SC-3/SC-8/SC-9/SC-6.2-exec/SC-6.4/SC-6.9/SC-6.10) are not_run — require live API keys, real sources, and sources-ledger.jsonl. SC-9 is blocked_by SC-8. Factory gate is NOT closed.",
+  "main_agent_merge": {
+    "merge_report_path": "plans/gd/2026-06-12-content-quality-loop/execute/controller-report.json",
+    "merged_at": "2026-06-13T01:35:00Z"
+  },
+  "aggregate_test_results": {
+    "total_tests": 293,
+    "passed": 293,
+    "failed": 0,
+    "deselected": 4,
+    "lint": "All checks passed (owned-scope)"
+  },
+  "master_sc_verification": {
+    "SC-1": {
+      "status": "build_gate_pass",
+      "note": "test_golden_replay.py 可收集; 执行门需真API+修宪应用后跑"
+    },
+    "SC-2": {
+      "status": "pass",
+      "note": "4 tests passed, 负样本100%拒收"
+    },
+    "SC-3": {
+      "status": "not_run",
+      "note": "校准出厂需真API环境; calibration.py CLI已就绪"
+    },
+    "SC-4": {
+      "status": "pass",
+      "note": "七段生命线测试全过"
+    },
+    "SC-5": {
+      "status": "pass",
+      "note": "3 schema + watchdog ≤80行 + 适配卡9字段自洽"
+    },
+    "SC-6": {
+      "status": "pass",
+      "note": "293 tests + ruff 0 issues (owned-scope: tests/loops/ tests/quality/ + src/akb2/loops/ src/akb2/quality/)"
+    },
+    "SC-7": {
+      "status": "pass",
+      "note": "promote_gate_switch 3 tests"
+    },
+    "SC-8": {
+      "status": "not_run",
+      "note": "sources-ledger.jsonl 不存在 (reports/source-validation/ 为空); step-2 仅跑 --dry-run 未写盘; 需真实 trial-fetch 运行"
+    },
+    "SC-9": {
+      "status": "not_run",
+      "note": "真实源专项需真API; calibration --live-sample CLI已就绪",
+      "blocked_by": "SC-8 (sources-ledger.jsonl not generated)"
+    }
+  }
+}

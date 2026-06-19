@@ -1,0 +1,82 @@
+# Step 3 执行结果
+# GD_EXECUTION_RESULT
+
+plan_source: approved_plan
+plan_path: plans/gd/2026-06-12-content-quality-loop/step-3-admission-distill.md
+review_domain: ai_infra
+review_focus: "准入二值判定无连续分数(FR-004/宪法P8); 负样本 fail-closed 且拒收落账(P3/P4); 路由禁 -preview+缺 key 显式报错(P7); 抽取重试有界+预算具名常量(P1/P4); frontmatter 硬字段对齐样张步 3-4 与已知坑 1-3(P6)"
+completed_at: 2026-06-13T00:00:00Z
+status: completed
+
+## 变更摘要
+
+### 新建文件（14 个）
+
+**核心实现（4 个）:**
+- `src/akb2/quality/__init__.py` — 模块文档
+- `src/akb2/quality/llm_router.py` — OpenAI 兼容端点路由，三族模型（deepseek-v4-pro/gpt-5.4/gemini-flash），reasoning_effort="max" 透传，预算具名常量
+- `src/akb2/quality/admission.py` — 三硬判定（主题相关性/How倾向/新颖度），二值无连续分数，fail-closed 落账
+- `src/akb2/quality/distill.py` — 两段式提炼：段1结构化抽取（MAX_EXTRACT_RETRIES=3）+ 段2模板成稿（frontmatter 确定性代码写死）
+
+**接口规格（1 个）:**
+- `docs/interface-contracts/llm_router.md` — route_llm 接口契约
+
+**Skillpack（4 个）:**
+- `skillpack/quality/golden-sample-refs.md` — 黄金样张引用清单
+- `skillpack/quality/negative-sample-notes.md` — 负样本对照说明
+- `skillpack/quality/concept-index-injection.md` — 概念索引注入文件
+- `skillpack/quality/known-pitfalls.md` — 已知坑 5 条
+
+**测试套件（5 个）:**
+- `tests/quality/__init__.py` — 测试包
+- `tests/quality/conftest.py` — 共享 fixtures（make_mock_route_llm + sample_raw_content + admission 响应 + extract 响应）
+- `tests/quality/fixtures/__init__.py` — fixture 包
+- `tests/quality/fixtures/candidate_page_fixture.md` — 候选页契约 fixture
+- `tests/quality/test_llm_router.py` — 路由测试（14 用例）
+- `tests/quality/test_admission_negative.py` — 负样本拒收测试（6 用例）
+- `tests/quality/test_admission_positive.py` — 正样本通过测试（7 用例）
+- `tests/quality/test_distill_extract_retry.py` — 抽取重试测试（12 用例）
+- `tests/quality/test_distill_frontmatter.py` — frontmatter 全检测试（14 用例）
+
+## 成功标准验收
+
+| SC | 状态 | 验证结果 |
+|----|------|---------|
+| SC-3.1 (承载 master SC-2) | pass | 2 负样本 100% 拒于准入段，拒收原因落账，账本零提炼调用。6 用例通过 |
+| SC-3.2 | pass | 正样本三判定全 pass，输出 schema 化布尔+理由，无连续分数字段。7 用例通过 |
+| SC-3.3 | pass | llm_router 缺 key 显式抛错、拒绝 -preview 模型、预算为具名常量、reasoning_effort 透传。14 用例通过 |
+| SC-3.4 | pass | 段1抽取 JSON jsonschema 校验，有界重试（MAX_EXTRACT_RETRIES=3），耗尽显式失败。12 用例通过 |
+| SC-3.5 | pass | frontmatter gate_decision: null 写死、source_refs 含 raw 路径、gate_reason ≤150 字符、future_questions 2-3 条、related_concepts ≥2。14 用例通过 |
+| SC-3.6 | pass | skillpack/quality/ 四件齐（golden-sample-refs / negative-sample-notes / concept-index-injection / known-pitfalls），每文件头带 version 字段 |
+| SC-3.7 (工程门) | pass | 53 tests passed, ruff check all passed |
+
+## 测试统计
+
+- **总计**: 53 passed
+- **test_admission_negative**: 6 passed
+- **test_admission_positive**: 7 passed
+- **test_llm_router**: 14 passed
+- **test_distill_extract_retry**: 12 passed
+- **test_distill_frontmatter**: 14 passed
+
+## 运行时/持久状态
+
+- 无运行时状态变更（全 fixture LLM 响应，不写入 vault）
+- staging/candidate/ 仅在 fixture 临时目录写入（tests 隔离）
+
+## 未执行/延期
+
+- none (step-3 范围内全部完成)
+- skillpack/quality/rubric/ 归 step-4 owned，本 step 不交付
+- skillpack/quality/repair-adapter-card.yaml 归 step-6 owned，本 step 不交付
+- 真 API 调用测试归 step-6 出厂验收（SC-3 校准跑）
+
+## 代码审查移交
+
+- Review command/status: not_run（child_executor 单步实现，由 step-6 集成 + Codex cross-review 收口）
+
+## 残余风险
+
+- risk_low: 领域 taxonomy 在 admission.py 中为 _DEFAULT_DOMAIN_TAXONOMY 常量，需保持与 concept-index-injection.md 同步（未自动化）
+- risk_low: distill.py 的未来问题生成使用启发式规则，非 LLM 生成（符合"量化代码不进 prompt"约束但 pragmatism 可能不够）
+- risk_low: 准入判定的 LLM prompt 为嵌入学步代码的常量，后续 Prompt 优化需更新 admission.py 对应位置

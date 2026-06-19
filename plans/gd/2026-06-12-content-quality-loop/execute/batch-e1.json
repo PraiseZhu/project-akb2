@@ -1,0 +1,40 @@
+{
+  "batch_id": "batch-akb2-cql-execute-dispatch-v1-wave-e1",
+  "dispatch_id": "akb2-cql-execute-dispatch-v1",
+  "wave_ref": "e1",
+  "batch_created_at": "2026-06-13T00:00:00Z",
+  "batch_completed_at": "2026-06-13T00:20:00Z",
+  "execution_mode": "agent_exec",
+  "task_results": [
+    {
+      "task_id": "e-step1",
+      "track_ref": "e-step1",
+      "exec_status": "completed",
+      "not_run_reason": null,
+      "deliverables_produced": [
+        {"path": "schema/loop-ledger.schema.json", "kind": "file", "verified": true},
+        {"path": "schema/failure-signature.schema.json", "kind": "file", "verified": true},
+        {"path": "schema/repair-adapter-card.schema.json", "kind": "file", "verified": true},
+        {"path": "src/akb2/loops/__init__.py", "kind": "file", "verified": true},
+        {"path": "src/akb2/loops/paths.py", "kind": "file", "verified": true},
+        {"path": "src/akb2/loops/ledger.py", "kind": "file", "verified": true},
+        {"path": "src/akb2/loops/signatures.py", "kind": "file", "verified": true},
+        {"path": "scripts/akb2-watchdog.sh", "kind": "file", "verified": true},
+        {"path": "tests/loops/", "kind": "directory", "verified": true}
+      ],
+      "verify_results": [
+        {"sc_ref": "SC-s1", "method": "command", "cmd": "test -f schema/loop-ledger.schema.json && ...", "result": "PASS", "exit_code": 0},
+        {"sc_ref": "SC-s2", "method": "test", "cmd": "python3 -m pytest tests/loops/test_ledger_lifeline.py -q", "result": "PASS", "exit_code": 0},
+        {"sc_ref": "SC-s3", "method": "test", "cmd": "python3 -m pytest tests/loops/test_signatures.py -q", "result": "PASS", "exit_code": 0},
+        {"sc_ref": "SC-s4", "method": "command", "cmd": "test -x scripts/akb2-watchdog.sh && ...", "result": "PASS", "exit_code": 0},
+        {"sc_ref": "SC-s5", "method": "assertion", "cmd": "PYTHONPATH=src python3 -c ...", "result": "PASS", "exit_code": 0},
+        {"sc_ref": "SC-s6", "method": "command", "cmd": "ruff check src/akb2/loops tests/loops && echo PASS", "result": "PASS", "exit_code": 0}
+      ],
+      "gd_execution_status_json": {
+        "task_id": "e-step1",
+        "exec_status": "completed",
+        "sc_results": {"SC-s1": "pass", "SC-s2": "pass", "SC-s3": "pass", "SC-s4": "pass", "SC-s5": "pass", "SC-s6": "pass"}
+      }
+    }
+  ]
+}

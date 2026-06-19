@@ -1,0 +1,68 @@
+{
+  "stage": "review_plan",
+  "run_mode": "live",
+  "target": "plans/gd/2026-06-12-content-quality-loop/",
+  "review_kind": "plan",
+  "final_decision": "APPROVED",
+  "closure_status": "approved",
+  "child_jobs": [
+    {
+      "id": "claude-cross-consistency",
+      "role": "claude_self_review",
+      "result_path": "review/final/claude-cross-consistency.md",
+      "status": "completed",
+      "decision": "REQUIRES_CHANGES",
+      "note": "3P1+2P2 found, all fixed"
+    },
+    {
+      "id": "codex-final",
+      "role": "codex_bridge_cross_review",
+      "result_path": "review/final/codex-mapped-final.json",
+      "status": "completed",
+      "decision": "REQUIRES_CHANGES",
+      "note": "1P2 (SC-8 uniqueness), fixed"
+    },
+    {
+      "id": "claude-final-verify",
+      "role": "claude_self_review",
+      "result_path": "review/final/claude-final-verify.md",
+      "status": "completed",
+      "decision": "APPROVED"
+    },
+    {
+      "id": "codex-final2",
+      "role": "codex_bridge_cross_review",
+      "result_path": "review/final/codex-round2/codex-mapped-final2.json",
+      "status": "completed",
+      "decision": "REQUIRES_CHANGES",
+      "note": "1P2 (SC-8 config_urls equality), fixed"
+    },
+    {
+      "id": "claude-sc8-final",
+      "role": "claude_self_review",
+      "result_path": "review/final/claude-sc8-final.md",
+      "status": "completed",
+      "decision": "APPROVED"
+    },
+    {
+      "id": "codex-sc8",
+      "role": "codex_bridge_cross_review",
+      "result_path": "review/final/codex-sc8/codex-mapped-sc8.json",
+      "status": "completed",
+      "decision": "APPROVED",
+      "raw_result": "~/.claude/review-baselines/gd-plan-master-plan-md-a598959d6bdf/result-20260612T135317Z.md",
+      "verdict_in_raw": "APPROVED"
+    }
+  ],
+  "main_agent_merge": {
+    "merge_report_path": "review/final/controller-report-final.json",
+    "merged_decision": "APPROVED",
+    "final_claude": "APPROVED",
+    "final_codex": "APPROVED (0 findings, real VERDICT confirmed)"
+  },
+  "residual_p3": [
+    "step-2 SC-2.5 断言弱于 master SC-8（已接受，master 门兜底）",
+    "master §5 step-6 主要 SC 列未标 SC-5（追溯性缺口）",
+    "trial_fetch 仅断言 key 存在不查非空"
+  ]
+}

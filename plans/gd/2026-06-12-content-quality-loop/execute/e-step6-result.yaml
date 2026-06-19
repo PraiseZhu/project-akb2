@@ -1,0 +1,133 @@
+# e-step6-execution-result
+# Step 6 执行完成 — 常驻调度与校准出厂 v1
+# 日期: 2026-06-13
+
+status: completed_build_only
+status_note: "SC-6.4/6.9/6.10 not_run（需真实 API）；SC-6.2 execution gate not_run；与 controller APPROVED_BUILD_ONLY 一致；F-r4 fix 2026-06-13"
+agent: child_executor (Claude Fable 5)
+plan_source: approved step-6 plan
+
+# =========================================================================
+# 交付物清单
+# =========================================================================
+deliverables:
+  - path: evals/main-pipeline-quality/corpus.yaml
+    status: created
+    description: "20 条校准语料: 18 正样本 (按领域配比) + 2 负样本"
+  - path: src/akb2/quality/runner.py
+    status: created
+    description: "24h 常驻串行单工 daemon: 文件队列驱动/避让窗口/SIGTERM/七段生命线/周抽检"
+  - path: src/akb2/quality/calibration.py
+    status: created
+    description: "全量端到端校准跑: --corpus/--live-sample/--report-out/--help"
+  - path: scripts/akb2-main-pipeline.sh
+    status: created
+    description: "启动包装: Python 环境检测/单实例锁/日志重定向"
+  - path: launchd/com.akb2.main-pipeline.plist
+    status: created_not_loaded
+    description: "KeepAlive 常驻型 plist，EnvironmentVariables 含 AKB2_AUTO_PROMOTE=1，头部注释含安装命令+三链路触发时间对照表"
+  - path: skillpack/quality/repair-adapter-card.yaml
+    status: created
+    description: "循环 1 修复适配卡 v1: 9 字段 (7 项故障签名/SBR 三档/验证/回滚/watchdog/共享依赖)"
+  - path: tests/quality/test_runner_queue.py
+    status: created
+    description: "Runner 队列驱动测试: 文件队列/串行单工/避让窗口/SIGTERM"
+  - path: tests/quality/test_runner_lifecycle.py
+    status: created
+    description: "Runner 生命周期测试: 七段生命线/停链/提议模式/周抽检 happy path + 达标率<80%"
+  - path: tests/quality/test_golden_replay.py
+    status: created
+    description: "黄金样张端到端重放测试: proposal_mode + post_amendment 两档，build 期可收集"
+  - path: tests/quality/test_negative_samples.py
+    status: created
+    description: "负样本回归测试: 洗稿型/新闻型拒于准入段+零提炼调用"
+  - path: tests/quality/test_adapter_card_schema.py
+    status: created
+    description: "适配卡 schema 校验测试: 13 项检查 (9 字段/7 签名/SBR 枚举/诊断覆盖等)"
+  - path: pyproject.toml
+    status: modified
+    description: "新增 pytest markers: proposal_mode, post_amendment"
+
+# =========================================================================
+# 成功标准验收
+# =========================================================================
+sc_verification:
+  SC-6.1:
+    status: pass
+    verify: "pytest tests/quality/test_runner_queue.py tests/quality/test_runner_lifecycle.py -q"
+    result: "14 tests passed (all fixture mock, no real API)"
+  SC-6.2-build-gate:
+    status: pass
+    verify: "pytest tests/quality/test_golden_replay.py --collect-only -q"
+    result: "4 build-gate tests collected, 4 integration deselected"
+  SC-6.2-execution-gate:
+    status: not_run
+    not_run_reason: "proposal/active integration gates require live API + AKB2_VAULT_ROOT; build-gate only verifies test collectability"
+    note: "与 aggregate execution-outcome.json SC-6.2 not_run 对齐；F-r4 fix 2026-06-13"
+  SC-6.3:
+    status: pass
+    verify: "pytest tests/quality/test_negative_samples.py -q"
+    result: "4 tests passed (plagiarism/neg/news/admission rejection + zero distill calls + corpus count)"
+  SC-6.5:
+    status: pass
+    verify: "python -c 'import yaml; ...'"
+    result: "PASS — 20 entries, 18 ingest, 2 reject"
+  SC-6.6:
+    status: pass
+    verify: "plutil -lint + launchctl list grep"
+    result: "PASS — plist syntax OK, install command in comments, not loaded"
+  SC-6.7:
+    status: pass
+    verify: "pytest tests/quality/test_adapter_card_schema.py -q"
+    result: "13 tests passed (jsonschema validate + 9 fields + 7 signatures + tiers + hints + deps)"
+  SC-6.8:
+    status: pass
+    verify: "python -m pytest tests/loops/ tests/quality/ -q && ruff check src/akb2/loops/ src/akb2/quality/ tests/loops/ tests/quality/ && echo PASS"
+    result: "293 passed, 4 deselected, ruff: All checks passed! (owned-scope)"
+    note: "F-4 fix 2026-06-13: corrected from full-repo command to owned-scope; matches master-plan SC-6"
+  SC-6.4:
+    status: not_run
+    verify: "PYTHONPATH=src python -m akb2.quality.calibration --corpus ... --report-out ..."
+    note: "执行期真 API 项，需 LLM 端点可用。CLI --help 已验证可用。"
+  SC-6.9:
+    status: not_run
+    verify: "PYTHONPATH=src python -m akb2.quality.calibration --live-sample 3 --report-out ..."
+    note: "执行期真 API 项，需 sources-ledger 有 reachable 源。"
+  SC-6.10:
+    status: not_run
+    verify: "grep AKB2_AUTO_PROMOTE launchd/... + 校准报告交叉断言"
+    note: "plist 已写入 AKB2_AUTO_PROMOTE=1。校准出厂需先跑 SC-6.4。"
+
+# =========================================================================
+# review 信息
+# =========================================================================
+review:
+  REVIEW_DOMAIN: ai_infra
+  REVIEW_FOCUS: "有界循环与具名常量(P1/P4); fail-closed 七段串联完整性(P3); launchd 产物不加载纪律(自动化纪律); 校准报告区分管线缺陷与语料不当(P6); 适配卡 S/B/R 三档与 schema 自洽(循环 7 契约)"
+  code_review: not_run
+  reason: "无批准计划 (step-6 为子代理执行)，由父代理做 L1/L2 review"
+
+# =========================================================================
+# 残余风险
+# =========================================================================
+residual_risks:
+  - sc_ref: SC-6.4
+    description: "校准出厂（20条语料端到端）未在执行期验证"
+    requires: "DEEPSEEK_API_KEY + OPENAI_API_KEY；reports/calibration/ 目录存在；factory.json 不存在或为空"
+    status: not_run
+  - sc_ref: SC-6.9
+    description: "3篇真实源专项未验证；blocked_by SC-8（sources-ledger.jsonl 不存在）"
+    requires: "SC-8 先通过（sources-ledger.jsonl 有 ≥3 个 reachable 源）+ live API"
+    status: not_run
+  - sc_ref: SC-6.10
+    description: "修宪应用 + 自动升格出厂形态未完成；需 SC-6.4 校准通过后应用修宪文本"
+    requires: "SC-6.4 通过 → 应用 docs/vault-amendment-draft.md → 重跑校准 → promotion_mode=active"
+    status: not_run
+  - sc_ref: null
+    description: "feishu_sync 测试因 langgraph 未安装无法收集（预存问题，非本 step 引入）"
+    requires: "pip install langgraph 或标记该测试 skip"
+    status: known_issue
+  - sc_ref: null
+    description: "runner 常驻模式未在本会话实测；24h daemon 需 Mac mini 部署环境"
+    requires: "Mac mini 部署 + launchctl load（用户手动执行）"
+    status: deferred

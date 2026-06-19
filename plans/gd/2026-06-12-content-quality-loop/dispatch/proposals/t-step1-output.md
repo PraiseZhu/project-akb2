@@ -1,0 +1,5 @@
+<!-- gd-child-plan-proposal-json:start -->
+```json
+{"proposal_id": "akb2-cql-plan-dispatch-v2-t-step1-w1a1", "parent_dispatch_id": "akb2-cql-plan-dispatch-v2", "parent_track_id": "t-step1", "agent_role": "child_planner", "output_status": "completed", "summary_cn": "step-1 循环7契约骨架草稿完成:三 schema + src/akb2/loops 幂等账本与签名升级 + watchdog(≤80行纯shell) + 隔离区常量 + tests/loops 契约测试,6 条 SC 全带可执行 verify,承载 master SC-4/SC-5。", "task_packets": [{"task_id": "loop7-contract-skeleton", "owned_paths": ["schema/loop-ledger.schema.json", "schema/failure-signature.schema.json", "schema/repair-adapter-card.schema.json", "src/akb2/loops/", "scripts/akb2-watchdog.sh", "tests/loops/"], "required_context": ["docs/constitution.md", "docs/loops-design-decisions.md", "docs/main-pipeline-golden-sample.md", "config/vault.toml", "plans/gd/2026-06-12-content-quality-loop/master-plan.md"]}], "sc_refs": ["SC-4", "SC-5"], "verify": [{"sc_ref": "SC-5", "method": "command", "cmd": "test -f schema/loop-ledger.schema.json"}, {"sc_ref": "SC-4", "method": "test", "cmd": "python3 -m pytest tests/loops/test_ledger_lifeline.py -q"}], "blocked_reason": null}
+```
+<!-- gd-child-plan-proposal-json:end -->

@@ -1,0 +1,5 @@
+<!-- gd-child-plan-proposal-json:start -->
+```json
+{"proposal_id": "akb2-cql-plan-dispatch-v2-t-step5-w3a1", "parent_dispatch_id": "akb2-cql-plan-dispatch-v2", "parent_track_id": "t-step5", "agent_role": "child_planner", "output_status": "completed", "summary_cn": "step-5 草稿完成:五闸升格+提议模式开关(默认0 fail-closed)+快照回滚+收尾完整性+修宪草案,SC-5.1~5.5 全带可执行 verify,单 packet 可与 step-4 在 e3 并行。", "task_packets": [{"task_id": "promote-and-closure", "owned_paths": ["src/akb2/quality/promote.py", "tests/quality/test_promote_gate_switch.py", "tests/quality/test_promote_gates.py", "tests/quality/test_promote_snapshot_rollback.py", "tests/quality/test_promote_finalize.py", "docs/vault-amendment-draft.md"], "required_context": ["plans/gd/2026-06-12-content-quality-loop/master-plan.md", "docs/main-pipeline-golden-sample.md", "src/akb2/gate/akb2_gate_check.py", "schema/loop-ledger.schema.json"]}], "sc_refs": ["SC-7"], "verify": [{"sc_ref": "SC-7", "method": "test", "cmd": "python3 -m pytest tests/quality/test_promote_gate_switch.py -q"}], "blocked_reason": null}
+```
+<!-- gd-child-plan-proposal-json:end -->

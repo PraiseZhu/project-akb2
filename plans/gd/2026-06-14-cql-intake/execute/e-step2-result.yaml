@@ -1,0 +1,48 @@
+template_kind: gd-execution-result
+result_id: step-2-extract-tools
+task_id: t2
+parent_step: step-2
+parent_plan: plans/gd/2026-06-14-cql-intake/master-plan.md
+executor_role: claude_subagent
+exec_status: completed
+sc_acceptance:
+  - sc_ref: SC-2
+    status: pass
+    evidence: |
+      python -c "import pytest; pytest.main(['tests/quality/test_intake_extract.py::TestExtractViaDefuddle', '-v'])"
+      4 passed in 0.55s
+      - test_returns_markdown_content_without_html_tags: PASSED (no <html>/<body>/<p> tags)
+      - test_title_is_not_hardcoded_stub: PASSED (title="Building AI Agents with Loop Engineering", not "Defuddle Extracted Title")
+      - test_word_count_based_on_markdown_body: PASSED (word_count=397, manual_count delta <=20%)
+      - test_empty_html_returns_empty_dict: PASSED
+  - sc_ref: SC-3
+    status: pass
+    evidence: |
+      python -c "import pytest; pytest.main(['tests/quality/test_intake_extract.py::TestExtractViaScrapling', '-v'])"
+      4 passed in 0.24s
+      - test_adaptive_mode_calls_fetcher: PASSED (Fetcher mock, title from page)
+      - test_browser_mode_calls_stealthy_fetcher: PASSED (StealthyFetcher mock)
+      - test_scrapling_unavailable_returns_empty_and_warns: PASSED (import gate warning)
+      - test_scrapling_exception_returns_empty: PASSED (graceful degradation)
+  - sc_ref: SC-4
+    status: pass
+    evidence: |
+      python -c "import pytest; pytest.main(['tests/quality/test_intake_extract.py::TestExtractViaDocling', '-v'])"
+      5 passed in 0.07s
+      - test_returns_markdown_from_export: PASSED (content = export_to_markdown(), not bytes.decode())
+      - test_file_bytes_written_to_temp_pdf: PASSED (convert() called with .pdf temp path)
+      - test_no_file_bytes_returns_empty: PASSED
+      - test_docling_unavailable_returns_empty_and_warns: PASSED (import gate warning)
+      - test_docling_exception_returns_empty: PASSED (graceful degradation)
+files_added: []
+files_modified:
+  - src/akb2/quality/intake/extract.py
+  - tests/quality/test_intake_extract.py
+  - tests/quality/test_extraction_context.py
+owned_paths_writes_only: true
+forbidden_paths_touched: []
+handoff:
+  result_path: plans/gd/2026-06-14-cql-intake/execute/e-step2-result.yaml
+  status_field: exec_status
+  summary: "三工具真实接口实现完成：_extract_via_defuddle 调 defuddle CLI（subprocess + JSON 解析）、_extract_via_scrapling 调 Fetcher/StealthyFetcher（import gate 保护）、_extract_via_docling 调 DocumentConverter.convert().export_to_markdown()（import gate 保护）；HTTP fetcher 入口已加；MIN_CONTENT_LENGTH 上调至 200；50 个测试全绿。"
+  blockers: none

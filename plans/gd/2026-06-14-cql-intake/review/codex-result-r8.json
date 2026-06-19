@@ -1,0 +1,49 @@
+{
+  "template_kind": "gd-plan-review",
+  "reviewer": "codex",
+  "review_target": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-14-cql-intake/master-plan.md",
+  "review_kind": "plan",
+  "review_run_status": "completed",
+  "gd_review_decision": "REQUIRES_CHANGES",
+  "scope_checked": [
+    {
+      "facet": "raw markdown structure",
+      "result": "pass",
+      "evidence": "writer-validated; verdict=REQUIRES_CHANGES"
+    }
+  ],
+  "findings": [
+    {
+      "severity": "P1",
+      "title": "Step-3 执行顺序依赖未声明",
+      "sc_refs": [
+        "SC-7",
+        "SC-7",
+        "SC-7"
+      ],
+      "evidence": "`plans/gd/2026-06-14-cql-intake/master-plan.md:164`, `:186`, `:211`",
+      "impact": "按计划顺序执行到 Step-3 时，orchestrator CLI 可能仍调用未实现 listing 路径，SC-7 active path 失败或只能靠 mock 假通过。",
+      "required_fix": "把 discovery listing 实现移入 Step-3，或调整依赖/执行顺序为 Step-5 before Step-3，并同步更新 `blocked_by` / `can_parallel_with`。",
+      "verify": "Step-3 验收时直接运行 SC-7 command，确认 `archived=0` 且退出码 0。"
+    },
+    {
+      "severity": "P2",
+      "title": "SC-10 live trial-fetch 验证不足",
+      "sc_refs": [
+        "SC-10",
+        "SC-10",
+        "SC-10",
+        "SC-10"
+      ],
+      "evidence": "`plans/gd/2026-06-14-cql-intake/master-plan.md:80-82`, `:186-188`",
+      "impact": "实现可以写入空占位字段却通过验收，source_validator live 仍可能继续产出错误 ledger。",
+      "required_fix": "在 SC-10 command 中增加 `trial_fetch` 结构/状态断言，以及 reachable 源的 `latest_post` 或 trial-fetch outcome 非空断言。",
+      "verify": "人为构造空 `trial_fetch` 或空 `latest_post` ledger 时，SC-10 后半段 Python assert 必须失败。"
+    }
+  ],
+  "merge_notes": {
+    "conflict_with_other_reviewer": false
+  },
+  "residual_risk": [],
+  "timestamp": "2026-06-14T14:43:08Z"
+}

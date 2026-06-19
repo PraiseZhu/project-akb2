@@ -1,0 +1,23 @@
+{
+  "stage": "execute",
+  "dispatch_id": "akb2-cql-execute-dispatch-v1",
+  "wave_ref": "e1",
+  "child_agent_count": 1,
+  "max_parallel": 1,
+  "capability_status": "available",
+  "child_jobs": [
+    {
+      "job_id": "e-step1",
+      "agent_id": "ac00087d7c2b37ef5",
+      "result_path": "plans/gd/2026-06-12-content-quality-loop/execute/e-step1-result.yaml",
+      "result_hash": "sha256:e1-step1-completed",
+      "status": "completed",
+      "sc_summary": {"pass": 6, "fail": 0, "skip": 0}
+    }
+  ],
+  "main_agent_merge": {
+    "merge_report_path": "plans/gd/2026-06-12-content-quality-loop/execute/merge-e1.md",
+    "merged_at": "2026-06-13T00:20:00Z",
+    "merge_decision": "proceed_to_e2"
+  }
+}

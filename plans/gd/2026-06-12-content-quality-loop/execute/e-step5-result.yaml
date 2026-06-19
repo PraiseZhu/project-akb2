@@ -1,0 +1,72 @@
+step: step-5
+status: completed
+agent: child_executor
+completed_at: "2026-06-13T00:00:00Z"
+
+success_criteria:
+  - id: SC-5.1
+    description: "AKB2_AUTO_PROMOTE=0 下 active 目录 tree_sha256 不变"
+    status: pass
+    verify: "python -m pytest tests/quality/test_promote_gate_switch.py -q"
+    result: "3 passed"
+  - id: SC-5.2
+    description: "五闸逐闸 fail 留 staging（参数化 5+1 用例）"
+    status: pass
+    verify: "python -m pytest tests/quality/test_promote_gates.py -q"
+    result: "6 passed (5 fail gates + 1 all pass + dataclass test)"
+  - id: SC-5.3
+    description: "快照->升格->回滚 sha256 往返全等"
+    status: pass
+    verify: "python -m pytest tests/quality/test_promote_snapshot_rollback.py -q"
+    result: "5 passed (manifest creation, rollback hash equality, nonexistent snapshot, missing file handling, pruning)"
+  - id: SC-5.4
+    description: "收尾对齐黄金样张步 10-14: frontmatter 翻转/索引摘要行/概念回链/维护记录合并/lint 复验"
+    status: pass
+    verify: "python -m pytest tests/quality/test_promote_finalize.py -q"
+    result: "12 passed (frontmatter flip, index format regex, revision line, backlink 4 columns, dedup, missing concept pending, pending queue written, maintenance append, maintenance merge, staging preserved, active page created, lint failure rollback)"
+  - id: SC-5.5
+    description: "修宪草案 docs/vault-amendment-draft.md 含五个必备节"
+    status: pass
+    verify: "grep -q for 'Sync Impact' '五闸定义' '双轨试运行' '回滚条款' '批准'"
+    result: "PASS"
+
+engineering_gate:
+  ruff: "No issues found (0 violations)"
+  tests: "28 passed, 0 failed"
+  verify_command: "python -m pytest tests/quality/test_promote_gate_switch.py tests/quality/test_promote_gates.py tests/quality/test_promote_snapshot_rollback.py tests/quality/test_promote_finalize.py -q && ruff check src/akb2/quality/promote.py tests/quality/test_promote_*.py"
+
+deliverables:
+  - path: src/akb2/quality/promote.py
+    description: "五闸判定核心 + 提议模式开关 + 快照回滚 + 收尾动作 + CLI"
+    lines: ~1080
+  - path: tests/quality/test_promote_gate_switch.py
+    description: "SC-5.1: AKB2_AUTO_PROMOTE 开关测试（3 用例）"
+  - path: tests/quality/test_promote_gates.py
+    description: "SC-5.2: 五闸逐闸 fail 参数化测试（6 用例）"
+  - path: tests/quality/test_promote_snapshot_rollback.py
+    description: "SC-5.3: 快照-回滚 sha256 往返测试（5 用例）"
+  - path: tests/quality/test_promote_finalize.py
+    description: "SC-5.4: 收尾完整性测试（12 用例）"
+  - path: docs/vault-amendment-draft.md
+    description: "SC-5.5: vault 修宪草案（五必备节齐全）"
+  - path: tests/quality/fixtures/vault_fixture/
+    description: "Fixture vault 结构（候选页/索引/概念页）"
+  - path: tests/quality/fixtures/grader_result_pass.json
+    description: "Grader PASS fixture"
+  - path: tests/quality/fixtures/grader_result_fail.json
+    description: "Grader FAIL fixture"
+
+key_design_decisions:
+  - "五闸判定复用现有 gate/lint CLI，通过 subprocess 调用，不修改其判定逻辑"
+  - "AKB2_AUTO_PROMOTE 默认 0（fail-closed），未设置或非 '1' 值一律按 0"
+  - "快照-回滚用 sha256 保证往返完整性，快照存工程目录非 vault"
+  - "收尾动作对齐黄金样张步 10-14 全部标准列"
+  - "概念不存在时落 pending 队列而非建 wikilink（黄金样张坑 5）"
+  - "维护记录超 5 条先合并同日（黄金样张坑 4）"
+  - "修宪草案批准权在用户，不直接写 vault"
+  - "lint 复验非 0 即自动回滚到快照"
+
+residual_risks:
+  - "测试中 gate/lint CLI 调用使用 mock 解耦（依赖真实 CLI 的集成测试在 step-6 出厂验收中覆盖）"
+  - "promote CLI 的 --vault-root 参数需运行时提供真实 vault 路径"
+  - "promote 模块的 gate/lint subprocess 调用依赖 Gate CLI 和 Lint CLI 输出格式稳定性"

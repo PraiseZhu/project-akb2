@@ -1,0 +1,352 @@
+{
+  "dispatch_id": "akb2-cql-plan-dispatch-v2",
+  "source_master_plan": "plans/gd/2026-06-12-content-quality-loop/master-plan.md",
+  "goal_chain": {
+    "PROJECT_GOAL": "在 Claude Code 中建设 /gd Goal-Driven 多 Agent 主链路,提升复杂任务的计划、审查、执行、验收效率,并通过 Codex 作为 cross-review sidecar 降低填表式计划与执行遗漏风险。",
+    "CHAIN_GOAL": "用 shared core 固定目标链、SC、任务包、review contract 和 anti-fill 标准,保证后续 /gd command、multi-agent dispatch、execution review、Codex cross-review 都引用同一套契约。",
+    "PHASE_GOAL": "为 AKB2 内容质量循环 Plan 1 产出完整 step plan 套件(step-1~6)与 task packets:每步单独一个 child_planner 起草,3 波推进,单波并发≤2。"
+  },
+  "max_parallel_planning": 2,
+  "max_parallel_execution": 2,
+  "max_parallel_review": 2,
+  "max_parallel_validation": 2,
+  "tracks": [
+    {
+      "track_id": "t-step1",
+      "mode": "plan",
+      "agent_role": "child_planner",
+      "owned_paths": [
+        "plans/gd/2026-06-12-content-quality-loop/step-1-loop7-skeleton.md"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "plans/gd/2026-06-12-content-quality-loop/step-2-intake-raw.md",
+        "plans/gd/2026-06-12-content-quality-loop/step-3-admission-distill.md",
+        "plans/gd/2026-06-12-content-quality-loop/step-4-quality-repair.md",
+        "plans/gd/2026-06-12-content-quality-loop/step-5-promote.md",
+        "plans/gd/2026-06-12-content-quality-loop/step-6-runner-calibration.md"
+      ],
+      "required_context": [
+        "plans/gd/2026-06-12-content-quality-loop/master-plan.md",
+        "docs/constitution.md",
+        "specs/content-quality-loop/spec.md",
+        "docs/main-pipeline-golden-sample.md"
+      ],
+      "deliverables": [
+        {
+          "path": "plans/gd/2026-06-12-content-quality-loop/step-1-loop7-skeleton.md",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [],
+      "can_parallel_with": [
+        "t-step2"
+      ],
+      "sc_refs": [
+        "SC-4",
+        "SC-5"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-4",
+          "method": "assertion",
+          "cmd": "grep -c 'SC-4' plans/gd/2026-06-12-content-quality-loop/step-1-loop7-skeleton.md",
+          "expect": ">=1"
+        },
+        {
+          "sc_ref": "SC-5",
+          "method": "assertion",
+          "cmd": "grep -c 'SC-5' plans/gd/2026-06-12-content-quality-loop/step-1-loop7-skeleton.md",
+          "expect": ">=1"
+        }
+      ]
+    },
+    {
+      "track_id": "t-step2",
+      "mode": "plan",
+      "agent_role": "child_planner",
+      "owned_paths": [
+        "plans/gd/2026-06-12-content-quality-loop/step-2-intake-raw.md"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "plans/gd/2026-06-12-content-quality-loop/step-1-loop7-skeleton.md",
+        "plans/gd/2026-06-12-content-quality-loop/step-3-admission-distill.md",
+        "plans/gd/2026-06-12-content-quality-loop/step-4-quality-repair.md",
+        "plans/gd/2026-06-12-content-quality-loop/step-5-promote.md",
+        "plans/gd/2026-06-12-content-quality-loop/step-6-runner-calibration.md"
+      ],
+      "required_context": [
+        "plans/gd/2026-06-12-content-quality-loop/master-plan.md",
+        "docs/constitution.md",
+        "specs/content-quality-loop/spec.md",
+        "docs/main-pipeline-golden-sample.md"
+      ],
+      "deliverables": [
+        {
+          "path": "plans/gd/2026-06-12-content-quality-loop/step-2-intake-raw.md",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [],
+      "can_parallel_with": [
+        "t-step1"
+      ],
+      "sc_refs": [
+        "SC-8"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-8",
+          "method": "assertion",
+          "cmd": "grep -c 'SC-8' plans/gd/2026-06-12-content-quality-loop/step-2-intake-raw.md",
+          "expect": ">=1"
+        }
+      ]
+    },
+    {
+      "track_id": "t-step3",
+      "mode": "plan",
+      "agent_role": "child_planner",
+      "owned_paths": [
+        "plans/gd/2026-06-12-content-quality-loop/step-3-admission-distill.md"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "plans/gd/2026-06-12-content-quality-loop/step-1-loop7-skeleton.md",
+        "plans/gd/2026-06-12-content-quality-loop/step-2-intake-raw.md",
+        "plans/gd/2026-06-12-content-quality-loop/step-4-quality-repair.md",
+        "plans/gd/2026-06-12-content-quality-loop/step-5-promote.md",
+        "plans/gd/2026-06-12-content-quality-loop/step-6-runner-calibration.md"
+      ],
+      "required_context": [
+        "plans/gd/2026-06-12-content-quality-loop/master-plan.md",
+        "docs/constitution.md",
+        "specs/content-quality-loop/spec.md",
+        "docs/main-pipeline-golden-sample.md"
+      ],
+      "deliverables": [
+        {
+          "path": "plans/gd/2026-06-12-content-quality-loop/step-3-admission-distill.md",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [],
+      "can_parallel_with": [
+        "t-step4"
+      ],
+      "sc_refs": [
+        "SC-2"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-2",
+          "method": "assertion",
+          "cmd": "grep -c 'SC-2' plans/gd/2026-06-12-content-quality-loop/step-3-admission-distill.md",
+          "expect": ">=1"
+        }
+      ]
+    },
+    {
+      "track_id": "t-step4",
+      "mode": "plan",
+      "agent_role": "child_planner",
+      "owned_paths": [
+        "plans/gd/2026-06-12-content-quality-loop/step-4-quality-repair.md"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "plans/gd/2026-06-12-content-quality-loop/step-1-loop7-skeleton.md",
+        "plans/gd/2026-06-12-content-quality-loop/step-2-intake-raw.md",
+        "plans/gd/2026-06-12-content-quality-loop/step-3-admission-distill.md",
+        "plans/gd/2026-06-12-content-quality-loop/step-5-promote.md",
+        "plans/gd/2026-06-12-content-quality-loop/step-6-runner-calibration.md"
+      ],
+      "required_context": [
+        "plans/gd/2026-06-12-content-quality-loop/master-plan.md",
+        "docs/constitution.md",
+        "specs/content-quality-loop/spec.md",
+        "docs/main-pipeline-golden-sample.md"
+      ],
+      "deliverables": [
+        {
+          "path": "plans/gd/2026-06-12-content-quality-loop/step-4-quality-repair.md",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [],
+      "can_parallel_with": [
+        "t-step3"
+      ],
+      "sc_refs": [
+        "SC-1"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-1",
+          "method": "assertion",
+          "cmd": "grep -c 'SC-1' plans/gd/2026-06-12-content-quality-loop/step-4-quality-repair.md",
+          "expect": ">=1"
+        }
+      ]
+    },
+    {
+      "track_id": "t-step5",
+      "mode": "plan",
+      "agent_role": "child_planner",
+      "owned_paths": [
+        "plans/gd/2026-06-12-content-quality-loop/step-5-promote.md"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "plans/gd/2026-06-12-content-quality-loop/step-1-loop7-skeleton.md",
+        "plans/gd/2026-06-12-content-quality-loop/step-2-intake-raw.md",
+        "plans/gd/2026-06-12-content-quality-loop/step-3-admission-distill.md",
+        "plans/gd/2026-06-12-content-quality-loop/step-4-quality-repair.md",
+        "plans/gd/2026-06-12-content-quality-loop/step-6-runner-calibration.md"
+      ],
+      "required_context": [
+        "plans/gd/2026-06-12-content-quality-loop/master-plan.md",
+        "docs/constitution.md",
+        "specs/content-quality-loop/spec.md",
+        "docs/main-pipeline-golden-sample.md"
+      ],
+      "deliverables": [
+        {
+          "path": "plans/gd/2026-06-12-content-quality-loop/step-5-promote.md",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [],
+      "can_parallel_with": [
+        "t-step6"
+      ],
+      "sc_refs": [
+        "SC-7"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-7",
+          "method": "assertion",
+          "cmd": "grep -c 'SC-7' plans/gd/2026-06-12-content-quality-loop/step-5-promote.md",
+          "expect": ">=1"
+        }
+      ]
+    },
+    {
+      "track_id": "t-step6",
+      "mode": "plan",
+      "agent_role": "child_planner",
+      "owned_paths": [
+        "plans/gd/2026-06-12-content-quality-loop/step-6-runner-calibration.md"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "plans/gd/2026-06-12-content-quality-loop/step-1-loop7-skeleton.md",
+        "plans/gd/2026-06-12-content-quality-loop/step-2-intake-raw.md",
+        "plans/gd/2026-06-12-content-quality-loop/step-3-admission-distill.md",
+        "plans/gd/2026-06-12-content-quality-loop/step-4-quality-repair.md",
+        "plans/gd/2026-06-12-content-quality-loop/step-5-promote.md"
+      ],
+      "required_context": [
+        "plans/gd/2026-06-12-content-quality-loop/master-plan.md",
+        "docs/constitution.md",
+        "specs/content-quality-loop/spec.md",
+        "docs/main-pipeline-golden-sample.md"
+      ],
+      "deliverables": [
+        {
+          "path": "plans/gd/2026-06-12-content-quality-loop/step-6-runner-calibration.md",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [],
+      "can_parallel_with": [
+        "t-step5"
+      ],
+      "sc_refs": [
+        "SC-1",
+        "SC-3",
+        "SC-6"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-1",
+          "method": "assertion",
+          "cmd": "grep -c 'SC-1' plans/gd/2026-06-12-content-quality-loop/step-6-runner-calibration.md",
+          "expect": ">=1"
+        },
+        {
+          "sc_ref": "SC-3",
+          "method": "assertion",
+          "cmd": "grep -c 'SC-3' plans/gd/2026-06-12-content-quality-loop/step-6-runner-calibration.md",
+          "expect": ">=1"
+        },
+        {
+          "sc_ref": "SC-6",
+          "method": "assertion",
+          "cmd": "grep -c 'SC-6' plans/gd/2026-06-12-content-quality-loop/step-6-runner-calibration.md",
+          "expect": ">=1"
+        }
+      ]
+    }
+  ],
+  "waves": [
+    {
+      "wave_id": "w1",
+      "track_ids": [
+        "t-step1",
+        "t-step2"
+      ],
+      "description": "起草 t-step1 + t-step2(单步单 agent,并发 2)"
+    },
+    {
+      "wave_id": "w2",
+      "track_ids": [
+        "t-step3",
+        "t-step4"
+      ],
+      "description": "起草 t-step3 + t-step4(单步单 agent,并发 2)"
+    },
+    {
+      "wave_id": "w3",
+      "track_ids": [
+        "t-step5",
+        "t-step6"
+      ],
+      "description": "起草 t-step5 + t-step6(单步单 agent,并发 2)"
+    }
+  ],
+  "merge_gates": [
+    {
+      "gate_id": "G1",
+      "description": "child 输出含合法 gd-child-plan-proposal-json block 且过 gd-validate-child-proposal.py"
+    },
+    {
+      "gate_id": "G2",
+      "description": "草稿 owned_paths 与本 map 声明一致,单 step 不越界"
+    },
+    {
+      "gate_id": "G3",
+      "description": "草稿无 REV_VERDICT/GD_REVIEW_DECISION 字段"
+    },
+    {
+      "gate_id": "G4",
+      "description": "每条 SC 带可执行 verify(anti-fill 规则 A)"
+    },
+    {
+      "gate_id": "G5",
+      "description": "每波全完成并校验后才进下一波"
+    },
+    {
+      "gate_id": "G6",
+      "description": "step 间契约接口冲突时主 agent 写仲裁理由"
+    }
+  ]
+}

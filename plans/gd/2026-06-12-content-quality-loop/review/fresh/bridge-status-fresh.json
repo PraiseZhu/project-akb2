@@ -1,0 +1,10 @@
+{
+  "status": "completed",
+  "verdict": "REQUIRES_CHANGES",
+  "queue_job_id": "adhoc-adhoc-deb3ecb4efe47480",
+  "target_hash": "8a45ea09320febcd4090daab3af3f3bf7ac05b67047d55a1573d714ebb35fa06",
+  "capsule_hash": "5223007351edae4279e88f9cdbdba97500ac518421aff20a09ec4490856c5c20",
+  "mapped_result": "codex-mapped-fresh.json",
+  "transport_result": "/Users/praise/.claude/review-baselines/gd-plan-master-plan-md-6989ce4d96d4/result-20260612T122800Z.md",
+  "timestamp": "2026-06-12T12:28:00Z"
+}

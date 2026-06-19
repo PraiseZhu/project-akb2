@@ -1,0 +1,21 @@
+{
+  "batch_id": "batch-akb2-cql-execute-dispatch-v1-wave-e2",
+  "dispatch_id": "akb2-cql-execute-dispatch-v1",
+  "wave_ref": "e2",
+  "batch_created_at": "2026-06-13T00:30:00Z",
+  "execution_mode": "agent_exec",
+  "task_results": [
+    {
+      "job_id": "e-step2",
+      "result_path": "plans/gd/2026-06-12-content-quality-loop/execute/e-step2-result.yaml",
+      "status": "completed_build_only"
+    },
+    {
+      "job_id": "e-step3",
+      "result_path": "plans/gd/2026-06-12-content-quality-loop/execute/e-step3-result.yaml",
+      "status": "completed"
+    }
+  ],
+  "status": "placeholder_completed",
+  "authoritative_note": "Placeholder batch ledger — authoritative results at execute/e-step2-result.yaml and execute/e-step3-result.yaml"
+}

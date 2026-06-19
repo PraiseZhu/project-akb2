@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Atom Test Feed</title>
+  <link href="https://example.com/atom" rel="self"/>
+  <link href="https://example.com/"/>
+  <updated>2026-06-13T10:00:00Z</updated>
+  <id>https://example.com/atom</id>
+
+  <entry>
+    <title>Understanding Context Engineering</title>
+    <link href="https://example.com/blog/context-engineering"/>
+    <id>https://example.com/blog/context-engineering</id>
+    <updated>2026-06-12T14:00:00Z</updated>
+    <published>2026-06-12T14:00:00Z</published>
+    <summary>Context engineering is the practice of designing how AI agents receive, process, and maintain context across sessions. This article covers the fundamental patterns.</summary>
+    <content type="html"><![CDATA[<p>Context engineering is the practice of designing how AI agents receive, process, and maintain context across sessions.</p>]]></content>
+    <author>
+      <name>Jane Engineer</name>
+    </author>
+  </entry>
+
+  <entry>
+    <title>Multi-Agent Orchestration Patterns</title>
+    <link href="https://example.com/blog/multi-agent-patterns"/>
+    <id>https://example.com/blog/multi-agent-patterns</id>
+    <updated>2026-06-11T09:00:00Z</updated>
+    <published>2026-06-11T09:00:00Z</published>
+    <summary>Patterns for orchestrating multiple AI agents in parallel and sequential workflows. Covers fan-out, pipeline, and consensus patterns.</summary>
+    <author>
+      <name>Bob Systems</name>
+    </author>
+  </entry>
+</feed>

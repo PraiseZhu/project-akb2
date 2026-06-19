@@ -1,0 +1,10 @@
+{
+  "status": "completed",
+  "round": 3,
+  "queue_job_id": "adhoc-adhoc-750e82a55c53677b",
+  "target_role": "subplan",
+  "target_hash": "855e16fa2324649d23d0c8a5df1e47d126d72b87a97765baee82a2544575af4d",
+  "capsule_hash": "c1afa1b948f08de151a94bbd0f25db295c502c8fdd6d8c38874723dd43f844ca",
+  "review_decision": "REQUIRES_CHANGES",
+  "transport_result": "/Users/praise/.claude/review-baselines/gd-plan-master-plan-md-93ad689ebce0/result-20260612T121605Z.md"
+}

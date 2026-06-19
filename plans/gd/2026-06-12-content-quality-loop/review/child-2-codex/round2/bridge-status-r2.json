@@ -1,0 +1,16 @@
+{
+  "round": 2,
+  "status": "completed",
+  "transport_status": "completed",
+  "gd_review_decision": "REQUIRES_CHANGES",
+  "queue_job_id": "adhoc-adhoc-482aff9b7a58f0c6",
+  "capsule_hash": "0ffbfd871965742aa400bb72ff5bd0d9360776f08a86d41049cab2d53f6aaa92",
+  "target_hash": "da46fbe7b7bcd3354520f7859cd77eca85c9bf61f48ceb039894b7fd3b8c0c6c",
+  "mapped_result": "codex-mapped-r2.json",
+  "transport_result": "/Users/praise/.claude/review-baselines/gd-plan-master-plan-md-c72166e5732b/result-20260612T120918Z.md",
+  "findings_summary": {
+    "P1": 1,
+    "P2": 1
+  },
+  "timestamp": "2026-06-12T12:13:19Z"
+}

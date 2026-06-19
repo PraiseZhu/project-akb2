@@ -1,0 +1,32 @@
+{
+  "stage": "review_plan",
+  "review_round": 1,
+  "child_agent_count": 2,
+  "max_parallel": 2,
+  "capability_status": "available",
+  "child_jobs": [
+    {
+      "id": "child-1-claude",
+      "role": "claude_self_review",
+      "result_path": "review/child-1-claude/claude-review.md",
+      "result_hash": "5198ee8d91af0de8b7e05ca1dcd809b0018be477fa688793ae32377b7ba9821a",
+      "status": "completed",
+      "decision": "REQUIRES_CHANGES"
+    },
+    {
+      "id": "child-2-codex",
+      "role": "codex_bridge_cross_review",
+      "result_path": "review/child-2-codex/codex-mapped.json",
+      "result_hash": "2cb1f37a18d2997ded655430724d9e36e8e45ada4b08cb36e5b941048afff8b2",
+      "status": "completed",
+      "decision": "REQUIRES_CHANGES"
+    }
+  ],
+  "main_agent_merge": {
+    "merge_report_path": "review/merge-report-round1.md",
+    "merged_decision": "REQUIRES_CHANGES",
+    "p1_count": 1,
+    "p2_count": 7,
+    "auto_fix_initiated": true
+  }
+}

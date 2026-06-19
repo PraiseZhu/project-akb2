@@ -1,0 +1,77 @@
+{
+  "schema": "gd-stage-dispatch-ledger",
+  "dispatch_id": "cql-intake-v1",
+  "stage": "execute",
+  "child_agent_count": 6,
+  "max_parallel": 2,
+  "capability_status": "available",
+  "waves": [
+    {
+      "wave_id": "w1",
+      "parallel": 1,
+      "track_ids": ["t1"]
+    },
+    {
+      "wave_id": "w2",
+      "parallel": 2,
+      "track_ids": ["t2", "t4"]
+    },
+    {
+      "wave_id": "w3",
+      "parallel": 2,
+      "track_ids": ["t3", "t5"]
+    },
+    {
+      "wave_id": "w4",
+      "parallel": 1,
+      "track_ids": ["t6"]
+    }
+  ],
+  "child_jobs": [
+    {
+      "track_id": "t1",
+      "wave": "w1",
+      "result_path": "plans/gd/2026-06-14-cql-intake/execute/e-step1-result.yaml",
+      "result_hash": "ba6cbfbcfc099328f3d6c9b226e715a6f2b9b389cca3de309d86a8b02542ef1e",
+      "status": "completed"
+    },
+    {
+      "track_id": "t2",
+      "wave": "w2",
+      "result_path": "plans/gd/2026-06-14-cql-intake/execute/e-step2-result.yaml",
+      "result_hash": "40cc95cf67d0ebf21cf09193ea541205e477c867a96648663f3551b62b59b0d0",
+      "status": "completed"
+    },
+    {
+      "track_id": "t4",
+      "wave": "w2",
+      "result_path": "plans/gd/2026-06-14-cql-intake/execute/e-step4-result.yaml",
+      "result_hash": "96de0f2d6dd6232f84256d0d8529bc4631567cf13586bb988eff2ae681c18129",
+      "status": "completed"
+    },
+    {
+      "track_id": "t3",
+      "wave": "w3",
+      "result_path": "plans/gd/2026-06-14-cql-intake/execute/e-step3-result.yaml",
+      "result_hash": "41d2dcb29624a478d2c98102e648e1b17a4561e15858c7567c2d29bbd01d21d1",
+      "status": "completed"
+    },
+    {
+      "track_id": "t5",
+      "wave": "w3",
+      "result_path": "plans/gd/2026-06-14-cql-intake/execute/e-step5-result.yaml",
+      "result_hash": "fb4f33c008e1dcc2760eec7f49f9f780f5a2b4854ca8b29b5f3a51b98442a261",
+      "status": "completed"
+    },
+    {
+      "track_id": "t6",
+      "wave": "w4",
+      "result_path": "plans/gd/2026-06-14-cql-intake/execute/e-step6-result.yaml",
+      "result_hash": "0561926ab41a174827463b4cfd3e18733c8d023ab8749097964fb3570c979ec2",
+      "status": "completed"
+    }
+  ],
+  "main_agent_merge": {
+    "merge_report_path": "plans/gd/2026-06-14-cql-intake/execute/controller-report.json"
+  }
+}
