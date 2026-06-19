@@ -428,3 +428,42 @@ Test page.
 
         assert success is False, "Finalize should fail when lint re-verify fails"
         assert "lint re-verify failed" in detail.lower() or "roll" in detail.lower()
+
+
+class TestMachineReviewerSignature:
+    """机器 reviewer 升格签名（2026-06-17 修宪，CONTENT-LIFECYCLE §6.1 + §7 第 8 条）。"""
+
+    def test_flip_writes_machine_reviewer(self):
+        """五闸升 active 时写全 reviewer + reviewed_at；gate_reason（distill 已写）保留。"""
+        from src.akb2.quality.promote import MACHINE_REVIEWER, _flip_frontmatter
+
+        candidate = (
+            "---\n"
+            "slug: test-x\n"
+            "status: candidate\n"
+            "gate_decision: null\n"
+            "gate_reason: ok\n"
+            "---\n\n# body\n"
+        )
+        out = _flip_frontmatter(candidate, "test-x")
+        assert "status: active" in out
+        assert "gate_decision: active" in out
+        assert f"reviewer: {MACHINE_REVIEWER}" in out
+        assert re.search(r"^reviewed_at: \d{4}-\d{2}-\d{2}$", out, re.M)
+        assert "gate_reason: ok" in out
+
+    def test_flip_replaces_stale_reviewer_no_dup(self):
+        """已有 reviewer/reviewed_at 时替换为机器 reviewer，不重复。"""
+        from src.akb2.quality.promote import MACHINE_REVIEWER, _flip_frontmatter
+
+        candidate = (
+            "---\n"
+            "status: candidate\n"
+            "reviewer: stale\n"
+            "reviewed_at: 2020-01-01\n"
+            "---\n\n# body\n"
+        )
+        out = _flip_frontmatter(candidate, "x")
+        assert out.count("reviewer:") == 1
+        assert f"reviewer: {MACHINE_REVIEWER}" in out
+        assert "2020-01-01" not in out

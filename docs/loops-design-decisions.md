@@ -62,6 +62,7 @@
 
 - **判定规则:节点内需要"自主决定下一步"才上 agent;固定变换一律 LLM 函数**
 - Loop A 全部节点 = 固定变换:抓取/raw/准入/组装/gate/升格 = 脚本,提炼/复核 = LLM 函数(API 直调,litellm 路由,不经 agent 会话)
+> **NOTE(2026-06-17 实测修订)**:本裁决待重估。实测+调研(Boris Cherny:"给模型目标让它爬坡到完成")表明 **repair 节点不该是固定变换**——它本质需要"自主决定怎么改、改到何处、何时停",正是该上 agent 的场景。把 repair 当脚本做(整页重写+逐字节 diff)是 addy 卡空转的根因。Plan 4 拟把 **驱动/收敛/修复三个控制面还权给模型(agent)**,门控/准入/五闸仍保持确定性脚本 fail-closed(知识库误放成本高,不照搬"harness 会贬值")。详见文末修订块。
 - LLM 函数 = 固定输入→一次调用→schema 校验输出;重试/校验/预算全是确定性代码
 - Agent 进场位置:修复循环(诊断开放式)、进化循环、源补充的找新源任务、治理的立法起草
 - 状态:文件系统当队列 + jsonl 账本;幂等靠内容 hash;无数据库无消息队列
@@ -85,6 +86,7 @@
 - 七段链:抓取→raw 锚点化→准入→提炼组装→门控→升格→收尾,**每段一检查点,前段不过后段不启动**
 - 准入段新增:相关性/How 倾向/新颖度硬判定;负样本必须死在这里
 - 评分器(grader):GPT-5.4 + 从样张反提取的量规(锚定/How 可执行/证据诚实/解读分离/密度),输出**点名缺陷清单**供定点修复
+  > **NOTE(2026-06-17 实测修订)**:grader 本身实测可用(异族裁判、点名缺陷清单成立),**问题在 repair 侧而非 grader**。repair 空转 4 根因:① grader 的 location 词表 ≠ repair 小节定位 ② repair 只认 H2 不认 H3 ③ 整页重写+逐字节 diff 自相矛盾→整轮丢弃 ④ 超时静默吞(`repair.py:246`)。Plan 4(C+):repair 改 agent 爬坡,把 grader 的点名缺陷清单 + 黄金样本喂入,grader 复评作 `/goal` 停止条件。grader/量规零改动(forbidden)。
 - 出厂标准(端到端口径):20 条 URL 语料(含 2 负样本),≥90% 正样本各段限轮走完全程,负样本 100% 拒于准入,样张 URL 重跑结构等价
 - 运行期防漂移:周抽检 3 篇重过评分器,跌破阈值自动触发再校准
 - 状态:`quality-loop.jsonl` 每篇一条生命线(七段判定+轮次+耗时+token)
@@ -177,6 +179,7 @@ Ring 3 进化循环(月):功能架构自我迭代
 ## 9. 构建方式(loop 工程的本义)
 
 - **用户给一次目标,/goal 机制驱动 agent 循环逼近,AI 自己给 agent 发提示词**
+> **NOTE(2026-06-17 实测修订 · 范式分层)**:本节把"/goal 驱动循环"当成统一范式,概念错置。需分三层:(1)**dev 期构建循环**——/goal 驱动 agent 把 AKB2 这套系统造出来(本节描述的就是这层;本地 `/goal` 是提示词生成器,非 turn-loop,且无 `/loop` 命令);(2)**运行期内容循环(循环1)**——24h 常驻 daemon/launchd/watchdog,goal 达标即停**驱动不了**常驻供料,运行期是 loop 不是 goal;(3)**单篇 repair 收敛**——每篇向黄金样张爬坡,goal=量规阈值。三层不可混。详见文末修订块。
 - GOAL 文件 = 机判验收标准(14 步清单 + 各循环①标准 + 出厂统计阈值)
 - 构建循环:读账本→选工作单元→生成提示词→执行→pytest+gate+lint+样张回归→Codex cross-review→定点修复(有界)→记账→下一单元
 - 用户出现两次:批计划(每 Plan 一次)、看收工报告
@@ -216,3 +219,36 @@ Ring 3 进化循环(月):功能架构自我迭代
 - 风险定价:准入段(fail-closed)才是真噪音闸,源三筛仅预过滤;选错源代价=几次便宜准入调用+30 天自动汰换,故可主动快填不必慢挣
 - 进池流程:过三筛 → trial(L3 默许制:周报预告,不否决即进);用户只看周报"本周进池 N/汰换 M/池 X/200"
 - 已确认核心源(day-1 池首批):Anthropic Engineering、OpenAI Blog/Cookbook、Addy Osmani、Simon Willison、steipete.me、Lilian Weng、Chip Huyen、Eugene Yan、Hamel Husain、LangChain、HuggingFace;Rauno Freiberg、Josh Comeau、Emil Kowalski、Motion、web.dev、Vercel、Ahmad Shadeed、Figma、Linear、Maggie Appleton、Game Developer、Lost Garden(CSS-Tricks 列汰换观察位;Dribbble/Behance 类图站不收——无 how 过不了准入)
+
+---
+
+## 12. 2026-06-17 实测修订 · CQL Plan 4 设计输入
+
+> 2026-06-12 设计冻结后的实测 + 调研结论。§1-11 原文保留;受本块约束处已就地加 NOTE(§5 架构裁决、§7 循环1 grader、§9 范式分层)。
+
+### 12.1 实测结论(真 API · tapsvc 网关)
+- 黄金样张 addy-osmani 卡端到端跑通全 7 段,**卡在 repair:grade 7→修后 10→12,3 轮不收敛(越修越坏)**。
+- intake 层已出货:archived 0→4(raw 9 字段 frontmatter + 锚点齐)。后半段(准入→提炼→评分→修复→升格)经 backhalf 计划首次真跑,**骨架贯通,repair 是唯一撞墙节点**;~80% 地基实测可用。
+- repair 空转 4 根因:① grader 的 location 词表 ≠ repair 小节定位 ② 只认 H2 不认 H3 ③「整页重写+逐字节 diff 不变」自相矛盾→整轮丢弃 ④ 超时被静默 continue 吞(`repair.py:246`,违反原则 4 失败可见)。
+
+### 12.2 调研启发(Addy Osmani《Loop Engineering》+ Boris Cherny AI Ascent 炉边谈话)
+- **loop 工程 6 件套**:Automations(心跳)/ Worktrees(并行隔离)/ Skills(知识外置)/ Connectors(MCP 触手)/ Sub-agents(maker/checker)/ Memory(状态落盘)。
+- **AKB2 对账**:✅ Skills(skillpack)/ Memory(loops/ledger)/ Automations 骨架(runner daemon);⊘ Worktrees 故意不要(串行单工是节流阀,FR-017);⚠️ Connectors 主链不需(循环1 写 vault filesystem 即其环境,对外是 Plan 3);⚠️ **Sub-agents 的"自驱动修复 agent"= 真缺口**(Plan 4 未建,正是 repair 空转处)。
+- **Boris 核心论断**:"4.7 可以对任何东西爬坡优化,你给它一个目标,让它一直迭代到完成——这是第一个能做到的模型。" → **背书黄金样张目标驱动范式**。他实战:几十个单一职责小 loop(PR watcher / CI healer / Twitter clusterer)+ routines(服务器侧,关机不停)+ 模型自己决定何时开 loop/并行。
+- **关键断层**:AKB2 把节点全做成确定性脚本、模型只当 LLM 函数(§5 裁决);Boris 实践是"模型自己决定编排/修复"。**repair 空转根因 = 用刚性脚本对抗模型爬坡**。
+- **警示(不照搬)**:Boris"模型自己会做对、harness 会贬值、安全机制变次要"的乐观适用于**写代码**(错了重跑成本低),**不适用于知识库入库**(误放一篇洗稿=坟场化,误放成本高且难回滚)→ 门控/准入/五闸保持确定性 fail-closed,仅**修复/编排**还权给模型。
+
+### 12.3 决策:C+ → B(不推倒重来 A)
+- **A 推倒重来**:否决。~80% 地基实测全通,质量门是知识库场景正确选择,不学写代码场景的激进。
+- **C+(最小可出货,= B 第一步)**:只重写 repair 节点 → 「缺陷清单 + 黄金样本 → agent 定点爬坡(切节-改节-拼回)→ grader 作 `/goal` 停止条件」;统一 grader↔repair location 契约;认 H3;超时不静默。验收门 = addy 卡端到端收敛。
+- **B(根治,C+ 验证收敛后)**:① 范式分层写进 spec(见 §9 NOTE 三层)② 重估 §5 架构裁决(驱动/收敛/修复还权给模型)③ 修三缺口 ④ 补 2-3 张真实卡验证契约表达力。
+
+### 12.4 三缺口(目标驱动范式真缺的)
+1. **黄金样本不进 repair 输入** → maker 盲修非照范本爬坡。
+2. **固有缺陷不上抛换源** → 如 How 不可执行因源头没命令,repair 再多轮也修不出,该上抛循环4换源而非死磕。
+3. **收敛口径矛盾** → "收敛=零缺陷"(碰宪法 P3 fail-closed)vs "目标驱动=足够接近阈值"。需修宪(L4 红线,待用户批);纪律:先让 C+ 实测能否到零,**不能才据数据提修宪案**(原则 8 实测裁决)。
+
+### 12.5 计划包映射
+- `plans/gd/2026-06-12-content-quality-loop`(Plan 1 主链路):step-4(质量评估与修复)需重写 repair;SC-3「≥90% 正样本 ≤3 轮」受 repair 阻塞,C+ 收敛是解锁前提。
+- `plans/gd/2026-06-14-cql-intake`:已交付(archived 0→4),非阻塞。
+- `plans/gd/2026-06-15-cql-backhalf`:已实测出 repair 空转;C+ repair 重写是其自然续作(见该计划 v4 修订)。

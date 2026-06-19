@@ -88,6 +88,7 @@ class RunnerConfig:
     poll_interval_seconds: int = POLL_INTERVAL_SECONDS
     auto_promote: bool = False
     lock_dir: str = ""
+    golden_sample_path: str = ""  # 权威黄金样张(喂 repair 爬坡);空则不喂
 
     def __post_init__(self) -> None:
         if not self.lock_dir:
@@ -97,6 +98,23 @@ class RunnerConfig:
 def _now() -> datetime:
     """当前 UTC 时间（可 mock）。"""
     return datetime.now(UTC)
+
+
+def _load_golden_sample(config: RunnerConfig) -> str | None:
+    """读权威黄金样张(addy active 页)作 repair 爬坡标杆;缺失返回 None(repair 降级 prompt)。
+
+    路径优先级:config.golden_sample_path override > 从 raw_dir 派生
+    (akb2_root = raw_dir.parent;golden = akb2_root/wiki/sources/addy-osmani-loop-engineering.md)。
+    """
+    golden_path = (
+        Path(config.golden_sample_path)
+        if config.golden_sample_path
+        else Path(config.raw_dir).parent / "wiki/sources/addy-osmani-loop-engineering.md"
+    )
+    try:
+        return golden_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -331,6 +349,7 @@ def _run_distill_segment(
 
 def _run_quality_segments(
     candidate_text: str,
+    candidate_path: str,
     raw_content: str,
     config: RunnerConfig,
     grader_result_path: Path | None = None,
@@ -426,12 +445,15 @@ def _run_quality_segments(
         "b_defect_summary": _defect_summary(b_defects),
     }
 
-    # 修复循环
+    # 修复循环(根因③:喂权威黄金样张作 repair 爬坡标杆)
+    golden_text = _load_golden_sample(config)
     repair_result = run_repair_loop(
         candidate_text=candidate_text,
         a_defects=a_defects,
         b_defects=b_defects,
         failures_path=config.failures_path,
+        golden_sample_text=golden_text,
+        raw_text=raw_content,
     )
 
     repair_rounds = repair_result.get("rounds", 0)
@@ -449,6 +471,11 @@ def _run_quality_segments(
         remaining = len(final_defects)
         return False, error_class, f"修复不收敛: {remaining} 项缺陷残留", meta_final
 
+    # 问题2(Codex):repair 收敛后把 final_text 写回 candidate 文件
+    # (否则 promote 段读修复前 candidate,C+ 真链路不成立)
+    final_text = repair_result.get("final_text")
+    if final_text and final_text != candidate_text:
+        Path(candidate_path).write_text(final_text, encoding="utf-8")
     _persist_grader_pass()
     return True, "", "", meta_final
 
@@ -551,7 +578,7 @@ def _run_pipeline_segments(
         Path(config.grader_result_dir) / f"{Path(candidate_path).stem}.grader.json"
     )
     converged, error_class, error_detail, quality_meta = _run_quality_segments(
-        candidate_text, raw_content, config, grader_result_path
+        candidate_text, candidate_path, raw_content, config, grader_result_path
     )
     # P2: rounds 回填真实 repair 轮数（修复原恒为 0 的报告 bug）
     rounds = quality_meta.get("repair_rounds", 0) if quality_meta else 0

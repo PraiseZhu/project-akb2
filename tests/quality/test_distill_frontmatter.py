@@ -420,6 +420,86 @@ class TestCandidatePageWritten:
             assert "段 1 抽取未成功" in result.error
 
 
+class TestFrontmatterActiveRequiredFields:
+    """active 必填字段补齐（2026-06-18 F4 schema 对账）——否则升格被 lint P1 硬门拦。"""
+
+    def _data(self):
+        return {
+            "claims": [
+                {"text": "Loop engineering bounds agent workflows", "anchor": "§A", "provenance": "source_grounded"},
+                {"text": "Maker and checker must be different model families", "anchor": "§B", "provenance": "source_grounded"},
+                {"text": "Every loop needs an explicit named budget", "anchor": "§C", "provenance": "source_grounded"},
+            ],
+            "how_steps": ["step 1"],
+            "params": {},
+            "referenced_concepts": ["loop-engineering", "harness-engineering"],
+        }
+
+    def test_constant_fields_present(self):
+        """template_type/graph_role/evidence_provenance/graph_status/star_level 写死正确值。"""
+        from src.akb2.quality.distill import _build_frontmatter
+
+        fm = _build_frontmatter("raw/test.md", self._data())
+        assert fm["template_type"] == "source"
+        assert fm["graph_role"] == "evidence"
+        assert fm["graph_status"] == "healthy"
+        assert fm["evidence_provenance"] == "source_grounded"
+        assert fm["star_level"] == 0
+
+    def test_key_findings_from_claims(self):
+        """key_findings 为非空数组，来自 claims（真实内容 ≥3 满足 H7）。"""
+        from src.akb2.quality.distill import _build_frontmatter
+
+        fm = _build_frontmatter("raw/test.md", self._data())
+        assert isinstance(fm["key_findings"], list)
+        assert len(fm["key_findings"]) >= 3, f"3 条 claims 应产 ≥3 key_findings: {fm['key_findings']}"
+
+    def test_related_concepts_wikilink_format(self):
+        """related_concepts 统一 [[wikilink]] 格式（GRAPH-LINKING §3.8.1）。"""
+        from src.akb2.quality.distill import _build_frontmatter
+
+        fm = _build_frontmatter("raw/test.md", self._data())
+        for c in fm["related_concepts"]:
+            assert c.startswith("[[") and c.endswith("]]"), f"非 wikilink 格式: {c}"
+
+    def test_source_metadata_from_raw_frontmatter(self):
+        """source_url/author/published_at 从 raw frontmatter 取（不是空）。"""
+        import tempfile
+
+        from src.akb2.quality.distill import _build_frontmatter
+
+        raw = """---
+artifact_type: raw
+source_slug: addy-osmani-loop-engineering
+source_url: https://example.com/loop-engineering
+source_title: Loop Engineering
+source_authors: ["Addy Osmani"]
+source_published_at: 2026-06-07
+---
+
+# §A body
+"""
+        with tempfile.NamedTemporaryFile("w", suffix="--raw--2026-06-11.md", delete=False, encoding="utf-8") as fh:
+            fh.write(raw)
+            path = fh.name
+
+        fm = _build_frontmatter(path, self._data())
+        assert fm["source_url"] == "https://example.com/loop-engineering"
+        assert fm["source_author"] == "Addy Osmani"  # list → 首作者
+        assert fm["source_published_at"] == "2026-06-07"
+        assert "Loop Engineering" in fm["canonical_title"]
+        assert fm["source_type"] == "blog"  # raw 无 source_type → 默认 blog
+
+    def test_missing_raw_file_graceful(self):
+        """raw 文件不存在时不崩，来源字段降级为空/默认。"""
+        from src.akb2.quality.distill import _build_frontmatter
+
+        fm = _build_frontmatter("raw/does-not-exist.md", self._data())
+        assert fm["source_url"] == ""
+        assert fm["source_type"] == "blog"
+        assert fm["template_type"] == "source"  # 常量字段不受影响
+
+
 class TestCandidatePageBodyStructure:
     """候选页正文 10 节结构验证。"""
 

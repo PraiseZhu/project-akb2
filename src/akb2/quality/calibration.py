@@ -207,7 +207,8 @@ def _fetch_url_content(url: str, config: dict[str, Any]) -> str | None:
     """抓取 URL 内容。
 
     对于 fixture: 前缀的 URL，从本地 fixture 读取。
-    对于真实 URL，尝试 defuddle。
+    对于真实 URL，走生产 extract_content 决策树（根因④：defuddle→scrapling→docling
+    三层兜底），不再用 defuddle+urllib 弱抓取（旧 14/18 intake_raw 失败根因）。
 
     Returns:
         内容字符串，或 None 表示抓取失败。
@@ -217,33 +218,14 @@ def _fetch_url_content(url: str, config: dict[str, Any]) -> str | None:
         fixture_name = url.replace("fixture:", "")
         return _load_fixture_content(fixture_name)
 
-    # 尝试 defuddle
+    # 根因④(2026-06-18):走生产 extract_content(多工具决策树)
+    failures_path = config.get("failures_path", "")
     try:
-        import subprocess
+        from src.akb2.quality.intake.extract import extract_content
 
-        result = subprocess.run(
-            ["defuddle", "parse", url],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        pass
-
-    # 尝试直接 HTTP 请求（低权限 fallback）
-    try:
-        import urllib.request
-
-        req = urllib.request.Request(
-            url,
-            headers={"User-Agent": "AKB2-Calibration/1.0"},
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            content = resp.read().decode("utf-8", errors="replace")
-            if len(content) > 100:
-                return _html_to_markdown_fallback(content, url)
+        result = extract_content(url, failures_path=failures_path or None)
+        if result.extraction_success and result.content:
+            return result.content
     except Exception:
         pass
 

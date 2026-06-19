@@ -405,10 +405,17 @@ def rollback_snapshot(snapshot_id: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+# 机器 reviewer 身份（CONTENT-LIFECYCLE §6.1，用户 2026-06-13 预批常驻委托）
+MACHINE_REVIEWER = "akb2-quality-loop-v1"
+
+
 def _flip_frontmatter(text: str, slug: str) -> str:
-    """翻转 frontmatter: status: active + gate_decision: active。
+    """翻转 frontmatter: status: active + gate_decision: active + 机器 reviewer 签名。
 
     同时去掉候选自评前缀（如 "候选自评: " 等 pattern）。
+    机器 reviewer 签名（2026-06-17 修宪）：五闸全过经本函数升 active 时，
+    必须写全 reviewer/reviewed_at（gate_reason 由 distill 候选阶段已写入），
+    满足 CONTENT-LIFECYCLE §1.3 不变量 2 + §7 第 8 条。
     """
     fm_match = re.match(r"^---\n(.*?)\n---\n", text, re.DOTALL)
     if not fm_match:
@@ -430,6 +437,17 @@ def _flip_frontmatter(text: str, slug: str) -> str:
     # 添加 slug（如不存在）
     if not re.search(r"^slug:", fm_text, re.M):
         fm_text += f"\nslug: {slug}"
+
+    # 机器 reviewer 签名（active 必带 reviewer + reviewed_at）
+    reviewed_at = datetime.now(UTC).strftime("%Y-%m-%d")
+    if re.search(r"^reviewer:", fm_text, re.M):
+        fm_text = re.sub(r"^reviewer:\s*.*$", f"reviewer: {MACHINE_REVIEWER}", fm_text, flags=re.M)
+    else:
+        fm_text += f"\nreviewer: {MACHINE_REVIEWER}"
+    if re.search(r"^reviewed_at:", fm_text, re.M):
+        fm_text = re.sub(r"^reviewed_at:\s*.*$", f"reviewed_at: {reviewed_at}", fm_text, flags=re.M)
+    else:
+        fm_text += f"\nreviewed_at: {reviewed_at}"
 
     return f"---\n{fm_text}\n---\n{body}"
 

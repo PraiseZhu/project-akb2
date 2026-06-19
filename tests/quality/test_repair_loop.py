@@ -706,3 +706,196 @@ class TestMaxRepairRounds:
         assert "MAX_REPAIR_ROUNDS" in source, (
             "run_repair_loop must use MAX_REPAIR_ROUNDS constant"
         )
+
+
+# ---------------------------------------------------------------------------
+# 根因④: 路由失败不再静默吞(违宪法 P4 失败可见)
+# ---------------------------------------------------------------------------
+
+
+class TestRouteFailureVisible:
+    def test_route_failure_records_signature(
+        self, candidate_with_defects, temp_failures_path
+    ):
+        """根因④:路由失败(RouterConfigError/超时)→ 记 signature 留痕,不再静默 continue。
+
+        绑可观测行为:failures.jsonl 必须出现 repair_route_failed(每轮失败都留痕),
+        而非旧的"静默 continue 把失败伪装成模型修不动"。
+        """
+        from src.akb2.quality.llm_router import RouterConfigError
+
+        def mock_route_fail(model_family, messages, response_schema=None):
+            raise RouterConfigError("simulated key/endpoint failure (根因④ 测试)")
+
+        a_defects = run_structural_checks(candidate_with_defects)
+        b_defects = [
+            Defect(
+                dimension="论断锚定率",
+                location="TLDR",
+                defect="无锚点",
+                suggestion="添加锚点",
+            ),
+        ]
+
+        result = run_repair_loop(
+            candidate_text=candidate_with_defects,
+            a_defects=a_defects,
+            b_defects=b_defects,
+            failures_path=temp_failures_path,
+            mock_route_llm=mock_route_fail,
+        )
+
+        # 每轮路由失败都留痕 → failures.jsonl 含 repair_route_failed(不再静默)
+        failures_content = Path(temp_failures_path).read_text()
+        assert "repair_route_failed" in failures_content, (
+            "根因④:路由失败必须记 signature 留痕(违宪法 P4),不可静默吞"
+        )
+        # 3 轮全失败 → fail_closed(distill_no_converge)
+        assert result["rounds"] == MAX_REPAIR_ROUNDS
+        assert result["signature_written"]
+
+
+# ---------------------------------------------------------------------------
+# 根因①②: 定位认 H2+H3 + location 归一化匹配
+# ---------------------------------------------------------------------------
+
+
+class TestH3LocationNormalization:
+    def test_finds_h3_sections(self):
+        """根因②:正文 H3 子节也被识别(不只 H2)。"""
+        from src.akb2.quality.repair import _find_sections_h2_h3
+
+        text = "## 核心论点\n### 操作步骤1-9\n内容\n## 论证与解释\n正文"
+        titles = {t for _, t in _find_sections_h2_h3(text)}
+        assert "核心论点" in titles
+        assert "操作步骤1-9" in titles, "H3 子节必须被识别(根因②)"
+        assert "论证与解释" in titles
+
+    def test_normalize_matches_free_location(self):
+        """根因①:grader 自由 location(如'核心论点 第2条')归一化后匹配 H2'核心论点'。"""
+        from src.akb2.quality.repair import _normalize_loc
+
+        loc = _normalize_loc("核心论点 第2条")
+        title = _normalize_loc("核心论点")
+        assert title and title in loc, (
+            "归一化后 '核心论点' 应匹配 '核心论点 第2条'(根因①,原精确子串匹配会漏)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 根因③: 定点爬坡切节拼回(废整页重写)
+# ---------------------------------------------------------------------------
+
+
+class TestApplySectionPatches:
+    def test_only_named_section_replaced(self):
+        """根因③:只替换被点名节,其余原样。"""
+        from src.akb2.quality.repair import _apply_section_patches
+
+        body = "## TLDR\n旧TLDR\n## 核心论点\n旧论点\n## 维护记录\n- 旧"
+        patches = {"TLDR": "## TLDR\n新TLDR(带锚点)"}
+        result = _apply_section_patches(body, patches)
+        assert "新TLDR(带锚点)" in result
+        assert "旧论点" in result, "核心论点未点名必须不变"
+        assert "- 旧" in result, "维护记录未点名必须不变"
+
+    def test_unnamed_section_byte_unchanged(self):
+        """根因③:未点名节逐字节不变(机制保证,LLM 碰不到)。"""
+        from src.akb2.quality.repair import _apply_section_patches
+
+        body = "## A\na内容\n## B\nb内容"
+        result = _apply_section_patches(body, {"A": "## A\n新a"})
+        assert "## B\nb内容" in result, "B 节逐字节不变"
+
+    def test_invalid_patch_returns_body_unchanged(self):
+        """根因③:patch 非 JSON/解析失败 → 原样返回(上层记 signature,不崩)。"""
+        from src.akb2.quality.repair import _apply_section_patches
+
+        body = "## A\na内容"
+        assert _apply_section_patches(body, "not json") == body
+        assert _apply_section_patches(body, None) == body
+
+    def test_allowed_titles_drops_extra_patch(self):
+        """问题5:allowed_titles 限制——LLM 返回未点名节 patch 必须丢弃(机制保证)。"""
+        from src.akb2.quality.repair import _apply_section_patches
+
+        body = "## TLDR\n旧TLDR\n## 核心论点\n旧论点\n## 维护记录\n- 旧"
+        # LLM 返回 TLDR(命名)+ 核心论点(未命名,额外/违规)
+        patches = {
+            "TLDR": "## TLDR\n新TLDR",
+            "核心论点": "## 核心论点\n被改了!",
+        }
+        result = _apply_section_patches(body, patches, allowed_titles={"TLDR"})
+        assert "新TLDR" in result, "命名节 TLDR 应被 patch"
+        # 核心论点未点名 → patch 被丢弃 → 逐字节不变
+        assert "旧论点" in result
+        assert "被改了!" not in result, "未命名节 patch 必须被 apply 丢弃(问题5机制保证)"
+
+    def test_empty_allowed_titles_applies_zero_patch(self):
+        """问题3(Codex):空集合(没定位到任何节)→ 必须零 patch,而非当 None 全应用。"""
+        from src.akb2.quality.repair import _apply_section_patches
+
+        body = "## A\na内容\n## B\nb内容"
+        # 空集合 ≠ None;LLM 返回任意 patch 都不应应用
+        result = _apply_section_patches(body, {"A": "## A\n被改了!"}, allowed_titles=set())
+        assert result == body, "空 allowed_titles 必须零 patch(问题3,原空当 None 会全应用)"
+
+
+class TestRepairLoopSectionPatch:
+    """根因③ 集成:LLM 返回 JSON 节 patch → loop apply 真改点名节,未点名节逐字节不变。
+
+    (区别于旧 test_single_round_convergence:旧 fixture 返回完整页,③后 apply 会
+    解析失败回退原样——但因 mock grader 全 pass 仍"收敛",是假阳性。本测试用
+    JSON patch fixture,真正验证定点爬坡生效。)
+    """
+
+    def test_loop_applies_section_patch_and_preserves_unnamed(
+        self, candidate_with_defects, temp_failures_path
+    ):
+        from tests.quality.conftest import make_mock_route_llm
+
+        all_pass = [
+            {"dimension": d, "pass": True, "defects": []}
+            for d in [
+                "论断锚定率", "How 密度", "How 可执行性", "证据诚实", "解读分离",
+                "TLDR 密度", "新颖增量", "边强度匹配", "Future Questions 质量", "适用边界",
+            ]
+        ]
+        patch_resp = {
+            "deepseek-v4-pro": LLMResponse(
+                content={"TLDR": "## TLDR\nLoop Engineering: bounded loops [raw §A]."},
+                model_used="deepseek-v4-pro",
+                calls_used=1,
+            ),
+            "gpt-5.4": LLMResponse(
+                content={"dimensions": all_pass},
+                model_used="gpt-5.4",
+                calls_used=1,
+            ),
+        }
+        mock_llm = make_mock_route_llm(patch_resp)
+
+        result = run_repair_loop(
+            candidate_text=candidate_with_defects,
+            a_defects=[],
+            b_defects=[
+                Defect(
+                    dimension="论断锚定率",
+                    location="TLDR",
+                    defect="TLDR 无 [raw §X] 锚点",
+                    suggestion="为 TLDR 加 [raw §A] 锚点",
+                )
+            ],
+            failures_path=temp_failures_path,
+            mock_route_llm=mock_llm,
+        )
+
+        assert result["converged"], "应收敛(patch 改 TLDR + grader 全 pass)"
+        # 根因③ 真测:TLDR 节被 patch 替换(出现锚点)
+        assert "[raw §A]" in result["final_text"], (
+            "TLDR 节应被 JSON patch 替换(出现锚点)——定点爬坡真生效"
+        )
+        # 未点名节逐字节不变(根因③ 机制保证,repair 碰不到)
+        assert "1. Bounded loops are important" in result["final_text"], (
+            "未点名节'关键发现'逐字节不变"
+        )

@@ -428,30 +428,81 @@ def _derive_slug(raw_path: str) -> str:
     return slug
 
 
+# active source 页 frontmatter key_findings 硬门（H7 / SOURCE-KEY-FINDINGS-MISSING-FRONTMATTER P1）
+KEY_FINDINGS_MIN = 3
+
+
+def _read_raw_frontmatter(raw_path: str) -> dict[str, Any]:
+    """读取 raw 文件 YAML frontmatter；缺失/不可解析时返回 {}（优雅降级，单测传虚拟路径不崩）。"""
+    try:
+        with open(raw_path, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return {}
+    m = re.match(r"^---\n(.*?)\n---\n", text, re.DOTALL)
+    if not m:
+        return {}
+    try:
+        import yaml
+
+        data = yaml.safe_load(m.group(1))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _first_author(authors: Any) -> str:
+    """source_authors 兼容 list（`["A"]`）与 scalar（`A`）→ 首作者字符串。"""
+    if isinstance(authors, list):
+        return str(authors[0]) if authors else ""
+    if isinstance(authors, str):
+        return authors
+    return ""
+
+
+def _extract_key_findings(claims: list[dict[str, Any]]) -> list[str]:
+    """从 claims 取 key_findings 短陈述数组（真实内容 claims≥3 时自然满足 H7 ≥3 硬门）。"""
+    findings: list[str] = []
+    for c in claims:
+        text = str(c.get("text", "")).strip()
+        if not text:
+            continue
+        findings.append(text if len(text) <= 120 else text[:117] + "...")
+    return findings
+
+
 def _build_frontmatter(
     raw_path: str,
     extract_data: dict[str, Any],
 ) -> dict[str, Any]:
-    """构建 frontmatter（确定性代码，防范已知坑 1-3）。
+    """构建 frontmatter（确定性代码）。
+
+    candidate 阶段产出 active-ready 的全字段集（除 reviewer/reviewed_at——
+    那两项由 promote 升格时的机器 reviewer 写入，见 CONTENT-LIFECYCLE §6.1）。
 
     已知坑:
         1. gate_decision 写死 null（不许预填 active，防 HC-09 拦）
         2. source_refs 必须含 raw 路径（HC-05 硬指标）
         3. gate_reason ≤150 字符（lint P1）
+    补齐（2026-06-18，F4 schema 对账）:
+        template_type / key_findings / graph_role / evidence_provenance /
+        source_type / source_author / source_published_at / star_level
+        —— 否则升格时被 active lint P1 硬门拦（升不了格）。
     """
     claims = extract_data.get("claims", [])
     concepts = extract_data.get("referenced_concepts", [])
+    raw_fm = _read_raw_frontmatter(raw_path)
 
-    # 确保 related_concepts ≥2
+    # 确保 related_concepts ≥2，并统一 [[wikilink]] 格式（GRAPH-LINKING §3.8.1）
     related = list(concepts) if concepts else []
     if len(related) < RELATED_CONCEPTS_MIN:
-        # 从 claims 中反推概念名
         fallback_concepts = _infer_concepts(claims)
         for fc in fallback_concepts:
             if fc not in related:
                 related.append(fc)
             if len(related) >= RELATED_CONCEPTS_MIN:
                 break
+    related_links = [c if str(c).startswith("[[") else f"[[{c}]]" for c in related]
 
     # future_questions 2-3 条
     questions = _generate_questions(claims, extract_data.get("how_steps", []))
@@ -463,13 +514,36 @@ def _build_frontmatter(
     )
     gate_reason = raw_reason[:GATE_REASON_MAX_CHARS]
 
+    slug = _derive_slug(raw_path)
+    source_title = str(raw_fm.get("source_title", "")).strip()
+    canonical_title = f"{slug} — {source_title}" if source_title else slug
+
     frontmatter: dict[str, Any] = {
+        # 身份
+        "canonical_title": canonical_title,
+        "slug": slug,
+        "template_type": "source",
+        "directory_scope": "wiki/sources/",
+        # 来源
+        "source_type": str(raw_fm.get("source_type", "blog")),
+        "source_url": str(raw_fm.get("source_url", "")),
+        "source_author": _first_author(raw_fm.get("source_authors")),
+        "source_published_at": str(raw_fm.get("source_published_at", "")),
+        "evidence_provenance": "source_grounded",
+        "confidence": "medium",
+        # 状态（短）
         "status": "candidate",
         "gate_decision": None,  # 写死 null（已知坑 1）
-        "source_refs": [raw_path],  # 必须含 raw 路径（已知坑 2）
         "gate_reason": gate_reason,  # ≤150 字符（已知坑 3）
+        "star_level": 0,  # 0 星基线（STAR-RATING；升星引擎=循环3）
+        "graph_role": "evidence",  # source 默认（PAGE-TEMPLATES §4.0）
+        "graph_status": "healthy",
+        # 内容
+        "key_findings": _extract_key_findings(claims),
         "future_questions": questions,
-        "related_concepts": related,
+        "related_concepts": related_links,
+        "source_refs": [raw_path],  # 必须含 raw 路径（已知坑 2）
+        # 保留
         "artifact_type": "wiki",
         "pipeline_version": "v1",
     }
@@ -732,9 +806,14 @@ def _assemble_page(frontmatter: dict[str, Any], body: str) -> str:
         elif isinstance(value, bool):
             fm_lines.append(f"{key}: {str(value).lower()}")
         elif isinstance(value, list):
-            fm_lines.append(f"{key}:")
-            for item in value:
-                fm_lines.append(f"  - {item}")
+            if key.startswith("related_"):
+                # 轻量 wikilink list 内联渲染（GRAPH-LINKING §3.8.1 + 控 frontmatter 行数）
+                inline = ", ".join(f'"{item}"' for item in value)
+                fm_lines.append(f"{key}: [{inline}]")
+            else:
+                fm_lines.append(f"{key}:")
+                for item in value:
+                    fm_lines.append(f"  - {item}")
         elif isinstance(value, (int, float)):
             fm_lines.append(f"{key}: {value}")
         else:
