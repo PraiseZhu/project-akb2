@@ -37,6 +37,14 @@ fi
 DATE="$(TZ=Asia/Shanghai date +%Y-%m-%d)"
 ts()  { TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S'; }
 log() { echo "$(ts) [backstop] $*" | tee -a "$LOG" >&2; }
+deadline_missed() {
+  local now_hm deadline_h deadline_m deadline_hm
+  now_hm="$(TZ=Asia/Shanghai date +%H%M)"
+  deadline_h="${AKB2_BRIEFING_DEADLINE_HOUR:-12}"
+  deadline_m="${AKB2_BRIEFING_DEADLINE_MINUTE:-0}"
+  printf -v deadline_hm '%02d%02d' "$deadline_h" "$deadline_m"
+  (( 10#$now_hm >= 10#$deadline_hm ))
+}
 
 # 发布落点（与 pipeline.py: briefing_filename = "<date> Daily Briefing.md" 对齐）
 SOCIAL_FILE="$VAULT_ROOT/Praise Space/AKB2.0/AI TRENDS/Social/$DATE Daily Briefing.md"
@@ -46,7 +54,11 @@ SOCIAL_FILE="$VAULT_ROOT/Praise Space/AKB2.0/AI TRENDS/Social/$DATE Daily Briefi
 # - warn / fail: 已发布但质量有问题 → 触发重跑（覆盖）
 # - 文件不存在或无法解析 → 触发重跑
 if [[ -f "$SOCIAL_FILE" ]]; then
-  audit_verdict=$(sed -n '/^---$/,/^---$/p' "$SOCIAL_FILE" 2>/dev/null | grep -oP 'audit_verdict:\s*\K\w+' 2>/dev/null || true)
+  audit_verdict=$(
+    sed -n '/^---$/,/^---$/p' "$SOCIAL_FILE" 2>/dev/null \
+      | sed -n -E 's/^audit_verdict:[[:space:]]*"?([A-Za-z_]+)"?.*/\1/p' \
+      | head -n 1
+  )
   if [[ "$audit_verdict" == "pass" ]]; then
     log "skip — 今日已发布且 audit_verdict=pass，无需补跑 ($DATE)"
     exit 0
@@ -61,8 +73,17 @@ fi
 
 # 守卫 ②：主跑进程仍在运行 → 让它先跑完，本次跳过
 if pgrep -f "akb2.briefing.pipeline" >/dev/null 2>&1; then
+  if deadline_missed; then
+    log "FAILED — 已超过 12:00 deadline，主跑仍在进行，不能继续静默等待 ($DATE)"
+    exit 124
+  fi
   log "skip — 主跑仍在进行，本次不抢 ($DATE)"
   exit 0
+fi
+
+if deadline_missed; then
+  log "FAILED — 已超过 12:00 deadline 且今日未发布，不再启动补跑 ($DATE)"
+  exit 124
 fi
 
 if [[ "$DRY_RUN" -eq 1 ]]; then

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # feishu_sync.sh — Shell wrapper：发现当天简报 → 飞书卡片 → PROJECT DOKI 发送。
-# Usage: feishu_sync.sh --vault-root <path> [--date YYYY-MM-DD] [--target dm|group] [--state-path <abs>]
+# Usage: feishu_sync.sh --vault-root <path> [--date YYYY-MM-DD] [--target dm|group] [--state-path <abs>] [--dry-run]
 # 默认 --target dm（防误发群）；prod launchd 显式传 --target group。
 set -euo pipefail
 
@@ -21,6 +21,7 @@ DATE_ARG=""
 VAULT_ROOT=""
 TARGET="dm"
 STATE_PATH=""
+DRY_RUN=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -28,6 +29,7 @@ while [[ $# -gt 0 ]]; do
     --vault-root) VAULT_ROOT="$2"; shift 2 ;;
     --target) TARGET="$2"; shift 2 ;;
     --state-path) STATE_PATH="$2"; shift 2 ;;
+    --dry-run) DRY_RUN=1; shift ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -44,6 +46,9 @@ fi
 CMD=("$PYTHON_BIN" -m akb2.feishu_sync.cli --date "$DATE_ARG" --vault-root "$VAULT_ROOT" --target "$TARGET")
 if [[ -n "$STATE_PATH" ]]; then
   CMD+=(--state-path "$STATE_PATH")
+fi
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  CMD+=(--dry-run)
 fi
 
 exec "${CMD[@]}"

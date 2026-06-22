@@ -6,7 +6,7 @@
 
 [vault]
 # Obsidian vault 内 AKB2.0 子库根
-akb2_root = "${HOME}/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0"
+akb2_root = "${HOME}/Obsidian/Praise Space/AKB2.0"
 
 [vault.layers]
 # 三层 + 支撑区，路径相对 vault.akb2_root
