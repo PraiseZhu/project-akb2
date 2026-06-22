@@ -10,7 +10,11 @@
 
 from __future__ import annotations
 
-from src.akb2.quality.admission import _strip_raw_boilerplate, run_admission
+from src.akb2.quality.admission import (
+    _build_how_tendency_snippet,
+    _strip_raw_boilerplate,
+    run_admission,
+)
 
 # 典型 raw 文件：frontmatter + ## 锚点目录(TOC) + §A_CONTENT_START + how-to 正文
 _RAW_WITH_BOILERPLATE = """---
@@ -37,6 +41,52 @@ fetched_via: scrapling_browser
 Loop engineering 的五个可执行步骤：1) 定义 automation 循环目标；
 2) 配置 workspace；3) 注册 skills；4) 接 plugins；5) 派 subagents。
 配置示例与具体步骤如下……
+"""
+
+_LONG_RAW_WITH_LATE_HOW = """---
+artifact_type: raw
+source_slug: addy-osmani-loop-engineering
+source_title: Loop Engineering
+fetched_via: defuddle_cli
+---
+
+# Addy Osmani "Loop Engineering" 抓取归档
+
+本文件是 wiki/sources 的 raw 归档。引用本归档的论断必须能定位到对应小节。
+
+## 锚点目录
+
+| 锚点 | 内容 |
+|------|------|
+| §A | 开篇：loop engineering 定义 |
+| §B | loop 五要素 + Codex/Claude Code 对照表 |
+| §H | 一个完整 loop 的样子 |
+
+---
+
+## §A. 开篇（原文）
+
+""" + ("Loop engineering 是范式变化的概念说明。" * 240) + """
+
+## §B. The five pieces, and then notes
+
+1. Automations that go off on a schedule and do discovery and triage.
+2. Worktrees so agents working in parallel do not step on each other.
+3. Skills to write down project knowledge.
+4. Plugins and connectors to plug the agent into tools.
+5. Sub-agents so one agent drafts and another checks it.
+
+配置模板示例：
+
+```toml
+[loop]
+cadence = "daily"
+workflow = "triage -> draft -> review -> promote"
+```
+
+## §H. What one loop looks like
+
+可执行步骤：先读取 CI 和 issue，再写入 state file，然后派 maker/checker 两个 agent。
 """
 
 
@@ -101,3 +151,46 @@ class TestAdmissionSeesBodyNotBoilerplate:
         assert "五大构建块" in joined, "LLM 应看到正文"
         assert "artifact_type:" not in joined, "LLM 不应看到 frontmatter"
         assert "## 锚点目录" not in joined, "LLM 不应看到锚点目录 TOC"
+
+
+class TestHowTendencyLateContentWindow:
+    """How 判定必须能看到后段可执行章节，而不是只看 raw 开头。"""
+
+    def test_how_snippet_prefers_late_how_sections(self):
+        stripped = _strip_raw_boilerplate(_LONG_RAW_WITH_LATE_HOW)
+        naive_window = stripped[:4000]
+        assert "配置模板示例" not in naive_window
+        assert "可执行步骤" not in naive_window
+
+        snippet = _build_how_tendency_snippet(stripped)
+
+        assert "## 锚点目录" not in snippet
+        assert "配置模板示例" in snippet
+        assert "workflow = \"triage -> draft -> review -> promote\"" in snippet
+        assert "可执行步骤" in snippet
+
+    def test_run_admission_how_check_receives_late_how_sections(self, tmp_path):
+        prompts_by_call: list[str] = []
+
+        def spy_route_llm(model_family, messages, response_schema=None):
+            prompts_by_call.append("\n".join(str(m.get("content", "")) for m in messages))
+
+            class _Resp:
+                content = '{"pass": true, "reason": "ok"}'
+
+            return _Resp()
+
+        run_admission(
+            raw_path=str(tmp_path / "raw.md"),
+            raw_content=_LONG_RAW_WITH_LATE_HOW,
+            ledger_path=str(tmp_path / "ledger.jsonl"),
+            wiki_references=[],
+            route_llm_fn=spy_route_llm,
+        )
+
+        assert len(prompts_by_call) == 2
+        how_prompt = prompts_by_call[1]
+        assert "配置模板示例" in how_prompt
+        assert "workflow = \"triage -> draft -> review -> promote\"" in how_prompt
+        assert "可执行步骤" in how_prompt
+        assert "## 锚点目录" not in how_prompt

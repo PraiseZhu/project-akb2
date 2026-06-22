@@ -10,6 +10,7 @@ import pytest
 from src.akb2.quality.grader import (
     FALLBACK_GRADER_MODEL,
     PRIMARY_GRADER_MODEL,
+    run_grader_with_fixture_detailed,
     run_grader_with_fixture,
 )
 from src.akb2.quality.llm_router import LLMResponse, RouterConfigError
@@ -230,6 +231,38 @@ class TestGraderFallback:
 
         assert not suspended
         assert model_used == "gemini-2.5-flash"
+
+    def test_primary_parse_failure_reason_is_visible(
+        self, candidate_page, gemini_flash_pass_response
+    ):
+        """canary 诊断需要看到 primary 为什么降级，而不是只看到 gemini 结果。"""
+
+        def mock_partial_schema_then_fallback(model_family, messages, response_schema=None):
+            from src.akb2.quality.llm_router import LLMResponse
+
+            if model_family == PRIMARY_GRADER_MODEL:
+                return LLMResponse(
+                    content={
+                        "dimensions": [
+                            {"id": 1, "pass": True, "defects": []},
+                        ]
+                    },
+                    model_used="gpt-5.4",
+                    calls_used=1,
+                )
+            if model_family == FALLBACK_GRADER_MODEL:
+                return gemini_flash_pass_response["gemini-flash"]
+            return LLMResponse(content={}, model_used=model_family)
+
+        result = run_grader_with_fixture_detailed(
+            candidate_page, mock_partial_schema_then_fallback
+        )
+
+        assert not result.suspended
+        assert result.fallback_used is True
+        assert result.model_used == "gemini-2.5-flash"
+        assert result.primary_failed is True
+        assert "不符合 grader schema" in result.primary_failure_reason
 
     def test_primary_config_error_falls_back(
         self, candidate_page, gemini_flash_pass_response

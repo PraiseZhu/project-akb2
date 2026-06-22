@@ -1,4 +1,4 @@
-"""反填表用例测试 — 结构 10 节全齐但内容空洞，A 层全过、B 层必须打回。
+"""反填表用例测试 — 结构 10 节全齐但内容空洞，A/B 两层都不能放过。
 
 黄金样张质量锚定（P6）的核心验收：表单填满不代表质量合格。
 """
@@ -210,14 +210,15 @@ def anti_fill_grader_response() -> dict:
 
 
 class TestAntiFill:
-    """反填表用例: 结构完整但内容空洞 → A 全过, B 必须打回。"""
+    """反填表用例: 结构完整但内容空洞 → 本地契约或 B 层必须打回。"""
 
-    def test_a_layer_passes_hollow_page(self, hollow_candidate_page):
-        """A 层: 10 节全齐 + frontmatter 合规 → 零缺陷（反填表通过结构检查）。"""
+    def test_a_layer_rejects_hollow_page_contract_gaps(self, hollow_candidate_page):
+        """A 层: 明显缺 raw/provenance/边界分层的空洞页应先被本地契约拦截。"""
         defects = run_structural_checks(hollow_candidate_page)
-        assert len(defects) == 0, (
-            f"Anti-fill page should pass structural checks, but got defects: {defects}"
-        )
+        assert len(defects) > 0
+        dimensions = {d.dimension for d in defects}
+        assert "A7-图谱证据" in dimensions
+        assert "A8-适用边界" in dimensions
 
     def test_b_layer_rejects_hollow_page(
         self, hollow_candidate_page, anti_fill_grader_response
@@ -305,13 +306,16 @@ Complete loop design template filling a methodology gap in AKB.
 Write ledger before executing — crash recovery reads last entry [raw §B].
 
 ## 适用边界
-适用: Agent pipeline, content QA
-不适用: Simple CRUD, one-off migrations
+- [raw §A] (source_grounded) 来源事实：Loop engineering frames agent work as bounded loops.
+- [raw §B] (source_grounded) 来源事实：The loop includes trigger, selector, executor, gate, and ledger.
+- [raw §A] (akb_interpretation) 适用场景：Agent pipeline, content QA.
+- [raw §C] (akb_interpretation) 不适用场景：Simple CRUD, one-off migrations.
+- [raw §B] (akb_interpretation) 约束条件：需要显式账本、质量门和人工复核入口。
 
 ## 图谱关系
 | target | relation | strength | evidence |
 |--------|----------|----------|----------|
-| harness-engineering | upstream | strong | text says "one level up" |
+| harness-engineering | upstream | strong | [raw §B] (source_grounded) text says "one level up" |
 
 ## Future Questions
 1. Loop engineering in real-time systems?

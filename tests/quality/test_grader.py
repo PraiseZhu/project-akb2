@@ -9,6 +9,7 @@ import pytest
 
 from src.akb2.quality.grader import (
     RUBRIC_DIMENSIONS,
+    _build_grader_schema,
     _load_rubric_text,
     _parse_grader_output,
     run_grader_with_fixture,
@@ -231,6 +232,54 @@ class TestParseGraderOutput:
         for d in defects:
             assert d.location, f"Defect missing location: {d}"
 
+    def test_parse_accepts_canonical_name_with_english_suffix(self):
+        """gpt-5.4 常把维度名写成中文 canonical + 英文括注，应归一化后接收。"""
+        english_suffixes = [
+            "Claim Anchor Rate",
+            "How Density",
+            "How Actionability",
+            "Evidence Honesty",
+            "Interpretation Separation",
+            "TLDR Density",
+            "Novelty Increment",
+            "Edge Strength Matching",
+            "Future Questions Quality",
+            "Applicability Boundary",
+        ]
+        dims = []
+        for dim, suffix in zip(RUBRIC_DIMENSIONS, english_suffixes, strict=True):
+            dims.append({"dimension": f"{dim} ({suffix})", "pass": True, "defects": []})
+        dims[0] = {
+            "dimension": "论断锚定率 (Claim Anchor Rate)",
+            "pass": False,
+            "defects": [
+                {
+                    "location": "入选理由",
+                    "defect": "入选理由缺 raw 锚点",
+                    "suggestion": "补充 raw § 引用",
+                }
+            ],
+        }
+
+        defects, ok = _parse_grader_output({"dimensions": dims})
+
+        assert ok
+        assert len(defects) == 1
+        assert defects[0].dimension == "论断锚定率"
+
+    def test_parse_rejects_unknown_dimension_even_with_suffix(self):
+        """只接受已知 canonical 维度名的括注变体。"""
+        dims = [
+            {"dimension": dim, "pass": True, "defects": []}
+            for dim in RUBRIC_DIMENSIONS
+        ]
+        dims[0] = {"dimension": "论断覆盖率 (Claim Anchor Rate)", "pass": True, "defects": []}
+
+        defects, ok = _parse_grader_output({"dimensions": dims})
+
+        assert not ok
+        assert defects == []
+
     def test_parse_missing_location_rejected(self, missing_location_response):
         """FR-006: 缺 location 的条目整批拒收。"""
         response = missing_location_response["gpt-5.4"]
@@ -244,7 +293,13 @@ class TestParseGraderOutput:
 
     def test_parse_string_content(self):
         """解析字符串形式的 dict → 成功。"""
-        content = '{"dimensions": [{"dimension": "test", "pass": true, "defects": []}]}'
+        dims = [
+            {"dimension": dim, "pass": True, "defects": []}
+            for dim in RUBRIC_DIMENSIONS
+        ]
+        import json
+
+        content = json.dumps({"dimensions": dims}, ensure_ascii=False)
         defects, ok = _parse_grader_output(content)
         assert ok
 
@@ -252,6 +307,41 @@ class TestParseGraderOutput:
         """dimensions 不是 list → 失败。"""
         defects, ok = _parse_grader_output({"dimensions": "not_a_list"})
         assert not ok
+
+    def test_parse_rejects_partial_qwen_like_shape(self):
+        """网关模型只返回半结构化对象时必须拒收，不许当 0 缺陷通过。"""
+        content = {
+            "dimensions": [
+                {"id": 1, "pass": True, "defects": []},
+                {
+                    "id": 2,
+                    "pass": False,
+                    "defects": [{"location": "## Future Questions"}],
+                },
+            ]
+        }
+        defects, ok = _parse_grader_output(content)
+        assert not ok
+        assert defects == []
+
+    def test_parse_requires_all_10_dimensions(self):
+        """缺维度时拒收，避免单维 pass 被误作整体验收。"""
+        content = {
+            "dimensions": [
+                {"dimension": "论断锚定率", "pass": True, "defects": []},
+            ]
+        }
+        defects, ok = _parse_grader_output(content)
+        assert not ok
+        assert defects == []
+
+
+class TestGraderSchema:
+    def test_dimension_schema_is_canonical_enum(self):
+        """结构化输出 schema 固定 10 个 canonical 中文维度名。"""
+        schema = _build_grader_schema()
+        dim_schema = schema["properties"]["dimensions"]["items"]["properties"]["dimension"]
+        assert dim_schema["enum"] == RUBRIC_DIMENSIONS
 
 
 # ---------------------------------------------------------------------------

@@ -133,6 +133,7 @@ def make_mock_route_llm(responses: dict[str, Any] | None = None):
         model_family: str,
         messages: list[dict],
         response_schema: dict | None = None,
+        **kwargs: Any,
     ):
         from src.akb2.quality.llm_router import LLMResponse
 
@@ -152,6 +153,7 @@ def make_mock_route_llm(responses: dict[str, Any] | None = None):
             calls_used=1,
         )
 
+    mock_route_llm.call_counts = _call_counts  # type: ignore[attr-defined]
     return mock_route_llm
 
 
@@ -361,24 +363,27 @@ def extract_success_response() -> dict[str, Any]:
                         "text": "Loop engineering is the practice of designing bounded, convergent, observable AI agent loops",
                         "anchor": "§A",
                         "provenance": "source_grounded",
+                        "evidence_gap": "未量化：原文未提供 bounded/convergent 的可度量判据与失败样本",
                     },
                     {
                         "text": "A well-designed loop has five components: trigger, work unit selector, action executor, quality gate, ledger writer",
                         "anchor": "§B",
                         "provenance": "source_grounded",
+                        "evidence_gap": "未比较：原文未比较五组件在不同负载下的取舍与替代方案",
                     },
                     {
                         "text": "Fix specific defects rather than restarting the entire pipeline — convergence over restart",
                         "anchor": "§C",
                         "provenance": "source_grounded",
+                        "evidence_gap": "未验证：原文未提供定点修复 vs 整体重跑的实测成本/收敛数据",
                     },
                 ],
                 "how_steps": [
-                    "1. Define trigger type (schedule/event/manual)",
-                    "2. Implement work unit selector (read ledger, pick next)",
-                    "3. Build action executor (run the work)",
-                    "4. Add quality gate (verify output)",
-                    "5. Write ledger entry BEFORE next action",
+                    {"instruction": "Define trigger type", "command": "schedule|event|manual", "executable": True},
+                    {"instruction": "Implement work unit selector", "command": "read ledger; pick next", "executable": True},
+                    {"instruction": "Build action executor", "command": "run the work", "executable": True},
+                    {"instruction": "Add quality gate", "command": "verify output", "executable": True},
+                    {"instruction": "Write ledger entry BEFORE next action", "command": "ledger.append(entry)", "executable": True},
                 ],
                 "params": {
                     "max_rounds": 3,
@@ -398,6 +403,7 @@ def extract_success_response() -> dict[str, Any]:
                 "argumentation": [
                     {
                         "claim_anchor": "§A",
+                        "provenance": "source_grounded",
                         "explanation": (
                             "The practice shifts the human role from prompt-author to loop-designer, "
                             "enabling scalable automation via observable, convergent pipelines."
@@ -405,6 +411,7 @@ def extract_success_response() -> dict[str, Any]:
                     },
                     {
                         "claim_anchor": "§B",
+                        "provenance": "source_grounded",
                         "explanation": (
                             "Five components form the minimal viable loop: each is independently testable "
                             "and replaceable, satisfying the bounded-automation principle."
@@ -412,6 +419,7 @@ def extract_success_response() -> dict[str, Any]:
                     },
                     {
                         "claim_anchor": "§C",
+                        "provenance": "source_grounded",
                         "explanation": (
                             "Targeted repair of specific defects avoids full restart costs and preserves "
                             "already-converged sections, a key efficiency gain over naive retry."
@@ -428,7 +436,7 @@ def extract_success_response() -> dict[str, Any]:
                         "concept": "harness-engineering",
                         "relation_type": "part_of",
                         "strength": "strong",
-                        "evidence": "loop sits one floor above the harness (original text)",
+                        "evidence": "[raw §B] original text: \"loop sits one floor above the harness\"",
                     },
                     {
                         "concept": "agent-collaboration",

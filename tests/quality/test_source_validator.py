@@ -30,6 +30,7 @@ if str(_REPO_ROOT / "src") not in sys.path:
 
 from akb2.quality.intake.source_validator import (  # noqa: E402
     _extract_latest_url,
+    _extract_listing_candidate_url,
     _validate_source_dry,
     _validate_source_live,
     _write_jsonl_atomic,
@@ -52,7 +53,20 @@ SAMPLE_SOURCE: dict = {
     "notes": "test source",
 }
 
-REQUIRED_FIELDS = {"feed", "url", "reachable", "latest_post", "trial_fetch"}
+REQUIRED_FIELDS = {
+    "feed",
+    "url",
+    "reachable",
+    "latest_post",
+    "trial_fetch",
+    "failure_class",
+}
+GENERIC_FAILURE_VALUES = {
+    "error",
+    "timeout",
+    "no reachable feed/listing",
+    "all httpx strategies 403 — needs scrapling browser",
+}
 
 SAMPLE_RSS_FEED = """<?xml version="1.0"?>
 <rss version="2.0">
@@ -219,7 +233,7 @@ class TestLedgerRequiredFields:
         assert record["latest_post"] != "" or record["trial_fetch"] != ""
 
     def test_live_timeout_sets_reachable_false(self, tmp_path: Path) -> None:
-        """timeout 异常 → reachable=False，trial_fetch_status='timeout'。"""
+        """timeout 异常 → reachable=False，类型化为 network_timeout。"""
         import httpx
 
         run_id = str(uuid.uuid4())
@@ -228,7 +242,71 @@ class TestLedgerRequiredFields:
             record = _validate_source_live(SAMPLE_SOURCE, run_id)
 
         assert record["reachable"] is False
-        assert record["trial_fetch_status"] == "timeout"
+        assert record["trial_fetch_status"] == "network_timeout"
+        assert record["failure_class"] == "network_timeout"
+        assert record["error"].startswith("network_timeout:")
+
+    def test_live_404_sets_config_stale_failure_class(self, tmp_path: Path) -> None:
+        """404/410 代表配置过期路径，而不是泛化 error。"""
+        run_id = str(uuid.uuid4())
+
+        with patch("httpx.get", return_value=self._mock_live_response("", 404)):
+            record = _validate_source_live(SAMPLE_SOURCE, run_id)
+
+        assert record["reachable"] is False
+        assert record["failure_class"] == "config_stale"
+        assert record["error"].startswith("config_stale:")
+        assert record["error"] not in GENERIC_FAILURE_VALUES
+
+    def test_live_402_sets_anti_bot_failure_class(self, tmp_path: Path) -> None:
+        """400/402/403 均不可直达时标记 anti_bot_or_edge_block。"""
+        run_id = str(uuid.uuid4())
+
+        with patch("httpx.get", return_value=self._mock_live_response("", 402)):
+            record = _validate_source_live(SAMPLE_SOURCE, run_id)
+
+        assert record["reachable"] is False
+        assert record["failure_class"] == "anti_bot_or_edge_block"
+        assert record["error"].startswith("anti_bot_or_edge_block:")
+
+    def test_live_403_browser_challenge_sets_browser_needed(self, tmp_path: Path) -> None:
+        """明显 JS/captcha 挑战页标记 browser_needed。"""
+        run_id = str(uuid.uuid4())
+        challenge = "<html><title>Cloudflare</title>enable javascript captcha</html>"
+
+        with patch("httpx.get", return_value=self._mock_live_response(challenge, 403)):
+            record = _validate_source_live(SAMPLE_SOURCE, run_id)
+
+        assert record["reachable"] is False
+        assert record["needs_browser"] is True
+        assert record["failure_class"] == "browser_needed"
+        assert record["working_strategy"] == "browser_needed"
+
+    def test_listing_reachable_extracts_article_candidate(self, tmp_path: Path) -> None:
+        """feed 不可用但 listing 2xx 时，抽一个候选文章 URL。"""
+        run_id = str(uuid.uuid4())
+        listing_html = """
+        <html><body>
+          <a href="/privacy">Privacy</a>
+          <a href="/blog/2026/06/hello-world">Hello World</a>
+        </body></html>
+        """
+        responses = [
+            self._mock_live_response("", 404),
+            self._mock_live_response(listing_html, 200),
+        ]
+
+        with (
+            patch("akb2.quality.intake.source_validator._feed_path_candidates", return_value=[]),
+            patch("httpx.get", side_effect=responses),
+        ):
+            record = _validate_source_live(SAMPLE_SOURCE, run_id)
+
+        assert record["reachable"] is True
+        assert record["working_strategy"] == "listing_reachable"
+        assert record["latest_post"] == "https://example.com/blog/2026/06/hello-world"
+        assert record["trial_fetch"] == "https://example.com/blog/2026/06/hello-world"
+        assert record["failure_class"] == ""
 
     def test_dry_run_record_has_run_id(self) -> None:
         """dry-run 记录也包含 run_id 字段。"""
@@ -391,6 +469,29 @@ class TestExtractLatestUrl:
         """无链接的 XML 返回空串。"""
         assert _extract_latest_url("<rss><channel><title>x</title></channel></rss>") == ""
 
+    def test_listing_candidate_prefers_article_path(self) -> None:
+        """listing HTML 中优先选择同站文章路径，而非导航链接。"""
+        html = """
+        <a href="/about">About</a>
+        <a href="https://external.example/post">External</a>
+        <a href="/blog/2026/06/new-release">New release</a>
+        """
+        assert (
+            _extract_listing_candidate_url(html, "https://example.com/blog")
+            == "https://example.com/blog/2026/06/new-release"
+        )
+
+    def test_listing_candidate_skips_invalid_urls(self) -> None:
+        """listing HTML 中的畸形 URL 不应中断整轮验证。"""
+        html = """
+        <script>const bad = "https://example.com/[not-ipv6";</script>
+        <a href="/blog/2026/06/valid-release">Valid release</a>
+        """
+        assert (
+            _extract_listing_candidate_url(html, "https://example.com/blog")
+            == "https://example.com/blog/2026/06/valid-release"
+        )
+
 
 # ---------------------------------------------------------------------------
 # SC-10: Integration 测试（真网，默认不跑）
@@ -413,11 +514,16 @@ class TestLive76Sources:
 
         assert config_path.exists(), "config/main_sources.yaml not found"
 
-        # 加载配置源 URL 集合
+        # 加载配置源 URL 集合。ledger["url"] 是 canonical/listing URL，feed 单独记录。
         with open(config_path, encoding="utf-8") as fh:
             cfg = yaml.safe_load(fh)
         config_urls = {
-            s.get("feed_url") or s.get("listing_url")
+            s.get("listing_url") or s.get("feed_url")
+            for s in cfg["sources"]
+            if s.get("feed_url") or s.get("listing_url")
+        }
+        config_feeds = {
+            s.get("listing_url") or s.get("feed_url"): s.get("feed_url", "")
             for s in cfg["sources"]
             if s.get("feed_url") or s.get("listing_url")
         }
@@ -437,6 +543,12 @@ class TestLive76Sources:
             f"  In ledger but not config: {ledger_urls - config_urls}\n"
             f"  In config but not ledger: {config_urls - ledger_urls}"
         )
+        bad_feeds = [
+            r["slug"]
+            for r in records
+            if r.get("feed", "") != config_feeds.get(r["url"], "")
+        ]
+        assert not bad_feeds, f"Feed mismatch at rows: {bad_feeds}"
 
         # 必填字段齐
         bad_rows = [
@@ -451,6 +563,20 @@ class TestLive76Sources:
         # run_id 一致（同一次运行）
         run_ids = {r.get("run_id") for r in records}
         assert len(run_ids) == 1, f"Mixed run_ids: {run_ids}"
+
+        generic_errors = [
+            r["slug"]
+            for r in records
+            if not r.get("reachable") and (r.get("error") in GENERIC_FAILURE_VALUES)
+        ]
+        assert not generic_errors, f"Generic error for failed rows: {generic_errors}"
+
+        missing_failure_class = [
+            r["slug"] for r in records if not r.get("reachable") and not r.get("failure_class")
+        ]
+        assert not missing_failure_class, (
+            f"Failed rows must have failure_class: {missing_failure_class}"
+        )
 
         # reachable 源的 trial_fetch + latest_post 非空 >= 60
         rich_count = sum(

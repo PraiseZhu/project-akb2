@@ -15,6 +15,7 @@ from src.akb2.quality.checks_structural import (
     check_a4_graph_edges,
     check_a5_wikilinks,
     check_a6_maintenance_records,
+    run_candidate_self_gate,
     run_structural_checks,
 )
 
@@ -38,6 +39,10 @@ future_questions:
 related_concepts:
   - harness-engineering
   - agent-collaboration
+key_findings:
+  - "[raw §A] (source_grounded) 每个 loop 必须有显式停止条件"
+  - "[raw §B] (source_grounded) loop 需要 trigger、selector、executor、quality gate、ledger writer"
+  - "[raw §C] (source_grounded) 定点修复优于整体重跑"
 artifact_type: wiki
 pipeline_version: v1
 ---
@@ -73,15 +78,18 @@ Loop engineering 的核心洞察是: 先写账本再执行，崩溃恢复只需�
 
 ## 适用边界
 
-适用: Agent pipeline、内容质量自动化
-不适用: 简单 CRUD 脚本、一次性数据迁移
+- [raw §A] (source_grounded) 来源事实：原文把任务从 prompt 上移为 loop/system 设计。
+- [raw §B] (source_grounded) 来源事实：原文列出 trigger、selector、executor、quality gate、ledger writer。
+- [raw §A] (akb_interpretation) 适用场景：Agent pipeline、内容质量自动化。
+- [raw §C] (akb_interpretation) 不适用场景：简单 CRUD 脚本、一次性数据迁移。
+- [raw §D] (akb_interpretation) 约束条件：需要显式预算、质量门和人工复核入口。
 
 ## 图谱关系
 
 | target | relation | strength | evidence |
 |--------|----------|----------|----------|
-| harness-engineering | 上游概念 | strong | 原文明示 "楼上一层" |
-| agent-collaboration | 相关领域 | medium | 场景应用 |
+| harness-engineering | upstream | strong | [raw §B] (source_grounded) 原文明示 "楼上一层" |
+| agent-collaboration | related | weak | [raw §E] (akb_interpretation) 多 agent 协作可复用 maker/checker separation，但原文未定义协作协议。 |
 
 ## Future Questions
 
@@ -358,6 +366,31 @@ test
         fq_defects = [d for d in defects if "future_questions" in d.location]
         assert len(fq_defects) >= 1
 
+    def test_key_findings_require_provenance_when_anchored(self):
+        """负: frontmatter key_findings 带 raw 锚点时也必须标 provenance。"""
+        text = """---
+status: candidate
+gate_decision: null
+source_refs:
+  - raw/test.md
+gate_reason: ok
+future_questions:
+  - q1
+  - q2
+related_concepts:
+  - c1
+  - c2
+key_findings:
+  - "[raw §A] a source claim without provenance"
+---
+
+## TLDR
+test
+"""
+        defects = check_a2_frontmatter(text)
+        key_defects = [d for d in defects if "key_findings" in d.location]
+        assert len(key_defects) >= 1
+
     def test_related_concepts_too_few(self):
         """负: related_concepts 只有 1 条 → 缺陷。"""
         text = """---
@@ -425,6 +458,110 @@ class TestA3RawAnchors:
         defects = check_a3_raw_anchors(valid_candidate_page, valid_raw_content)
         assert len(defects) == 0
 
+    def test_double_hash_dotted_anchor_headings_exist(self):
+        """正: 真实 raw 的 `## §A. 标题` 章节格式应被识别为锚点声明。"""
+        candidate = """---
+status: candidate
+gate_decision: null
+---
+
+## TLDR
+
+Loop 工程需要五个组件 [raw §B]，也需要保留人工验证边界 [raw §I]。
+"""
+        raw = """---
+artifact_type: raw
+---
+
+## 锚点目录
+
+| 锚点 | 内容 |
+|------|------|
+| §B | loop 五要素 |
+| §I | loop 不替你做的三件事 |
+
+---
+
+## §B. The five pieces, and then notes
+
+A loop needs five things.
+
+## §I. What the loop still does not do for you
+
+Verification is still on you.
+"""
+        defects = check_a3_raw_anchors(candidate, raw)
+        assert defects == []
+
+    def test_bracketed_raw_anchor_lines_exist(self):
+        """正: smoke/raw 常用的 `[raw §A] ...` 段落行应被识别为锚点声明。"""
+        candidate = """---
+status: candidate
+gate_decision: null
+---
+
+## TLDR
+
+Loop 工程需要显式停止条件 [raw §A]，也需要失败可观测 [raw §I]。
+"""
+        raw = """---
+artifact_type: raw
+---
+
+[raw §A] Loop engineering is bounded, convergent, and observable.
+
+[raw §I] A loop is deployable only when failure is observable.
+"""
+        assert check_a3_raw_anchors(candidate, raw) == []
+
+    def test_numeric_anchor_headings_exist(self):
+        """正: fresh raw 的 `§1/§2` 数字锚点必须被识别。"""
+        candidate = """---
+status: candidate
+gate_decision: null
+---
+
+## TLDR
+
+MCP 初始化和工具调用都来自原文数字锚点 [raw §1] [raw §2]。
+"""
+        raw = """---
+artifact_type: raw
+---
+
+# §1 Initialize
+
+Clients send initialize first.
+
+# §2 Tools
+
+Clients call tools/list before tools/call.
+"""
+        assert check_a3_raw_anchors(candidate, raw) == []
+
+    def test_inline_section_mentions_do_not_create_anchor(self):
+        """负: 正文里偶然提到 §Z 不能被当作合法 raw 锚点声明。"""
+        candidate = """---
+status: candidate
+gate_decision: null
+---
+
+## TLDR
+
+引用不存在的锚点 [raw §Z].
+"""
+        raw = """---
+artifact_type: raw
+---
+
+## §A. 开篇
+
+这段文字只是说不要引用 §Z，因为它不存在。
+"""
+        defects = check_a3_raw_anchors(candidate, raw)
+        assert len(defects) == 1
+        assert "§Z" in defects[0].defect
+
     def test_nonexistent_anchor(self, valid_raw_content):
         """负: 引用不存在的锚点 → 缺陷。"""
         text = """---
@@ -443,6 +580,99 @@ gate_decision: null
         """raw_content=None → 跳过检查，零缺陷。"""
         defects = check_a3_raw_anchors(valid_candidate_page, None)
         assert len(defects) == 0
+
+
+class TestCandidateSelfGate:
+    def test_rejects_excessive_akb_interpretation(self, valid_candidate_page, valid_raw_content):
+        text = valid_candidate_page.replace(
+            "## 关键发现\n\n"
+            "1. 每个 loop 必须有显式停止条件 [raw §A]\n"
+            "2. 定点修复优于整体重跑 [raw §C]\n\n"
+            "## 入选理由\n\n"
+            "本文提供了完整的 loop 设计模板，填补了 AKB 在 agent 工程方法论的空白。",
+            "## 关键发现\n\n"
+            "1. [raw §A] (akb_interpretation) 每个 loop 必须有显式停止条件。\n"
+            "2. [raw §C] (akb_interpretation) 定点修复优于整体重跑。\n\n"
+            "## 入选理由\n\n"
+            "- [raw §B] (akb_interpretation) 本文提供了完整的 loop 设计模板。\n"
+            "- [raw §D] (akb_interpretation) 该方法论可以泛化到多种 agent 管线。",
+        )
+        defects = run_candidate_self_gate(text, valid_raw_content)
+        assert any(d.dimension == "SG-provenance-ratio" for d in defects)
+
+    def test_rejects_core_section_akb_interpretation_ratio(
+        self, valid_candidate_page, valid_raw_content
+    ):
+        text = valid_candidate_page.replace(
+            "## 核心论点\n\n"
+            "1. 有界循环设计 [raw §A]: 每个 loop 必须有显式停止条件\n"
+            "2. 五组件模板 [raw §B]: trigger, work unit selector, action executor, quality gate, ledger writer\n"
+            "3. 收敛优先 [raw §C]: 定点修复成本远低于整体重跑",
+            "## 核心论点\n\n"
+            "1. [raw §A] (akb_interpretation) 有界循环设计可以推导出治理面。\n"
+            "2. [raw §B] (akb_interpretation) 五组件模板适合所有 agent 系统。\n"
+            "3. [raw §C] (akb_interpretation) 定点修复必然优于整体重跑。",
+        )
+        defects = run_candidate_self_gate(text, valid_raw_content)
+        assert any(d.dimension == "SG-provenance-ratio" for d in defects)
+
+    def test_allows_interpretation_markers_in_operational_sections(
+        self, valid_candidate_page, valid_raw_content
+    ):
+        text = valid_candidate_page.replace(
+            "## 适用边界\n\n"
+            "- [raw §A] (source_grounded) 来源事实：原文把任务从 prompt 上移为 loop/system 设计。\n"
+            "- [raw §B] (source_grounded) 来源事实：原文列出 trigger、selector、executor、quality gate、ledger writer。\n"
+            "- [raw §A] (akb_interpretation) 适用场景：Agent pipeline、内容质量自动化。\n"
+            "- [raw §C] (akb_interpretation) 不适用场景：简单 CRUD 脚本、一次性数据迁移。\n"
+            "- [raw §D] (akb_interpretation) 约束条件：需要显式预算、质量门和人工复核入口。",
+            "## 适用边界\n\n"
+            "- [raw §A] (akb_interpretation) 适用场景：Agent pipeline、内容质量自动化。\n"
+            "- [raw §B] (akb_interpretation) 适用场景：需要 trigger、selector、executor、quality gate、ledger writer 的多步骤系统。\n"
+            "- [raw §C] (akb_interpretation) 不适用场景：简单 CRUD 脚本、一次性数据迁移。\n"
+            "- [raw §D] (akb_interpretation) 约束条件：需要显式预算、质量门和人工复核入口。",
+        ).replace(
+            "| harness-engineering | upstream | strong | [raw §B] (source_grounded) 原文明示 \"楼上一层\" |\n"
+            "| agent-collaboration | related | weak | [raw §E] (akb_interpretation) 多 agent 协作可复用 maker/checker separation，但原文未定义协作协议。 |",
+            "| harness-engineering | related | weak | [raw §B] (akb_interpretation) 与 harness-engineering 保守相关，等待图谱校准。 |\n"
+            "| agent-collaboration | related | weak | [raw §E] (akb_interpretation) 多 agent 协作可复用 maker/checker separation，但原文未定义协作协议。 |",
+        )
+        defects = run_candidate_self_gate(text, valid_raw_content)
+        assert not any(d.dimension == "SG-provenance-ratio" for d in defects)
+
+    def test_how_interpretation_steps_do_not_count_against_core_ratio(
+        self, valid_candidate_page, valid_raw_content
+    ):
+        text = valid_candidate_page.replace(
+            "## Future Questions",
+            "### 操作步骤\n\n"
+            "1. [raw §A] (akb_interpretation) Record failure before stopping `ledger.append({event:'abort',node:node})`\n"
+            "2. [raw §B] (akb_interpretation) Assert loop budget before executing `assert max_repair_rounds <= 3 and timeout_s == 60`\n"
+            "3. [raw §C] (akb_interpretation) Dispatch section repair by defect `repair_router.dispatch(section=defect.section)`\n\n"
+            "## Future Questions",
+        )
+        defects = run_candidate_self_gate(text, valid_raw_content)
+        assert not any(d.dimension == "SG-provenance-ratio" for d in defects)
+
+    def test_rejects_generic_akb_command(self, valid_candidate_page, valid_raw_content):
+        text = valid_candidate_page.replace(
+            "## Future Questions",
+            "### 操作步骤\n\n"
+            "- [raw §A] (akb_interpretation) `assert evidence_map.contains('[raw §A]')`\n\n"
+            "## Future Questions",
+        )
+        defects = run_candidate_self_gate(text, valid_raw_content)
+        assert any(d.dimension == "SG-generic-command" for d in defects)
+
+    def test_rejects_hardcoded_novelty_baseline(self, valid_candidate_page, valid_raw_content):
+        text = valid_candidate_page.replace(
+            "## Future Questions",
+            "## 新颖增量\n\n"
+            "wiki/sources/addy-osmani-loop-engineering.md\n\n"
+            "## Future Questions",
+        )
+        defects = run_candidate_self_gate(text, valid_raw_content)
+        assert any(d.dimension == "SG-novelty-hardcoded" for d in defects)
 
 
 # ---------------------------------------------------------------------------
@@ -498,6 +728,98 @@ test
 """
         defects = check_a4_graph_edges(text)
         assert len(defects) == 0
+
+    def test_evidence_requires_raw_anchor_or_interpretation(self):
+        """负: 图谱 evidence 无 raw anchor 且无 provenance → 本地契约直接抓出。"""
+        text = """---
+status: candidate
+---
+
+## 图谱关系
+
+| target | relation | strength | evidence |
+|--------|----------|----------|----------|
+| agent-collaboration | related | medium | multi-agent loops require coordination primitives |
+"""
+        defects = check_a4_graph_edges(text)
+        assert any(d.dimension == "A7-图谱证据" for d in defects)
+        assert any(d.dimension == "A7-边强度匹配" for d in defects)
+
+    def test_weak_interpretation_edge_without_raw_anchor_is_allowed(self):
+        """正: 无 raw anchor 的 AKB 推断边必须降 weak 且标 provenance。"""
+        text = """---
+status: candidate
+---
+
+## 图谱关系
+
+| target | relation | strength | evidence |
+|--------|----------|----------|----------|
+| agent-collaboration | related | weak | (akb_interpretation) 多 agent 协作可复用账本模式，但原文未定义协作协议。 |
+"""
+        defects = check_a4_graph_edges(text)
+        assert defects == []
+
+    def test_five_column_graph_edge_with_provenance_is_allowed(self):
+        """正: 新图谱契约含 provenance 列，evidence 同步 marker。"""
+        text = """---
+status: candidate
+---
+
+## 图谱关系
+
+| target | relation | strength | provenance | evidence |
+|--------|----------|----------|------------|----------|
+| agent-collaboration | related | weak | akb_interpretation | (akb_interpretation) 多 agent 协作可复用账本模式，但原文未定义协作协议。 |
+"""
+        defects = check_a4_graph_edges(text)
+        assert defects == []
+
+    def test_five_column_graph_edge_requires_matching_marker(self):
+        """负: provenance 列与 evidence marker 必须一致，防止边界只写在表头里。"""
+        text = """---
+status: candidate
+---
+
+## 图谱关系
+
+| target | relation | strength | provenance | evidence |
+|--------|----------|----------|------------|----------|
+| agent-collaboration | related | weak | akb_interpretation | 多 agent 协作可复用账本模式。 |
+"""
+        defects = check_a4_graph_edges(text)
+        assert any("marker" in d.defect for d in defects)
+
+
+class TestA8ApplicabilityBoundary:
+    def test_boundary_bullets_require_anchor_and_provenance(self):
+        """负: 自由文本边界会被本地契约拒绝。"""
+        text = """---
+status: candidate
+---
+
+## 适用边界
+
+适用: Agent pipeline
+不适用: one-shot
+"""
+        defects = run_structural_checks(text)
+        assert any(d.dimension == "A8-适用边界" for d in defects)
+
+    def test_boundary_rejects_mixed_categories_in_one_bullet(self):
+        """负: 同一 bullet 混写适用/不适用/约束。"""
+        text = """---
+status: candidate
+---
+
+## 适用边界
+
+- [raw §A] (akb_interpretation) 适用场景：Agent pipeline。不适用场景：one-shot。约束条件：需要账本。
+"""
+        from src.akb2.quality.checks_structural import check_a8_applicability_boundary
+
+        defects = check_a8_applicability_boundary(text)
+        assert any("混写" in d.defect for d in defects)
 
 
 # ---------------------------------------------------------------------------

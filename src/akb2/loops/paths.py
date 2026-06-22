@@ -1,6 +1,6 @@
 """隔离区与 staging 路径常量。
 
-路径解析规则：vault 根由 config/vault.toml 解析，禁止硬编码。
+路径解析规则：机器本地 env/local override 优先，config/vault.toml 兜底。
 使用 tomllib（Python 3.11+）正确解析 TOML 格式，替代 configparser。
 tests 中用 AKB2_TEST_HOME 环境变量隔离，不接触真 vault。
 """
@@ -20,6 +20,8 @@ QUARANTINE_SUBDIR = "quarantine"
 
 # vault.toml 在本工程中的固定位置
 _VAULT_CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "vault.toml"
+_VAULT_LOCAL_CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "vault.local.toml"
+_AKB2_RELATIVE_PARTS = ("Praise Space", "AKB2.0")
 
 # ---------------------------------------------------------------------------
 # 懒加载缓存（单次 IO 后一并缓存全部解析值）
@@ -42,16 +44,54 @@ def _resolve_refs(value: str, akb2_root_resolved: str) -> str:
     return expanded
 
 
-def _read_vault_config() -> dict[str, object]:
-    """读取 vault.toml 配置（单次 IO，使用 tomllib 正确解析 TOML）。"""
-    with open(_VAULT_CONFIG_PATH, "rb") as f:
+def _read_toml(path: Path) -> dict[str, object]:
+    with open(path, "rb") as f:
         return tomllib.load(f)
+
+
+def _read_vault_config() -> dict[str, object]:
+    """读取 vault 配置（local override 优先，使用 tomllib 正确解析 TOML）。"""
+    if _VAULT_LOCAL_CONFIG_PATH.exists():
+        return _read_toml(_VAULT_LOCAL_CONFIG_PATH)
+    return _read_toml(_VAULT_CONFIG_PATH)
+
+
+def _normalise_akb2_root(raw_path: str) -> Path:
+    """把 vault 父根或 AKB2 子根规范化为 AKB2.0 子根。"""
+    expanded = Path(os.path.expandvars(raw_path)).expanduser()
+    if expanded.name == "AKB2.0":
+        return expanded.resolve()
+    return expanded.joinpath(*_AKB2_RELATIVE_PARTS).resolve()
+
+
+def _env_akb2_root() -> Path | None:
+    """解析机器本地环境变量，返回 AKB2.0 子根。"""
+    for name in ("AKB2_ROOT", "AKB2_VAULT_ROOT"):
+        value = os.environ.get(name)
+        if value:
+            return _normalise_akb2_root(value)
+    vault_root = os.environ.get("VAULT_ROOT")
+    if vault_root:
+        return _normalise_akb2_root(vault_root)
+    return None
+
+
+def _existing_machine_default() -> Path | None:
+    """本机常见 vault 根。存在才启用，避免跨设备共享配置写错盘。"""
+    candidates = [
+        Path("/Volumes/AKB2/Obsidian").joinpath(*_AKB2_RELATIVE_PARTS),
+        Path.home().joinpath("Obsidian", *_AKB2_RELATIVE_PARTS),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+    return None
 
 
 def _ensure_config() -> Path:
     """确保 vault config 已读取并解析，返回解析后的 akb2_root Path。
 
-    一次性完成：tomllib 解析 → ${HOME} 展开 → vault.akb2_root 解析 →
+    一次性完成：env/local/default/config → vault.akb2_root 解析 →
     交叉引用 ${vault.akb2_root} 展开 → 缓存两个 Path。
     """
     global _vault_config_cache, _akb2_root_cache, _staging_root_cache
@@ -60,20 +100,26 @@ def _ensure_config() -> Path:
         config = _read_vault_config()
         _vault_config_cache = config
 
-        # 1. 读取原始 akb2_root（tomllib 已去掉外围引号）
+        # 1. 读取原始 akb2_root（tomllib 已去掉外围引号），env/本机默认优先。
         vault = config.get("vault", {})
         assert isinstance(vault, dict)
-        raw_akb2_root = str(vault.get("akb2_root", ""))
-        if not raw_akb2_root:
+        env_root = _env_akb2_root()
+        default_root = _existing_machine_default()
+        raw_akb2_root = str(vault.get("akb2_root", "")).strip()
+        if env_root is not None:
+            _akb2_root_cache = env_root
+        elif default_root is not None:
+            _akb2_root_cache = default_root
+        elif raw_akb2_root:
+            _akb2_root_cache = _normalise_akb2_root(raw_akb2_root)
+        else:
             raise RuntimeError(
                 "config/vault.toml: [vault] akb2_root 未设置，无法解析路径"
             )
 
-        # 2. 展开 ${HOME}
-        akb2_root_expanded = os.path.expandvars(raw_akb2_root)
-        _akb2_root_cache = Path(akb2_root_expanded).resolve()
+        akb2_root_expanded = str(_akb2_root_cache)
 
-        # 3. 读取 staging（含 ${vault.akb2_root} 交叉引用）
+        # 2. 读取 staging（含 ${vault.akb2_root} 交叉引用）
         layers = vault.get("layers", {})
         assert isinstance(layers, dict)
         raw_staging = str(layers.get("staging", ""))
@@ -82,7 +128,7 @@ def _ensure_config() -> Path:
                 "config/vault.toml: [vault.layers] staging 未设置，无法解析路径"
             )
 
-        # 4. 展开 ${vault.akb2_root} 交叉引用 + ${HOME}
+        # 3. 展开 ${vault.akb2_root} 交叉引用 + ${HOME}
         staging_expanded = _resolve_refs(raw_staging, akb2_root_expanded)
         _staging_root_cache = Path(staging_expanded).resolve()
 

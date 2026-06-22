@@ -37,9 +37,12 @@ _ADMISSION_CHECK_SCHEMA: dict[str, Any] = {
 }
 
 # 内容截断长度：送入 LLM 判定的最大字符数
-# 主题相关性和 How 倾向取 4000 字足以覆盖导语+前几段核心内容
-# 新颖度判定需更完整的论点和论证结构，取 3000 字聚焦核心主张
+# 主题相关性取 4000 字足以覆盖导语+前几段核心内容。
+# How 倾向另用 how-aware 窗口，避免真实归档的目录/背景说明把后段 how 章节挤出。
+# 新颖度判定需更完整的论点和论证结构，取 3000 字聚焦核心主张。
 MAX_ADMISSION_CONTENT_CHARS: int = 4000
+MAX_HOW_TENDENCY_CONTENT_CHARS: int = 8000
+HOW_TENDENCY_CONTEXT_CHARS: int = 1200
 MAX_NOVELTY_CONTENT_CHARS: int = 3000
 
 # 领域 taxonomy 锚点（从 skillpack/quality/concept-index-injection.md 运行时注入）
@@ -164,7 +167,20 @@ def run_admission(
 # ---------------------------------------------------------------------------
 
 # 正文起始锚点：raw_archiver 写入 §A_CONTENT_START（或 §X_CONTENT_START）标记正文开端
-_CONTENT_START_RE = re.compile(r"§[A-Z]_CONTENT_START")
+_ANCHOR_DECL_RE = r"§[A-Z0-9]+"
+_CONTENT_START_RE = re.compile(rf"{_ANCHOR_DECL_RE}_CONTENT_START")
+
+_ANCHOR_HEADING_RE = re.compile(rf"(?m)^##\s+{_ANCHOR_DECL_RE}\.?\s+.+$")
+_HOW_HEADING_RE = re.compile(
+    r"(?im)^#{1,4}\s+.*(?:"
+    r"how|step|workflow|configuration|template|example|code|"
+    r"步骤|流程|工作流|配置|模板|示例|代码|架构|模式|组件|构建块|实践|实现"
+    r").*$"
+)
+_LEGACY_HOW_ANCHOR_HEADING_RE = re.compile(r"(?im)^##\s+§[B-H]\b")
+_TOC_BLOCK_RE = re.compile(
+    rf"(?ms)^##\s*锚点目录\s*\n.*?(?=^---\s*$|^##\s+{_ANCHOR_DECL_RE}\.|\Z)"
+)
 
 
 def _strip_raw_boilerplate(raw_content: str) -> str:
@@ -194,6 +210,88 @@ def _strip_raw_boilerplate(raw_content: str) -> str:
 
     stripped = text.strip()
     return stripped if stripped else raw_content
+
+
+def _build_how_tendency_snippet(raw_content: str) -> str:
+    """构建 How 倾向专用窗口。
+
+    真实 raw 归档可能没有 `§X_CONTENT_START`，且开头常含抓取说明、传播背景、
+    锚点目录和概念导语。机械前 4000 字会让 §B/§H 等 how 章节不可见，造成
+    `how_tendency` 误拒。这里保留短导语作为上下文，再优先拼入命中 how 关键词
+    的章节，仍限制总长度，避免把整篇文章无界送入轻量准入模型。
+    """
+    text = _remove_anchor_toc(raw_content).strip()
+    if not text:
+        text = raw_content.strip()
+    if len(text) <= MAX_ADMISSION_CONTENT_CHARS:
+        return text[:MAX_ADMISSION_CONTENT_CHARS]
+
+    sections = _split_heading_sections(text)
+    selected = [
+        section.strip()
+        for section in sections
+        if _section_is_how_candidate(section)
+    ]
+
+    if not selected:
+        return text[:MAX_ADMISSION_CONTENT_CHARS]
+
+    parts = [text[:HOW_TENDENCY_CONTEXT_CHARS].strip()]
+    seen: set[str] = {parts[0]} if parts[0] else set()
+    for section in selected:
+        if not section or section in seen:
+            continue
+        parts.append(section)
+        seen.add(section)
+        if len("\n\n".join(parts)) >= MAX_HOW_TENDENCY_CONTENT_CHARS:
+            break
+
+    snippet = "\n\n".join(part for part in parts if part).strip()
+    return snippet[:MAX_HOW_TENDENCY_CONTENT_CHARS]
+
+
+def _remove_anchor_toc(raw_content: str) -> str:
+    """移除 raw 归档锚点目录；格式不匹配时原样返回。"""
+    return _TOC_BLOCK_RE.sub("", raw_content)
+
+
+def _split_heading_sections(text: str) -> list[str]:
+    """按 `## §X` 章节切分；没有锚点标题时返回整篇。"""
+    matches = list(_ANCHOR_HEADING_RE.finditer(text))
+    if not matches:
+        return [text]
+
+    sections: list[str] = []
+    for idx, match in enumerate(matches):
+        start = match.start()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+        section = text[start:end].strip()
+        if section:
+            sections.append(section)
+    return sections
+
+
+def _section_is_how_candidate(section: str) -> bool:
+    """判断章节是否值得送入 How 倾向窗口。"""
+    if _HOW_HEADING_RE.search(section):
+        return True
+    if _LEGACY_HOW_ANCHOR_HEADING_RE.search(section):
+        return True
+    lower = section.lower()
+    return any(
+        marker in lower
+        for marker in (
+            "1.",
+            "2.",
+            "3.",
+            "- ",
+            "| primitive |",
+            "code",
+            "config",
+            "workflow",
+            "step",
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +363,7 @@ def _check_how_tendency(
     """
     from src.akb2.quality.llm_router import RouterConfigError
 
-    content_snippet = raw_content[:MAX_ADMISSION_CONTENT_CHARS]
+    content_snippet = _build_how_tendency_snippet(raw_content)
 
     messages = [
         {

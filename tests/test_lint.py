@@ -107,8 +107,8 @@ def test_query_result_bad_derived_slug_r23_with_explicit_vault_root(repo_root: P
     yields None and R23 silently skips. With --vault-root explicit, wiki_root
     is taken from <vault-root>/wiki and R23 fires correctly.
     """
-    import sys
     import subprocess
+    import sys
     fixture = repo_root / "tests" / "fixtures" / "compound" / "invalid-bad-derived-slug.md"
     vault_root = repo_root / "tests" / "fixtures" / "compound"
     result = subprocess.run(
@@ -151,3 +151,80 @@ def test_query_result_empty_query_r25(repo_root: Path):
     )
     assert result.returncode != 0
     assert "QUERY-EMPTY" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# R16 staging 候选豁免（promote Gate-4 与 gate CLI HC-01 互斥修复）
+# ---------------------------------------------------------------------------
+
+
+def test_r16_exempts_staging_candidate_with_directory_scope(monkeypatch):
+    """R16 豁免 staging/candidate/ 下、directory_scope 已声明 canonical 目标的候选页。
+
+    痛点:gate CLI HC-01 强制候选必须在 staging/candidate/，但 R16 要求 source 模板在
+    wiki/sources/ ——两条规则对 source 候选互斥，导致 promote Gate-4 永远过不了
+    (本机真跑 addy 卡在此)。豁免后:staging 候选物理路径待升格后落地 canonical 目录，
+    frontmatter directory_scope 已声明目标即合规。
+    断言绑定可观测行为:staging 候选 + directory_scope=wiki/sources/ → 0 findings。
+    """
+    from src.akb2.lint import akb2_lint
+
+    monkeypatch.setattr(akb2_lint, "VAULT_ROOT", Path("/tmp/akb2-r16-test-vault"))
+    rule = akb2_lint.rule_r16_template_directory_mismatch
+    fm_ok = (
+        "template_type: source\n"
+        "directory_scope: wiki/sources/\n"
+        "status: candidate\n"
+    )
+    ctx = {"template_type": "source"}
+    staging_path = Path("/tmp/akb2-r16-test-vault/staging/candidate/batch/test.md")
+
+    assert rule(staging_path, fm_ok, "body", ctx) == [], (
+        "staging 候选 + directory_scope 声明 wiki/sources/ 应豁免 R16"
+    )
+
+
+def test_r16_still_flags_non_staging_source_template(monkeypatch):
+    """R16 对非 staging 路径(如 wiki/cql/)的 source 模板仍报 TEMPLATE-DIRECTORY-MISMATCH。
+
+    断言绑定可观测行为:豁免只覆盖 staging/candidate/，active 误放目录仍被拦(护栏不破)。
+    """
+    from src.akb2.lint import akb2_lint
+
+    monkeypatch.setattr(akb2_lint, "VAULT_ROOT", Path("/tmp/akb2-r16-test-vault"))
+    rule = akb2_lint.rule_r16_template_directory_mismatch
+    fm = (
+        "template_type: source\n"
+        "directory_scope: wiki/sources/\n"
+        "status: active\n"
+    )
+    ctx = {"template_type": "source"}
+    bad_path = Path("/tmp/akb2-r16-test-vault/wiki/cql/test.md")  # 非 staging/candidate/
+
+    findings = rule(bad_path, fm, "body", ctx)
+    assert any(f["rule_id"] == "TEMPLATE-DIRECTORY-MISMATCH" for f in findings), (
+        "非 staging 路径的 source 模板应仍报 R16(豁免不外溢)"
+    )
+
+
+def test_r16_still_flags_staging_candidate_with_wrong_directory_scope(monkeypatch):
+    """R16 对 directory_scope 未声明正确 canonical 目标的 staging 候选仍报(豁免需匹配)。
+
+    断言绑定可观测行为:豁免要求 directory_scope 含 expected 目录——乱声明的候选仍被拦。
+    """
+    from src.akb2.lint import akb2_lint
+
+    monkeypatch.setattr(akb2_lint, "VAULT_ROOT", Path("/tmp/akb2-r16-test-vault"))
+    rule = akb2_lint.rule_r16_template_directory_mismatch
+    fm_bad_scope = (
+        "template_type: source\n"
+        "directory_scope: wiki/tools/\n"  # source 应是 wiki/sources/，声明错了
+        "status: candidate\n"
+    )
+    ctx = {"template_type": "source"}
+    staging_path = Path("/tmp/akb2-r16-test-vault/staging/candidate/batch/test.md")
+
+    findings = rule(staging_path, fm_bad_scope, "body", ctx)
+    assert any(f["rule_id"] == "TEMPLATE-DIRECTORY-MISMATCH" for f in findings), (
+        "directory_scope 不匹配 expected 的 staging 候选应仍报 R16"
+    )

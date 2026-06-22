@@ -70,17 +70,22 @@ _VAULT_TOML = _PROJECT_ROOT / "config" / "vault.toml"
 
 def _resolve_vault_root_from_toml() -> Path | None:
     """Read vault.toml and return the akb2_root path, or None if unavailable."""
-    if not _VAULT_TOML.exists():
-        return None
     try:
-        for line in _VAULT_TOML.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if stripped.startswith("akb2_root"):
-                val = stripped.split("=", 1)[1].strip().strip('"').strip("'")
-                val = val.replace("${HOME}", os.environ.get("HOME", "~"))
-                return Path(val).expanduser().resolve()
+        from src.akb2.loops.paths import get_akb2_root
+
+        return get_akb2_root()
     except Exception:
-        pass
+        if not _VAULT_TOML.exists():
+            return None
+        try:
+            for line in _VAULT_TOML.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if stripped.startswith("akb2_root"):
+                    val = stripped.split("=", 1)[1].strip().strip('"').strip("'")
+                    val = val.replace("${HOME}", os.environ.get("HOME", "~"))
+                    return Path(val).expanduser().resolve()
+        except Exception:
+            pass
     return None
 
 # -----------------------------------------------------------------------------
@@ -646,6 +651,15 @@ def rule_r16_template_directory_mismatch(path, fm, body, ctx):
         )]
     rel_path = str(path.relative_to(VAULT_ROOT)) if path.is_absolute() else str(path)
     if expected not in rel_path:
+        # 豁免:staging/candidate/ 下的候选页(尚未升格到 canonical 目录)。
+        # 候选物理路径在 staging 是 promote 五闸的 HC-01 要求(gate CLI 强制 input 在
+        # staging/candidate/);其 canonical 目标由 frontmatter directory_scope 声明,
+        # 升格后物理路径才会落到 expected 目录。此处只校验 directory_scope 已正确声明,
+        # 避免与 gate HC-01「候选必须 staging」互斥误报(否则 source 模板候选永远过不了 Gate-4)。
+        if "staging/candidate/" in rel_path.replace("\\", "/"):
+            declared = parse_fm_field_raw(fm, "directory_scope")
+            if declared and expected in declared:
+                return []  # 候选已声明正确 canonical 目标,物理路径待升格后落地
         return [make_finding(
             "TEMPLATE-DIRECTORY-MISMATCH", "P1", path,
             actual=f"template_type={tt}, path={rel_path}",
