@@ -9,6 +9,7 @@ Pipeline output contract (§step-4 PIPELINE_OUTPUT_CONTRACT):
 import json
 import os
 import sys
+import time
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -39,6 +40,34 @@ _MIN_REPOS_FOR_BRIEFING = 6
 _IDEAL_REPOS_FOR_BRIEFING = 10
 
 
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Write text via fsync + same-dir replace so partial files never appear."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(content)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+class _StageTimer:
+    def __init__(self, name: str):
+        self.name = name
+        self.started = 0.0
+
+    def __enter__(self):
+        self.started = time.monotonic()
+        _ts_print(f"STAGE_START {self.name}")
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        elapsed = time.monotonic() - self.started
+        status = "error" if exc_type else "ok"
+        _ts_print(f"STAGE_END {self.name} status={status} elapsed={elapsed:.1f}s")
+        return False
+
+
 def _clean_repo(repo: dict) -> dict:
     """Keep only schema-approved repo fields, stripping enrichment internals."""
     return {k: v for k, v in repo.items() if k in _SCHEMA_REPO_FIELDS}
@@ -54,11 +83,12 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
     vault = Path(vault_root)
 
     # Step 1: Intake via three-layer fallback
-    if mock:
-        candidates, fallback_layer = _mock_intake(force_layer)
-        l1_recency_stats = {}  # mock 无真实 L1
-    else:
-        candidates, fallback_layer, l1_recency_stats = _real_intake(force_layer)
+    with _StageTimer("intake"):
+        if mock:
+            candidates, fallback_layer = _mock_intake(force_layer)
+            l1_recency_stats = {}  # mock 无真实 L1
+        else:
+            candidates, fallback_layer, l1_recency_stats = _real_intake(force_layer)
 
     if not candidates:
         sys.stderr.write(
@@ -72,7 +102,8 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
 
     # Step 2-3: Aggregate by repo_url（mention_count 在此正确累加：collector 现按
     # per-handle 去重，跨博主同 repo 会保留多条 candidate）。
-    aggregated = _aggregate(candidates)
+    with _StageTimer("aggregate"):
+        aggregated = _aggregate(candidates)
 
     # 跨天 novelty 去重：过滤最近 3 天已推过的 repo（避免重复推荐）。这是真正该做
     # 去重的地方——在聚合算完热度之后，而非抓取时（抓取去重会抹掉 mention 信号）。
@@ -132,29 +163,30 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
     enriched = []
     enrich_attempted = 0
     enrich_failed = 0
-    for repo_url in list(aggregated.keys())[:30]:  # Cap at 30 for rate limits
-        # mock 模式必须 hermetic：不打真实 GitHub API（否则受限额影响 flaky，
-        # 且会被 enrich_degraded gate 误杀）。真实模式才走 enrich()。
-        data = _mock_enrich(repo_url) if mock else enrich(repo_url)
-        enrich_attempted += 1
-        # fail-safe 默认：缺 enrich_ok 字段 → 视为失败（保守计入降级），
-        # 避免未来新增 enrich 变体忘记打标记时静默绕过 enrich_degraded 门控。
-        if not data.get("enrich_ok", False):
-            enrich_failed += 1
-        # Merge aggregate data into enriched
-        agg = aggregated[repo_url]
-        data["mention_count"] = agg["mention_count"]
-        data["mentioners"] = agg["mentioners"]
-        data["first_mention_at"] = agg["first_mention_at"]
-        data["engagement"] = agg.get("engagement")  # MAX tweet metrics（engagement 打分维）
+    with _StageTimer("enrich"):
+        for repo_url in list(aggregated.keys())[:30]:  # Cap at 30 for rate limits
+            # mock 模式必须 hermetic：不打真实 GitHub API（否则受限额影响 flaky，
+            # 且会被 enrich_degraded gate 误杀）。真实模式才走 enrich()。
+            data = _mock_enrich(repo_url) if mock else enrich(repo_url)
+            enrich_attempted += 1
+            # fail-safe 默认：缺 enrich_ok 字段 → 视为失败（保守计入降级），
+            # 避免未来新增 enrich 变体忘记打标记时静默绕过 enrich_degraded 门控。
+            if not data.get("enrich_ok", False):
+                enrich_failed += 1
+            # Merge aggregate data into enriched
+            agg = aggregated[repo_url]
+            data["mention_count"] = agg["mention_count"]
+            data["mentioners"] = agg["mentioners"]
+            data["first_mention_at"] = agg["first_mention_at"]
+            data["engagement"] = agg.get("engagement")  # MAX tweet metrics（engagement 打分维）
 
-        # Record star snapshot (for future velocity computation)
-        if data.get("stars", 0) > 0:
-            star_history.record(repo_url, data["stars"])
-        # Inject velocity_7d (None until ≥7d of snapshots accumulate)
-        data["velocity_7d"] = star_history.velocity_7d(repo_url)
+            # Record star snapshot (for future velocity computation)
+            if data.get("stars", 0) > 0:
+                star_history.record(repo_url, data["stars"])
+            # Inject velocity_7d (None until ≥7d of snapshots accumulate)
+            data["velocity_7d"] = star_history.velocity_7d(repo_url)
 
-        enriched.append(data)
+            enriched.append(data)
 
     star_history.close()
 
@@ -211,8 +243,9 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
 
     # Step 7: Synthesize
     try:
-        synthesis_result = synthesize(top10)
-        top10_with_summaries = synthesis_result["top_repos"]
+        with _StageTimer("synthesize"):
+            synthesis_result = synthesize(top10)
+            top10_with_summaries = synthesis_result["top_repos"]
     except Exception as e:
         _emit_sc7_metrics(_sc7_metrics)
         _write_failed(f"synthesis_failed: {e}", fallback_layer=fallback_layer)
@@ -261,14 +294,22 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
         return 0
 
     # Write vault
-    out_dir = vault / OUTPUT_DIR_TEMPLATE
-    out_dir.mkdir(parents=True, exist_ok=True)
-    base_name = f"{today_str} GitHub Briefing"
-    md_path = out_dir / f"{base_name}.md"
-    json_path = out_dir / f"{base_name}.json"
+    with _StageTimer("write_vault"):
+        out_dir = vault / OUTPUT_DIR_TEMPLATE
+        if not vault.is_dir():
+            if mock:
+                vault.mkdir(parents=True, exist_ok=True)
+            else:
+                _write_failed(f"vault_not_ready: {vault}", fallback_layer=fallback_layer)
+                return 0
+        out_dir.mkdir(parents=True, exist_ok=True)
+        base_name = f"{today_str} GitHub Briefing"
+        md_path = out_dir / f"{base_name}.md"
+        json_path = out_dir / f"{base_name}.json"
 
-    md_path.write_text(_render_markdown(briefing))
-    json_path.write_text(json.dumps(briefing, ensure_ascii=False, indent=2))
+        _ts_print(f"briefing: WRITE_START {md_path}")
+        _atomic_write_text(md_path, _render_markdown(briefing))
+        _atomic_write_text(json_path, json.dumps(briefing, ensure_ascii=False, indent=2))
 
     # 仅在简报真正写盘后，把这 10 个 repo 标记为"已推荐"（3 天内不再重复推）。
     # 标记发生在写成功之后，避免被 skip 的候选误占用 novelty 名额。

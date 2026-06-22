@@ -33,6 +33,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import zoneinfo
 from pathlib import Path
 
@@ -55,6 +56,13 @@ _TZ_SH = zoneinfo.ZoneInfo("Asia/Shanghai")
 # 默认 3 天：19 个活跃账号在 2 天窗口下安静日仅 ~10 条原创、只够 3 主题；
 # 放宽到 3 天提升素材量（够 4-5 主题），新鲜度损失可接受。可 AKB2_INTAKE_WINDOW_DAYS 覆盖。
 _INTAKE_WINDOW_DAYS_DEFAULT = 3
+
+
+def _stage_log(stage: str, event: str, elapsed: float | None = None) -> None:
+    now = datetime.datetime.now(_TZ_SH).isoformat(timespec="seconds")
+    suffix = f" elapsed={elapsed:.1f}s" if elapsed is not None else ""
+    sys.stderr.write(f"{now} [briefing-stage] {stage} {event}{suffix}\n")
+    sys.stderr.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -560,6 +568,8 @@ def main(argv: list[str] | None = None) -> int:
     # Stage 1: Intake
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
         intake_tmp = Path(tf.name)
+    stage_start = time.monotonic()
+    _stage_log("intake", "start")
     try:
         intake_data = run_intake(
             dry_run=dry_run_intake,
@@ -569,9 +579,13 @@ def main(argv: list[str] | None = None) -> int:
         )
     finally:
         intake_tmp.unlink(missing_ok=True)
+    _stage_log("intake", "end", time.monotonic() - stage_start)
 
     # Stage 2: Scoring
+    stage_start = time.monotonic()
+    _stage_log("scoring", "start")
     scored_data = run_scoring(intake_data)
+    _stage_log("scoring", "end", time.monotonic() - stage_start)
 
     # 产出层日期兜底（SC-7）：去掉超出时间窗的旧推文
     # 跳过条件：dry-run 模式（fixture 日期与今日不同）或 intake 标记了 fallback（降级到旧 fixture）
@@ -582,7 +596,10 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     # Stage 3: Synthesis（产出英文结构化分析，语言交翻译阶段负责）
+    stage_start = time.monotonic()
+    _stage_log("synthesis", "start")
     synth_en = run_synthesis(scored_data, date=date)
+    _stage_log("synthesis", "end", time.monotonic() - stage_start)
 
     # Prepare paths
     akb2_root = vault_root / "Praise Space" / "AKB2.0"
@@ -603,10 +620,13 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # Stage 4a: Write temp briefing → gate（自检①：schema/结构，语言无关）
+    stage_start = time.monotonic()
+    _stage_log("gate", "start")
     temp_content = build_temp_briefing_markdown(synth_en, date, collector_name=effective_collector)
     real_briefing_path.write_text(temp_content, encoding="utf-8")
 
     gate_decision = run_gate(akb_root=akb2_root, input_file=real_briefing_path, date=date)
+    _stage_log("gate", "end", time.monotonic() - stage_start)
 
     if gate_decision == "reject":
         sys.stderr.write("gate decision: reject — skipping translate/audit/Social write\n")
@@ -614,8 +634,14 @@ def main(argv: list[str] | None = None) -> int:
         sys.exit(1)
 
     # Stage 4b: 翻译（全中文化）+ 译后审计定点修复收敛循环
+    stage_start = time.monotonic()
+    _stage_log("translate", "start")
     synth_zh = translate_briefing(synth_en)
+    _stage_log("translate", "end", time.monotonic() - stage_start)
+    stage_start = time.monotonic()
+    _stage_log("audit_fix", "start")
     synth_zh, verdict = run_audit_fix_loop(synth_zh, synth_en)
+    _stage_log("audit_fix", "end", time.monotonic() - stage_start)
     audit_verdict = verdict["verdict"]  # pass | warn | fail
     fix_loop_reason = verdict.get("fix_loop_reason")
 
@@ -650,11 +676,14 @@ def main(argv: list[str] | None = None) -> int:
         sys.exit(2)  # 2 = audit fail，不入库；调度器可据此区分成功(0)与审计拒绝(2)
 
     # Copy to Social
+    stage_start = time.monotonic()
+    _stage_log("write_social", "start")
     if final_briefing_path.exists() or final_briefing_path.is_symlink():
         final_briefing_path.unlink()
     shutil.copy2(real_briefing_path, final_briefing_path)
     real_briefing_path.unlink(missing_ok=True)
     sys.stderr.write("staging 中转已清除\n")
+    _stage_log("write_social", "end", time.monotonic() - stage_start)
 
     print(f"proposed_gate_decision: {gate_decision}")
     return 0

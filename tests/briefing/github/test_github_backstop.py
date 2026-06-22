@@ -1,6 +1,7 @@
 """Tests for github_briefing_backstop.sh — SC-2: github链路补跑守卫。"""
 
 import subprocess
+import os
 from datetime import date
 from pathlib import Path
 
@@ -13,11 +14,21 @@ def _today() -> str:
     return date.today().isoformat()
 
 
-def _run_backstop(vault_root: str, extra_args: list[str] | None = None) -> subprocess.CompletedProcess:
+def _run_backstop(
+    vault_root: str,
+    extra_args: list[str] | None = None,
+    env_overrides: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
     args = ["/bin/bash", str(BACKSTOP_SH), "--vault-root", vault_root]
     if extra_args:
         args += extra_args
-    return subprocess.run(args, capture_output=True, text=True)
+    env = {
+        **os.environ,
+        "AKB2_GITHUB_DEADLINE_HOUR": "99",
+        "AKB2_GITHUB_DEADLINE_MINUTE": "0",
+        **(env_overrides or {}),
+    }
+    return subprocess.run(args, capture_output=True, text=True, env=env)
 
 
 class TestGithubBackstop:
@@ -56,6 +67,22 @@ class TestGithubBackstop:
         assert result.returncode == 0
         assert "dry-run" in result.stderr
         assert "补跑" in result.stderr
+
+    def test_deadline_missed_blocks_late_rerun(self, tmp_path):
+        """After the noon deadline, a missing report must fail visibly, not rerun late."""
+        vault = tmp_path / "vault"
+        (vault / "Praise Space/AKB2.0/AI TRENDS/GitHub").mkdir(parents=True)
+
+        result = _run_backstop(
+            str(vault),
+            ["--dry-run"],
+            env_overrides={
+                "AKB2_GITHUB_DEADLINE_HOUR": "0",
+                "AKB2_GITHUB_DEADLINE_MINUTE": "0",
+            },
+        )
+        assert result.returncode == 124
+        assert "deadline" in result.stderr
 
     def test_log_written_to_logs_dir(self, tmp_path):
         """Each run appends one line to logs/github-backstop.log."""
