@@ -322,3 +322,14 @@ def test_report_results_all_failed_returns_1():
     ]
     exit_code = _report_results(results)
     assert exit_code == 1
+
+
+def test_report_results_needs_repair_returns_1():
+    """needs_repair 表示未发布，launchd 必须看到非 0。"""
+    from src.akb2.video.__main__ import _report_results
+
+    results = [
+        {"status": "needs_repair", "video": {"title": "Repair"}, "candidate_path": "staging/x.md"},
+    ]
+    exit_code = _report_results(results)
+    assert exit_code == 1

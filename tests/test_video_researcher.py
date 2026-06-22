@@ -144,13 +144,18 @@ def test_nlm_quota_exhausted_failover(temp_config, sample_video_result):
             with mock.patch.object(r, "_nlm_add_youtube", side_effect=[True, True]):
                 with mock.patch.object(r, "_nlm_research", side_effect=[False, True]):
                     with mock.patch.object(r, "_nlm_wait_research", return_value=True):
-                        with mock.patch.object(r, "_generate_and_download_report", return_value="# Test Report\n\nContent"):
+                        with mock.patch.object(
+                            r,
+                            "_generate_and_download_report",
+                            return_value="# Test Report\n\nContent",
+                        ) as mock_report:
                             outputs = r.run([sample_video_result])
 
     assert len(outputs) == 1
     assert outputs[0].degraded is False
     # Should have used alt profile
     assert outputs[0].nlm_profile_used == "alt"
+    mock_report.assert_called_once_with("nb-alt-001", "DeepSeek V4 Architecture Deep Dive", "alt")
 
 
 # ---------------------------------------------------------------------------
@@ -552,6 +557,21 @@ def test_health_check_returns_network_error_on_connect_refused(temp_config):
             stdout="",
             stderr="Traceback (most recent call last):\nConnectError: [Errno 61] Connection refused",
             returncode=0,
+        ),
+    ):
+        result = r._health_check("default")
+    assert result == "network_error"
+
+
+def test_health_check_checks_stdout_for_network_errors(temp_config):
+    """nlm CLI 返回 exit 1 + stdout 网络错误 + stderr 空 → network_error。"""
+    r = VideoResearcher(temp_config)
+    with mock.patch(
+        "src.akb2.video.researcher.subprocess.Popen",
+        return_value=_fake_proc(
+            stdout="Traceback (most recent call last):\nNetwork is unreachable",
+            stderr="",
+            returncode=1,
         ),
     ):
         result = r._health_check("default")

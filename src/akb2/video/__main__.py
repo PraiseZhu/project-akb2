@@ -197,8 +197,14 @@ def _run_single_source(config: VideoConfig, url: str, dry_run: bool) -> int:
                 logger.info(f"dry-run: {output.video_meta.get('title', '?')}")
             else:
                 try:
-                    formal_path = assembler.commit(candidate_md)
-                    logger.info(f"已发布到 AI TRENDS/Video: {formal_path}")
+                    candidate_path = assembler.commit(candidate_md)
+                    if assembler._is_staging_candidate(candidate_path):
+                        logger.warning(
+                            "gate 判 needs_repair，报告未发布，已保留 staging: %s",
+                            candidate_path,
+                        )
+                        return 1
+                    logger.info(f"已发布到 AI TRENDS/Video: {candidate_path}")
                 except GateRejected as e:
                     logger.warning(f"gate 拒绝，报告已丢弃: {e}")
                     return 1
@@ -315,8 +321,8 @@ def _report_results(results: list[dict]) -> int:
                 title = r.get("video", {}).get("title", "?")
                 logger.error("  失败: %s — %s", title, r.get("error", "?"))
 
-    # exit 1 = 有失败（即使部分成功）；exit 0 = 全成功
-    if failed > 0:
+    # exit 1 = 有失败或待修复（即使部分成功）；exit 0 = 全成功
+    if failed > 0 or needs_repair > 0:
         return 1
     return 0
 

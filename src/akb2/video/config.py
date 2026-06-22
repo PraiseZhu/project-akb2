@@ -71,6 +71,23 @@ def _resolve_nlm() -> str:
     return str(default) if default.exists() else "nlm"
 
 
+def _resolve_akb2_root() -> Path:
+    """解析 AKB2.0 子库根：env / 本机默认 / vault config。"""
+    try:
+        from src.akb2.loops.paths import get_akb2_root
+
+        return get_akb2_root()
+    except Exception:
+        env_value = os.environ.get("AKB2_ROOT") or os.environ.get("AKB2_VAULT_ROOT")
+        if env_value:
+            return Path(env_value).expanduser().resolve()
+        vault_root = os.environ.get("VAULT_ROOT")
+        if vault_root:
+            return Path(vault_root).expanduser().joinpath(
+                "Praise Space", "AKB2.0"
+            ).resolve()
+        return Path.home().joinpath("Obsidian", "Praise Space", "AKB2.0").resolve()
+
 
 @dataclass
 class VideoConfig:
@@ -85,12 +102,7 @@ class VideoConfig:
     keywords_path: Path = field(default_factory=lambda: Path("config/keywords.json"))
 
     # -- AKB2 Obsidian vault 路径 --
-    akb2_root: Path = field(default_factory=lambda: Path(
-        os.environ.get(
-            "AKB2_ROOT",
-            str(Path.home() / "Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0"),
-        )
-    ))
+    akb2_root: Path = field(default_factory=_resolve_akb2_root)
 
     # -- staging 目录 --
     staging_dir: Path = field(default_factory=lambda: Path("staging/candidate"))

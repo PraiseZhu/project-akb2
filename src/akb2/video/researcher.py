@@ -272,9 +272,10 @@ class VideoResearcher:
             # 尝试 profile 轮替；弃用原 notebook（GC：防 orphan）
             logger.info(f"尝试切换 profile: {profile} → {self.config.nlm_alt_profile}")
             old_nb_id = nb_id
+            old_profile = profile
             profile = self.config.nlm_alt_profile
             nb_id = self._nlm_create_notebook(nb_title, profile)
-            self._nlm_delete_notebook(old_nb_id, profile)
+            self._nlm_delete_notebook(old_nb_id, old_profile)
             if not nb_id:
                 logger.warning(f"备用 profile notebook 创建失败（非配额），转降级: {title}")
                 return None, None, profile
@@ -297,9 +298,10 @@ class VideoResearcher:
             # 尝试 profile 轮替；弃用原 notebook（GC：防 orphan）
             logger.info(f"尝试切换 profile: {profile} → {self.config.nlm_alt_profile}")
             old_nb_id = nb_id
+            old_profile = profile
             profile = self.config.nlm_alt_profile
             nb_id = self._nlm_create_notebook(nb_title, profile)
-            self._nlm_delete_notebook(old_nb_id, profile)
+            self._nlm_delete_notebook(old_nb_id, old_profile)
             if not nb_id:
                 logger.warning(f"备用 profile notebook 创建失败（非配额），转降级: {title}")
                 return None, None, profile
@@ -325,7 +327,7 @@ class VideoResearcher:
         if nlm_success:
             # 导入发现的源
             self._nlm_import(nb_id, profile)
-            report_content = self._generate_and_download_report(nb_id, title)
+            report_content = self._generate_and_download_report(nb_id, title, profile)
             return report_content, nb_id, profile
         else:
             self._nlm_delete_notebook(nb_id, profile)
@@ -378,41 +380,47 @@ class VideoResearcher:
             # 再次抛配额异常，由 run() 的 break 分支停批标 pending。
             return "ok"
 
+        stdout_text = stdout.strip()
+        stderr_text = stderr.strip()
+        combined_text = "\n".join(part for part in (stdout_text, stderr_text) if part)
+
         if proc.returncode == 0:
-            stdout_text = stdout.strip()
-            if stdout_text and not _is_network_error_stderr(stderr):
-                return "ok"
-            # exit 0 但 stdout 为空或 stderr 含网络错误特征
-            if _is_network_error_stderr(stderr):
+            if _is_network_error_stderr(combined_text):
                 logger.warning(
-                    "健康检查: 网络不可达（nlm CLI 返回 exit 0 但 stderr 含网络错误特征）"
+                    "健康检查: 网络不可达（nlm CLI 返回 exit 0 但输出含网络错误特征）"
                 )
                 return "network_error"
+            if stdout_text:
+                return "ok"
             # stdout 为空且无网络错误特征 → 保守视为 auth 问题
             logger.warning("健康检查: nlm 返回空响应，疑似 auth 过期")
             return "auth_expired"
 
         # exit != 0（且 != 8）
-        stderr_text = stderr.strip()
-        if _is_network_error_stderr(stderr_text):
+        if _is_network_error_stderr(combined_text):
             logger.warning("健康检查: 网络不可达（exit %d + 网络错误特征）", proc.returncode)
             return "network_error"
 
         # 检查 auth 相关特征
-        if ("Profile" in stderr_text
-                and ("not found" in stderr_text or "login" in stderr_text)):
+        auth_text = combined_text.lower()
+        if (
+            ("profile" in auth_text and ("not found" in auth_text or "login" in auth_text))
+            or "unauthorized" in auth_text
+            or "authentication" in auth_text
+            or "auth" in auth_text and "expired" in auth_text
+        ):
             logger.error(
                 "健康检查: auth 过期 — profile '%s' 不可用，终端运行: nlm login",
                 profile,
             )
             return "auth_expired"
 
-        # 其余非零码 → 保守视为 auth 问题（避免在未知错误时继续走 NLM）
+        # 其余非零码多为 CLI/网络临时错误；转 pending，避免降级产低质报告。
         logger.error(
-            "健康检查失败 (exit %d): stderr=%s",
-            proc.returncode, stderr_text[:200],
+            "健康检查失败 (exit %d): output=%s",
+            proc.returncode, combined_text[:200],
         )
-        return "auth_expired"
+        return "network_error"
 
     # ------------------------------------------------------------------
     # 降级路径：yt-dlp 字幕 → LLM 摘要
@@ -687,9 +695,18 @@ class VideoResearcher:
     # NLM 报告生成（三步：report create → 轮询 list artifacts → download）
     # ------------------------------------------------------------------
 
-    def _generate_and_download_report(self, nb_id: str, title: str) -> str | None:
+    def _generate_and_download_report(
+        self,
+        nb_id: str,
+        title: str,
+        profile: str | None = None,
+    ) -> str | None:
         """通过 nlm 三步生成并下载报告：report create → 轮询 list artifacts → download report。"""
-        logger.info(f"[DIAG-GEN-REPORT] nb_id={nb_id}, title={title[:60]!r}")
+        profile = profile or self.config.nlm_profile
+        logger.info(
+            "[DIAG-GEN-REPORT] nb_id=%s, title=%r, profile=%s",
+            nb_id, title[:60], profile,
+        )
 
         slug = re.sub(r"[^\w-]", "", title.lower().replace(" ", "-"))[:40]
         report_path = f"/tmp/research-video-{slug}.md"
@@ -700,7 +717,7 @@ class VideoResearcher:
             "--format", "Briefing Doc",
             "--language", "zh-Hans",
             "--confirm",
-            profile=self.config.nlm_profile,
+            profile=profile,
             timeout=60,
         )
         if not create_output:
@@ -734,7 +751,7 @@ class VideoResearcher:
         while elapsed < deadline:
             list_output = self._nlm(
                 "list", "artifacts", nb_id, "--json",
-                profile=self.config.nlm_profile,
+                profile=profile,
                 timeout=60,
             )
             if list_output:
