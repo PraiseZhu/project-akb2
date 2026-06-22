@@ -3,8 +3,8 @@ name: "cc-local-llm"
 description: "llama-swap 本地 LLM 集成。通过 127.0.0.1:8080 的 OpenAI-compatible /v1/* 端点进行只读本地推理,包含健康检查、chat 调用模板、参数经验值、长文本分批策略、结构化 JSON 抽取、system prompt 注入上下文。"
 ---
 
-<!-- akb-backlink: /Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0/wiki/tools/cc-local-llm.md -->
-<!-- akb-interface: /Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0/toolbox/interfaces/cc-local-llm.md -->
+<!-- akb-backlink: /Volumes/AKB2/Obsidian/Praise Space/AKB2.0/wiki/tools/cc-local-llm.md -->
+<!-- akb-interface: /Volumes/AKB2/Obsidian/Praise Space/AKB2.0/toolbox/interfaces/cc-local-llm.md -->
 
 # 本地LLM
 

@@ -21,7 +21,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AKB2_BASE="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-AKB_ROOT="/Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0"
+AKB_ROOT="/Volumes/AKB2/Obsidian/Praise Space/AKB2.0"
 CLOSURE_MANIFEST="$AKB2_BASE/src/akb2/closure/2026-05-07/closure-manifest.json"
 L2_REG_BASE="$AKB2_BASE/evals/l2-regression-v1"
 PROMO_BASE="$AKB2_BASE/src/akb2/promotion_gate/v0/outputs"

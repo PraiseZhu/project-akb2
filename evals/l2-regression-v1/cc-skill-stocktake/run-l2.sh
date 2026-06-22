@@ -15,7 +15,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EVAL_BASE="$(dirname "$(dirname "$SCRIPT_DIR")")"
 UPSTREAM_RECOMMENDATION="$EVAL_BASE/l2-regression-v1/cc-local-llm/recommendation.json"
 LANES_DIR="$SCRIPT_DIR/lanes"
-AKB_ROOT="/Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0"
+AKB_ROOT="/Volumes/AKB2/Obsidian/Praise Space/AKB2.0"
 
 LANE_FILTER=""
 DRY_RUN=false

@@ -3,8 +3,8 @@ name: cc-executable-plan
 description: Create decision-complete implementation plans using the Codex workspace plan template. Use whenever the user asks for a 方案, 计划, 执行计划, implementation plan, technical plan, roadmap, task plan, refactor plan, migration plan, rollout plan, or asks to plan before coding; especially use when the plan must be detailed enough to avoid review churn.
 ---
 
-<!-- akb-backlink: /Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0/wiki/tools/cc-executable-plan.md -->
-<!-- akb-interface: /Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0/toolbox/interfaces/cc-executable-plan.md -->
+<!-- akb-backlink: /Volumes/AKB2/Obsidian/Praise Space/AKB2.0/wiki/tools/cc-executable-plan.md -->
+<!-- akb-interface: /Volumes/AKB2/Obsidian/Praise Space/AKB2.0/toolbox/interfaces/cc-executable-plan.md -->
 
 # Executable Plan
 

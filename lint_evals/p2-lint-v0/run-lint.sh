@@ -11,7 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-AKB_ROOT="/Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0"
+AKB_ROOT="/Volumes/AKB2/Obsidian/Praise Space/AKB2.0"
 FIXTURES_DIR="$SCRIPT_DIR/fixtures"
 OUTPUTS_DIR="$SCRIPT_DIR/outputs"
 SKILL_BASE="$HOME/.codex/skills"
