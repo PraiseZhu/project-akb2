@@ -1,0 +1,32 @@
+{
+  "template_kind": "gd-execution-result",
+  "result_id": "step-1-data-contracts",
+  "task_id": "t1",
+  "parent_step": "step-1",
+  "parent_plan": "plans/gd/2026-06-14-cql-intake/master-plan.md",
+  "executor_role": "claude_subagent",
+  "exec_status": "completed",
+  "sc_acceptance": [
+    {
+      "sc_ref": "SC-1",
+      "status": "pass",
+      "evidence": "python -m pytest tests/quality/test_extraction_context.py -v\n12 passed in 0.06s (exit 0)\n\n覆盖用例:\n  TestFeedTitleFallback::test_missing_title_falls_back_to_feed_title        PASSED\n  TestFeedMetadataFallbacks::test_missing_author_falls_back                 PASSED\n  TestFeedMetadataFallbacks::test_missing_published_falls_back              PASSED\n  TestFeedMetadataFallbacks::test_missing_publisher_stored_in_raw_metadata  PASSED\n  TestFailClosed::test_all_missing_fail_closed                              PASSED\n  TestFailClosed::test_no_context_no_metadata_fail_closed                  PASSED\n  TestExtractionContextFields::test_field_count_at_least_8                 PASSED\n  TestExtractionContextFields::test_instantiation_with_all_fields          PASSED\n  TestArticleId::test_deterministic_same_url                                PASSED\n  TestArticleId::test_length_is_12                                          PASSED\n  TestArticleId::test_different_urls_different_ids                          PASSED\n  TestArticleId::test_matches_manual_sha256                                 PASSED\n\n回归验证: tests/quality/test_intake_extract.py 25 passed in 0.07s (exit 0)\nLint: ruff check 3 files — All checks passed! (exit 0)\n",
+      "not_run_reason": ""
+    }
+  ],
+  "files_added": [
+    "src/akb2/quality/intake/models.py",
+    "tests/quality/test_extraction_context.py"
+  ],
+  "files_modified": [
+    "src/akb2/quality/intake/extract.py"
+  ],
+  "owned_paths_writes_only": true,
+  "forbidden_paths_touched": [],
+  "handoff": {
+    "result_path": "plans/gd/2026-06-14-cql-intake/execute/e-step1-result.yaml",
+    "status_field": "exec_status",
+    "summary": "ExtractionContext(8字段) + compute_article_id + extract_content fallback(title/author/published/publisher) + fail-closed 全部实现，12个新测试+25个回归测试全绿，lint clean。",
+    "blockers": "none"
+  }
+}

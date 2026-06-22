@@ -5,7 +5,7 @@ GOAL_SOURCE: Project GD/docs/gd-v7-project-goal.md
 TEMPLATE_KIND: gd-master-plan
 
 日期: 2026-06-14
-状态: draft
+状态: draft（2026-06-17 实测修订：本计划范围已交付，archived 0→4，非阻塞；当前阻塞在下游 repair，见文末修订）
 负责人: Claude 执行; Codex cross-review
 
 > 规格输入: 计划审查反馈（2026-06-14）7 finding + 3 P3 风险；蓝本 `/Users/praise/.claude/plans/structured-puzzling-moore.md`（已废弃）
@@ -223,3 +223,13 @@ VERIFY: python -m pytest tests/quality/ tests/loops/ -q && ruff check src/akb2/q
 | P3 | scrapling/docling 已安装≠当前 Python env 可导入 | import gate 探测（Step-6）；测试 mock 三个 _extract_via_* 不依赖真 import |
 | P3 | source_validator jsonl 追加混旧记录 | Step-5 改为 run_id 原子写入（replace，非 append） |
 | P3 | fetch_fail/archive_fail 签名排障慢 | Step-4 签名补 details/sample_error（SC-6 覆盖） |
+
+---
+
+## 实测修订（2026-06-17）
+
+> 权威细节见 `docs/loops-design-decisions.md` §12。
+
+- **本计划已达目标**：抓取链路出货，intake archived 0→4（openai Cloudflare 文章入库，raw 9 字段 frontmatter + 锚点齐），不是当前阻塞点。
+- **下游阻塞在 repair**（非本计划范围，本计划 §2 非目标已划出 admission/distill/grader/repair/promote）：黄金样张卡端到端跑通 7 段后卡在 repair 子循环空转（3 轮不收敛）。修复在 Plan 1（`2026-06-12-content-quality-loop`）step-4 + back-half 计划，C+ 重写 repair 为 agent 爬坡。
+- intake 层无需改动；后续若 C+ 需要"黄金样本喂进 repair 输入"，读取的是 vault 既有样张文件，与本抓取链路解耦。

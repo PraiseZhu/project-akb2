@@ -1,0 +1,42 @@
+{
+  "template_kind": "gd-execution-result",
+  "result_id": "step-3-orchestrator",
+  "task_id": "t3",
+  "parent_step": "step-3",
+  "parent_plan": "plans/gd/2026-06-14-cql-intake/master-plan.md",
+  "executor_role": "claude_subagent",
+  "exec_status": "completed",
+  "sc_acceptance": [
+    {
+      "sc_ref": "SC-5",
+      "status": "pass",
+      "evidence": "pytest tests/quality/test_intake_orchestrator.py -k \"article_id or idempotent\"\n→ test_article_id_uniqueness PASSED (不同 URL 产 2 个不同 12 位 article_id)\n→ test_article_id_deterministic PASSED (相同 URL 重复调用结果一致)\n→ test_idempotent PASSED (同 URL 重跑 ledger 已有 → skipped_seen，ledger 行数不增，无新 raw 文件)\n"
+    },
+    {
+      "sc_ref": "SC-7",
+      "status": "pass",
+      "evidence": "PYTHONPATH=src python -m akb2.quality.intake.orchestrator --dry-run --limit 3 \\\n  --sources-config config/main_sources.yaml 2>&1 | grep -q 'archived=0' && echo PASS\n→ 输出末行: discovered=0 skipped=0 archived=0\n→ grep 命中 archived=0，exit 0，PASS\n→ test_dry_run_no_raw PASSED\n→ test_dry_run_no_network_no_raw PASSED (httpx/scrapling patch fail-on-call，干跑通过)\n→ test_stdout_format PASSED (stdout 含 discovered=/skipped=/archived=0)\n"
+    },
+    {
+      "sc_ref": "SC-8",
+      "status": "pass",
+      "evidence": "pytest tests/quality/test_intake_orchestrator.py -k \"rate_limit or quarantine or ledger\"\n→ test_rate_limit_skip PASSED (超限 status=skipped_rate_limit)\n→ test_quarantine_skip PASSED (quarantine=True → archived=0，不写 raw)\n→ test_ledger_fields PASSED (run_id/source_slug/article_id/last_fetch_at/daily_count/quarantine_status/status 全部存在)\n→ test_ledger_write_and_reload PASSED\n全部 7 passed, 0 failed\n"
+    }
+  ],
+  "files_added": [
+    "src/akb2/quality/intake/orchestrator.py",
+    "tests/quality/test_intake_orchestrator.py",
+    "reports/intake/.gitkeep"
+  ],
+  "files_modified": [
+    ".gitignore"
+  ],
+  "owned_paths_writes_only": true,
+  "forbidden_paths_touched": [],
+  "handoff": {
+    "result_path": "plans/gd/2026-06-14-cql-intake/execute/e-step3-result.yaml",
+    "status_field": "exec_status",
+    "summary": "orchestrator.py 新建完成，10 个测试全部通过，SC-5/SC-7/SC-8 三项验收均 pass",
+    "blockers": "none"
+  }
+}

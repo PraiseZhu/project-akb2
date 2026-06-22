@@ -321,3 +321,21 @@ VERIFY: `reports/calibration/live-sample.json` 产出，3 篇有 final_status + 
 | v1 | 2026-06-15 | 初始版本：P0 后半段实测 + P1 校准修复 + P2 源尾巴；承接本会话 G1-G3（intake archived 0→4） |
 | v2 | 2026-06-16 | 计划审查 REQUIRES_CHANGES 修复：R1[P1] 加 Step P0.0 `--staging-dir` 隔离参数 + ledger_path 硬断言（防污染真 staging）；R2[P2] 临时目录 `_tmp/cql-p0/`→`/tmp/akb2-cql-p0/`（移出 repo 避 gitignore 问题）；R3[P2] P0.2 加路由/预算 gate（SC-8）；残余风险：SC-9 标注为外部 spec、raw 源文件改持久绝对路径 + 重生成兜底 |
 | v3 | 2026-06-16 | 第二轮审查 REQUIRES_CHANGES 修复：F1[P1] SC-1 顶层 verify 命令补 `--staging-dir`（之前漏同步，仍会绕过隔离）；F2[P2] Step P0.0 verify 改为 CLI 解析级（不再要求 ledger 存在，修顺序矛盾——P0.0 早于 P0.1 建 raw）；残余：依赖段 live2 路径同步为持久绝对路径、SC-7 改用真 staging before/after mtime+sha256 证明零写入（不依赖真 vault 是否 git repo） |
+| v4 | 2026-06-17 | 实测修订 + C+ 续作定向（见下「实测修订」节）：本计划 P0 已暴露 repair 子循环空转（addy 卡 grade 7→10→12 三轮不收敛）；C+ 重写 repair 为 agent 爬坡是本计划的自然续作 |
+
+---
+
+## 实测修订（2026-06-17 · C+ 续作）
+
+> 权威细节见 `docs/loops-design-decisions.md` §12 与 `specs/content-quality-loop/spec.md` 顶部修订块 + Addy Osmani《Loop Engineering》/ Boris Cherny 炉边谈话调研。
+
+**本计划 P0 的实测产出（= 续作的依据）**
+- 后半段（准入→提炼→评分→修复→升格）首次真跑，**骨架贯通，repair 是唯一撞墙节点**：黄金样张 addy 卡 grade 7→修后 10→12，3 轮不收敛（越修越坏）。
+- 这证实本计划 §背景判断（SC-3 0% 主因是 defuddle bug + 虚构语料，非管线本身）只对了一半：intake/前半段确实修好了，**但 repair 本身确有结构性缺陷**。
+
+**repair 空转 4 根因**：① grader location 词表 ≠ repair 小节定位 ② 只认 H2 不认 H3 ③「整页重写+逐字节 diff」自相矛盾→整轮丢弃 ④ 超时静默吞（`repair.py:246`）。
+
+**C+ 续作（本计划非目标曾写"不改 repair 判定逻辑，除非 P0 实测暴露 bug，暴露即停下单独决策"——现已触发该条款，用户已授权改 `repair.py`）**
+- 重写 repair 节点 → 「缺陷清单 + 黄金样本 → agent 定点爬坡（切节-改节-拼回）→ grader 作 `/goal` 停止条件」；统一 grader↔repair location 契约；认 H3；超时不静默。
+- 验收门 = addy 卡端到端收敛（接本计划 P0.4 通过率口径，目标从"0% 收敛"→"≥1 张样张卡走完全链"）。
+- `grader.py`/量规零改动（forbidden 不变）；门控/准入/五闸保持确定性 fail-closed（知识库误放成本高，不照搬"模型自己会做对"）。

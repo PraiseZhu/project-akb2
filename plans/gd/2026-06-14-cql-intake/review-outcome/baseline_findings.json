@@ -1,0 +1,37 @@
+{
+  "schema_version": "1.0",
+  "baseline_round": 1,
+  "created_at": "2026-06-14T18:14:18Z",
+  "controller_invocation_id": "ctrl-20260614T181133Z-e020fdc3",
+  "branch": "execution-only",
+  "delta_snapshot": "594dee5040f485effb018359035822ecec18b54c",
+  "baseline_unresolved_count": 1,
+  "findings": [
+    {
+      "severity": "P2",
+      "title": "Live SC 未完成却进入合并结果",
+      "sc_refs": [
+        "SC-10",
+        "SC-10",
+        "SC-10",
+        "SC-10",
+        "SC-10"
+      ],
+      "evidence": "`plans/gd/2026-06-14-cql-intake/execute/combined-outcome.json:114-117` 显示 `SC-10` status 为 `not_run`，reason 为需 `AKB2_LIVE_VALIDATE=1` 手动触发；计划 `master-plan.md:80-82` 要求 live ledger 76 行、reachable≥70、run_id 一致并打印 PASS。",
+      "impact": "execution outcome 作为合并验收输入时会把未执行的 active SC 当作可通过状态，用户目标未完整验收。",
+      "required_fix": "在 Step-5/source_validator 执行并记录 SC-10 live verify；更新 `combined-outcome.json` 中 `SC-10` 为 `pass` 且填入真实命令、stdout、exit code，或把整体 outcome/merge 决策降为未完成。",
+      "verify": "`cd \"/Users/praise/AI-Agent/Claude/projects/Project AKB2\" && AKB2_LIVE_VALIDATE=1 PYTHONPATH=src python -m akb2.quality.intake.source_validator --live --out reports/source-validation/sources-ledger.jsonl && <SC-10 ledger assertions>`",
+      "source": "codex_B",
+      "also_reported_by": [],
+      "id": "F001",
+      "status": "unresolved",
+      "resolved_in_round": null,
+      "round_history": [
+        {
+          "round": 1,
+          "status": "unresolved"
+        }
+      ]
+    }
+  ]
+}
