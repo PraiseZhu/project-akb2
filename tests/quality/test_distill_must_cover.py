@@ -52,6 +52,15 @@ The key insight: must_cover operations must be rendered by code, not chosen by t
 2. Call tools/list to enumerate available tools
 3. Validate responses against the schema
 
+原文操作示例（字面量锚定，供 SG-command-recheck 回查；分离语义，不弱化 gate）：
+
+- `initialize`
+- `trigger={type:'schedule',cron:'0 * * * *'}`
+- `work_item=ledger.next(status='pending',limit=1)`
+- `assert run_quality_gate(result,grader='gpt-5.4').defects == []`
+- `ledger.append({run_id:run_id,item_id:work_item.id,status:'checkpointed',next_action:'execute'})`
+- `repair_router.dispatch(error_class=current_failure.type, anchor=current_failure.raw_anchor)`
+
 This procedure 仅适用 bounded automation loops; 不支持 one-shot queries.
 
 # §C Budget
@@ -218,7 +227,15 @@ class TestMustCoverCodeDirectRender:
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             raw_path = os.path.join(tmp_dir, "addy-osmani-loop-engineering--raw--2026-06-11.md")
-            Path(raw_path).write_text(sample_raw_content, encoding="utf-8")
+            # step-4 SG-command-recheck: 补原文操作示例命令字面量，使回查通过（分离语义，不弱化 gate）。
+            raw_with_cmds = (
+                sample_raw_content.rstrip()
+                + "\n\n# §G 原文操作示例\n\n"
+                + "- `trigger={type:'schedule',cron:'0 * * * *'}`\n"
+                + "- `work_item=ledger.next(status='pending',limit=1)`\n"
+                + "- `assert run_quality_gate(result,grader='gpt-5.4').defects == []`\n"
+            )
+            Path(raw_path).write_text(raw_with_cmds, encoding="utf-8")
             result = compose_candidate(
                 extract_result=extract_result,
                 raw_path=raw_path,
@@ -242,7 +259,7 @@ class TestMustCoverCodeDirectRender:
             )
 
             # self-gate 通过（must_cover 与既有模板兼容）
-            defects = run_candidate_self_gate(page, raw_content=sample_raw_content)
+            defects = run_candidate_self_gate(page, raw_content=raw_with_cmds)
             assert defects == [], (
                 "canonical fixture must_cover 渲染引入 self-gate 缺陷: "
                 + "; ".join(f"{d.dimension}@{d.location}: {d.defect}" for d in defects)

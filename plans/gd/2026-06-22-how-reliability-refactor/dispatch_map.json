@@ -120,7 +120,8 @@
       "owned_paths": [
         "src/akb2/quality/source_ops_scanners/raw_verify.py",
         "src/akb2/quality/checks_structural.py",
-        "tests/quality/test_raw_verify.py"
+        "tests/quality/test_raw_verify.py",
+        "tests/quality/test_distill_must_cover.py"
       ],
       "forbidden_paths": [
         "/Users/praise/.claude/**",

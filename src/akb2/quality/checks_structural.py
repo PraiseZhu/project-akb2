@@ -26,6 +26,9 @@ from dataclasses import dataclass
 
 from src.akb2.quality.md_table import split_md_table_row
 from src.akb2.quality.source_ops_scanners import scan_all as _scan_source_evidence
+from src.akb2.quality.source_ops_scanners.raw_verify import (
+    verify_commands_in_raw as _verify_commands_in_raw,
+)
 
 # ---------------------------------------------------------------------------
 # 公开类型
@@ -1140,5 +1143,36 @@ def run_candidate_self_gate(
                         ),
                     )
                 )
+
+    # SG-command-recheck: 双层门（Codex step-4 refactor）
+    # Layer 1 (代码直出命令回查): must_cover 代码直出命令（行含 must_cover 代码直出信号）
+    #   必须字面回溯 raw，治"代码直出命令字面量漂移"（双保险）。raw 缺失即 Violation。
+    # Layer 2 (派生命令安全门): 其他命令（akb_interpretation / source_grounded 误标 LLM step /
+    #   未标注）不查 raw，跑 deterministic 危险命令黑名单，治"LLM 塞破坏性命令"。
+    # raw_content=None 已被 SG-must-cover 块 fail-closed（保持现状），本块在 raw 存在时才执行。
+    if raw_content:
+        command_violations = _verify_commands_in_raw(body, raw_content)
+        for v in command_violations:
+            if "来源锚定" in v.reason or "raw 文本为空" in v.reason:
+                defect_text = f"来源锚定命令原文不存在: `{v.command}`"
+                suggestion = (
+                    "删除该命令或改为 raw 中真实存在的字面量；"
+                    "若 raw 确无对应操作，compose 必须 fail-closed，不得编造命令补齐 How"
+                )
+            else:
+                defect_text = f"派生命令含危险操作: `{v.command}`"
+                suggestion = (
+                    "删除该危险命令或替换为安全的等价操作示例；"
+                    "How 步骤中的派生命令不得含 rm -rf / fork bomb / 管道执行远程脚本 / "
+                    "凭据外泄等破坏性操作"
+                )
+            defects.append(
+                Defect(
+                    dimension="SG-command-recheck",
+                    location="### 操作步骤",
+                    defect=defect_text,
+                    suggestion=suggestion,
+                )
+            )
 
     return defects

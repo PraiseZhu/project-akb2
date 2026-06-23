@@ -1,0 +1,41 @@
+template_kind: gd-execution-result
+result_id: w3-step-4-machine-recheck-dual-layer
+task_id: step-4
+parent_step: step-4
+parent_plan: plans/gd/2026-06-22-how-reliability-refactor/master-plan.md
+executor_role: claude_subagent
+executed_at: 2026-06-23T19:30:00Z
+exec_status: completed
+sc_acceptance:
+  - sc_ref: SC-4
+    status: pass
+    evidence: >
+      主 agent 独立复核全 quality 套件 592 passed / 0 failed exit=0。
+      step-4 重构为双层门（Codex 方案）：Layer 1 must_cover 代码直出命令
+      （带 source_grounded 标记）字面回溯 raw 治字面量漂移；Layer 2 派生命令
+      （akb_interpretation/未标注）不查 raw 但跑危险命令黑名单（rm -rf/fork
+      bomb/curl|sh/mkfs/chmod 777 等）治 LLM 塞破坏性命令。raw_verify 重构
+      按命令来源分流。test_raw_verify 26 passed；test_checks_structural -k
+      recheck 4 passed。原 55 红全转绿（frontmatter 35+extract_retry 11+
+      repair 5+smoke 3+runner 1）。gate 治编未弱化（source_grounded 命令仍
+      raw 回查 + 危险命令黑名单仍挡）。
+    not_run_reason: ""
+files_added:
+  - src/akb2/quality/source_ops_scanners/raw_verify.py
+  - tests/quality/test_raw_verify.py
+files_modified:
+  - src/akb2/quality/checks_structural.py
+  - tests/quality/test_checks_structural.py
+  - tests/quality/test_distill_must_cover.py
+files_unchanged_in_scope: []
+owned_paths_writes_only: true
+forbidden_paths_touched: []
+out_of_scope_writes: []
+handoff:
+  result_path: plans/gd/2026-06-22-how-reliability-refactor/execute/w3-step-4-result.yaml
+  status_field: completed
+  summary: "step-4 重构为 Codex 双层门：来源锚定命令 raw 回查 + 派生命令危险黑名单；55 红全转绿，治编未弱化。"
+  blockers: "none"
+known_limitations:
+  - "判定信号用 'must_cover 代码直出' 字符串而非裸 (source_grounded) marker（_how_step_provenance 会把有 anchor 的 LLM step 误标 source_grounded，裸 marker 会误归）；达成 Codex 双层意图但实现信号与原指令略有偏离，留 review 评估是否规范化 provenance 标记。"
+  - "test_distill_must_cover.py 补了占位命令字面量（w3 期间 fix），step-4 收窄后多余但无害，保留。"

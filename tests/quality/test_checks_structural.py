@@ -1304,3 +1304,63 @@ class TestSGMustCoverCallSiteProvenance:
         # 无任何调用点传截断/异源 raw（无 [:N] / split 截断模式指向 raw_text/raw_content）。
         assert "raw_text[: " not in repair_src
         assert "raw_content[: " not in runner_src
+
+
+class TestSGCommandRecheckFailClosed:
+    """SC-4.2: 正文含"原文不存在命令" → run_candidate_self_gate 产 SG-command-recheck Defect。
+
+    SG-must-cover 治"漏"（raw 有 → 候选没渲染），SG-command-recheck 治"编"
+    （候选有 → raw 没有）。两者语义分离，互不替代。
+    """
+
+    def test_fabricated_command_produces_recheck_defect(self):
+        """正文 How 步骤含 raw 不存在的命令 → SG-command-recheck Defect。"""
+        # 所有 must_cover 字面量都已逐字渲染（npm install / npm test / 边界 / 结论），
+        # 额外注入一条 raw 不存在的命令 `rm -rf /`。
+        steps = (
+            "- [raw §A] (source_grounded) 1. Run npm install `npm install`\n"
+            "- [raw §A] (source_grounded) 2. Run npm test `npm test`\n"
+            "- [raw §A] (source_grounded) 3. 清理环境 `rm -rf /`"
+        )
+        text = _candidate_with_how_steps(steps)
+        defects = run_candidate_self_gate(text, raw_content=_MUST_COVER_RAW)
+        recheck = [d for d in defects if d.dimension == "SG-command-recheck"]
+        assert recheck, "正文含原文不存在的命令未被 SG-command-recheck 挡下"
+        assert any("rm -rf /" in d.defect for d in recheck)
+        assert all(d.location == "### 操作步骤" for d in recheck)
+
+    def test_real_commands_no_recheck_defect(self):
+        """正文命令都在 raw 中字面量存在 → 无 SG-command-recheck Defect。"""
+        steps = (
+            "- [raw §A] (source_grounded) 1. Run npm install `npm install`\n"
+            "- [raw §A] (source_grounded) 2. Run npm test `npm test`"
+        )
+        text = _candidate_with_how_steps(steps)
+        defects = run_candidate_self_gate(text, raw_content=_MUST_COVER_RAW)
+        recheck = [d for d in defects if d.dimension == "SG-command-recheck"]
+        assert recheck == [], f"命令都来自 raw 却报 SG-command-recheck: {recheck}"
+
+    def test_recheck_does_not_duplicate_must_cover(self):
+        """SG-command-recheck 与 SG-must-cover 语义分离：漏渲染不触发 recheck。"""
+        # 漏渲染第一条 npm install（must_cover 会报），但不注入编造命令 → recheck 不报。
+        steps = "- [raw §A] (source_grounded) 2. Run npm test `npm test`"
+        text = _candidate_with_how_steps(steps)
+        defects = run_candidate_self_gate(text, raw_content=_MUST_COVER_RAW)
+        must_cover = [d for d in defects if d.dimension == "SG-must-cover"]
+        recheck = [d for d in defects if d.dimension == "SG-command-recheck"]
+        assert must_cover, "漏渲染应触发 SG-must-cover"
+        # npm test 在 raw 中 → 不应触发 recheck。
+        assert all("npm test" not in d.defect for d in recheck)
+
+    def test_raw_none_does_not_duplicate_recheck(self):
+        """raw_content=None 已被 SG-must-cover 块 fail-closed，recheck 不重复报 raw 缺失。"""
+        steps = (
+            "- [raw §A] (source_grounded) 1. Run npm install `npm install`\n"
+            "- [raw §A] (source_grounded) 2. Run npm test `npm test`"
+        )
+        text = _candidate_with_how_steps(steps)
+        defects = run_candidate_self_gate(text, raw_content=None)
+        recheck = [d for d in defects if d.dimension == "SG-command-recheck"]
+        # raw=None 时 recheck 块不执行（raw_content falsy），不产 recheck Defect。
+        assert recheck == []
+

@@ -57,6 +57,22 @@ RAW_ANCHOR_DECL_RE: str = r"§[A-Z0-9]+"
 RAW_ANCHOR_VALUE_RE = re.compile(rf"^{RAW_ANCHOR_DECL_RE}$")
 RAW_ANCHOR_REF_RE = re.compile(rf"\[raw\s+({RAW_ANCHOR_DECL_RE})\]")
 
+# Step-5: How provenance 细分标注层（三态）。
+# source_grounded 的细分：source_operation（原文操作/命令）、source_fact（原文非操作的事实陈述）；
+# akb_interpretation 保持原义（AKB 解读/补充）。消费者 SG-provenance-ratio 仍按
+# (source_grounded) / (akb_interpretation) marker 计数——本层只是标注，不改渲染 marker。
+HOW_PROVENANCE_SPLIT_VALUES: tuple[str, ...] = (
+    "source_operation",
+    "source_fact",
+    "akb_interpretation",
+)
+# 标注层 → 消费者两态 provenance 的映射（source_operation/source_fact 都落到 source_grounded）。
+HOW_PROVENANCE_SPLIT_TO_MARKER: dict[str, str] = {
+    "source_operation": "source_grounded",
+    "source_fact": "source_grounded",
+    "akb_interpretation": "akb_interpretation",
+}
+
 
 class DistillAttemptTimeoutError(TimeoutError):
     """Distill extract attempt exceeded its wall-clock budget."""
@@ -128,6 +144,13 @@ _EXTRACT_SCHEMA: dict[str, Any] = {
                     "provenance": {
                         "type": "string",
                         "enum": ["source_grounded", "akb_interpretation"],
+                    },
+                    # step-5: 三态细分标注层（normalize 阶段注入，消费者仍读两态 provenance）。
+                    # 对齐 HOW_PROVENANCE_SPLIT_VALUES 常量；非 required——LLM 原始抽取不带此字段，
+                    # normalize 后必存。声明于 properties 以过 additionalProperties: False 校验。
+                    "provenance_split": {
+                        "type": "string",
+                        "enum": ["source_operation", "source_fact", "akb_interpretation"],
                     },
                 },
                 "required": ["instruction", "command", "executable"],
@@ -702,6 +725,51 @@ def _normalize_claim(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def how_step_provenance_split(
+    step: dict[str, Any],
+    command: str,
+    source_anchor: str = "",
+) -> str:
+    """Classify a How step into the three-way provenance split (step-5).
+
+    Layered on top of the existing two-way provenance (source_grounded /
+    akb_interpretation). The split aligns with the rendered marker so that
+    the consumer SG-provenance-ratio (which counts ``(source_grounded)`` /
+    ``(akb_interpretation)`` markers) counts consistently:
+        - source_operation: step renders a ``(source_grounded)`` marker because
+          it carries a concrete executable command verbatim from the source.
+        - akb_interpretation: step renders an ``(akb_interpretation)`` marker
+          (LLM-supplemented, generated placeholder, or no anchor).
+        - source_fact: not produced for LLM how_steps; reserved for must_cover
+          boundary/conclusion facts (see ``must_cover_fact_provenance_split``).
+
+    This field is annotation-only and does not alter rendering.
+    """
+    rendered_marker = _how_step_provenance(step, command, source_anchor)
+    if rendered_marker == "source_grounded":
+        return "source_operation"
+    return "akb_interpretation"
+
+
+def must_cover_operation_provenance_split() -> str:
+    """Provenance split for code-direct must_cover source_operation steps.
+
+    These are verbatim source literals rendered by the scanner; they are the
+    canonical ``source_operation`` instances and render ``(source_grounded)``.
+    """
+    return "source_operation"
+
+
+def must_cover_fact_provenance_split() -> str:
+    """Provenance split for code-direct must_cover fact items.
+
+    source_boundary / source_conclusion items are verbatim source facts (not
+    operations); they render ``(source_grounded)`` markers and are classified
+    as ``source_fact`` on the annotation layer.
+    """
+    return "source_fact"
+
+
 def _normalize_how_step(item: Any, idx: int) -> dict[str, Any]:
     if isinstance(item, dict):
         instruction = str(item.get("instruction") or item.get("text") or item.get("name") or "").strip()
@@ -720,13 +788,20 @@ def _normalize_how_step(item: Any, idx: int) -> dict[str, Any]:
     command = _expand_placeholder_command(command, instruction, idx)
     if provenance not in {"source_grounded", "akb_interpretation"}:
         provenance = "source_grounded" if anchor else "akb_interpretation"
-    return {
+    normalized = {
         "instruction": instruction,
         "command": command,
         "executable": bool(command) if executable is None else bool(executable),
         "anchor": anchor,
         "provenance": provenance,
+        # step-5: 三态细分标注层（source_operation / source_fact / akb_interpretation）。
+        # 与 provenance 二态并存：source_grounded → source_operation|source_fact；
+        # akb_interpretation → akb_interpretation。消费者仍读 marker，本字段仅标注。
+        "provenance_split": how_step_provenance_split(
+            {"provenance": provenance}, command, anchor
+        ),
     }
+    return normalized
 
 
 def _infer_source_command_from_instruction(instruction: str) -> str:
