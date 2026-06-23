@@ -53,6 +53,9 @@ DISTILL_MODEL_FAMILY: str = "deepseek-v4-pro"
 DISTILL_TIMEOUT_S: float = 60.0
 DISTILL_MAX_RETRIES: int = 0
 DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S: float = 180.0
+# Step-7: 语义型 How 抖动兜底。how_params segment（LLM 自由文本 how_steps，
+# 非 must_cover 代码直出）多取取交集，抵抗单次 LLM 抖动。有界：SEMANTIC_RETAKE_MAX 次。
+SEMANTIC_RETAKE_MAX: int = 2
 RAW_ANCHOR_DECL_RE: str = r"§[A-Z0-9]+"
 RAW_ANCHOR_VALUE_RE = re.compile(rf"^{RAW_ANCHOR_DECL_RE}$")
 RAW_ANCHOR_REF_RE = re.compile(rf"\[raw\s+({RAW_ANCHOR_DECL_RE})\]")
@@ -76,6 +79,10 @@ HOW_PROVENANCE_SPLIT_TO_MARKER: dict[str, str] = {
 
 class DistillAttemptTimeoutError(TimeoutError):
     """Distill extract attempt exceeded its wall-clock budget."""
+
+
+class SemanticJitterError(Exception):
+    """语义 segment 多取交集为空/连续不一致达阈值，fail-closed（不无限重试）。"""
 
 
 @contextmanager
@@ -465,6 +472,10 @@ def extract_claims(
         and os.environ.get("AKB2_DISTILL_DEEPSEEK_JSON_MODE", "0") == "1"
         and not beta_tool_enabled
     )
+    # Step-7: 语义型 How 抖动兜底开关。how_params segment 多取取交集（router 无关，
+    # 注入 mock 亦可触发，便于测试）；默认关，与 beta_tool/json_mode 的 default-router
+    # 闸门并列。仅作用于 LLM 自由文本 how_steps，不碰 must_cover 代码直出。
+    semantic_retake_enabled = os.environ.get("AKB2_DISTILL_SEMANTIC_RETAKE", "0") == "1"
 
     content_snippet = raw_content[:MAX_EXTRACT_CHARS]  # 截断保护（具名常量，旧阈值截掉半数正文）
 
@@ -472,46 +483,35 @@ def extract_claims(
         try:
             with _distill_attempt_deadline(DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S):
                 parsed_segments: dict[str, dict[str, Any]] = {}
-                for segment_name, schema in _DISTILL_SEGMENT_SCHEMAS.items():
-                    messages = _build_extract_segment_messages(segment_name, content_snippet)
-                    if beta_tool_enabled:
-                        from src.akb2.quality.llm_router import route_deepseek_beta_tool
-
-                        response = route_deepseek_beta_tool(
-                            messages,
-                            schema,
-                            timeout_s=DISTILL_TIMEOUT_S,
-                            max_retries=DISTILL_MAX_RETRIES,
-                            tool_name=f"akb2_extract_{segment_name}",
-                        )
-                    elif json_mode_enabled:
-                        from src.akb2.quality.llm_router import route_deepseek_json_object
-
-                        response = route_deepseek_json_object(
-                            messages,
-                            timeout_s=DISTILL_TIMEOUT_S,
-                            max_retries=DISTILL_MAX_RETRIES,
+                for segment_name in _DISTILL_SEGMENT_SCHEMAS:
+                    if segment_name == "how_params" and semantic_retake_enabled:
+                        # Step-7: 语义 segment 多取取交集（仅 LLM 自由文本 how_steps）。
+                        segment_data = _extract_how_params_with_retake(
+                            content_snippet,
+                            route_llm_fn,
+                            beta_tool_enabled,
+                            json_mode_enabled,
+                            parsed_segments,
                         )
                     else:
-                        response = route_llm_fn(
-                            DISTILL_MODEL_FAMILY,
-                            messages,
-                            response_schema=schema,
-                            timeout_s=DISTILL_TIMEOUT_S,
-                            max_retries=DISTILL_MAX_RETRIES,
-                            reasoning_effort=None,
-                            strict_schema=True,
+                        segment_data = _extract_segment_once(
+                            segment_name,
+                            content_snippet,
+                            route_llm_fn,
+                            beta_tool_enabled,
+                            json_mode_enabled,
+                            parsed_segments,
                         )
-                    parsed = _coerce_json_dict(response.content)
-                    segment_data = _normalize_extract_segment(
-                        segment_name,
-                        parsed,
-                        parsed_segments,
-                    )
-                    _validate_extract_segment(segment_name, segment_data)
                     parsed_segments[segment_name] = segment_data
             merged = _merge_extract_segments(parsed_segments)
             _validate_extract_output(merged)
+        except SemanticJitterError as exc:
+            # Step-7: 语义 segment 连续不稳定达阈值 → fail-closed（不无限重试，有界）。
+            return ExtractResult(
+                success=False,
+                retries_used=attempt,
+                error=f"语义 segment 抖动 fail-closed（{SEMANTIC_RETAKE_MAX} 次交集为空）: {exc}",
+            )
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
             if attempt >= MAX_EXTRACT_RETRIES:
                 return ExtractResult(
@@ -1006,6 +1006,122 @@ def _validate_extract_segment(segment_name: str, data: dict[str, Any]) -> None:
         jsonschema.validate(data_for_schema, schema)
     except jsonschema.ValidationError as exc:
         raise ValueError(f"{segment_name} schema 校验失败: {exc.message}") from exc
+
+
+def _extract_segment_once(
+    segment_name: str,
+    content_snippet: str,
+    route_llm_fn: Any,
+    beta_tool_enabled: bool,
+    json_mode_enabled: bool,
+    previous_segments: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """单次抽取一个 segment：messages → LLM → parse → normalize → validate。
+
+    从 extract_claims 主循环抽出，便于 how_params retake 复用同一路径产多次。
+    非 retake 路径行为与原内联实现等价（同调用、同归一化、同校验）。
+    """
+    schema = _DISTILL_SEGMENT_SCHEMAS[segment_name]
+    messages = _build_extract_segment_messages(segment_name, content_snippet)
+    if beta_tool_enabled:
+        from src.akb2.quality.llm_router import route_deepseek_beta_tool
+
+        response = route_deepseek_beta_tool(
+            messages,
+            schema,
+            timeout_s=DISTILL_TIMEOUT_S,
+            max_retries=DISTILL_MAX_RETRIES,
+            tool_name=f"akb2_extract_{segment_name}",
+        )
+    elif json_mode_enabled:
+        from src.akb2.quality.llm_router import route_deepseek_json_object
+
+        response = route_deepseek_json_object(
+            messages,
+            timeout_s=DISTILL_TIMEOUT_S,
+            max_retries=DISTILL_MAX_RETRIES,
+        )
+    else:
+        response = route_llm_fn(
+            DISTILL_MODEL_FAMILY,
+            messages,
+            response_schema=schema,
+            timeout_s=DISTILL_TIMEOUT_S,
+            max_retries=DISTILL_MAX_RETRIES,
+            reasoning_effort=None,
+            strict_schema=True,
+        )
+    parsed = _coerce_json_dict(response.content)
+    segment_data = _normalize_extract_segment(segment_name, parsed, previous_segments)
+    _validate_extract_segment(segment_name, segment_data)
+    return segment_data
+
+
+def _extract_how_params_with_retake(
+    content_snippet: str,
+    route_llm_fn: Any,
+    beta_tool_enabled: bool,
+    json_mode_enabled: bool,
+    previous_segments: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """语义型 How 抖动兜底：how_params segment 产 SEMANTIC_RETAKE_MAX 次取交集。
+
+    只针对 LLM 自由文本 how_steps（语义 segment），不碰 must_cover 代码直出
+    （must_cover 由 scanner 产、_build_body 代码直出渲染，本函数不涉及）。
+    交集以 command 对齐，保留每次都产出的 step（取首次 instruction/command/anchor）；
+    交集为空 → SemanticJitterError fail-closed（有界 SEMANTIC_RETAKE_MAX，不无限重试）。
+    param_entries 非语义抖动源，取首次产出。
+    """
+    samples: list[dict[str, Any]] = []
+    for _ in range(SEMANTIC_RETAKE_MAX):
+        samples.append(
+            _extract_segment_once(
+                "how_params",
+                content_snippet,
+                route_llm_fn,
+                beta_tool_enabled,
+                json_mode_enabled,
+                previous_segments,
+            )
+        )
+    intersected = _intersect_how_steps(samples)
+    if not intersected["how_steps"]:
+        raise SemanticJitterError(
+            f"how_params 多取（{SEMANTIC_RETAKE_MAX} 次）交集为空，语义 segment 连续不一致"
+        )
+    return intersected
+
+
+def _intersect_how_steps(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    """多取取交集：以 command 为 key 对齐，保留所有 sample 共有的 step。
+
+    取首次出现的 step（instruction/command/anchor/provenance/provenance_split），
+    保留首次 param_entries。command 为空或仅单次出现的 step 舍弃；交集为空由调用方
+    fail-closed。
+    """
+    if not samples:
+        return {"how_steps": [], "param_entries": []}
+    first = samples[0]
+    by_command: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for step in first.get("how_steps", []):
+        cmd = str(step.get("command", "")).strip()
+        if cmd and cmd not in by_command:
+            by_command[cmd] = step
+            order.append(cmd)
+    common = set(by_command)
+    for sample in samples[1:]:
+        sample_commands = {
+            str(step.get("command", "")).strip()
+            for step in sample.get("how_steps", [])
+            if str(step.get("command", "")).strip()
+        }
+        common &= sample_commands
+    intersected_steps = [by_command[cmd] for cmd in order if cmd in common]
+    return {
+        "how_steps": intersected_steps,
+        "param_entries": first.get("param_entries", []),
+    }
 
 
 def _merge_extract_segments(
