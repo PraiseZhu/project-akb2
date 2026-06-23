@@ -1,24 +1,25 @@
-"""Raw command recheck — dual-layer gate for backtick commands in candidate body.
+"""Raw command recheck — full literal recheck + dangerous-command blocklist.
 
-Layer 1 (code-direct raw recheck): commands emitted by
-``_render_must_cover_operations`` — identified by the ``must_cover 代码直出`` /
-``原文操作（must_cover`` signal on their line — are verbatim source literals.
-Each must appear as a verbatim substring of ``raw_text``; absence = literal
-drift = fabricated. This is the double-check on code-direct commands.
+Full literal recheck (SC-4 原意): every backtick command in the candidate body
+(excluding reserved structural tokens) must appear as a verbatim substring of
+``raw_text``. Absence = the command is not grounded in source = fabricated. This
+applies uniformly to all commands regardless of provenance marker
+(``source_grounded`` / ``akb_interpretation`` / unannotated) — the previous
+"code-direct only" narrowing let safe-but-fabricated commands through, which
+violates SC-4 (master-plan:132-134 / step-4:36-49 require every backtick
+command to trace back to raw).
 
-Layer 2 (derived command safety net): all other commands — ``(akb_interpretation)``,
-``(source_grounded)``-tagged LLM how_steps (whose commands are LLM semantics, not
-raw code-direct output), or unannotated — are NOT checked against raw. Instead they
-run a deterministic dangerous-command blocklist to catch destructive operations the
-LLM might inject (``rm -rf /``, fork bombs, pipe-to-shell remote scripts, etc.).
-This treats "LLM slipped a destructive command" without forbidding all derived
-operation expression.
+Dangerous-command blocklist (附加拦截): a conservative deterministic blocklist is
+applied as an ADDITIONAL layer on top of the raw recheck. A command matching a
+destructive pattern is flagged as a Violation EVEN IF it appears in raw — this
+double-intercepts ``rm -rf /``, fork bombs, pipe-to-shell remote scripts, etc.
+that might slip through verbatim.
 
 Complements ``SG-must-cover`` (step-3, treats "missing" — raw has it, candidate
-did not render it). This module treats "fabricated" (code-direct command whose
-literal drifted from raw) + "destructive" (derived command that would harm the
-system if executed). Together they form a two-sided anchor: nothing is dropped
-and nothing destructive slips through.
+did not render it). This module treats "fabricated" (command whose literal is
+absent from raw) + "destructive" (command that would harm the system if
+executed). Together they form a two-sided anchor: nothing is dropped, nothing
+is fabricated, and nothing destructive slips through.
 
 Public API: verify_commands_in_raw(candidate_body, raw_text) -> list[Violation].
 """
@@ -59,34 +60,21 @@ _RESERVED_LITERAL_TOKENS: frozenset[str] = frozenset(
     }
 )
 
-# Provenance marker that marks a command as a source-grounded verbatim literal.
-# Commands whose surrounding context carries this marker are candidates for
-# Layer 1 (raw verbatim recheck). All other commands fall through to Layer 2
-# (derived safety blocklist).
-_SOURCE_GROUNDED_MARKER = "(source_grounded)"
-
-# Deterministic marker emitted by ``_render_must_cover_operations`` — only these
-# commands are genuine code-direct source literals whose literals must trace to
-# raw verbatim. ``_how_step_provenance`` may tag LLM-provided How steps as
-# ``source_grounded`` when they carry an anchor, but those commands are LLM
-# semantics, not raw code-direct output. We therefore key Layer 1 on the
-# ``must_cover 代码直出`` / ``原文操作（must_cover`` signal that only the
-# code-direct renderer emits, not on the bare ``(source_grounded)`` marker.
-_MUST_COVER_CODE_DIRECT_SIGNALS: tuple[str, ...] = (
-    "must_cover 代码直出",
-    "原文操作（must_cover",
-)
-
 # ---------------------------------------------------------------------------
-# Layer 2: deterministic dangerous-command blocklist
+# Dangerous-command blocklist (附加拦截层)
 # ---------------------------------------------------------------------------
 #
 # Conservative, explicit patterns for commands that are unambiguously
 # destructive and must never appear in a candidate How body regardless of
-# provenance. These are matched against the command literal with word
-# boundaries where appropriate. The blocklist is intentionally narrow —
-# false positives here would block legitimate operation examples, so each
-# pattern targets a concrete destructive shape rather than a broad keyword.
+# provenance or raw presence. These are matched against the command literal
+# with word boundaries where appropriate. The blocklist is intentionally
+# narrow — false positives here would block legitimate operation examples, so
+# each pattern targets a concrete destructive shape rather than a broad
+# keyword.
+#
+# A command matching a destructive pattern is flagged EVEN IF it appears
+# verbatim in raw (double interception: the raw recheck alone would pass a
+# destructive command that happens to be quoted from source).
 #
 # Categories covered:
 #   - rm -rf / rm -fr with root or no-preserve-root
@@ -149,17 +137,19 @@ _DANGEROUS_COMMAND_PATTERNS: tuple[re.Pattern[str], ...] = (
 
 @dataclass(frozen=True)
 class Violation:
-    """One command flagged by the dual-layer gate.
+    """One command flagged by the full-recheck + dangerous-blocklist gate.
 
     Attributes:
         command: the backtick literal as it appears in the candidate body.
         reason: human-readable explanation of why it is flagged. The prefix
-            distinguishes the two layers: "来源锚定命令原文不存在" (Layer 1)
-            and "派生命令含危险操作" (Layer 2).
+            distinguishes the two layers: "含危险操作..." (dangerous blocklist,
+            flagged even if present in raw) and "原文不存在此命令字面量..." /
+            "raw 文本为空..." (full literal recheck, command absent from raw).
         candidate_offset: char offset of the backtick literal in candidate_body.
-        raw_nearest_line: when the command is absent from raw (Layer 1), the raw
-            line that shares the longest common prefix with the command (for
-            triage); None for Layer 2 violations or when raw_text is empty.
+        raw_nearest_line: when the command is absent from raw (recheck layer),
+            the raw line that shares the longest common prefix with the command
+            (for triage); None for dangerous-blocklist violations or when
+            raw_text is empty.
     """
 
     command: str
@@ -190,41 +180,16 @@ def _is_reserved_token(literal: str) -> bool:
 
 
 def _is_dangerous_command(literal: str) -> bool:
-    """Layer 2 blocklist: True if the command literal matches a destructive pattern.
+    """Dangerous-command blocklist: True if the command literal matches a destructive pattern.
 
     Deterministic, no LLM. Conservative — each pattern targets a concrete
-    destructive shape. ``False`` means "not obviously destructive, allow".
+    destructive shape. ``False`` means "not obviously destructive, proceed to
+    raw literal recheck".
     """
     for pattern in _DANGEROUS_COMMAND_PATTERNS:
         if pattern.search(literal):
             return True
     return False
-
-
-def _command_is_source_grounded(candidate_body: str, match: re.Match[str]) -> bool:
-    """Determine whether a backtick command is a code-direct source literal.
-
-    Only ``_render_must_cover_operations`` emits code-direct source operations
-    with the ``原文操作（must_cover 代码直出`` signal on their line. These are the
-    commands whose literals MUST trace to raw verbatim (Layer 1).
-
-    LLM how_steps (``_render_how_step_with_provenance``) may also carry the
-    ``(source_grounded)`` marker when ``_how_step_provenance`` infers
-    source-groundedness from an anchor, but their commands are LLM-provided
-    semantics, not raw code-direct output. We therefore key Layer 1 on the
-    ``must_cover 代码直出`` / ``原文操作（must_cover`` signal — present only on
-    code-direct rendered lines — rather than on the bare provenance marker.
-    Everything else (akb_interpretation, source_grounded-tagged LLM steps,
-    unannotated) falls through to Layer 2.
-    """
-    start = match.start(1)
-    # Find the line bounds containing this match.
-    line_start = candidate_body.rfind("\n", 0, start) + 1
-    line_end = candidate_body.find("\n", start)
-    if line_end == -1:
-        line_end = len(candidate_body)
-    line = candidate_body[line_start:line_end]
-    return any(signal in line for signal in _MUST_COVER_CODE_DIRECT_SIGNALS)
 
 
 def _raw_line_with_longest_common_prefix(
@@ -258,18 +223,25 @@ def _raw_line_with_longest_common_prefix(
 def verify_commands_in_raw(
     candidate_body: str, raw_text: str
 ) -> list[Violation]:
-    """Dual-layer gate: verify backtick commands in candidate_body.
+    """Full literal recheck + dangerous-command blocklist.
 
-    Layer 1 — code-direct raw recheck: every backtick command whose line carries
-    the ``must_cover 代码直出`` / ``原文操作（must_cover`` signal (emitted only by
-    ``_render_must_cover_operations``) must appear as a verbatim substring of
-    ``raw_text``. Absence = literal drift = Violation.
+    For every backtick command in ``candidate_body`` (excluding reserved
+    structural tokens), in document order:
 
-    Layer 2 — derived command safety net: all other backtick commands
-    (``(akb_interpretation)``, ``source_grounded``-tagged LLM how_steps whose
-    commands are LLM semantics, or unannotated) are NOT checked against raw.
-    Instead they run a deterministic dangerous-command blocklist.
-    A hit = Violation.
+    1. Dangerous-command blocklist (附加拦截): if the command literal matches a
+       destructive pattern, it is flagged as a Violation IMMEDIATELY — even if
+       it appears verbatim in ``raw_text``. This double-intercepts destructive
+       commands that happen to be quoted from source. Dangerous commands take
+       precedence over the raw recheck (a destructive command is blocked
+       regardless of whether it is also fabricated).
+
+    2. Full literal recheck (SC-4 原意): otherwise the command must appear as a
+       verbatim substring of ``raw_text``. Absence = not grounded in source =
+       fabricated = Violation. This applies uniformly to ALL commands regardless
+       of provenance marker (``source_grounded`` / ``akb_interpretation`` /
+       unannotated) — the previous "code-direct only" narrowing let
+       safe-but-fabricated commands through. Empty ``raw_text`` ⇒ every
+       non-reserved command is a Violation.
 
     Reserved structural tokens (raw anchors, provenance markers, fence language
     tags, wikilink fragments) are exempt from both layers.
@@ -283,9 +255,9 @@ def verify_commands_in_raw(
             not be None; callers should handle None upstream (fail-closed).
 
     Returns:
-        List of Violation records, in document order. Empty list means no
-        code-direct command drifted from raw AND no derived command hit the
-        dangerous blocklist.
+        List of Violation records, in document order. Empty list means every
+        backtick command is grounded in raw AND none matched the dangerous
+        blocklist.
     """
     violations: list[Violation] = []
 
@@ -294,39 +266,36 @@ def verify_commands_in_raw(
         if _is_reserved_token(literal):
             continue
 
-        source_grounded = _command_is_source_grounded(candidate_body, m)
-
-        if source_grounded:
-            # Layer 1: verbatim raw recheck. Empty raw = fabricated.
-            if not raw_text or literal not in raw_text:
-                nearest = (
-                    _raw_line_with_longest_common_prefix(raw_text, literal)
-                    if raw_text
-                    else None
-                )
-                reason = (
-                    "raw 文本为空，无法回查来源锚定命令字面量"
-                    if not raw_text
-                    else "来源锚定命令原文不存在此命令字面量（疑似字面量漂移）"
-                )
-                violations.append(
-                    Violation(
-                        command=literal,
-                        reason=reason,
-                        candidate_offset=m.start(1),
-                        raw_nearest_line=nearest,
-                    )
-                )
-            continue
-
-        # Layer 2: derived command safety net. Do NOT check against raw.
+        # 附加拦截层: dangerous-command blocklist. Flagged even if in raw.
         if _is_dangerous_command(literal):
             violations.append(
                 Violation(
                     command=literal,
-                    reason="派生命令含危险操作（破坏性/权限/网络/凭据）",
+                    reason="含危险操作（破坏性/权限/网络/凭据）",
                     candidate_offset=m.start(1),
                     raw_nearest_line=None,
+                )
+            )
+            continue
+
+        # 全文回查: command must appear verbatim in raw. Absent = fabricated.
+        if not raw_text or literal not in raw_text:
+            nearest = (
+                _raw_line_with_longest_common_prefix(raw_text, literal)
+                if raw_text
+                else None
+            )
+            reason = (
+                "raw 文本为空，无法回查命令字面量"
+                if not raw_text
+                else "原文不存在此命令字面量（疑似编造）"
+            )
+            violations.append(
+                Violation(
+                    command=literal,
+                    reason=reason,
+                    candidate_offset=m.start(1),
+                    raw_nearest_line=nearest,
                 )
             )
 

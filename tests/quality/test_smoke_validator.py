@@ -139,6 +139,14 @@ Loop engineering is bounded, convergent, and observable.
 
 A loop has trigger, selector, executor, gate, and ledger.
 
+原文操作示例（AKB 操作化命令字面量，供 SG-command-recheck 回查锚定）：
+
+```text
+trigger={type:'schedule',cron:'0 * * * *'}
+work_item=ledger.next(status='pending',limit=1)
+assert run_quality_gate(result,grader='gpt-5.4').defects == []
+```
+
 # §C Convergence
 
 Fix defects instead of restarting the entire pipeline.

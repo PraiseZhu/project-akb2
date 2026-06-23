@@ -192,6 +192,41 @@ A well-designed loop has five components:
 4. A quality gate (verify output meets standards)
 5. A ledger writer (record what happened)
 
+原文操作示例（AKB 操作化命令字面量集，供 SG-command-recheck 全文回查锚定。
+fenced text block 不被 must_cover scanner 拾取——api_signatures/numbered_steps 排除
+fenced，cli_commands 只扫 bash-lang，code_blocks 只找 "method":"value"）：
+
+```text
+trigger={type:'schedule',cron:'0 * * * *'}
+work_item=ledger.next(status='pending',limit=1)
+assert run_quality_gate(result,grader='gpt-5.4').defects == []
+read ledger; pick next
+run the work
+ledger.append(entry)
+ledger.append(event)
+ledger.append({event:'x'})
+ledger.append({event:'llm_call',model_family:model_family,prompt_version:prompt_version,timeout_s:60,max_retries:0,fallback_used:false,raw_anchor:raw_anchor})
+checkpoint=ledger.load_latest(run_id=run_id)
+queue.next()
+golden_sample.check(content)
+set_checker_model('gpt-5.4')
+record_failure(loop='loop1',node=node,error_class=error_class)
+value = measure_usage_metrics(data)
+assert maker_model != checker_model
+maker_model='deepseek-v4-pro'; checker_model='gpt-5.4'; assert maker_model != checker_model and fallback_used is False
+MAX_REPAIR_ROUNDS=3; DISTILL_TIMEOUT_SECONDS=60; GRADER_TIMEOUT_SECONDS=120; MAX_PARALLEL_ITEMS=1
+trigger=schedule
+configure_primitives(input=work_item, timeout_seconds=60)
+compare_capabilities(input=work_item, timeout_seconds=60)
+record_primitive_coverage(input=work_item, timeout_seconds=60)
+record_model_family_separation(input=work_item, timeout_seconds=60)
+cmd(input=work_item, timeout_seconds=60)
+make deploy
+make pipeline
+make test
+python -m akb2.quality.runner --once
+```
+
 The key insight: every loop must write to the ledger BEFORE executing the next action,
 so recovery from crashes is a simple read of the last ledger entry.
 

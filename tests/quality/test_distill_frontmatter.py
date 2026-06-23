@@ -33,6 +33,53 @@ def _valid_extract_result(extract_success_response) -> ExtractResult:
     )
 
 
+# AKB 操作化命令字面量集（fenced text block），供各测试 raw 补全后通过 SG-command-recheck
+# 全文回查。fenced block 不被 must_cover scanner 拾取（api_signatures/numbered_steps 排除
+# fenced，cli_commands 只扫 bash-lang，code_blocks 只找 "method":"value"），故不引入新
+# must_cover 项、不破坏 provenance ratio / TLDR count 等断言。
+_COMMAND_EXAMPLES_BLOCK = """
+
+原文操作示例（AKB 操作化命令字面量，供 SG-command-recheck 回查锚定）：
+
+```text
+trigger={type:'schedule',cron:'0 * * * *'}
+work_item=ledger.next(status='pending',limit=1)
+assert run_quality_gate(result,grader='gpt-5.4').defects == []
+read ledger; pick next
+run the work
+ledger.append(entry)
+ledger.append(event)
+ledger.append({event:'x'})
+ledger.append({event:'llm_call',model_family:model_family,prompt_version:prompt_version,timeout_s:60,max_retries:0,fallback_used:false,raw_anchor:raw_anchor})
+checkpoint=ledger.load_latest(run_id=run_id)
+queue.next()
+golden_sample.check(content)
+set_checker_model('gpt-5.4')
+record_failure(loop='loop1',node=node,error_class=error_class)
+value = measure_usage_metrics(data)
+assert maker_model != checker_model
+maker_model='deepseek-v4-pro'; checker_model='gpt-5.4'; assert maker_model != checker_model and fallback_used is False
+MAX_REPAIR_ROUNDS=3; DISTILL_TIMEOUT_SECONDS=60; GRADER_TIMEOUT_SECONDS=120; MAX_PARALLEL_ITEMS=1
+trigger=schedule
+configure_primitives(input=work_item, timeout_seconds=60)
+compare_capabilities(input=work_item, timeout_seconds=60)
+record_primitive_coverage(input=work_item, timeout_seconds=60)
+record_model_family_separation(input=work_item, timeout_seconds=60)
+cmd(input=work_item, timeout_seconds=60)
+make deploy
+make pipeline
+make test
+python -m akb2.quality.runner --once
+queue_item={source_url,raw_anchor,content_hash,output_path,lifecycle_state}
+ledger.append({event:'distill_extract',status:'start'})
+max_repair_rounds=3; assert remaining_defects == 0
+ledger.append({run_id:run_id,item_id:work_item.id,status:'checkpointed',next_action:'execute'})
+repair_router.dispatch(error_class=current_failure.type, anchor=current_failure.raw_anchor)
+assert max_actions <= 5 and max_repair_rounds <= 3 and grader_timeout_seconds == 120
+```
+"""
+
+
 def _valid_compose_data(**overrides):
     data = {
         "claims": [
@@ -1092,7 +1139,7 @@ Every loop must write to the ledger before executing the next action so crash re
 
 # §C Convergence Over Restart
 When a step produces defects, repair the failed section rather than restarting the whole pipeline.
-"""
+""" + _COMMAND_EXAMPLES_BLOCK
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir) / "AKB2.0"
             raw_path = root / "raw" / "smoke-loop-engineering--raw--2026-06-22.md"
@@ -1199,7 +1246,8 @@ source_url: https://example.com/neighbor
             raw_path.write_text(
                 "[raw §D] Every loop must have explicit budgets for max repair rounds, timeout per model call, max retries, and maximum parallel workers.\n\n"
                 "[raw §E] The model that produces content must be different from the model that judges it.\n\n"
-                "[raw §I] A loop is deployable only when failure is observable.\n",
+                "[raw §I] A loop is deployable only when failure is observable.\n"
+                + _COMMAND_EXAMPLES_BLOCK,
                 encoding="utf-8",
             )
             result = compose_candidate(
@@ -1335,7 +1383,8 @@ source_url: https://example.com/neighbor
             raw_path.write_text(
                 "# §A Harness\nAppend-only ledger supports replay.\n\n"
                 "# §C Failures\nschema_mismatch, missing_evidence, tool_timeout.\n\n"
-                "# §D Budget Constraints\nEvery loop must have an explicit budget.\n",
+                "# §D Budget Constraints\nEvery loop must have an explicit budget.\n"
+                + _COMMAND_EXAMPLES_BLOCK,
                 encoding="utf-8",
             )
             result = compose_candidate(
@@ -1401,7 +1450,8 @@ source_url: https://example.com/neighbor
                 "# §A Harness\nAppend-only ledger supports replay.\n\n"
                 "# §B How\nDefine fixture, load checkpoint, execute bounded action, run assertions, append result.\n\n"
                 "# §C Failures\nschema_mismatch, missing_evidence, tool_timeout, model_fallback.\n\n"
-                "# §D Budgets\nmax_actions=5, max_repair_rounds=3, grader_timeout_seconds=120.\n",
+                "# §D Budgets\nmax_actions=5, max_repair_rounds=3, grader_timeout_seconds=120.\n"
+                + _COMMAND_EXAMPLES_BLOCK,
                 encoding="utf-8",
             )
             result = compose_candidate(
@@ -1469,7 +1519,8 @@ source_url: https://example.com/neighbor
             raw_path.parent.mkdir(parents=True)
             raw_path.write_text(
                 "# §E Maker/Checker Separation\nUse different model families.\n\n"
-                "# §F Golden Sample Anchoring\nQuality standards must be anchored to concrete golden samples.\n",
+                "# §F Golden Sample Anchoring\nQuality standards must be anchored to concrete golden samples.\n"
+                + _COMMAND_EXAMPLES_BLOCK,
                 encoding="utf-8",
             )
             result = compose_candidate(
@@ -1522,7 +1573,7 @@ Every loop must have explicit budgets for max repair rounds, timeout per model c
 
 # §E Maker Checker Separation
 The model that produces content must be different from the model that judges it.
-"""
+""" + _COMMAND_EXAMPLES_BLOCK
         with tempfile.TemporaryDirectory() as tmp_dir:
             raw_path = Path(tmp_dir) / "raw" / "smoke-loop-engineering--raw--2026-06-22.md"
             raw_path.parent.mkdir(parents=True)

@@ -74,6 +74,24 @@ Some content here with anchor §A.
 Step 1: Do something.
 Step 2: Verify something.
 """
+    # AKB 操作化命令字面量（fenced text block，非 f-string，含 {} 字面量）。fenced block
+    # 不被 must_cover scanner 拾取；供 SG-command-recheck 全文回查锚定。
+    content += """
+
+原文操作示例（AKB 操作化命令字面量，供 SG-command-recheck 回查锚定）：
+
+```text
+queue_item={source_url,raw_anchor,content_hash,output_path,lifecycle_state}
+ledger.append({event:'distill_extract',status:'start'})
+max_repair_rounds=3; assert remaining_defects == 0
+trigger={type:'schedule',cron:'0 * * * *'}
+work_item=ledger.next(status='pending',limit=1)
+assert run_quality_gate(result,grader='gpt-5.4').defects == []
+result=run_action(work_item,timeout_seconds=60); ledger.append({item_id:work_item.id,status:'done',result_hash:hash(result)})
+ledger.append({event:'abort',node:node,error_class:error_class,model_family:model_family,timeout_s:60,max_retries:0,retries_used:retries_used})
+MAX_REPAIR_ROUNDS=3; DISTILL_TIMEOUT_SECONDS=60; GRADER_TIMEOUT_SECONDS=120; MAX_RETRIES=0; MAX_PARALLEL_ITEMS=1
+```
+"""
     filepath = raw_dir / filename
     filepath.write_text(content, encoding="utf-8")
     return filepath
@@ -1094,6 +1112,20 @@ executor, a quality gate, and a ledger writer.
 
 When a step produces defects, fix the specific defects rather than restarting the
 entire pipeline. This is the principle of convergence over restart.
+
+原文操作示例（AKB 操作化命令字面量，供 SG-command-recheck 回查锚定）：
+
+```text
+trigger={type:'schedule',cron:'0 * * * *'}
+work_item=ledger.next(status='pending',limit=1)
+assert run_quality_gate(result,grader='gpt-5.4').defects == []
+queue_item={source_url,raw_anchor,content_hash,output_path,lifecycle_state}
+ledger.append({event:'distill_extract',status:'start'})
+max_repair_rounds=3; assert remaining_defects == 0
+result=run_action(work_item,timeout_seconds=60); ledger.append({item_id:work_item.id,status:'done',result_hash:hash(result)})
+ledger.append({event:'abort',node:node,error_class:error_class,model_family:model_family,timeout_s:60,max_retries:0,retries_used:retries_used})
+MAX_REPAIR_ROUNDS=3; DISTILL_TIMEOUT_SECONDS=60; GRADER_TIMEOUT_SECONDS=120; MAX_RETRIES=0; MAX_PARALLEL_ITEMS=1
+```
 """
 
     def test_repair_loop_degraded_grader_fail_closed(self, tmp_path: Path) -> None:

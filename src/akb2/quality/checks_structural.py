@@ -1144,27 +1144,27 @@ def run_candidate_self_gate(
                     )
                 )
 
-    # SG-command-recheck: 双层门（Codex step-4 refactor）
-    # Layer 1 (代码直出命令回查): must_cover 代码直出命令（行含 must_cover 代码直出信号）
-    #   必须字面回溯 raw，治"代码直出命令字面量漂移"（双保险）。raw 缺失即 Violation。
-    # Layer 2 (派生命令安全门): 其他命令（akb_interpretation / source_grounded 误标 LLM step /
-    #   未标注）不查 raw，跑 deterministic 危险命令黑名单，治"LLM 塞破坏性命令"。
+    # SG-command-recheck: 全文回查 + 危险黑名单附加（SC-4 原意恢复）
+    # 全文字面量回查: 正文每个反引号命令（非 reserved token）必须字面出现在 raw。
+    #   不出现 = 编造 = Defect。不区分 source_grounded/akb_interpretation——
+    #   之前的"代码直出 only"收窄让安全但 raw 不存在的编造命令漏过（审查 Finding 1）。
+    # 危险黑名单附加: 命中危险命令即使 raw 有也算 Defect（双重拦截）。
     # raw_content=None 已被 SG-must-cover 块 fail-closed（保持现状），本块在 raw 存在时才执行。
     if raw_content:
         command_violations = _verify_commands_in_raw(body, raw_content)
         for v in command_violations:
-            if "来源锚定" in v.reason or "raw 文本为空" in v.reason:
-                defect_text = f"来源锚定命令原文不存在: `{v.command}`"
-                suggestion = (
-                    "删除该命令或改为 raw 中真实存在的字面量；"
-                    "若 raw 确无对应操作，compose 必须 fail-closed，不得编造命令补齐 How"
-                )
-            else:
+            if "危险" in v.reason:
                 defect_text = f"派生命令含危险操作: `{v.command}`"
                 suggestion = (
                     "删除该危险命令或替换为安全的等价操作示例；"
                     "How 步骤中的派生命令不得含 rm -rf / fork bomb / 管道执行远程脚本 / "
                     "凭据外泄等破坏性操作"
+                )
+            else:
+                defect_text = f"命令原文不存在（疑似编造）: `{v.command}`"
+                suggestion = (
+                    "删除该命令或改为 raw 中真实存在的字面量；"
+                    "若 raw 确无对应操作，compose 必须 fail-closed，不得编造命令补齐 How"
                 )
             defects.append(
                 Defect(

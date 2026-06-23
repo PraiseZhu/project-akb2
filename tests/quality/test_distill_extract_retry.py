@@ -30,6 +30,32 @@ from src.akb2.quality.distill import (
 )
 
 
+# AKB 操作化命令字面量集（fenced text block），供测试 raw 补全后通过 SG-command-recheck
+# 全文回查。fenced block 不被 must_cover scanner 拾取，不引入新 must_cover 项。
+_COMMAND_EXAMPLES_BLOCK = """
+
+原文操作示例（AKB 操作化命令字面量，供 SG-command-recheck 回查锚定）：
+
+```text
+trigger={type:'schedule',cron:'0 * * * *'}
+work_item=ledger.next(status='pending',limit=1)
+assert run_quality_gate(result,grader='gpt-5.4').defects == []
+read ledger; pick next
+run the work
+ledger.append(entry)
+ledger.append(event)
+make pipeline
+make test
+make deploy
+queue.next()
+cmd(input=work_item, timeout_seconds=60)
+queue_item={source_url,raw_anchor,content_hash,output_path,lifecycle_state}
+ledger.append({event:'distill_extract',status:'start'})
+max_repair_rounds=3; assert remaining_defects == 0
+```
+"""
+
+
 class TestExtractSuccess:
     """正常抽取成功路径。"""
 
@@ -431,7 +457,7 @@ Budgets include distillation timeout 60 seconds, grader timeout 120 seconds, max
 
 §E_CHECKER
 An independent checker verifies raw anchors, source references, evidence gaps, graph relationships, and fallback usage.
-""",
+""" + _COMMAND_EXAMPLES_BLOCK,
             encoding="utf-8",
         )
         extract = build_deterministic_extract_result(raw.read_text(encoding="utf-8"), str(raw))
@@ -814,7 +840,7 @@ Loops use triggers, work unit selection, action execution, quality gates, and le
 
 # §C Repair
 Targeted repair avoids full restart.
-""",
+""" + _COMMAND_EXAMPLES_BLOCK,
             encoding="utf-8",
         )
         extract = {
