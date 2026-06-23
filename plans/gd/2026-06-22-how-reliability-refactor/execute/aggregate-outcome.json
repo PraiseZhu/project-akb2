@@ -1,0 +1,34 @@
+{
+  "template_kind": "gd-execution-result",
+  "result_id": "how-reliability-refactor-final-2026-06-24",
+  "task_id": "how-reliability-refactor",
+  "parent_step": "aggregate",
+  "parent_plan": "plans/gd/2026-06-22-how-reliability-refactor/master-plan.md",
+  "executor_role": "claude_main",
+  "executed_at": "2026-06-23T16:57:49Z",
+  "exec_status": "completed",
+  "sc_acceptance": [
+    {"sc_ref": "SC-1", "status": "pass", "evidence": "scanner 补 API/code-block 覆盖后 test_source_ops_scanners 全绿，三类 inventory ⊇ golden", "not_run_reason": ""},
+    {"sc_ref": "SC-2", "status": "pass", "evidence": "must_cover 代码直出，how_steps=[] 时 How 仍含 operation", "not_run_reason": ""},
+    {"sc_ref": "SC-3", "status": "pass", "evidence": "SG-must-cover raw=None→Defect + 5 调用点 provenance", "not_run_reason": ""},
+    {"sc_ref": "SC-4", "status": "pass", "evidence": "Finding1 修复后回到全文回查，deploy-preview 编造命令被挡（亲验 defects=1）", "not_run_reason": ""},
+    {"sc_ref": "SC-5", "status": "pass", "evidence": "Finding5 修复后 _regrade_sample 改用 run_grader_detailed 拒收 fallback_used/suspended；三函数体 hash 不变", "not_run_reason": ""},
+    {"sc_ref": "SC-6", "status": "pass", "evidence": "三语料回归 21 passed", "not_run_reason": ""},
+    {"sc_ref": "SC-7", "status": "pass", "evidence": "三打分函数体 + 10-dimensions.md hash 与起点 d50e094 完全一致", "not_run_reason": ""},
+    {"sc_ref": "SC-8", "status": "pass", "evidence": "Finding7 修复后 pytest tests/quality/ tests/loops/ 679 passed AND ruff check src/akb2/quality/ exit 0（整体 && exit 0）；异族 deepseek≠gpt-5.4", "not_run_reason": ""},
+    {"sc_ref": "SC-9", "status": "not_run", "evidence": "", "not_run_reason": "本机 LLM gateway 不可达（route_llm RuntimeError API 超时），runner 无法产出候选页；端到端黄金需在有 gateway 的 mac mini 跑"},
+    {"sc_ref": "SC-10", "status": "pass", "evidence": "Finding6 修复后 provenance 三态被 SG 真实消费（持久化摘要注释 + 读取器），删字段测试失败", "not_run_reason": ""},
+    {"sc_ref": "SC-11", "status": "pass", "evidence": "Finding3 修复后 retake 默认开（SEMANTIC_RETAKE_MAX=2），空交集 fail-closed", "not_run_reason": ""}
+  ],
+  "files_added": ["src/akb2/quality/source_ops_scanners/", "tests/quality/test_source_ops_scanners.py", "tests/quality/fixtures/test-fresh-golden-ops.json", "tests/quality/test_distill_must_cover.py", "tests/quality/test_raw_verify.py", "tests/quality/test_provenance_split.py", "tests/quality/test_semantic_jitter.py", "tests/quality/test_how_regression.py", "tests/quality/fixtures/regression/"],
+  "files_modified": ["src/akb2/quality/distill.py", "src/akb2/quality/checks_structural.py", "src/akb2/quality/grader.py", "src/akb2/quality/repair.py", "src/akb2/quality/runner.py", "src/akb2/quality/promote.py", "src/akb2/quality/intake/source_validator.py", "src/akb2/quality/smoke_validator.py", "src/akb2/quality/source_ops_scanners/operations.py", "tests/quality/conftest.py", "tests/quality/test_checks_structural.py", "tests/quality/test_grader.py", "tests/quality/test_runner_lifecycle.py", "tests/quality/test_repair_loop.py", "tests/quality/test_distill_must_cover.py", "tests/quality/test_distill_extract_retry.py", "tests/quality/test_distill_frontmatter.py", "tests/quality/test_raw_verify.py", "tests/quality/test_provenance_split.py", "tests/quality/test_semantic_jitter.py", "tests/quality/test_source_ops_scanners.py", "tests/quality/test_smoke_validator.py"],
+  "owned_paths_writes_only": true,
+  "forbidden_paths_touched": [],
+  "out_of_scope_writes": [],
+  "handoff": {
+    "result_path": "plans/gd/2026-06-22-how-reliability-refactor/execute/aggregate-outcome.json",
+    "status_field": "completed",
+    "summary": "6 wave + 7 finding 修复全落地；全 quality 套件 679 passed/0 failed；SC-1~8/10/11 pass，SC-7 hash 不变，SC-8 lint 0；SC-9 not_run（本机 gateway 不可达）",
+    "blockers": "SC-9 端到端需 mac mini gateway"
+  }
+}
