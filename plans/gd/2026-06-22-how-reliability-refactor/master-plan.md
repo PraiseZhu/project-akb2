@@ -2,7 +2,7 @@
 
 GD_STANDARD: Project GD/prompts/gd-review-standard.md
 GOAL_SOURCE: Project AKB2/docs/constitution.md
-TEMPLATE_KIND: gd-plan
+TEMPLATE_KIND: gd-master-plan
 
 > 作者：Claude（Opus 4.8）
 > 日期：2026-06-22（r5：2026-06-23 过三轮 Codex cross-review 后修订）
@@ -150,6 +150,28 @@ TASK_GOAL:    P0-1 建 scanner 独立模块 + test-fresh golden 操作清单，�
   - expect：grader **10 维全 pass** + gate 10/10 + lint 0
   - **诚实分流（fail 时按维度）**：fail 落 How 维（1 锚定 / 2 How 密度 / 3 How 可执行）→ P0/P1 机制有漏，回修；fail 落语义 5 维（4 证据诚实 / 6 TLDR / 7 新颖 / 8 边强度 / 9 Future Questions）→ **非本计划机制缺陷**，触发"换 maker 评估"（押后单元提前 deepseek→codex/gpt-5.4）；**任何情况不得为过 SC-9 降量规**
   - 依赖：step-1~6（全 P0+P1）落地后执行（由 step-8 收尾段或单独收尾跑）；SC-9 是"验整车上路"，区别于 SC-1~8 的"验零件"
+- [ ] **SC-10（step-5 provenance 三态标注可验证）**：How 项含三态 provenance 标注（source_operation/source_fact/akb_interpretation）+ SG-provenance-ratio 能计数 akb 占比（消费 checks_structural.py 的 MAX_AKB_INTERPRETATION_RATIO=0.40）
+  - verify (method: test)：`PYTHONPATH=src python -m pytest tests/quality/test_provenance_split.py -q`
+  - expect：三态标注齐；akb 占比可被 SG-provenance-ratio 正确计数。关联 step-5
+- [ ] **SC-11（step-7 语义抖动兜底可验证）**：关键语义段产 2 次取交集（SEMANTIC_RETAKE_MAX=2）+ 连续不稳定 fail-closed 有界停止 + must_cover kind 集合不变 + 两模型常量（DISTILL_MODEL_FAMILY/PRIMARY_GRADER_MODEL）不变
+  - verify (method: test)：`PYTHONPATH=src python -m pytest tests/quality/test_semantic_jitter.py -q`
+  - expect：多取有界 + 交集逻辑正确 + 连续不稳定 fail-closed。关联 step-7
+
+---
+
+## Dispatch Map / Wave Contract
+
+DISPATCH_MAP_PATH: plans/gd/2026-06-22-how-reliability-refactor/dispatch_map.json
+VALIDATE_CMD: python3 /Users/praise/.claude/plugins/marketplaces/project-gd-marketplace/scripts/gd-validate-dispatch.py plans/gd/2026-06-22-how-reliability-refactor/dispatch_map.json
+
+| Wave | Steps | 并行前提 |
+|------|-------|---------|
+| w1 | step-1（串行） | — |
+| w2 | step-2, step-3（并行） | can_parallel_with 双向；owned 不重叠（distill vs checks_structural） |
+| w3 | step-4, step-5（并行） | can_parallel_with 双向；owned 不重叠（raw_verify+checks块 vs distill provenance段） |
+| w4 | step-6（串行） | blocked_by step-1/2/3（w1-w2） |
+| w5 | step-7（串行） | blocked_by step-5（w3） |
+| w6 | step-8（串行） | blocked_by step-1~6（w1-w4） |
 
 ---
 
