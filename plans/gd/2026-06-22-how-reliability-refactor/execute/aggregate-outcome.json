@@ -8,27 +8,32 @@
   "executed_at": "2026-06-23T16:57:49Z",
   "exec_status": "completed",
   "sc_acceptance": [
-    {"sc_ref": "SC-1", "status": "pass", "evidence": "scanner 补 API/code-block 覆盖后 test_source_ops_scanners 全绿，三类 inventory ⊇ golden", "not_run_reason": ""},
-    {"sc_ref": "SC-2", "status": "pass", "evidence": "must_cover 代码直出，how_steps=[] 时 How 仍含 operation", "not_run_reason": ""},
-    {"sc_ref": "SC-3", "status": "pass", "evidence": "SG-must-cover raw=None→Defect + 5 调用点 provenance", "not_run_reason": ""},
-    {"sc_ref": "SC-4", "status": "pass", "evidence": "Finding1 修复后回到全文回查，deploy-preview 编造命令被挡（亲验 defects=1）", "not_run_reason": ""},
-    {"sc_ref": "SC-5", "status": "pass", "evidence": "Finding5 修复后 _regrade_sample 改用 run_grader_detailed 拒收 fallback_used/suspended；三函数体 hash 不变", "not_run_reason": ""},
-    {"sc_ref": "SC-6", "status": "pass", "evidence": "三语料回归 21 passed", "not_run_reason": ""},
-    {"sc_ref": "SC-7", "status": "pass", "evidence": "三打分函数体 + 10-dimensions.md hash 与起点 d50e094 完全一致", "not_run_reason": ""},
-    {"sc_ref": "SC-8", "status": "pass", "evidence": "Finding7 修复后 pytest tests/quality/ tests/loops/ 679 passed AND ruff check src/akb2/quality/ exit 0（整体 && exit 0）；异族 deepseek≠gpt-5.4", "not_run_reason": ""},
-    {"sc_ref": "SC-9", "status": "not_run", "evidence": "", "not_run_reason": "本机 LLM gateway 不可达（route_llm RuntimeError API 超时），runner 无法产出候选页；端到端黄金需在有 gateway 的 mac mini 跑"},
-    {"sc_ref": "SC-10", "status": "pass", "evidence": "Finding6 修复后 provenance 三态被 SG 真实消费（持久化摘要注释 + 读取器），删字段测试失败", "not_run_reason": ""},
-    {"sc_ref": "SC-11", "status": "pass", "evidence": "Finding3 修复后 retake 默认开（SEMANTIC_RETAKE_MAX=2），空交集 fail-closed", "not_run_reason": ""}
+    {"sc_ref": "SC-1", "status": "pass", "evidence": "[verify 2026-06-24 真跑] PYTHONPATH=src pytest tests/quality/test_source_ops_scanners.py -q -> exit 0 (20 passed); scanner 补 API/code-block 覆盖后三类 inventory ⊇ golden", "not_run_reason": ""},
+    {"sc_ref": "SC-2", "status": "pass", "evidence": "[verify 2026-06-24 真跑] PYTHONPATH=src pytest tests/quality/test_distill_must_cover.py -q -> exit 0 (3 passed); must_cover 代码直出，how_steps=[] 时 How 仍含 operation", "not_run_reason": ""},
+    {"sc_ref": "SC-3", "status": "pass", "evidence": "[verify 2026-06-24 真跑] PYTHONPATH=src pytest tests/quality/test_checks_structural.py -q -> exit 0 (68 passed); SG-must-cover raw=None->Defect + 5 调用点 provenance", "not_run_reason": ""},
+    {"sc_ref": "SC-4", "status": "pass", "evidence": "[verify 2026-06-24 真跑] PYTHONPATH=src pytest tests/quality/test_raw_verify.py -q -> exit 0 (30 passed); 全文回查，deploy-preview 编造命令被挡", "not_run_reason": ""},
+    {"sc_ref": "SC-5", "status": "pass", "evidence": "[verify 2026-06-24 真跑] PYTHONPATH=src pytest tests/quality/test_repair_loop.py tests/quality/test_runner_lifecycle.py -q -> exit 0 (58 passed); degraded(fallback_used/suspended) 在 repair/runner/promote 三处 fail-closed 不判收敛", "not_run_reason": ""},
+    {"sc_ref": "SC-6", "status": "pass", "evidence": "[verify 2026-06-24 真跑] PYTHONPATH=src pytest tests/quality/test_how_regression.py -q -> exit 0 (21 passed); test-fresh + 纯观点博客 + 陷阱样本三类语料就位且通过", "not_run_reason": ""},
+    {"sc_ref": "SC-7", "status": "pass", "evidence": "[verify 2026-06-24 真跑] ast-extract sha256(三打分函数体)+sha256(10-dimensions.md) vs git show d50e094 -> exit 0 ALL_HASH_INVARIANT (_build_grader_prompt=18cd25cadef8 _build_grader_schema=e7a5200bcd76 _parse_grader_output=f8c641cf24dc rubric=8dcef76fe184，cur==base)", "not_run_reason": ""},
+    {"sc_ref": "SC-8", "status": "pass", "evidence": "[verify 2026-06-24 真跑] PYTHONPATH=src pytest tests/quality/ tests/loops/ -q -m 'not integration' -> exit 0 (679 passed) AND ruff check src/akb2/quality/ -> exit 0 (No issues found); DISTILL_MODEL_FAMILY='deepseek-v4-pro' != PRIMARY_GRADER_MODEL='gpt-5.4' (异族 PASS)", "not_run_reason": ""},
+    {"sc_ref": "SC-9", "status": "not_run", "evidence": "", "not_run_reason": "deferred 到 mac mini，不在本机伪造。本机 LLM gateway 不可达：maker=deepseek 的 DEEPSEEK_API_KEY 未设置(runner 无法产候选页)，本机 OPENAI_API_KEY 是外部官方 key 打 tapsvc 网关返 401(与 memory project_akb2_grader_tapsvc_env_conflict 一致)->grader 降级假 0 缺陷 gemini。deferred 命令: AKB2_AUTO_PROMOTE=0 PYTHONPATH=src python3 -m akb2.quality.runner --once --raw-dir <test-fresh 目录> --vault-root /tmp/akb2-how-p0/vault --staging-dir /tmp/akb2-how-p0/staging; 再对候选页跑 grader(10 维)+akb2_gate_check(10 硬检查)+akb2_lint; 期望 grader 10 维全 pass + gate 10/10 + lint 0。完整前置/步骤/回填见 plans/gd/2026-06-22-how-reliability-refactor/execute/sc9-mac-mini-runbook.md"},
+    {"sc_ref": "SC-10", "status": "pass", "evidence": "[verify 2026-06-24 真跑] PYTHONPATH=src pytest tests/quality/test_provenance_split.py -q -> exit 0 (13 passed); provenance 三态被 SG 真实消费 (持久化摘要注释 + 读取器)", "not_run_reason": ""},
+    {"sc_ref": "SC-11", "status": "pass", "evidence": "[verify 2026-06-24 真跑] PYTHONPATH=src pytest tests/quality/test_semantic_jitter.py -q -> exit 0 (13 passed); retake 默认开 (SEMANTIC_RETAKE_MAX=2)，空交集 fail-closed", "not_run_reason": ""}
   ],
   "files_added": ["src/akb2/quality/source_ops_scanners/", "tests/quality/test_source_ops_scanners.py", "tests/quality/fixtures/test-fresh-golden-ops.json", "tests/quality/test_distill_must_cover.py", "tests/quality/test_raw_verify.py", "tests/quality/test_provenance_split.py", "tests/quality/test_semantic_jitter.py", "tests/quality/test_how_regression.py", "tests/quality/fixtures/regression/"],
   "files_modified": ["src/akb2/quality/distill.py", "src/akb2/quality/checks_structural.py", "src/akb2/quality/grader.py", "src/akb2/quality/repair.py", "src/akb2/quality/runner.py", "src/akb2/quality/promote.py", "src/akb2/quality/intake/source_validator.py", "src/akb2/quality/smoke_validator.py", "src/akb2/quality/source_ops_scanners/operations.py", "tests/quality/conftest.py", "tests/quality/test_checks_structural.py", "tests/quality/test_grader.py", "tests/quality/test_runner_lifecycle.py", "tests/quality/test_repair_loop.py", "tests/quality/test_distill_must_cover.py", "tests/quality/test_distill_extract_retry.py", "tests/quality/test_distill_frontmatter.py", "tests/quality/test_raw_verify.py", "tests/quality/test_provenance_split.py", "tests/quality/test_semantic_jitter.py", "tests/quality/test_source_ops_scanners.py", "tests/quality/test_smoke_validator.py"],
   "owned_paths_writes_only": true,
   "forbidden_paths_touched": [],
   "out_of_scope_writes": [],
+  "known_limitations": [
+    "SC-9（端到端达黄金，计划最终判据）deferred_to_mac_mini：本机 LLM gateway 不可达（DEEPSEEK_API_KEY 未设置 + 官方 OPENAI_API_KEY 打 tapsvc 网关 401 致 grader 降级假 0 缺陷 gemini），runner 无法产出真实候选页。SC-9 真跑通前永远是 not_run，绝不本机伪造 pass。完整复跑/前置/回填步骤见 plans/gd/2026-06-22-how-reliability-refactor/execute/sc9-mac-mini-runbook.md",
+    "verify_results 机器可读账本（deliverables_produced[] + 每条 SC 的 sc_ref/cmd/expected/actual_exit/evidence）落在 sidecar plans/gd/2026-06-22-how-reliability-refactor/execute/verify-evidence.json；本 outcome 受 gd-execution-status.schema.json 的 additionalProperties:false 约束，故 verify 账本外置以保 schema 合规，inline 仅在每条 sc_acceptance.evidence 携带 cmd+actual_exit 摘要",
+    "exec_status 维持 completed（非 completed_with_constraint）：runtime 校验器 gd-validate-execution-outcome.py 的 VALID_EXEC_STATUS={completed,failed,skipped,partial} 与 schema enum 的交集仅 {completed,failed}，completed_with_constraint 会让 validator exit 1。SC-9 deferred 不是 failure（10/11 机制 SC 真跑 pass），故 completed + known_limitations/blockers 显式标注"
+  ],
   "handoff": {
     "result_path": "plans/gd/2026-06-22-how-reliability-refactor/execute/aggregate-outcome.json",
     "status_field": "completed",
-    "summary": "6 wave + 7 finding 修复全落地；全 quality 套件 679 passed/0 failed；SC-1~8/10/11 pass，SC-7 hash 不变，SC-8 lint 0；SC-9 not_run（本机 gateway 不可达）",
-    "blockers": "SC-9 端到端需 mac mini gateway"
+    "summary": "6 wave + 7 finding 修复全落地。F-P2-A: 11 条 SC verify 命令本机真跑(2026-06-24)拿真实 exit code，10 条 exit 0(SC-1~8,10,11 含 SC-7 hash 不变命令)，机器可读账本见 sidecar verify-evidence.json。F-P2-B: conftest sample_raw_path autouse fixture 改 tmp_path+monkeypatch.chdir 隔离 CWD 消除共享 raw/ 竞态，全套件 679 passed/0 failed。SC-9 not_run（本机 gateway 不可达，deferred 到 mac mini，命令完整保留，不伪造）。",
+    "blockers": "SC-9 端到端达黄金需在有 LLM gateway + DEEPSEEK_API_KEY + vault 挂载的 mac mini 跑；前置/步骤/回填见 sc9-mac-mini-runbook.md。pending_verification: [SC-9]"
   }
 }

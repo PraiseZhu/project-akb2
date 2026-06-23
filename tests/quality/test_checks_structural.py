@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from src.akb2.quality.checks_structural import (
@@ -1047,11 +1049,16 @@ source_refs: []
 
 
 # 与 5 处生产调用点对应的源文件路径（provenance 静态审计用）。
+# 锚定到 repo root（__file__ = tests/quality/，parents[2] = repo 根），不依赖进程
+# CWD——conftest 的 sample_raw_path autouse fixture 已把 CWD 切到 per-test tmp 子目录
+# 以消除共享 raw/ 竞态，这里若用 CWD 相对路径会读不到 src/。改绝对锚定，纯路径解析
+# 机制变更，断言内容不变。
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 _CALLSITE_SOURCE_PATHS = {
-    "distill": "src/akb2/quality/distill.py",
-    "repair": "src/akb2/quality/repair.py",
-    "runner": "src/akb2/quality/runner.py",
-    "smoke_validator": "src/akb2/quality/smoke_validator.py",
+    "distill": str(_REPO_ROOT / "src/akb2/quality/distill.py"),
+    "repair": str(_REPO_ROOT / "src/akb2/quality/repair.py"),
+    "runner": str(_REPO_ROOT / "src/akb2/quality/runner.py"),
+    "smoke_validator": str(_REPO_ROOT / "src/akb2/quality/smoke_validator.py"),
 }
 
 # raw 含 operation/boundary/conclusion 三类 must_cover，scan_all 命中 4 项。

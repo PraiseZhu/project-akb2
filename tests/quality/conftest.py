@@ -296,8 +296,8 @@ is the immune system of the loop ecosystem.
 
 
 @pytest.fixture(autouse=True)
-def sample_raw_path(sample_raw_content) -> str:
-    """raw 文件 fixture（autouse）：在 CWD 相对 raw/ 下创建真实文件。
+def sample_raw_path(sample_raw_content, tmp_path, monkeypatch) -> str:
+    """raw 文件 fixture（autouse）：在 per-test 隔离的 tmp CWD 下创建真实文件。
 
     覆盖两类存量测试：
     - 用 sample_raw_path fixture 的测试：拿到路径字符串
@@ -305,12 +305,27 @@ def sample_raw_path(sample_raw_content) -> str:
       的测试：compose_candidate 读 Path(raw_path).read_text() 时能扫到 must_cover，
       不再因 raw_content=None 触发 SG-must-cover fail-closed（gate 未弱化）。
 
+    隔离机制（F-P2-B 修复）：以前在 *进程* CWD 相对 raw/ 下 create + teardown rmdir，
+    多 test 共享同一 raw/ 目录，并行/乱序下首个 mkdir 与末个 rmdir 竞态曾爆
+    FileNotFoundError。现改用 pytest tmp_path + monkeypatch.chdir：每个 test 独占
+    自己的 tmp 工作目录，相对路径契约不变（test 内 "raw/test.md" 仍按 CWD 解析、
+    CWD 已切到本 fixture 专属子目录），但目录不再跨 test 共享，teardown 由 pytest
+    清理 tmp_path 完成、无需手动 rmdir，竞态消除。断言语义不动。
+
+    关键：chdir 进 tmp_path 下一个 **专属子目录**（不是 tmp_path 本身），避免与那些
+    自己往 `tmp_path / "raw"` 写文件并断言计数的 test（如 test_runner_queue /
+    test_intake_raw）撞同一个 raw/ 目录——它们用绝对 tmp_path/raw，本 fixture 的
+    relative raw/ 落在 tmp_path/_sample_raw_cwd/raw/，两者互不相干。
+
     主路径去掉 source_conclusion 句（"The key insight:..."），避免 must_cover 代码直出
     在 TLDR 多渲染一条 (source_grounded) 使 test_tldr_has_sentence_boundaries_per_anchor
     的 count==3 断言失败。保留 5 条 source_operation 编号步骤，gate 仍 fail-closed
     要求 How 节覆盖。raw/test.md 用完整内容（图测试不检查 TLDR count）。
     """
-    raw_dir = Path("raw")
+    work_dir = tmp_path / "_sample_raw_cwd"
+    work_dir.mkdir(exist_ok=True)
+    monkeypatch.chdir(work_dir)
+    raw_dir = work_dir / "raw"
     raw_dir.mkdir(exist_ok=True)
     main_path = "raw/addy-osmani-loop-engineering--raw--2026-06-11.md"
     test_path = "raw/test.md"
@@ -319,15 +334,9 @@ def sample_raw_path(sample_raw_content) -> str:
         "so recovery from crashes is a simple read of the last ledger entry.",
         "",
     )
-    Path(main_path).write_text(main_content, encoding="utf-8")
-    Path(test_path).write_text(sample_raw_content, encoding="utf-8")
+    (work_dir / main_path).write_text(main_content, encoding="utf-8")
+    (work_dir / test_path).write_text(sample_raw_content, encoding="utf-8")
     yield main_path
-    Path(main_path).unlink(missing_ok=True)
-    Path(test_path).unlink(missing_ok=True)
-    try:
-        raw_dir.rmdir()
-    except OSError:
-        pass
 
 
 @pytest.fixture
