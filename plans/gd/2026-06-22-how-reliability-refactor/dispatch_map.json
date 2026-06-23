@@ -16,7 +16,7 @@
       "mode": "execute",
       "agent_role": "child_executor",
       "owned_paths": [
-        "src/akb2/quality/source_ops_scanners/**",
+        "src/akb2/quality/source_ops_scanners",
         "tests/quality/test_source_ops_scanners.py",
         "tests/quality/fixtures/test-fresh-golden-ops.json"
       ],
@@ -256,7 +256,7 @@
       "mode": "execute",
       "agent_role": "child_executor",
       "owned_paths": [
-        "tests/quality/fixtures/regression/**",
+        "tests/quality/fixtures/regression",
         "tests/quality/test_how_regression.py"
       ],
       "forbidden_paths": [

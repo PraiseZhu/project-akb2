@@ -1,0 +1,51 @@
+template_kind: gd-execution-result
+result_id: w1-step-1-scanner-module
+task_id: step-1
+parent_step: step-1
+parent_plan: plans/gd/2026-06-22-how-reliability-refactor/master-plan.md
+executor_role: claude_subagent
+executed_at: 2026-06-23T05:08:49Z
+exec_status: completed
+sc_acceptance:
+  - sc_ref: SC-1
+    status: pass
+    evidence: >
+      权威 verify 命令（dispatch_map 字面）PYTHONPATH=src python -m pytest
+      tests/quality/test_source_ops_scanners.py -q → 15 passed in 0.09s, exit_code=0
+      （主 agent 独立复跑确认）。import 校验 PYTHONPATH=src python -c
+      'from akb2.quality.source_ops_scanners import scan_all' → OK。
+      ruff check src/akb2/quality/source_ops_scanners/
+      tests/quality/test_source_ops_scanners.py → All checks passed。
+      scan_all(test-fresh raw) 产出 13 source_operation（6 mcp_protocol
+      命中 distill.py:2412 的 _SOURCE_PROTOCOL_COMMANDS 中出现在 test-fresh
+      的 6 个 + 7 numbered_steps）+ 5 source_boundary + 3 source_conclusion = 21 items。
+      三类 inventory ⊇ golden 逐类比对通过（test_golden_operation_subset parametrized）。
+      span 可追溯断言通过：每个 EvidenceItem 的 raw_text[span.start:span.end] 含其 literal。
+    not_run_reason: ""
+files_added:
+  - src/akb2/quality/source_ops_scanners/__init__.py
+  - src/akb2/quality/source_ops_scanners/_common.py
+  - src/akb2/quality/source_ops_scanners/operations.py
+  - src/akb2/quality/source_ops_scanners/boundaries.py
+  - src/akb2/quality/source_ops_scanners/conclusions.py
+  - tests/quality/fixtures/test-fresh-golden-ops.json
+  - tests/quality/test_source_ops_scanners.py
+files_modified: []
+files_unchanged_in_scope:
+  - src/akb2/quality/distill.py
+owned_paths_writes_only: true
+forbidden_paths_touched: []
+out_of_scope_writes: []
+handoff:
+  result_path: plans/gd/2026-06-22-how-reliability-refactor/execute/w1-step-1-result.yaml
+  status_field: completed
+  summary: >
+    source_ops_scanners 模块建成：5 个 operation 子扫描器（mcp_protocol 迁移
+    distill.py:2412 的 8 命令 + cli_commands + code_blocks + api_signatures +
+    numbered_steps）+ boundary/conclusion 句扫描器，scan_all 聚合去重排序；
+    test-fresh golden 三类 ⊇ 验收通过，15 测试全绿，ruff 0 error。
+  blockers: "none"
+known_limitations:
+  - "mcp_protocol scanner 显式只迁移 distill.py:2412 的 8 命令集（step-1 设计内范围）；test-fresh 出现 notifications/tools/list_changed 不在该 8 命令集中故未抓——它是 server→client 通知非客户端可执行操作，排除 must_cover 可辩护；扩展（bare 函数名/更多 MCP 方法）留 step-2 评估。"
+  - "api_signatures scanner 仅抓 obj.method(...) 形态，不抓 bare func(...)，避免自然语言括注误抓；test-fresh 无 obj.method(...) 模式，此 scanner 产出 0 项。"
+  - "line 247 多服务器示例操作（searchFlights/checkWeather/bookHotel/createCalendarEvent/sendEmail）为示例 bare 函数名，当前无 scanner 覆盖——属示例非主操作，留 step-2 评估是否加 bare-name scanner。"
