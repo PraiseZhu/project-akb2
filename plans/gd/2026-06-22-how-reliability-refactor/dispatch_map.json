@@ -84,7 +84,9 @@
       "agent_role": "child_executor",
       "owned_paths": [
         "src/akb2/quality/checks_structural.py",
-        "tests/quality/test_checks_structural.py"
+        "tests/quality/test_checks_structural.py",
+        "tests/quality/conftest.py",
+        "tests/quality/test_repair_loop.py"
       ],
       "forbidden_paths": [
         "/Users/praise/.claude/**",

@@ -25,6 +25,7 @@ import re
 from dataclasses import dataclass
 
 from src.akb2.quality.md_table import split_md_table_row
+from src.akb2.quality.source_ops_scanners import scan_all as _scan_source_evidence
 
 # ---------------------------------------------------------------------------
 # 公开类型
@@ -1083,5 +1084,61 @@ def run_candidate_self_gate(
                     suggestion="删除占位文本；无法生成真实内容时 fail-closed，不产出候选",
                 )
             )
+
+    # SG-must-cover: 确定性证据覆盖（fail-closed）
+    # scan_all(raw_content) 产出 must_cover 证据清单（CLI/编号步骤/边界句/结论句）；
+    # 任一字面量未在对应节逐字渲染即 Defect。raw_content=None 本身即 Defect——
+    # 绝不静默跳过覆盖校验（宪法 P3 fail-closed + P6 来源锚定）。
+    if raw_content is None:
+        defects.append(
+            Defect(
+                dimension="SG-must-cover",
+                location="raw_content",
+                defect="raw_content 缺失，无法验证 must_cover 覆盖",
+                suggestion=(
+                    "run_candidate_self_gate 必须传入与候选页同源的真实 raw 文本；"
+                    "缺失即 fail-closed，不静默跳过覆盖校验"
+                ),
+            )
+        )
+    else:
+        must_cover_items = _scan_source_evidence(raw_content)
+        body_text = _body_without_frontmatter(text)
+        how_text = _how_section_text(text)
+        boundary_text = _get_section_text(body_text, "适用边界")
+        conclusion_text = (
+            _get_section_text(body_text, "TLDR")
+            + "\n"
+            + _get_section_text(body_text, "关键发现")
+            + "\n"
+            + _get_section_text(body_text, "核心论点")
+        )
+        must_cover_section_text = {
+            "source_operation": how_text,
+            "source_boundary": boundary_text,
+            "source_conclusion": conclusion_text,
+        }
+        must_cover_section_name = {
+            "source_operation": "### 操作步骤",
+            "source_boundary": "## 适用边界",
+            "source_conclusion": "TLDR/关键发现/核心论点",
+        }
+        for item in must_cover_items:
+            section_text = must_cover_section_text.get(item.must_cover_class, "")
+            if item.literal not in section_text:
+                section_name = must_cover_section_name.get(
+                    item.must_cover_class, "正文"
+                )
+                defects.append(
+                    Defect(
+                        dimension="SG-must-cover",
+                        location=section_name,
+                        defect=f"must_cover 字面量未在对应节渲染: {item.literal}",
+                        suggestion=(
+                            f"在 {section_name} 中补上来源字面量并锚定 raw，"
+                            "不得意译或省略；无对应操作时 compose 应 fail-closed"
+                        ),
+                    )
+                )
 
     return defects

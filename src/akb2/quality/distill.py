@@ -1465,16 +1465,34 @@ def compose_candidate(
     # 构建 frontmatter（确定性代码写死，防范已知坑 1-3）
     frontmatter = _build_frontmatter(raw_path, extract_result.data)
 
-    # 用 LLM 生成正文 10 节
-    body = _build_body(extract_result.data, raw_path, route_llm_fn)
-
-    # 组装完整候选页
-    full_page = _assemble_page(frontmatter, body)
-
+    # raw_content 同源读取：must_cover 扫描与 self-gate A3 锚点校验共用同一份原文，
+    # 避免截断/不一致导致 must_cover 账本与锚点校验脱节。
     try:
         raw_content = Path(raw_path).read_text(encoding="utf-8")
     except OSError:
         raw_content = None
+
+    # must_cover 代码直出账本（step-2）：scan_all 扫 raw 建 evidence inventory，
+    # 不依赖 LLM 抽取。_build_body 据此把 source_operation/boundary/conclusion 三类
+    # 代码直接渲染进正文，LLM 无最终选择权（即使 how_steps=[]，operation 仍由代码渲染）。
+    must_cover_items: list[Any] = []
+    if raw_content:
+        from src.akb2.quality.source_ops_scanners import scan_all as _scan_must_cover
+
+        must_cover_items = _scan_must_cover(raw_content)
+
+    # 用 LLM 生成正文 10 节（must_cover 由代码直出，LLM segment 仅补充语义）
+    body = _build_body(
+        extract_result.data,
+        raw_path,
+        route_llm_fn,
+        must_cover=must_cover_items,
+        raw_content=raw_content,
+    )
+
+    # 组装完整候选页
+    full_page = _assemble_page(frontmatter, body)
+
     try:
         from src.akb2.quality.checks_structural import run_candidate_self_gate
 
@@ -2847,11 +2865,153 @@ def _compact_tldr_sentence(text: str) -> str:
 # 共享 markdown 表格 cell 转义(写侧),与 checks_structural 的读侧(split_md_table_row)同契约
 from src.akb2.quality.md_table import md_table_cell as _md_table_cell  # noqa: E402
 
+# ---------------------------------------------------------------------------
+# must_cover 代码直出渲染（step-2: scanner 账本 → 正文三节强制渲染）
+#
+# scan_all 产出的 EvidenceItem 携带 raw_anchor_span（char offset 进 raw_text），但
+# 正文引用锚点是 [raw §X] 形态。A3 (check_a3_raw_anchors) 拒绝任何 raw 未声明的 §X，
+# 故须把每个 span 就近映射到一个已声明的 §X 标题——落在该标题之下的 evidence 归属该节。
+# ---------------------------------------------------------------------------
+
+# 与 checks_structural._extract_raw_anchors 同源的四种声明形态，但这里保留位置
+# 用于就近映射（_extract_raw_anchors 只返回 set，丢失位置信息）。
+_RAW_ANCHOR_DECL_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(rf"(?m)^#{{1,6}}\s+({RAW_ANCHOR_DECL_RE})(?:[.\s:：]|$)"),
+    re.compile(rf"(?m)^\[raw\s+({RAW_ANCHOR_DECL_RE})\]"),
+    re.compile(rf"(?m)^({RAW_ANCHOR_DECL_RE})_[A-Z_]+\b"),
+    re.compile(rf"(?m)^\|\s*({RAW_ANCHOR_DECL_RE})\s*\|"),
+)
+
+
+def _declared_raw_anchors_with_pos(raw_content: str) -> list[tuple[int, str]]:
+    """Return (position, §X) pairs for all declared raw anchors, sorted by position."""
+    decls: list[tuple[int, str]] = []
+    for pattern in _RAW_ANCHOR_DECL_PATTERNS:
+        for m in pattern.finditer(raw_content):
+            decls.append((m.start(), m.group(1)))
+    decls.sort(key=lambda x: x[0])
+    return decls
+
+
+def _map_span_to_declared_anchor(
+    raw_content: str | None,
+    span_start: int,
+    decls: list[tuple[int, str]] | None = None,
+) -> str:
+    """Map a raw_text char offset to the nearest preceding declared §X anchor.
+
+    Returns the largest-position declaration at or before span_start. If the span
+    precedes all declarations (rare; evidence in frontmatter/prologue), falls
+    back to the first declared anchor. Returns "" only when raw has no declared
+    anchors at all (A3 is skipped when raw_content is None, so empty is safe then).
+    """
+    if not raw_content:
+        return ""
+    if decls is None:
+        decls = _declared_raw_anchors_with_pos(raw_content)
+    if not decls:
+        return ""
+    chosen = ""
+    for pos, anchor in decls:
+        if pos <= span_start:
+            chosen = anchor
+        else:
+            break
+    if not chosen:
+        chosen = decls[0][1]
+    return chosen
+
+
+def _sanitize_must_cover_literal_for_command(literal: str) -> str:
+    """Strip backticks/newlines so a literal can sit inside a `code` span.
+
+    HOW_STEP_COMMAND_RE extracts `([^`\\n]+)`; an embedded backtick would close the
+    code span early and break the gate's executable-step count. cli_commands can
+    contain backticks; numbered-step/sentence literals do not in practice.
+    """
+    cleaned = literal.replace("`", "'").replace("\n", " ").strip()
+    return cleaned or literal
+
+
+def _render_must_cover_operations(
+    items: list[Any],
+    raw_content: str | None,
+) -> str:
+    """Render source_operation EvidenceItems as code-direct How steps.
+
+    Output format satisfies HOW_STEP_COMMAND_RE:
+        {N}. [raw §X] (source_grounded) {instruction} `{literal}`
+
+    Provenance is source_grounded (literal is verbatim from raw). Prepended to
+    LLM how_steps so the LLM cannot drop a source operation (SC-2.2).
+    """
+    if not items:
+        return ""
+    decls = _declared_raw_anchors_with_pos(raw_content) if raw_content else []
+    lines: list[str] = []
+    for idx, item in enumerate(items, 1):
+        anchor = _map_span_to_declared_anchor(raw_content, item.raw_anchor_span.start, decls)
+        command = _sanitize_must_cover_literal_for_command(item.literal)
+        lines.append(
+            f"{idx}. [raw {anchor}] (source_grounded) "
+            f"原文操作（must_cover 代码直出，scanner={item.source}） `{command}`"
+        )
+    return "\n".join(lines)
+
+
+def _render_must_cover_boundaries(
+    items: list[Any],
+    raw_content: str | None,
+) -> str:
+    """Render source_boundary EvidenceItems as code-direct applicability-boundary bullets.
+
+    Output format satisfies check_a8_applicability_boundary:
+        - [raw §X] (source_grounded) 来源事实: {literal}
+
+    Category 「来源事实」(literal is a source-grounded scope/precondition).
+    One anchor + one provenance + one category per bullet (A8 contract).
+    """
+    if not items:
+        return ""
+    decls = _declared_raw_anchors_with_pos(raw_content) if raw_content else []
+    lines: list[str] = []
+    for item in items:
+        anchor = _map_span_to_declared_anchor(raw_content, item.raw_anchor_span.start, decls)
+        literal = item.literal.replace("\n", " ").strip()
+        lines.append(f"- [raw {anchor}] (source_grounded) 来源事实: {literal}")
+    return "\n".join(lines)
+
+
+def _render_must_cover_conclusions(
+    items: list[Any],
+    raw_content: str | None,
+) -> str:
+    """Render source_conclusion EvidenceItems as code-direct TLDR sentences.
+
+    Output format: (source_grounded) 原文结论（must_cover 代码直出）：{literal} [raw §X].
+    Prepended to the LLM-derived tldr so explicit author conclusions survive even
+    when the LLM omits them.
+    """
+    if not items:
+        return ""
+    decls = _declared_raw_anchors_with_pos(raw_content) if raw_content else []
+    parts: list[str] = []
+    for item in items:
+        anchor = _map_span_to_declared_anchor(raw_content, item.raw_anchor_span.start, decls)
+        literal = item.literal.replace("\n", " ").strip()
+        parts.append(
+            f"(source_grounded) 原文结论（must_cover 代码直出）：{literal} [raw {anchor}]."
+        )
+    return " ".join(parts)
+
 
 def _build_body(
     extract_data: dict[str, Any],
     raw_path: str,
     route_llm_fn: Any,  # 保留参数兼容接口，_build_body 是确定性脚本，不调 LLM
+    *,
+    must_cover: list[Any] | None = None,
+    raw_content: str | None = None,
 ) -> str:
     """构建 10 节正文（确定性脚本，只填 extract_data 槽位，不调 LLM）。
 
@@ -2866,7 +3026,12 @@ def _build_body(
         8. 图谱关系
         9. Future Questions
         10. 维护记录
+
+    must_cover（step-2）：scan_all 产出的 EvidenceItem 列表，按 kind 代码直出渲染
+    进对应节——source_operation→操作步骤、source_boundary→适用边界、
+    source_conclusion→TLDR。LLM segment 仅补充语义，不决定 operation 是否出现。
     """
+    must_cover = must_cover or []
     claims = list(extract_data.get("claims", []))
     how_steps = extract_data.get("how_steps", [])
     concepts = extract_data.get("referenced_concepts", [])
@@ -2912,6 +3077,13 @@ def _build_body(
     ]
     tldr = " ".join(tldr_sentences) if tldr_sentences else tldr
 
+    # must_cover source_conclusion: 代码直出进 TLDR，LLM 无最终选择权。
+    # 即使 LLM tldr 漏掉原文显式结论，scanner 账本仍强制渲染进 TLDR 节。
+    must_cover_concls = [m for m in must_cover if m.kind == "source_conclusion"]
+    mc_tldr_text = _render_must_cover_conclusions(must_cover_concls, raw_content)
+    if mc_tldr_text:
+        tldr = f"{mc_tldr_text} {tldr}".strip() if tldr else mc_tldr_text
+
     # 论证与解释：argumentation 字段逐条展开。
     # source_grounded 条目回到 claim 文本本身，避免把 LLM 的归纳解释伪装成来源事实。
     if argumentation:
@@ -2946,14 +3118,29 @@ def _build_body(
 
     # 操作步骤：how_steps 兼容对象({instruction,command,executable})与字符串两种形态
     # （Codex R2 剩余风险2:旧 staging/候选传入字符串 → .get 会 AttributeError，先判 isinstance）
-    how_text = (
+    #
+    # must_cover source_operation（step-2）：代码直出排在 LLM how_steps 之前。
+    # 关键不变量：即使 LLM how_steps=[]（mock 空），operation 仍由代码渲染出现（SC-2.2）。
+    # 当 must_cover 操作存在时，不输出 FORBIDDEN_HOW_FALLBACK_MARKERS 占位
+    # （否则 SG-how-executability 会拒绝）。占位仅在 must_cover 与 LLM 步骤双空时保留（既有行为）。
+    must_cover_ops = [m for m in must_cover if m.kind == "source_operation"]
+    mc_how_text = _render_must_cover_operations(must_cover_ops, raw_content)
+    llm_how_text = (
         "\n".join(
             _render_how_step_with_provenance(i, step, anchor)
             for i, step, anchor in supported_how_steps
         )
         if supported_how_steps
-        else "（原文无可安全锚定的操作步骤；候选阶段不强行生成 AKB 操作化步骤。）"
+        else ""
     )
+    if mc_how_text and llm_how_text:
+        how_text = f"{mc_how_text}\n\n原文语义补充（LLM 抽取）：\n{llm_how_text}"
+    elif mc_how_text:
+        how_text = mc_how_text
+    elif llm_how_text:
+        how_text = llm_how_text
+    else:
+        how_text = "（原文无可安全锚定的操作步骤；候选阶段不强行生成 AKB 操作化步骤。）"
     params = extract_data.get("params") or {}
     if isinstance(params, dict) and params:
         how_text = f"{how_text}\n\n配置示例：\n{_build_params_example(params)}"
@@ -3016,6 +3203,14 @@ def _build_body(
         how_steps,
         supported_how_steps,
     )
+    # must_cover source_boundary（step-2）：代码直出进适用边界节，排在 LLM 边界之前。
+    # 每条 bullet 用「来源事实」类别 + source_grounded provenance（literal 是原文边界语句）。
+    must_cover_bounds = [m for m in must_cover if m.kind == "source_boundary"]
+    mc_boundary_text = _render_must_cover_boundaries(must_cover_bounds, raw_content)
+    if mc_boundary_text:
+        boundary_text = (
+            f"{mc_boundary_text}\n{boundary_text}" if boundary_text else mc_boundary_text
+        )
 
     from datetime import UTC, datetime
 

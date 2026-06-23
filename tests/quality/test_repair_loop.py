@@ -213,6 +213,46 @@ def temp_failures_path():
     Path(path).unlink(missing_ok=True)
 
 
+@pytest.fixture
+def repair_raw_text() -> str:
+    """修复循环测试专用 raw 文本：含 §A/§B/§C 锚点（A3 锚点校验通过）但无编号步骤/
+    结论句/边界句（scan_all 返回空 → SG-must-cover gate 无 must_cover 项需覆盖，
+    不与 candidate_with_defects 的操作步骤冲突）。
+
+    gate 未弱化：raw_content 非 None（不触发"raw_content 缺失"fail-closed），
+    仅为分离语义——存量 candidate 不含 repair_raw_text 的编号步骤字面量，
+    用此 fixture 避免 must_cover mismatch 误报。
+    """
+    return """---
+artifact_type: raw
+source_slug: loop-engineering
+source_url: https://example.com/loop-engineering
+source_title: Loop Engineering
+source_authors: Addy Osmani
+source_publisher: Addy Osmani's Blog
+source_published_at: 2026-06-07
+fetched_at: 2026-06-13T00:00:00Z
+fetched_via: defuddle
+---
+
+# §A Loop Engineering
+
+Loop engineering is the practice of designing AI agent loops that are bounded,
+convergent, and observable. An agent loop without explicit stopping conditions is
+a runaway cost generator.
+
+# §B How: A Complete Loop Shape
+
+A well-designed loop has five components: a trigger, a work unit selector, an action
+executor, a quality gate, and a ledger writer.
+
+# §C Convergence Over Restart
+
+When a step produces defects, fix the specific defects rather than restarting the
+entire pipeline. This is the principle of convergence over restart.
+"""
+
+
 # ---------------------------------------------------------------------------
 # 修复指令模板
 # ---------------------------------------------------------------------------
@@ -335,6 +375,7 @@ class TestRepairLoopConverge:
         repair_fixture_response,
         grader_pass_response,
         temp_failures_path,
+        repair_raw_text,
     ):
         """一轮修复后 A+B 全过 → 收敛。"""
         from tests.quality.conftest import make_mock_route_llm
@@ -370,6 +411,7 @@ class TestRepairLoopConverge:
             b_defects=b_defects,
             failures_path=temp_failures_path,
             mock_route_llm=mock_llm,
+            raw_text=repair_raw_text,
         )
 
         assert result["converged"], (
@@ -620,7 +662,7 @@ test
 
 class TestRepairDiffRejection:
     def test_modified_unnamed_section_rejected(
-        self, candidate_with_defects, temp_failures_path
+        self, candidate_with_defects, temp_failures_path, repair_raw_text
     ):
         """修复改动了未点名小节 → 该轮重写被丢弃。"""
 
@@ -739,6 +781,7 @@ Loops need explicit budgets and observable failure modes.
             b_defects=b_defects,
             failures_path=temp_failures_path,
             mock_route_llm=mock_tampered_then_fix,
+            raw_text=repair_raw_text,
         )
 
         # 第一轮被拒绝，后续轮修复成功 → 最终收敛
@@ -1078,7 +1121,7 @@ keep me unchanged
         assert "| baseline | covered | delta | source_grounded | source claim | [raw §A] (source_grounded) |" in repaired
         assert "## 适用边界\nkeep me unchanged" in repaired
 
-    def test_loop_writes_repair_trace_and_final_grader_meta(self, temp_failures_path):
+    def test_loop_writes_repair_trace_and_final_grader_meta(self, temp_failures_path, repair_raw_text):
         """repair 收敛时必须留下 trace，且返回最终 grader meta。"""
         from tests.quality.conftest import make_mock_route_llm
 
@@ -1163,6 +1206,7 @@ Loop [raw §A].
             ],
             failures_path=temp_failures_path,
             mock_route_llm=mock_llm,
+            raw_text=repair_raw_text,
         )
         assert result["converged"]
         assert result["final_grader_meta"]["grader_model_used"] == "gpt-5.4"
@@ -1175,7 +1219,7 @@ Loop [raw §A].
         )
 
     def test_deterministic_repair_normalizes_empty_graph_placeholder(
-        self, temp_failures_path
+        self, temp_failures_path, repair_raw_text
     ):
         """占位图谱行也应被确定性修复为 weak + akb_interpretation。"""
         from tests.quality.conftest import make_mock_route_llm
@@ -1270,6 +1314,7 @@ Loop [raw §A].
             b_defects=[],
             failures_path=temp_failures_path,
             mock_route_llm=mock_llm,
+            raw_text=repair_raw_text,
         )
         assert result["converged"]
         assert "no-supported-related-concept" in result["final_text"]
@@ -1290,7 +1335,7 @@ class TestRepairLoopSectionPatch:
     """
 
     def test_loop_applies_section_patch_and_preserves_unnamed(
-        self, candidate_with_defects, temp_failures_path
+        self, candidate_with_defects, temp_failures_path, repair_raw_text
     ):
         from tests.quality.conftest import make_mock_route_llm
 
@@ -1328,6 +1373,7 @@ class TestRepairLoopSectionPatch:
             ],
             failures_path=temp_failures_path,
             mock_route_llm=mock_llm,
+            raw_text=repair_raw_text,
         )
 
         assert result["converged"], "应收敛(patch 改 TLDR + grader 全 pass)"

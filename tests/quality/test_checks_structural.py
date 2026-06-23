@@ -18,6 +18,7 @@ from src.akb2.quality.checks_structural import (
     run_candidate_self_gate,
     run_structural_checks,
 )
+from src.akb2.quality.source_ops_scanners import scan_all as scan_source_evidence
 
 # ---------------------------------------------------------------------------
 # 正样本: 完整的黄金样张风格候选页
@@ -1038,3 +1039,268 @@ source_refs: []
         for d in defects:
             assert d.location, f"Defect missing location: {d}"
             assert d.dimension, f"Defect missing dimension: {d}"
+
+
+# ---------------------------------------------------------------------------
+# SG-must-cover: 确定性证据覆盖（fail-closed）— step-3
+# ---------------------------------------------------------------------------
+
+
+# 与 5 处生产调用点对应的源文件路径（provenance 静态审计用）。
+_CALLSITE_SOURCE_PATHS = {
+    "distill": "src/akb2/quality/distill.py",
+    "repair": "src/akb2/quality/repair.py",
+    "runner": "src/akb2/quality/runner.py",
+    "smoke_validator": "src/akb2/quality/smoke_validator.py",
+}
+
+# raw 含 operation/boundary/conclusion 三类 must_cover，scan_all 命中 4 项。
+_MUST_COVER_RAW = """\
+# §A Setup
+
+1. Run npm install
+2. Run npm test
+
+仅限生产环境使用。
+
+因此该方案只适合生产部署。
+"""
+
+# 操作/边界/结论的字面量，用于断言 scan_all 非空且命中预期 must_cover。
+_EXPECTED_MUST_COVER_LITERALS = (
+    "1. Run npm install",
+    "2. Run npm test",
+    "仅限生产环境使用",
+    "因此该方案只适合生产部署",
+)
+
+
+def _candidate_with_how_steps(steps_text: str) -> str:
+    """构造一个含 ### 操作步骤 / ## 适用边界 / TLDR 的候选页骨架。"""
+    return f"""---
+status: candidate
+gate_decision: null
+source_refs:
+  - raw/test-must-cover--raw.md
+gate_reason: 待评审
+future_questions:
+  - Q1?
+  - Q2?
+related_concepts:
+  - concept-a
+key_findings:
+  - "[raw §A] (source_grounded) finding"
+artifact_type: wiki
+pipeline_version: v1
+---
+
+## TLDR
+
+因此该方案只适合生产部署 [raw §A]。
+
+## 关键发现
+
+1. finding [raw §A]
+
+## 入选理由
+
+理由。
+
+## 证据地图
+
+| 论点 | 锚点 | 证据强度 | 未覆盖 |
+|------|------|---------|--------|
+| A | §A | strong | - |
+
+## 核心论点
+
+1. 因此该方案只适合生产部署 [raw §A]
+
+## 论证与解释
+
+解释。
+
+### 操作步骤
+
+{steps_text}
+
+## 适用边界
+
+- [raw §A] (source_grounded) 仅限生产环境使用。
+
+## 图谱关系
+
+| target | relation | strength | evidence |
+|--------|----------|----------|----------|
+| concept-a | related | weak | [raw §A] (source_grounded) x |
+
+## Future Questions
+
+1. Q1?
+2. Q2?
+
+## 维护记录
+
+- 2026-06-23: 初始创建（待评审）
+"""
+
+
+class TestSGMustCoverFailClosed:
+    """SC-3.1 / SC-3.2: must_cover 漏即挡 + raw 缺失 fail-closed。"""
+
+    def test_scan_all_hits_expected_must_cover(self):
+        """scan_all(_MUST_COVER_RAW) 非空且命中 4 个预期字面量。"""
+        items = scan_source_evidence(_MUST_COVER_RAW)
+        literals = {i.literal for i in items}
+        assert len(items) == 4
+        for expected in _EXPECTED_MUST_COVER_LITERALS:
+            assert expected in literals, f"scan_all 漏掉 must_cover: {expected!r}"
+
+    def test_missing_operation_is_defect(self):
+        """SC-3.1 漏即挡：原文有编号步骤但 ### 操作步骤 没渲染 → SG-must-cover Defect。"""
+        # How 步骤只渲染了第二条，漏了第一条 "1. Run npm install"。
+        steps = "- [raw §A] (source_grounded) 2. Run npm test `npm test`"
+        text = _candidate_with_how_steps(steps)
+        defects = run_candidate_self_gate(text, raw_content=_MUST_COVER_RAW)
+        must_cover = [d for d in defects if d.dimension == "SG-must-cover"]
+        assert must_cover, "漏渲染的 must_cover 未被挡下"
+        assert any("1. Run npm install" in d.defect for d in must_cover)
+        assert all(d.location == "### 操作步骤" for d in must_cover if "Run npm" in d.defect)
+
+    def test_rendered_operations_no_must_cover_defect(self):
+        """SC-3.1 不漏→空：How 步骤逐字渲染了所有 operation → 无 SG-must-cover Defect。"""
+        steps = (
+            "- [raw §A] (source_grounded) 1. Run npm install `npm install`\n"
+            "- [raw §A] (source_grounded) 2. Run npm test `npm test`"
+        )
+        text = _candidate_with_how_steps(steps)
+        defects = run_candidate_self_gate(text, raw_content=_MUST_COVER_RAW)
+        must_cover = [d for d in defects if d.dimension == "SG-must-cover"]
+        assert must_cover == [], f"已逐字渲染却报 must_cover 缺陷: {must_cover}"
+
+    def test_missing_boundary_is_defect(self):
+        """SC-3.1 边界漏渲染：适用边界节不含原文边界字面量 → SG-must-cover Defect。"""
+        # 用一个不含 "仅限生产环境使用" 的候选页（边界节改成别的文字）。
+        text = _candidate_with_how_steps(
+            "- [raw §A] (source_grounded) 1. Run npm install `npm install`\n"
+            "- [raw §A] (source_grounded) 2. Run npm test `npm test`"
+        ).replace("仅限生产环境使用。", "适用所有环境。")
+        defects = run_candidate_self_gate(text, raw_content=_MUST_COVER_RAW)
+        must_cover = [d for d in defects if d.dimension == "SG-must-cover"]
+        assert any("仅限生产环境使用" in d.defect for d in must_cover)
+        assert any(d.location == "## 适用边界" for d in must_cover)
+
+    def test_missing_conclusion_is_defect(self):
+        """SC-3.1 结论漏渲染：TLDR/关键发现/核心论点 不含原文结论字面量 → SG-must-cover Defect。"""
+        text = _candidate_with_how_steps(
+            "- [raw §A] (source_grounded) 1. Run npm install `npm install`\n"
+            "- [raw §A] (source_grounded) 2. Run npm test `npm test`"
+        ).replace("因此该方案只适合生产部署", "该方案通用")
+        defects = run_candidate_self_gate(text, raw_content=_MUST_COVER_RAW)
+        must_cover = [d for d in defects if d.dimension == "SG-must-cover"]
+        assert any("因此该方案只适合生产部署" in d.defect for d in must_cover)
+        assert any(
+            d.location == "TLDR/关键发现/核心论点" for d in must_cover
+        )
+
+    def test_raw_none_fail_closed(self):
+        """SC-3.2 raw 缺失 fail-closed：raw_content=None → 必产 SG-must-cover Defect，不静默跳过。"""
+        text = _candidate_with_how_steps(
+            "- [raw §A] (source_grounded) 1. Run npm install `npm install`"
+        )
+        defects = run_candidate_self_gate(text, raw_content=None)
+        must_cover = [d for d in defects if d.dimension == "SG-must-cover"]
+        assert len(must_cover) == 1
+        assert "raw_content 缺失" in must_cover[0].defect
+        assert must_cover[0].location == "raw_content"
+
+    def test_raw_none_not_silently_skipped_on_clean_page(self):
+        """SC-3.2 即使候选页本身结构完整，raw=None 仍必须报 fail-closed 缺陷。"""
+        # 一个能通过其他 SG 检查的候选页：raw=None 时唯一新缺陷就是 SG-must-cover。
+        text = _candidate_with_how_steps(
+            "- [raw §A] (source_grounded) 1. Run npm install `npm install`\n"
+            "- [raw §A] (source_grounded) 2. Run npm test `npm test`\n"
+            "- [raw §A] (source_grounded) 3. Run npm build `npm build`"
+        )
+        defects_none = run_candidate_self_gate(text, raw_content=None)
+        defects_raw = run_candidate_self_gate(text, raw_content=_MUST_COVER_RAW)
+        none_mc = [d for d in defects_none if d.dimension == "SG-must-cover"]
+        raw_mc = [d for d in defects_raw if d.dimension == "SG-must-cover"]
+        assert len(none_mc) == 1 and "raw_content 缺失" in none_mc[0].defect
+        # 有真实 raw 时，已逐字渲染 → 无 must_cover 缺陷（语义分离）。
+        assert raw_mc == []
+
+
+class TestSGMustCoverCallSiteProvenance:
+    """SC-3.3: 5 处 run_candidate_self_gate 调用点 raw provenance 静态审计。"""
+
+    @staticmethod
+    def _read(rel_path: str) -> str:
+        from pathlib import Path
+
+        return Path(rel_path).read_text(encoding="utf-8")
+
+    def test_distill_callsite_reads_real_raw_from_disk(self):
+        """distill.py: raw_content = Path(raw_path).read_text()，同源于原始 raw 文件。"""
+        src = self._read(_CALLSITE_SOURCE_PATHS["distill"])
+        assert "run_candidate_self_gate(full_page, raw_content=raw_content)" in src
+        assert "Path(raw_path).read_text(encoding=\"utf-8\")" in src
+        # OSError 时 raw_content=None → fail-closed（不静默跳过）。
+        assert "raw_content = None" in src
+
+    def test_repair_callsites_use_raw_text_param(self):
+        """repair.py 两处调用点：raw_text 来自 run_repair_loop 参数，同源 raw。"""
+        src = self._read(_CALLSITE_SOURCE_PATHS["repair"])
+        # 两处调用点都用 raw_text（非截断/异源）。
+        assert src.count("run_candidate_self_gate(current_text, raw_text)") == 2
+        # raw_text 是 run_repair_loop 的参数（非局部拼接/截断）。
+        assert "raw_text: str | None = None," in src
+
+    def test_runner_callsite_uses_non_none_raw_content(self):
+        """runner.py: raw_content 是 _run_quality_segments 的非可选 str 参数，源于磁盘读。"""
+        src = self._read(_CALLSITE_SOURCE_PATHS["runner"])
+        # 调用点用 raw_content（非 None）。
+        assert "run_candidate_self_gate(candidate_text, raw_content)" in src
+        # _run_quality_segments 接收非可选 raw_content: str（非 str | None）。
+        assert "raw_content: str," in src
+        # raw_content 源头是磁盘读真实 raw 文件。
+        assert "raw_content = raw_file.read_text(encoding=\"utf-8\")" in src
+        # run_repair_loop 接收的 raw_text 同源 raw_content。
+        assert "raw_text=raw_content," in src
+
+    def test_smoke_validator_callsite_reads_raw_from_disk_or_none(self):
+        """smoke_validator.py: raw_content 来自 _load_candidate_raw 读盘；缺失显式 None。"""
+        src = self._read(_CALLSITE_SOURCE_PATHS["smoke_validator"])
+        assert "run_candidate_self_gate(candidate_text, raw_content=raw_content)" in src
+        # _load_candidate_raw 读盘，raw_path 不存在时返回 None（fail-closed）。
+        assert "raw_path.read_text(encoding=\"utf-8\")" in src
+        assert "return None" in src
+
+    def test_scan_all_on_real_raw_fixture_is_nonempty(self):
+        """SC-3.3 fixture：scan_all(真实 raw) 非空且命中预期 must_cover。"""
+        items = scan_source_evidence(_MUST_COVER_RAW)
+        assert items, "scan_all(真实 raw) 不应为空"
+        kinds = {i.kind for i in items}
+        assert "source_operation" in kinds
+        assert "source_boundary" in kinds
+        assert "source_conclusion" in kinds
+        literals = {i.literal for i in items}
+        for expected in _EXPECTED_MUST_COVER_LITERALS:
+            assert expected in literals
+
+    def test_callsite_raw_not_truncated_or_alien(self):
+        """SC-3.3: 5 处调用点 raw 变量均追溯到 read_text 或非可选 raw 参数，无截断/异源。"""
+        # distill / smoke_validator: read_text 直读
+        distill_src = self._read(_CALLSITE_SOURCE_PATHS["distill"])
+        smoke_src = self._read(_CALLSITE_SOURCE_PATHS["smoke_validator"])
+        assert "read_text" in distill_src
+        assert "read_text" in smoke_src
+        # runner: read_text + 非可选 str 参数透传
+        runner_src = self._read(_CALLSITE_SOURCE_PATHS["runner"])
+        assert "read_text" in runner_src
+        # repair: raw_text 来自 runner 的 raw_content（非截断）
+        repair_src = self._read(_CALLSITE_SOURCE_PATHS["repair"])
+        assert "raw_text" in repair_src
+        # 无任何调用点传截断/异源 raw（无 [:N] / split 截断模式指向 raw_text/raw_content）。
+        assert "raw_text[: " not in repair_src
+        assert "raw_content[: " not in runner_src

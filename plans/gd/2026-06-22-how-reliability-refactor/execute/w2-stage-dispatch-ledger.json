@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.0",
+  "stage": "execute",
+  "parent_run_id": "how-reliability-refactor-execute-2026-06-23",
+  "batch_id": "batch-how-reliability-refactor-2026-06-22-wave2",
+  "recorded_at": "2026-06-23T08:08:52Z",
+  "child_agent_count": 2,
+  "max_parallel": 2,
+  "child_jobs": [
+    {
+      "job_id": "w2-step-2",
+      "result_path": "plans/gd/2026-06-22-how-reliability-refactor/execute/w2-step-2-result.yaml",
+      "result_hash": "76270113be0f167e203d8a8ff3b5b73be86c7d41fa2d9062815be83188005641",
+      "status": "completed"
+    },
+    {
+      "job_id": "w2-step-3",
+      "result_path": "plans/gd/2026-06-22-how-reliability-refactor/execute/w2-step-3-result.yaml",
+      "result_hash": "15f446db4c316b6020fadd267637a2a12fa24c5d4a00b875926bde6e35cd3b79",
+      "status": "completed"
+    }
+  ],
+  "main_agent_merge": {
+    "merge_report_path": "plans/gd/2026-06-22-how-reliability-refactor/execute/w2-merge-report.md",
+    "merge_report_hash": "d877c0230659840436c8cf75ae646906fe9d6fda6a6b678a282d971a938f7667",
+    "final_decision": "APPROVED",
+    "blocking_buckets": []
+  }
+}

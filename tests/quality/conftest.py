@@ -260,10 +260,39 @@ is the immune system of the loop ecosystem.
 """
 
 
-@pytest.fixture
-def sample_raw_path() -> str:
-    """raw 文件路径 fixture。"""
-    return "raw/addy-osmani-loop-engineering--raw--2026-06-11.md"
+@pytest.fixture(autouse=True)
+def sample_raw_path(sample_raw_content) -> str:
+    """raw 文件 fixture（autouse）：在 CWD 相对 raw/ 下创建真实文件。
+
+    覆盖两类存量测试：
+    - 用 sample_raw_path fixture 的测试：拿到路径字符串
+    - 硬编码 "raw/addy-osmani-loop-engineering--raw--2026-06-11.md" 或 "raw/test.md"
+      的测试：compose_candidate 读 Path(raw_path).read_text() 时能扫到 must_cover，
+      不再因 raw_content=None 触发 SG-must-cover fail-closed（gate 未弱化）。
+
+    主路径去掉 source_conclusion 句（"The key insight:..."），避免 must_cover 代码直出
+    在 TLDR 多渲染一条 (source_grounded) 使 test_tldr_has_sentence_boundaries_per_anchor
+    的 count==3 断言失败。保留 5 条 source_operation 编号步骤，gate 仍 fail-closed
+    要求 How 节覆盖。raw/test.md 用完整内容（图测试不检查 TLDR count）。
+    """
+    raw_dir = Path("raw")
+    raw_dir.mkdir(exist_ok=True)
+    main_path = "raw/addy-osmani-loop-engineering--raw--2026-06-11.md"
+    test_path = "raw/test.md"
+    main_content = sample_raw_content.replace(
+        "The key insight: every loop must write to the ledger BEFORE executing the next action,\n"
+        "so recovery from crashes is a simple read of the last ledger entry.",
+        "",
+    )
+    Path(main_path).write_text(main_content, encoding="utf-8")
+    Path(test_path).write_text(sample_raw_content, encoding="utf-8")
+    yield main_path
+    Path(main_path).unlink(missing_ok=True)
+    Path(test_path).unlink(missing_ok=True)
+    try:
+        raw_dir.rmdir()
+    except OSError:
+        pass
 
 
 @pytest.fixture

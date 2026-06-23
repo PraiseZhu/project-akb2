@@ -1,0 +1,36 @@
+template_kind: gd-execution-result
+result_id: w2-step-3-sg-must-cover
+task_id: step-3
+parent_step: step-3
+parent_plan: plans/gd/2026-06-22-how-reliability-refactor/master-plan.md
+executor_role: claude_subagent
+executed_at: 2026-06-23T05:40:41Z
+exec_status: completed
+sc_acceptance:
+  - sc_ref: SC-3
+    status: pass
+    evidence: >
+      主 agent 独立复跑：PYTHONPATH=src python -m pytest
+      tests/quality/test_checks_structural.py -k "must_cover or callsite" -q →
+      8 passed exit=0；全文件 64 passed exit=0；callsite provenance 审计 6 passed。
+      SC-3.1 漏即挡（漏 operation/boundary/conclusion → Defect，不漏→空）。
+      SC-3.2 raw_content=None → fail-closed Defect（不静默跳过）。
+      SC-3.3 5 调用点（distill:1481 / repair:1125,1248 / runner:629 /
+      smoke_validator:441）provenance 审计：真实同源 raw（read_text/非可选 str），
+      无截断/异源；scan_all(真实 raw) 命中 must_cover。gate 未弱化。
+    not_run_reason: ""
+files_added: []
+files_modified:
+  - src/akb2/quality/checks_structural.py
+  - tests/quality/test_checks_structural.py
+files_unchanged_in_scope: []
+owned_paths_writes_only: true
+forbidden_paths_touched: []
+out_of_scope_writes: []
+handoff:
+  result_path: plans/gd/2026-06-22-how-reliability-refactor/execute/w2-step-3-result.yaml
+  status_field: completed
+  summary: "step-3 SG-must-cover fail-closed gate 完成：raw=None 不跳过、漏即 Defect、5 调用点 provenance 审计通过；SC-3 全过。"
+  blockers: "none（34 个存量测试回归由 step-3-fix 集成修复解决，见 w2-step-3-fix）"
+known_limitations:
+  - "gate 引入的 34 个存量测试回归（frontmatter 29 + repair_loop 5）由 step-3-fix 修复：测试改传真实 raw 分离语义，gate 未弱化。"
