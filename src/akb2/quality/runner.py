@@ -602,14 +602,22 @@ def _run_quality_segments(
 
         仅在 converged=True 时调用——此时缺陷已清零，status=PASS 为事实，
         非伪造。grader_result_path 为 None 时（旧测试调用方）为 no-op。
+
+        fail-closed: 若 grader_meta 标记 fallback_used/suspended（degraded 评分），
+        写 status=DEGRADED 而非 PASS，阻断升格——degraded grader 不可作为通过条件。
         """
         if grader_result_path is None:
             return
+        is_degraded = bool(
+            grader_meta.get("grader_fallback_used", False)
+            or grader_meta.get("grader_suspended", False)
+        )
+        status = "DEGRADED" if is_degraded else "PASS"
         grader_result_path.parent.mkdir(parents=True, exist_ok=True)
         grader_result_path.write_text(
             json.dumps(
                 {
-                    "status": "PASS",
+                    "status": status,
                     "dimensions_checked": len(RUBRIC_DIMENSIONS),
                     "findings": [],
                     "model_used": grader_meta.get("grader_model_used", ""),

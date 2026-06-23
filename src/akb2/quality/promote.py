@@ -192,6 +192,9 @@ def _read_grader_result(grader_result_path: Path) -> tuple[bool, str]:
 
     status = data.get("status", "")
     if status == "PASS":
+        # fail-closed: degraded grader 的 PASS 拒收（fallback_used/suspended 不可作为通过条件）
+        if data.get("fallback_used") or data.get("suspended"):
+            return False, "degraded grader, fail-closed"
         dims = data.get("dimensions_checked", "?")
         return True, f"grader: PASS ({dims} dimensions checked, 0 findings)"
     else:

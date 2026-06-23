@@ -918,3 +918,232 @@ class TestRunnerWeeklySpotCheck:
         if summary_path.exists():
             summary = json.loads(summary_path.read_text(encoding="utf-8"))
             assert summary.get("samples_checked", 0) == 0
+
+
+# ---------------------------------------------------------------------------
+# SC-6.3 下游拒收 degraded grader 的 PASS（step-6）
+# ---------------------------------------------------------------------------
+
+
+class TestGraderDegradedDownstreamRejection:
+    """runner _persist_grader_pass 不写 fallback PASS（写 DEGRADED）+ promote 拒收 degraded PASS。"""
+
+    def test_promote_rejects_degraded_grader_pass(self, tmp_path: Path) -> None:
+        """SC-6.3: promote._read_grader_result 对 fallback_used/suspended 的 PASS 拒收。"""
+        from src.akb2.quality.promote import _read_grader_result
+
+        # 1) status=PASS 但 fallback_used=True → 拒收（fail-closed）
+        degraded_pass = tmp_path / "grader_degraded_pass.json"
+        degraded_pass.write_text(
+            json.dumps(
+                {
+                    "status": "PASS",
+                    "dimensions_checked": 10,
+                    "findings": [],
+                    "fallback_used": True,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        ok, detail = _read_grader_result(degraded_pass)
+        assert ok is False, "fallback_used 的 PASS 必须拒收"
+        assert "degraded" in detail
+
+        # 2) status=PASS 但 suspended=True → 拒收
+        suspended_pass = tmp_path / "grader_suspended_pass.json"
+        suspended_pass.write_text(
+            json.dumps(
+                {
+                    "status": "PASS",
+                    "dimensions_checked": 10,
+                    "findings": [],
+                    "suspended": True,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        ok2, detail2 = _read_grader_result(suspended_pass)
+        assert ok2 is False, "suspended 的 PASS 必须拒收"
+        assert "degraded" in detail2
+
+        # 3) status=PASS 且无 degraded 标记 → 通过（回归：不误伤正常 PASS）
+        clean_pass = tmp_path / "grader_clean_pass.json"
+        clean_pass.write_text(
+            json.dumps(
+                {
+                    "status": "PASS",
+                    "dimensions_checked": 10,
+                    "findings": [],
+                    "fallback_used": False,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        ok3, detail3 = _read_grader_result(clean_pass)
+        assert ok3 is True, "正常 PASS 不应被误拒"
+        assert "PASS" in detail3
+
+        # 4) status=DEGRADED（runner _persist_grader_pass 对 degraded grader 写的）→ 拒收
+        degraded_status = tmp_path / "grader_degraded_status.json"
+        degraded_status.write_text(
+            json.dumps(
+                {
+                    "status": "DEGRADED",
+                    "dimensions_checked": 10,
+                    "findings": [],
+                    "fallback_used": True,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        ok4, detail4 = _read_grader_result(degraded_status)
+        assert ok4 is False, "DEGRADED 状态必须拒收"
+        assert "DEGRADED" in detail4
+
+
+class TestRepairLoopGraderDegraded:
+    """SC-6.2: repair 后 grader 走 gemini 兜底（fallback_used=True）时不得判收敛。
+
+    复用确定性修复路径（图谱关系缺陷 → 确定性修复 → A 通过 → B 评分）触达 grader，
+    无需 deepseek repair LLM 响应，自包含。
+    """
+
+    # A-clean 候选 + 确定性可修复的图谱关系缺陷（与 test_repair_loop 同源）
+    _CANDIDATE = """---
+status: candidate
+gate_decision: null
+source_refs:
+  - raw/test.md
+gate_reason: 待评审
+future_questions:
+  - 如何处理失败？
+  - 如何设置预算？
+related_concepts:
+  - harness-engineering
+  - agent-collaboration
+---
+
+## TLDR
+Loop [raw §A].
+
+## 关键发现
+- [raw §A] (source_grounded) Loop needs a gate.
+
+## 入选理由
+- [raw §A] (source_grounded) It is useful.
+
+## 证据地图
+| 锚点 | 论点 | 来源 | 未覆盖 |
+|------|------|------|--------|
+| §A | Loop | source_grounded | 未量化：原文未提供效果数据 |
+
+## 核心论点
+1. [raw §A] (source_grounded) Loop needs a gate.
+
+## 论证与解释
+**[raw §A]** (source_grounded) 来源事实：Loop needs a gate.
+
+## 适用边界
+- [raw §A] (akb_interpretation) 适用场景：多步骤管线。
+- [raw §A] (akb_interpretation) 适用场景：需要可恢复账本和质量门控的内容流水线。
+- [raw §A] (akb_interpretation) 不适用场景：one-shot。
+- [raw §A] (akb_interpretation) 约束条件：需要账本。
+
+## 图谱关系
+| target | relation | strength | evidence |
+|--------|----------|----------|----------|
+| agent collaboration | related | medium | multi-agent loops require coordination primitives |
+
+## Future Questions
+- 如何处理失败？
+- 如何设置预算？
+
+## 维护记录
+| 日期 | 操作 | 说明 |
+|------|------|------|
+| 2026-06-20 | 初始创建 | raw: test |
+"""
+
+    _RAW_TEXT = """---
+artifact_type: raw
+source_slug: loop-engineering
+source_url: https://example.com/loop-engineering
+source_title: Loop Engineering
+source_authors: Addy Osmani
+source_publisher: Addy Osmani's Blog
+source_published_at: 2026-06-07
+fetched_at: 2026-06-13T00:00:00Z
+fetched_via: defuddle
+---
+
+# §A Loop Engineering
+
+Loop engineering is the practice of designing AI agent loops that are bounded,
+convergent, and observable.
+
+# §B How: A Complete Loop Shape
+
+A well-designed loop has five components: a trigger, a work unit selector, an action
+executor, a quality gate, and a ledger writer.
+
+# §C Convergence Over Restart
+
+When a step produces defects, fix the specific defects rather than restarting the
+entire pipeline. This is the principle of convergence over restart.
+"""
+
+    def test_repair_loop_degraded_grader_fail_closed(self, tmp_path: Path) -> None:
+        """SC-6.2: repair 后 fallback_used=True 且 defects=[] → run_repair_loop 不判收敛。"""
+        from src.akb2.quality.checks_structural import Defect
+        from src.akb2.quality.llm_router import LLMResponse
+        from src.akb2.quality.repair import run_repair_loop
+        from tests.quality.conftest import make_mock_route_llm
+
+        # gpt-5.4 评分返回坏 JSON → 走 gemini 兜底 → fallback_used=True, defects=[]
+        bad_grader = LLMResponse(
+            content="not valid json", model_used="gpt-5.4", calls_used=1
+        )
+        good_dims = [
+            {"dimension": dim, "pass": True, "defects": []}
+            for dim in [
+                "论断锚定率", "How 密度", "How 可执行性", "证据诚实",
+                "解读分离", "TLDR 密度", "新颖增量", "边强度匹配",
+                "Future Questions 质量", "适用边界",
+            ]
+        ]
+        gemini_pass = LLMResponse(
+            content={"dimensions": good_dims}, model_used="gemini-flash", calls_used=1
+        )
+        mock_llm = make_mock_route_llm(
+            {"gpt-5.4": bad_grader, "gemini-flash": gemini_pass}
+        )
+
+        failures_path = tmp_path / "failures.jsonl"
+        failures_path.write_text("", encoding="utf-8")
+
+        result = run_repair_loop(
+            candidate_text=self._CANDIDATE,
+            a_defects=[],
+            b_defects=[
+                Defect(
+                    dimension="边强度匹配",
+                    location="图谱关系/evidence/agent collaboration",
+                    defect="缺 raw anchor/provenance，medium 证据不足",
+                    suggestion="补 provenance 并降级",
+                )
+            ],
+            failures_path=str(failures_path),
+            mock_route_llm=mock_llm,
+            raw_text=self._RAW_TEXT,
+        )
+
+        # fail-closed: fallback_used 的 grader 不可信，即使 defects=[] 也不判收敛
+        assert not result["converged"], "fallback_used 的 grader 不应判收敛"
+        meta = result.get("final_grader_meta") or {}
+        assert meta.get("grader_fallback_used") is True, (
+            f"final_grader_meta 应标记 fallback_used，实际: {meta}"
+        )

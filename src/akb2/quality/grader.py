@@ -336,28 +336,30 @@ def run_grader_detailed(candidate_text: str) -> GraderResult:
 
     result = GraderResult(defects=[], model_used="none", suspended=True)
 
-    # 尝试 GPT-5.4
-    try:
-        response = route_llm(
-            model_family=PRIMARY_GRADER_MODEL,
-            messages=messages,
-            response_schema=response_schema,
-        )
-        defects, parse_ok = _parse_grader_output(response.content)
-        if parse_ok:
-            return GraderResult(
-                defects=defects,
-                model_used=response.model_used,
-                suspended=False,
+    # 尝试 GPT-5.4（解析失败时按 MAX_GRADER_RETRIES 重试，耗尽再切兜底）
+    for _ in range(MAX_GRADER_RETRIES):
+        try:
+            response = route_llm(
+                model_family=PRIMARY_GRADER_MODEL,
+                messages=messages,
+                response_schema=response_schema,
             )
-        # 解析失败也算失败，切兜底
-        result.primary_failed = True
-        result.primary_failure_reason = _parse_failure_reason(
-            PRIMARY_GRADER_MODEL, response.content
-        )
-    except (RouterConfigError, RuntimeError) as exc:
-        result.primary_failed = True
-        result.primary_failure_reason = f"{PRIMARY_GRADER_MODEL} 调用失败: {exc}"
+            defects, parse_ok = _parse_grader_output(response.content)
+            if parse_ok:
+                return GraderResult(
+                    defects=defects,
+                    model_used=response.model_used,
+                    suspended=False,
+                )
+            # 解析失败：记录原因，继续重试（循环耗尽后退出走兜底）
+            result.primary_failed = True
+            result.primary_failure_reason = _parse_failure_reason(
+                PRIMARY_GRADER_MODEL, response.content
+            )
+        except (RouterConfigError, RuntimeError) as exc:
+            result.primary_failed = True
+            result.primary_failure_reason = f"{PRIMARY_GRADER_MODEL} 调用失败: {exc}"
+            break  # 配置/运行时错误非解析失败，不重试，直接走兜底
 
     # 兜底: gemini-flash
     if result.primary_failed:

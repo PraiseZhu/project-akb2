@@ -1149,6 +1149,20 @@ def run_repair_loop(
                         trace_paths=trace_paths,
                         final_grader_meta=final_grader_meta,
                     )
+                # degraded: fallback_used 的评分不可信，不判收敛（fail-closed，堵放水洞）
+                if grader_result.fallback_used:
+                    trace_payload["status"] = "grader_degraded"
+                    trace_payload["after_text_hash"] = _compute_text_hash(current_text)
+                    trace_paths.append(_write_repair_trace(trace_root, round_num, trace_payload))
+                    return _fail_closed(
+                        failures_path,
+                        current_text,
+                        current_defects,
+                        round_num,
+                        "grader_degraded",
+                        trace_paths=trace_paths,
+                        final_grader_meta=final_grader_meta,
+                    )
                 current_defects = grader_result.defects
                 trace_payload["b_defects_after"] = _defects_to_summary(current_defects)
                 if not current_defects:
@@ -1278,6 +1292,21 @@ def run_repair_loop(
                 current_defects,
                 round_num,
                 "grader_all_down",
+                trace_paths=trace_paths,
+                final_grader_meta=final_grader_meta,
+            )
+
+        # degraded: fallback_used 的评分不可信，不判收敛（fail-closed，堵放水洞）
+        if grader_result.fallback_used:
+            trace_payload["status"] = "grader_degraded"
+            trace_payload["after_text_hash"] = _compute_text_hash(current_text)
+            trace_paths.append(_write_repair_trace(trace_root, round_num, trace_payload))
+            return _fail_closed(
+                failures_path,
+                current_text,
+                current_defects,
+                round_num,
+                "grader_degraded",
                 trace_paths=trace_paths,
                 final_grader_meta=final_grader_meta,
             )

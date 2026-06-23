@@ -1,0 +1,41 @@
+template_kind: gd-execution-result
+result_id: w4-step-6-grader-degraded-guard
+task_id: step-6
+parent_step: step-6
+parent_plan: plans/gd/2026-06-22-how-reliability-refactor/master-plan.md
+executor_role: claude_subagent
+executed_at: 2026-06-23T12:47:26Z
+exec_status: completed
+sc_acceptance:
+  - sc_ref: SC-5
+    status: pass
+    evidence: >
+      主 agent 独立复核全 quality 套件 597 passed / 0 failed exit=0。
+      SC-6.1 重试：mock 首次坏 JSON → gpt-5.4 调用 2 次（初试+1 重试）≤
+      MAX_GRADER_RETRIES(2)，耗尽走 gemini→fallback_used=True。SC-6.2 repair
+      loop：fallback_used=True 时不收敛（failure_signature=grader_degraded）。
+      SC-6.3 下游拒收：runner 写 status=DEGRADED 不写 PASS；promote 拒收
+      fallback_used/suspended 的 PASS。SC-6.4 异族不变（deepseek≠gpt-5.4）。
+      SC-6.5 FORBIDDEN 守护：主 agent stash 对比三打分函数体（AST 提取）
+      + 10-dimensions.md sha256 改动前后完全一致。本期未动 PRIMARY_GRADER_MODEL。
+    not_run_reason: ""
+files_added: []
+files_modified:
+  - src/akb2/quality/grader.py
+  - src/akb2/quality/repair.py
+  - src/akb2/quality/runner.py
+  - src/akb2/quality/promote.py
+  - tests/quality/test_grader.py
+  - tests/quality/test_runner_lifecycle.py
+files_unchanged_in_scope: []
+owned_paths_writes_only: true
+forbidden_paths_touched: []
+out_of_scope_writes: []
+handoff:
+  result_path: plans/gd/2026-06-22-how-reliability-refactor/execute/w4-step-6-result.yaml
+  status_field: completed
+  summary: "step-6 grader degraded 护栏完成：重试循环 + repair/runner/promote 三处 fail-closed，SC-6.1-6.5 全过，三函数体 hash 不变，异族维持。"
+  blockers: "none"
+known_limitations:
+  - "child 发现 repair.py 有两个 grader 调用点（主路径 L1261 + 确定性修复路径 L1131），task 只指了主路径，已对称补两处 fallback_used fail-closed。"
+  - "runner._persist_grader_pass 的 DEGRADED 写入为 defense-in-depth（正常流已被前置拦截），promote 拒收测试覆盖其可观测效果。"

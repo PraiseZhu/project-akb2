@@ -405,3 +405,84 @@ class TestRubricCoverage:
         dims = [d["dimension"] for d in data["dimensions"]]
         for expected in RUBRIC_DIMENSIONS:
             assert expected in dims, f"Missing dimension in response: {expected}"
+
+
+# ---------------------------------------------------------------------------
+# SC-6.1 重试 + SC-6.4 异族分离（step-6: grader degraded fail-closed 护栏）
+# ---------------------------------------------------------------------------
+
+
+class TestGraderRetryAndIsolation:
+    """重试循环（解析失败时按 MAX_GRADER_RETRIES 重试）+ Maker/Checker 异族守护。"""
+
+    def test_run_grader_detailed_retry_exhausted_to_degraded(
+        self, monkeypatch, valid_candidate_page
+    ):
+        """SC-6.1: primary 持续返回坏 JSON → 重试（≤MAX_GRADER_RETRIES），耗尽走兜底标 degraded。"""
+        from src.akb2.quality import grader as grader_mod
+        from src.akb2.quality.grader import MAX_GRADER_RETRIES, run_grader_detailed
+        from src.akb2.quality.llm_router import LLMResponse
+        from tests.quality.conftest import make_mock_route_llm
+
+        bad = LLMResponse(content="not valid json", model_used="gpt-5.4", calls_used=1)
+        good_dims = [
+            {"dimension": dim, "pass": True, "defects": []} for dim in RUBRIC_DIMENSIONS
+        ]
+        good_gemini = LLMResponse(
+            content={"dimensions": good_dims}, model_used="gemini-flash", calls_used=1
+        )
+        mock_llm = make_mock_route_llm({"gpt-5.4": bad, "gemini-flash": good_gemini})
+        monkeypatch.setattr(grader_mod, "route_llm", mock_llm)
+
+        result = run_grader_detailed(valid_candidate_page)
+
+        gpt_calls = mock_llm.call_counts.get("gpt-5.4", 0)
+        # 重试发生：至少 2 次（初试 + 重试）
+        assert gpt_calls >= 2, f"应触发重试，实际 gpt-5.4 调用 {gpt_calls} 次"
+        # 重试上限 ≤ MAX_GRADER_RETRIES
+        assert gpt_calls <= MAX_GRADER_RETRIES, (
+            f"重试次数超上限：{gpt_calls} > {MAX_GRADER_RETRIES}"
+        )
+        # 耗尽后走 gemini 兜底 → degraded（fallback_used=True）
+        assert result.fallback_used is True
+        assert result.suspended is False
+        assert len(result.defects) == 0
+
+    def test_run_grader_detailed_retry_then_succeed(
+        self, monkeypatch, valid_candidate_page
+    ):
+        """SC-6.1: 首次坏 JSON、重试后成功 → 不走兜底，未 degraded。"""
+        from src.akb2.quality import grader as grader_mod
+        from src.akb2.quality.grader import run_grader_detailed
+        from src.akb2.quality.llm_router import LLMResponse
+        from tests.quality.conftest import make_mock_route_llm
+
+        bad = LLMResponse(content="not valid json", model_used="gpt-5.4", calls_used=1)
+        good_dims = [
+            {"dimension": dim, "pass": True, "defects": []} for dim in RUBRIC_DIMENSIONS
+        ]
+        good = LLMResponse(
+            content={"dimensions": good_dims}, model_used="gpt-5.4", calls_used=1
+        )
+        # 首次（call_index 0）坏，第二次（call_index 1）好
+        mock_llm = make_mock_route_llm({"gpt-5.4:0": bad, "gpt-5.4:1": good})
+        monkeypatch.setattr(grader_mod, "route_llm", mock_llm)
+
+        result = run_grader_detailed(valid_candidate_page)
+
+        assert mock_llm.call_counts.get("gpt-5.4", 0) == 2  # 初试 + 1 重试
+        assert result.fallback_used is False
+        assert result.suspended is False
+        assert len(result.defects) == 0
+        assert result.model_used == "gpt-5.4"
+
+    def test_grader_distill_model_family_isolation(self):
+        """SC-6.4: Maker/Checker 异族分离 — distill(deepseek) != grader(gpt-5.4)。"""
+        from src.akb2.quality.distill import DISTILL_MODEL_FAMILY
+        from src.akb2.quality.grader import PRIMARY_GRADER_MODEL
+
+        assert DISTILL_MODEL_FAMILY != PRIMARY_GRADER_MODEL, (
+            "Maker/Checker 必须异族分离，distill 与 grader 不得同模型"
+        )
+        assert PRIMARY_GRADER_MODEL == "gpt-5.4"
+        assert DISTILL_MODEL_FAMILY == "deepseek-v4-pro"
