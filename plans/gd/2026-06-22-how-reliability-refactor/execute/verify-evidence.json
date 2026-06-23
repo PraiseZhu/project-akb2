@@ -89,7 +89,7 @@
       "cmd": "PYTHONPATH=src python3 -m pytest tests/quality/ tests/loops/ -q -m 'not integration' && ruff check src/akb2/quality/  (+ DISTILL_MODEL_FAMILY != PRIMARY_GRADER_MODEL)",
       "expected": "pytest PASS(integration deselected) + lint 0 + maker≠checker",
       "actual_exit": 0,
-      "evidence": "pytest 679 passed (exit 0) AND ruff 'No issues found' (exit 0); DISTILL_MODEL_FAMILY='deepseek-v4-pro' != PRIMARY_GRADER_MODEL='gpt-5.4' (异族 PASS)"
+      "evidence": "pytest 679 passed (quality+loops 局部, exit 0) AND 全量 pytest -m 'not integration' --continue-on-collection-errors → 1347 passed / 0 failed / 0 error / 6 deselected (exit 0, 2026-06-24 真跑; 含 briefing/github twitter 4 pre-existing fixture 日期↔RECENCY_WINDOW_DAYS=7 未对齐已修 + feishu_sync langgraph 已装, 无盲区 regression); ruff 'No issues found' (exit 0); DISTILL_MODEL_FAMILY='deepseek-v4-pro' != PRIMARY_GRADER_MODEL='gpt-5.4' (异族 PASS)"
     },
     {
       "sc_ref": "SC-9",
@@ -115,5 +115,5 @@
       "evidence": "13 passed"
     }
   ],
-  "verify_summary": "10/11 SC 真跑 exit 0（SC-1~8,10,11 + SC-7 hash 命令）；SC-9 not_run（gateway 不可达，deferred 到 mac mini，命令完整保留）。所有 actual_exit 为真实退出码，无占位 0。"
+  "verify_summary": "10/11 SC 真跑 exit 0（SC-1~8,10,11 + SC-7 hash 命令）；SC-9 not_run（gateway 不可达，deferred 到 mac mini，命令完整保留）。所有 actual_exit 为真实退出码，无占位 0。全量 pytest -m 'not integration' → 1347 passed / 0 failed / 0 error / 6 deselected（2026-06-24 真跑，含 4 twitter pre-existing fixture 已修 + langgraph 已装，无盲区 regression）。"
 }

@@ -112,7 +112,9 @@ class TestTwitterCollector:
         with mock.patch.object(collector, "_health_check", return_value=True):
             with mock.patch.object(collector, "_fetch_user_posts", return_value=SAMPLE_TWEETS):
                 with mock.patch("time.sleep", return_value=None):
-                    result = collector.collect(pool_yaml)
+                    with mock.patch("akb2.briefing.github.intake.twitter_collector.datetime",
+                                    _freeze_now(datetime(2026, 6, 4, 12, 0, tzinfo=timezone.utc))):
+                        result = collector.collect(pool_yaml)
 
         assert result.ok
         assert len(result.candidates) >= 1
@@ -164,7 +166,9 @@ class TestTwitterCollector:
             # 两个 handle 都返回同样 tweets → microsoft/qlib 被两个博主提到
             with mock.patch.object(collector, "_fetch_user_posts", return_value=SAMPLE_TWEETS):
                 with mock.patch("time.sleep", return_value=None):
-                    result = collector.collect(pool_yaml)
+                    with mock.patch("akb2.briefing.github.intake.twitter_collector.datetime",
+                                    _freeze_now(datetime(2026, 6, 4, 12, 0, tzinfo=timezone.utc))):
+                        result = collector.collect(pool_yaml)
 
         qlib = [c for c in result.candidates if "microsoft/qlib" in c.repo_url]
         assert len(qlib) == 2  # 两个博主各保留一条
@@ -231,12 +235,12 @@ class TestTwitterCollector:
     # --- Recency tests (SC-1, SC-2) ---
 
     def test_recency_drops_old(self, tmp_path):
-        """Tweets from 4 days ago → filtered out (SC-1)."""
+        """Tweets from >7 days ago → filtered out (SC-1)."""
         from akb2.briefing.github.intake.twitter_collector import TwitterCollector
 
         now = datetime(2026, 6, 4, 12, 0, 0, tzinfo=timezone.utc)
         old_tweets = [{
-            "id": "1", "isRetweet": False, "created_at": "2026-05-31T10:00:00Z",
+            "id": "1", "isRetweet": False, "created_at": "2026-05-25T10:00:00Z",
             "full_text": "https://github.com/old/repo",
         }]
         pool_yaml = tmp_path / "pool.yaml"
@@ -376,8 +380,8 @@ class TestTwitterCollector:
 
         now = datetime(2026, 6, 4, 12, 0, 0, tzinfo=timezone.utc)
         tweets = [
-            # Old tweet (4 days ago) → should be dropped
-            {"id": "1", "isRetweet": False, "created_at": "2026-05-31T10:00:00Z",
+            # Old tweet (>7 days ago) → should be dropped
+            {"id": "1", "isRetweet": False, "created_at": "2026-05-25T10:00:00Z",
              "full_text": "https://github.com/old/repo1 https://github.com/old/repo2"},
             # Recent tweet → kept
             {"id": "2", "isRetweet": False, "created_at": "2026-06-03T10:00:00Z",
