@@ -1364,6 +1364,9 @@ def _validate_extract_output(data: dict[str, Any]) -> None:
 
     # 3.6 how_steps 可执行数量校验：prompt 已要求 ≥3 条 executable=true 且 command 非空，
     # 此处兜底——否则真实 extract 可合法通过但成稿缺 How 可执行性（rubric How 密度/可执行性）。
+    # 注：本校验作用于 extract 输出（maker 提案层），命令是否最终渲染进候选页由
+    # _build_body 的 emission-前回查 raw 护栏裁决（治本2）；此处只保证 maker 提出了
+    # 足量可执行候选步骤。
     how_steps = data.get("how_steps", []) or []
     executable_steps = sum(
         1
@@ -1519,6 +1522,13 @@ def _build_deterministic_extract_data(
             }
         )
 
+    # 治本2（砍编造源）：deterministic fallback 提出一组候选操作命令，但这些命令是
+    # AKB 对来源结构的保守映射，不保证字面存在于 raw。是否真正渲染进 How 由
+    # _build_body 的「emission 前回查 raw」护栏决定（_command_grounded_in_raw）：
+    # 命令字面量在 raw 中出现 → 保留为 source-grounded 可执行步骤；不在 raw 中 →
+    # 降级为无命令 instruction（executable:False），绝不把编造命令塞进候选页（会被
+    # SG-command-recheck 判为编造）。当真实可锚定命令 <3 时 SG-how-density 自然
+    # fail-closed。这样既不向 raw 注入编造命令，又保留来源里确实存在的操作命令。
     how_steps = [
         {
             "instruction": "Define the work item schema before processing",
@@ -2920,7 +2930,14 @@ def _supported_how_steps(
 
 
 def _claim_to_how_step(claim: dict[str, Any], idx: int) -> dict[str, Any]:
-    """Derive one conservative AKB operation step from an evidence-map claim."""
+    """Derive one conservative AKB operation step from an evidence-map claim.
+
+    治本2（砍编造源）：本函数按 claim 文本关键词提出候选操作命令，但这些命令是 AKB
+    对来源概念的保守映射，不保证字面存在于 raw。命令是否真正渲染进 How 由
+    _build_body 的「emission 前回查 raw」护栏（_command_grounded_in_raw）裁决：在
+    raw 中出现 → 保留；否则降级为无命令 instruction。本函数仍可返回带 command 的
+    step，绝不会让编造命令进入候选页——护栏在渲染层兜底。
+    """
     text = str(claim.get("text", "")).lower()
     anchor = str(claim.get("anchor", "§A")).strip() or "§A"
     if any(token in text for token in (
@@ -3147,11 +3164,14 @@ def _build_how_boundary_table(
         ).strip()
         command = ""
         if isinstance(step, dict):
-            command = _expand_placeholder_command(
-                str(step.get("command", "")).strip(),
-                instruction,
-                idx,
-            )
+            # 治本2（砍编造源）：仅当 step 自带非空 command（已是 source-grounded 或
+            # LLM 抽取的可执行命令）才展开/渲染反引号命令。command 为空的步骤
+            # （deterministic fallback / claim-derived 的无命令 instruction）不得由
+            # instruction 关键词反推合成命令——否则边界表会偷偷造出 assertions.run(...)
+            # 这类原文不存在的命令，被 SG-command-recheck 判为编造。
+            raw_command = str(step.get("command", "")).strip()
+            if raw_command:
+                command = _expand_placeholder_command(raw_command, instruction, idx)
         support_text = str(claim.get("text", "")).strip() or _anchor_support_text(
             anchor, claims, raw_anchor_texts or {}
         )
@@ -3385,6 +3405,69 @@ def _render_must_cover_conclusions(
     return " ".join(parts)
 
 
+def _read_full_raw_text(raw_path: str) -> str:
+    """读取完整 raw 文本（用于 emission 前命令回查）。读不到返回空串（fail-closed）。"""
+    if not raw_path:
+        return ""
+    try:
+        return Path(raw_path).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def _command_grounded_in_raw(command: str, raw_text: str) -> bool:
+    """判断一条反引号命令是否字面接地于 raw（与 SG-command-recheck 同口径）。
+
+    治本2（砍编造源）核心谓词：命令字面量必须作为子串出现在 raw_text 中才算
+    source-grounded。空命令视为无需回查（True，渲染层自然不输出反引号）。raw 为空
+    则一律不接地（fail-closed），任何派生命令都会被剥离。
+    """
+    cmd = command.strip()
+    if not cmd:
+        return True
+    if not raw_text:
+        return False
+    return cmd in raw_text
+
+
+def _ground_how_step_commands_in_raw(
+    steps: list[tuple[int, Any, str]],
+    raw_text: str,
+) -> list[tuple[int, Any, str]]:
+    """Emission 前回查 raw：剥掉不接地于 raw 的派生命令，降级为无命令 instruction。
+
+    治本2（砍编造源）：deterministic fallback / _claim_to_how_step / placeholder 展开
+    都可能产出 AKB 对来源的保守命令映射。这些命令只有字面出现在 raw 中才允许进候选页
+    （否则被 SG-command-recheck 判为编造）。本护栏在渲染前逐条检查**展开后**的命令
+    （_render_how_step_with_provenance / 边界表实际渲染的就是展开后命令）：
+
+    - 命令接地 raw → 步骤原样保留（source-grounded 可执行步骤）。
+    - 命令不接地 raw → 去掉 command（置空）+ executable:False，只渲染 instruction，
+      绝不把编造命令塞进候选页。
+
+    真实可锚定命令 <3 时，候选页 How 命令数不足，由 compose 的 SG-how-density
+    fail-closed（不在此处放行）。字符串型 step（旧形态）原样透传。
+    """
+    grounded: list[tuple[int, Any, str]] = []
+    for idx, step, anchor in steps:
+        if not isinstance(step, dict):
+            grounded.append((idx, step, anchor))
+            continue
+        raw_command = str(step.get("command", "")).strip()
+        if not raw_command:
+            grounded.append((idx, step, anchor))
+            continue
+        instruction = str(step.get("instruction", "")).strip()
+        expanded = _expand_placeholder_command(raw_command, instruction, idx)
+        if _command_grounded_in_raw(expanded, raw_text):
+            grounded.append((idx, step, anchor))
+            continue
+        # 命令不接地 raw：剥离命令，降级为无命令 instruction（executable:False）。
+        demoted = {**step, "command": "", "executable": False}
+        grounded.append((idx, demoted, anchor))
+    return grounded
+
+
 def _build_body(
     extract_data: dict[str, Any],
     raw_path: str,
@@ -3428,6 +3511,15 @@ def _build_body(
         supported_how_steps,
         claims,
         raw_anchor_texts,
+    )
+    # 治本2（砍编造源）：emission 前回查 raw 护栏。任何派生/合成命令（deterministic
+    # fallback、_claim_to_how_step、placeholder 展开）若其反引号命令字面量不在 raw 中
+    # 出现，则剥掉命令、降级为无命令 instruction，绝不把编造命令塞进候选页。命令字面量
+    # 在 raw 中出现的步骤（来源真有该操作，或 raw 显式给出命令示例）原样保留为
+    # source-grounded 可执行步骤。真实可锚定命令 <3 时由 SG-how-density fail-closed。
+    raw_full_text = raw_content if raw_content is not None else _read_full_raw_text(raw_path)
+    supported_how_steps = _ground_how_step_commands_in_raw(
+        supported_how_steps, raw_full_text
     )
     claims = _ensure_how_evidence_claims(claims, supported_how_steps, raw_anchor_texts)
 

@@ -25,8 +25,15 @@ from src.akb2.quality.distill import (
     ExtractResult,
     build_deterministic_extract_result,
     compose_candidate,
+    _build_body,
+    _claim_to_how_step,
+    _command_grounded_in_raw,
+    _ground_how_step_commands_in_raw,
     _validate_extract_output,
     extract_claims,
+)
+from src.akb2.quality.source_ops_scanners.raw_verify import (
+    verify_commands_in_raw,
 )
 
 
@@ -785,6 +792,11 @@ class TestHowStepsExecutableCount:
 
     痛点:prompt 要求 ≥3 executable=true 但 schema minItems=0、validate 无校验 →
     真实 extract 可合法通过但成稿缺 How 可执行性(rubric How 密度/可执行性)。
+
+    注（治本2）:本校验作用于 extract 输出（maker 提案层），保证 maker 提出足量可执行
+    候选命令；这些命令是否最终渲染进候选页，由 compose 的 emission-前回查 raw 护栏
+    （_ground_how_step_commands_in_raw）裁决——不接地 raw 的命令会被剥离，不会被
+    本校验放行成编造命令上稿。两者职责分离。
     """
 
     def _data(self, how_steps):
@@ -943,3 +955,114 @@ class TestMaxExtractCharsConstant:
 
         source = inspect.getsource(extract_claims)
         assert "MAX_EXTRACT_CHARS" in source, "extract_claims 必须用 MAX_EXTRACT_CHARS 常量"
+
+
+# §A-§E raw 不含任何反引号命令字面量（纯观点/结构性描述），用于验证：
+# 派生命令（deterministic fallback / claim-derived）一律不接地 raw，必须被剥离，
+# 候选页 How 段绝无编造命令（0 SG-command-recheck 违规）。
+_RAW_NO_COMMANDS = """# Real-style raw without seeded commands
+
+## §A Loop engineering
+Loop engineering turns repeated agent work into bounded feedback loops with visible state.
+
+## §B Work queue
+The work queue carries source URL, raw anchor, content hash, output path, and lifecycle state.
+
+## §C Repair
+Repair paths use a fixed number of rounds and accept the candidate only when defects reach zero.
+
+## §D Budgets
+Budgets cover distillation timeout, grader timeout, repair rounds, parallelism, and fallback policy.
+
+## §E Checker
+Maker and checker stay separated; the final gate must not treat fallback grading as a pass.
+"""
+
+
+class TestThorough2CommandGrounding:
+    """治本2（砍编造源）:emission 前回查 raw 护栏的可观测行为。
+
+    痛点:fallback / 补 How 路径会把 AKB 内部概念合成成反引号命令
+    （ledger.append / assert max_actions<=5 / repair_router.dispatch / queue_item=...），
+    这些命令不字面存在于真实 raw，被 SG-command-recheck 判为编造 → compose fail（SC-9 卡点）。
+    治本2 在渲染前逐条回查 raw:命令接地 raw 才保留,否则剥离降级为无命令 instruction,
+    绝不把编造命令塞进候选页。断言绑定可观测行为（命令是否进候选页 / SG 违规数）。
+    """
+
+    def test_command_grounded_predicate_substring_semantics(self):
+        """谓词与 SG-command-recheck 同口径:字面子串在 raw → True，否则 False；空命令 True。"""
+        raw = "the raw mentions queue.next() inline somewhere"
+        assert _command_grounded_in_raw("queue.next()", raw) is True
+        assert _command_grounded_in_raw("ledger.append(event)", raw) is False
+        assert _command_grounded_in_raw("", raw) is True  # 空命令无需回查
+        assert _command_grounded_in_raw("anything", "") is False  # raw 空 → fail-closed
+
+    def test_guard_strips_ungrounded_command_keeps_grounded(self):
+        """护栏:命令在 raw → 原样保留；命令不在 raw → 剥离 command + executable:False，不改原对象。"""
+        raw_with = "trigger={type:'schedule',cron:'0 * * * *'} appears verbatim"
+        grounded_step = {
+            "instruction": "configure trigger",
+            "command": "trigger={type:'schedule',cron:'0 * * * *'}",
+            "executable": True,
+            "provenance": "akb_interpretation",
+        }
+        ungrounded_step = {
+            "instruction": "在循环入口断言命名预算和停止条件",
+            "command": "assert max_actions <= 5 and max_repair_rounds <= 3",
+            "executable": True,
+            "provenance": "akb_interpretation",
+        }
+        steps = [(1, grounded_step, "§A"), (2, ungrounded_step, "§B")]
+        out = _ground_how_step_commands_in_raw(steps, raw_with)
+        # grounded 保留命令
+        assert out[0][1]["command"] == "trigger={type:'schedule',cron:'0 * * * *'}"
+        assert out[0][1]["executable"] is True
+        # ungrounded 剥离命令、降级
+        assert out[1][1]["command"] == ""
+        assert out[1][1]["executable"] is False
+        assert out[1][1]["instruction"] == "在循环入口断言命名预算和停止条件"
+        # 原对象不被 mutate（surgical：返回新 dict）
+        assert ungrounded_step["command"] == "assert max_actions <= 5 and max_repair_rounds <= 3"
+
+    def test_deterministic_fallback_body_has_zero_fabricated_commands(self):
+        """deterministic fallback + 无命令 raw → 候选 body 的反引号命令 0 条不接地 raw。
+
+        verify_commands_in_raw（SG-command-recheck 同实现）对 body 回查应返回空违规列表。
+        """
+        res = build_deterministic_extract_result(_RAW_NO_COMMANDS, "real.md")
+        assert res.success, res.error
+        body = _build_body(
+            res.data, "real.md", None, must_cover=[], raw_content=_RAW_NO_COMMANDS
+        )
+        violations = verify_commands_in_raw(body, _RAW_NO_COMMANDS)
+        assert violations == [], (
+            "无命令 raw 上候选页不得出现任何不接地命令，实际: "
+            f"{[v.command for v in violations]}"
+        )
+
+    def test_claim_derived_command_demoted_when_absent_from_raw(self):
+        """_claim_to_how_step 合成的命令若不在 raw，经护栏后不得作为反引号命令上稿。
+
+        _claim_to_how_step 仍可提出命令（提案层），但护栏在 emission 前剥离不接地命令——
+        合成命令 ledger.append(...) 不在 _RAW_NO_COMMANDS 中 → body 不含该命令字面量。
+        """
+        claim = {"text": "use a ledger checkpoint before executing", "anchor": "§A"}
+        derived = _claim_to_how_step(claim, 1)
+        assert derived.get("command"), "提案层仍合成命令（护栏在渲染层兜底）"
+        out = _ground_how_step_commands_in_raw([(1, derived, "§A")], _RAW_NO_COMMANDS)
+        assert out[0][1]["command"] == "", "不接地 raw 的合成命令必须被剥离"
+
+    def test_grounded_command_survives_when_present_in_raw(self):
+        """命令字面量确实出现在 raw 时,护栏保留它（不误杀真 source-grounded 操作）。
+
+        防回归:治本2 是砍编造源,不是砍掉所有命令——来源真有的操作命令必须留下，
+        否则 SG-how-density 会因命令不足而错误 fail-closed 掉合法候选。
+        """
+        synth = "ledger.append({run_id:run_id,item_id:work_item.id,status:'checkpointed',next_action:'execute'})"
+        raw_with_cmd = f"## §A\nThe loop runs `{synth}` before each step.\n"
+        claim = {"text": "use a ledger checkpoint before executing", "anchor": "§A"}
+        derived = _claim_to_how_step(claim, 1)
+        assert derived["command"] == synth  # 合成命令恰好与 raw 一致
+        out = _ground_how_step_commands_in_raw([(1, derived, "§A")], raw_with_cmd)
+        assert out[0][1]["command"] == synth, "raw 中存在的命令必须保留"
+        assert out[0][1]["executable"] is True
