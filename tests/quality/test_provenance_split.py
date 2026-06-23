@@ -217,3 +217,201 @@ class TestRubricHashUnchanged:
         h1 = hashlib.sha256(rubric_full.read_bytes()).hexdigest()
         h2 = hashlib.sha256(rubric_full.read_bytes()).hexdigest()
         assert h1 == h2 == _KNOWN_RUBRIC_HASH
+
+
+# ---------------------------------------------------------------------------
+# Finding 6: 三态 provenance_split 被 SG 真实消费（持久化摘要 + SG 读取）
+# ---------------------------------------------------------------------------
+
+
+class TestProvenanceSplitConsumedBySG:
+    """SC-10: 三态 provenance_split 必须被 SG 真实读取，而非仅标注。
+
+    compose_candidate 把 how_steps 的 provenance_split + 代码直出 must_cover
+    operations 汇总成 ``<!-- provenance_split: ... -->`` 注释持久化到 How 节末尾；
+    SG（checks_structural._provenance_split_summary）读取该注释消费三态细分。
+    核心比例阈值仍按二态 marker（操作步骤故意排除），三态在此只读报告。
+    """
+
+    def test_summary_helper_encodes_three_way_counts(self):
+        """_provenance_split_summary_comment 把 provenance_split 计数成三态注释。"""
+        from src.akb2.quality.distill import _provenance_split_summary_comment
+
+        how_steps = [
+            {"provenance_split": "source_operation"},
+            {"provenance_split": "source_operation"},
+            {"provenance_split": "akb_interpretation"},
+            {"provenance_split": "source_fact"},
+        ]
+        comment = _provenance_split_summary_comment(how_steps, must_cover_ops=["a", "b"])
+        # 2 how source_operation + 2 must_cover_ops = 4 source_operation
+        assert "source_operation=4" in comment
+        assert "source_fact=1" in comment
+        assert "akb_interpretation=1" in comment
+        assert comment.startswith("<!-- provenance_split:")
+
+    def test_summary_helper_collapses_when_field_deleted(self):
+        """删除 provenance_split 字段 → 所有 how_step 落到 akb_interpretation（保守）。
+
+        这是「删除字段测试失败」契约的直接体现：字段缺失时 source_operation 不再
+        含 how_step 贡献，仅剩 must_cover_ops。
+        """
+        from src.akb2.quality.distill import _provenance_split_summary_comment
+
+        with_field = [
+            {"provenance_split": "source_operation"},
+            {"provenance_split": "source_operation"},
+        ]
+        without_field = [{"command": "x"}, {"command": "y"}]  # 字段被删
+        c1 = _provenance_split_summary_comment(with_field, must_cover_ops=[])
+        c2 = _provenance_split_summary_comment(without_field, must_cover_ops=[])
+        assert "source_operation=2" in c1
+        # 字段删除后 → 两步都落到 akb_interpretation，source_operation 归零
+        assert "source_operation=0" in c2
+        assert "akb_interpretation=2" in c2
+
+    def test_sg_reader_parses_three_way_summary(self):
+        """_provenance_split_summary 解析注释为三态 dict；无注释返回 None。"""
+        from src.akb2.quality.checks_structural import _provenance_split_summary
+
+        body = (
+            "### 操作步骤\n\n"
+            "1. [raw §A] (source_grounded) op `tools/list`\n\n"
+            "<!-- provenance_split: source_operation=3 source_fact=1 akb_interpretation=2 -->\n"
+        )
+        parsed = _provenance_split_summary(body)
+        assert parsed == {
+            "source_operation": 3,
+            "source_fact": 1,
+            "akb_interpretation": 2,
+        }
+        # 无注释 → None（hand-written fixtures / 旧候选页）
+        assert _provenance_split_summary("plain text without comment") is None
+
+    def test_compose_candidate_emits_summary_readable_by_sg(self, tmp_path):
+        """真实 compose_candidate 产物：How 节末尾持久化三态摘要，SG 可读取。
+
+        用 deterministic maker fallback（不依赖 LLM）+ 含 deterministic 命令字面量
+        的 raw（_COMMAND_EXAMPLES_BLOCK，供 SG-command-recheck 回查），使 compose
+        通过 self-gate 并落盘；验证摘要存在且 SG 读出三态。
+        """
+        from pathlib import Path
+
+        from src.akb2.quality.checks_structural import (
+            _provenance_split_summary,
+            run_candidate_self_gate,
+        )
+        from src.akb2.quality.distill import (
+            build_deterministic_extract_result,
+            compose_candidate,
+        )
+        from tests.quality.test_distill_frontmatter import _COMMAND_EXAMPLES_BLOCK
+
+        raw_content = (
+            "---\nartifact_type: raw\nsource_slug: prov-split\n"
+            "source_url: https://example.com/prov-split\nsource_title: Prov Split\n---\n\n"
+            "# §A Loop Engineering Definition\n"
+            "Loop engineering is the practice of designing AI agent loops that are bounded, convergent, and observable.\n\n"
+            "# §B How: A Complete Loop Shape\n"
+            "A loop has a trigger, selector, executor, quality gate, and ledger writer.\n\n"
+            "# §C Convergence Over Restart\n"
+            "When a step produces defects, repair the failed section rather than restarting the whole pipeline.\n\n"
+            "# §D Budget Constraints\n"
+            "Every loop must have explicit budgets for max repair rounds, timeout per model call, max retries, and maximum parallel workers.\n\n"
+            "# §E Maker Checker Separation\n"
+            "The model that produces content must be different from the model that judges it.\n\n"
+            "# §F Source Operations\n"
+            "Use `tools/list` to enumerate tools, then `tools/call` to dispatch, "
+            "and `resources/read` to inspect resources.\n"
+            + _COMMAND_EXAMPLES_BLOCK
+        )
+        raw_path = tmp_path / "raw" / "prov-split--raw--2026-06-24.md"
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_path.write_text(raw_content, encoding="utf-8")
+        extract_result = build_deterministic_extract_result(raw_content, str(raw_path))
+        assert extract_result.success, extract_result.error
+        result = compose_candidate(
+            extract_result, str(raw_path), "prov-split", output_dir=str(tmp_path)
+        )
+        assert result.success, result.error
+        body = Path(result.candidate_path).read_text(encoding="utf-8")
+
+        # 真实 compose 产物含三态摘要注释
+        parsed = _provenance_split_summary(body)
+        assert parsed is not None, "compose 产物缺少 provenance_split 摘要注释"
+        # §F 的 tools/list|tools/call|resources/read 经 scan_mcp_protocol 产
+        # must_cover_ops（代码直出 source_operation）→ 摘要 source_operation ≥1；
+        # deterministic how_steps 全为 akb_interpretation → 摘要 akb ≥1。
+        # 这正是三态消费的核心：区分代码直出操作 vs AKB 解读 how_steps。
+        assert parsed["source_operation"] >= 1, parsed
+        assert parsed["akb_interpretation"] >= 1, parsed
+        # 全量 self-gate 仍过（摘要注释不引入新缺陷）
+        assert run_candidate_self_gate(body, raw_content) == []
+
+    def test_compose_summary_reflects_provenance_split_field(self, tmp_path):
+        """摘要的 akb_interpretation 计数与 how_steps 的 provenance_split 字段一致。
+
+        删除 provenance_split 注入（revert step-5/deterministic 注入）会使
+        how_steps 缺该字段 → source_operation 计数失去 how_step 贡献 → 本断言失败。
+        """
+        from pathlib import Path
+
+        from src.akb2.quality.checks_structural import _provenance_split_summary
+        from src.akb2.quality.distill import (
+            build_deterministic_extract_result,
+            compose_candidate,
+        )
+        from tests.quality.test_distill_frontmatter import _COMMAND_EXAMPLES_BLOCK
+
+        raw_content = (
+            "---\nartifact_type: raw\nsource_slug: prov-split-field\n"
+            "source_url: https://example.com/prov-split-field\n"
+            "source_title: Prov Split Field\n---\n\n"
+            "# §A Loop Engineering Definition\n"
+            "Loop engineering is the practice of designing AI agent loops bounded and observable.\n\n"
+            "# §B How Shape\n"
+            "A loop has a trigger, selector, executor, quality gate, and ledger writer.\n\n"
+            "# §C Convergence\n"
+            "Repair the failed section rather than restarting the whole pipeline.\n\n"
+            "# §D Budget\n"
+            "Every loop must have explicit budgets for max repair rounds and timeout.\n\n"
+            "# §E Maker Checker\n"
+            "The model that produces content must differ from the model that judges it.\n"
+            + _COMMAND_EXAMPLES_BLOCK
+        )
+        raw_path = tmp_path / "raw" / "prov-split-field--raw--2026-06-24.md"
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_path.write_text(raw_content, encoding="utf-8")
+        extract_result = build_deterministic_extract_result(raw_content, str(raw_path))
+        assert extract_result.success, extract_result.error
+        how_akb = sum(
+            1
+            for s in extract_result.data["how_steps"]
+            if isinstance(s, dict) and s.get("provenance_split") == "akb_interpretation"
+        )
+        how_source_op = sum(
+            1
+            for s in extract_result.data["how_steps"]
+            if isinstance(s, dict) and s.get("provenance_split") == "source_operation"
+        )
+        result = compose_candidate(
+            extract_result, str(raw_path), "prov-split-field", output_dir=str(tmp_path)
+        )
+        assert result.success, result.error
+        body = Path(result.candidate_path).read_text(encoding="utf-8")
+
+        parsed = _provenance_split_summary(body)
+        assert parsed is not None
+        # compose 仅渲染 supported_how_steps（有锚点支撑的子集），故摘要 akb 计数
+        # ≤ 全量 how_steps 的 akb 字段计数。删 provenance_split 字段后 how_akb 归零，
+        # 而 parsed 仍计渲染步数（>0）→ `<=` 断言失败，守护字段被真实消费。
+        assert parsed["akb_interpretation"] <= how_akb, (
+            f"akb 计数超过 how_steps 字段贡献: parsed={parsed['akb_interpretation']} "
+            f"vs how_akb={how_akb}"
+        )
+        assert parsed["akb_interpretation"] >= 1, parsed
+        # source_operation >= how_source_op（must_cover_ops 额外贡献）
+        assert parsed["source_operation"] >= how_source_op, (
+            f"source_operation 计数低于 how_steps 字段贡献: parsed={parsed['source_operation']} "
+            f"vs how_source_op={how_source_op}"
+        )

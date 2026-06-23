@@ -17,7 +17,6 @@ from typing import Any
 
 import yaml
 
-
 LAUNCHD_LABEL = "com.akb2.main-pipeline"
 TERMINAL_EVENTS = {"grade_llm", "promote", "finalize"}
 SENSITIVE_PATH_MARKERS = (

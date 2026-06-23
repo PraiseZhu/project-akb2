@@ -6,8 +6,12 @@ Five sub-scanners, all producing kind=source_operation:
    _SOURCE_PROTOCOL_COMMANDS). Uses the same word-boundary / substring logic
    as distill.py:2425 _source_text_has_command.
 2. cli_commands: ``$ cmd`` inline patterns and fenced bash/sh block lines.
-3. code_blocks: ``"method": "value"`` tokens inside fenced code blocks.
-4. api_signatures: ``func(...)`` / ``obj.method(...)`` call patterns.
+3. code_blocks: ``"method": "value"`` JSON-RPC tokens AND ``func(...)`` /
+   ``obj.method(...)`` call sites inside fenced code blocks (Finding 4: 保守
+   扩展覆盖 fenced Python/JS 调用).
+4. api_signatures: ``obj.method(...)`` dotted calls AND ``func(...)`` bare
+   camelCase calls outside fenced blocks (Finding 4: 保守扩展覆盖 bare API
+   调用；camelCase 要求过滤自然语言括注如 ``tools (e.g., ...)``).
 5. numbered_steps: ``Step N:`` and ``N.`` numbered list items (outside code
    blocks).
 """
@@ -134,14 +138,43 @@ def scan_cli_commands(raw_text: str) -> list[EvidenceItem]:
 # ---------------------------------------------------------------------------
 
 _JSON_METHOD_RE = re.compile(r'"method"\s*:\s*"(?P<method>[^"]+)"')
+# Function call sites inside fenced code blocks: ``func(`` / ``obj.method(``.
+# Matches both bare and dotted names; control-flow keywords are excluded so
+# ``def``/``if``/``for``/``while``/``return``/``function`` ... are not mistaken
+# for source operations. Only scanned in programming-language fenced blocks
+# (python/js/ts) — ``text``/plain blocks hold illustrative pseudocode, not real
+# calls, and scanning them produced false must_cover operations (Finding 4
+# conservative scope).
+_CALL_LANGS: frozenset[str] = frozenset(
+    {"python", "py", "javascript", "js", "typescript", "ts"}
+)
+_FENCED_CALL_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "def", "elif", "else", "for", "from", "if", "import", "class",
+        "while", "with", "return", "function", "const", "let", "var",
+        "async", "await", "yield", "switch", "try", "except", "catch",
+        "finally", "print", "console",
+    }
+)
+_FENCED_CALL_RE = re.compile(
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\s*\("
+)
 
 
 def scan_code_blocks(raw_text: str) -> list[EvidenceItem]:
-    """Scan fenced code blocks for JSON-RPC method tokens (``"method": "value"``)."""
+    """Scan fenced code blocks for JSON-RPC method tokens and call sites.
+
+    Catches two shapes (Finding 4):
+    - ``"method": "value"`` JSON-RPC tokens (existing, any fenced lang).
+    - ``func(...)`` / ``obj.method(...)`` call sites inside fenced Python/JS/TS
+      blocks only. Control-flow keyword names are excluded; ``text`` blocks are
+      skipped (illustrative pseudocode, not real calls).
+    """
     items: list[EvidenceItem] = []
     for m in _FENCED_BLOCK_RE.finditer(raw_text):
         body = m.group("body")
         body_start = m.start("body")
+        lang = m.group("lang").strip().lower()
         for mm in _JSON_METHOD_RE.finditer(body):
             method = mm.group("method")
             abs_start = body_start + mm.start("method")
@@ -150,6 +183,23 @@ def scan_code_blocks(raw_text: str) -> list[EvidenceItem]:
                     kind="source_operation",
                     literal=method,
                     raw_anchor_span=Span(start=abs_start, end=abs_start + len(method)),
+                    must_cover_class="source_operation",
+                    source="code_blocks",
+                )
+            )
+        if lang not in _CALL_LANGS:
+            continue
+        for mm in _FENCED_CALL_RE.finditer(body):
+            name = mm.group("name")
+            first_seg = name.split(".", 1)[0]
+            if first_seg.lower() in _FENCED_CALL_KEYWORDS:
+                continue
+            abs_start = body_start + mm.start("name")
+            items.append(
+                EvidenceItem(
+                    kind="source_operation",
+                    literal=name,
+                    raw_anchor_span=Span(start=abs_start, end=abs_start + len(name)),
                     must_cover_class="source_operation",
                     source="code_blocks",
                 )
@@ -164,15 +214,25 @@ def scan_code_blocks(raw_text: str) -> list[EvidenceItem]:
 _API_CALL_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?P<sig>[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*)\s*\("
 )
+# Conservative bare function call: ``func(`` whose name is camelCase (lowercase
+# start + at least one internal uppercase, e.g. ``searchFlights``). The
+# camelCase requirement filters out natural-language parentheticals such as
+# ``tools (e.g., ...)`` or ``the (only) option``; plain lowercase identifiers
+# without an uppercase stay excluded as ambiguous (no type context).
+_BARE_FUNC_RE = re.compile(
+    r"(?<![A-Za-z0-9_\.])(?P<name>[a-z][a-z0-9]*[A-Z][A-Za-z0-9_]*)\s*\("
+)
 
 
 def scan_api_signatures(raw_text: str) -> list[EvidenceItem]:
-    """Scan for ``obj.method(...)`` call patterns outside code blocks.
+    """Scan for API call patterns outside fenced code blocks.
 
-    Only matches dotted method calls (``obj.method``) to avoid false positives
-    from natural-language parentheticals like ``tools (e.g., ...)``. Bare
-    ``func(...)`` patterns without a dot are intentionally skipped in this
-    conservative first pass; they are ambiguous without type context.
+    Catches two conservative shapes (Finding 4):
+    - ``obj.method(...)`` dotted method calls (existing).
+    - ``func(...)`` bare calls whose name is camelCase. The camelCase gate
+      keeps natural-language parentheticals out; the lookbehind excludes the
+      method segment of an already-matched dotted call (``client.callTool`` →
+      only the dotted form is captured).
     """
     block_spans = fenced_block_spans(raw_text)
     items: list[EvidenceItem] = []
@@ -185,6 +245,19 @@ def scan_api_signatures(raw_text: str) -> list[EvidenceItem]:
                 kind="source_operation",
                 literal=sig,
                 raw_anchor_span=Span(start=m.start("sig"), end=m.end("sig")),
+                must_cover_class="source_operation",
+                source="api_signatures",
+            )
+        )
+    for m in _BARE_FUNC_RE.finditer(raw_text):
+        if is_in_fenced_block(m.start(), block_spans):
+            continue
+        name = m.group("name")
+        items.append(
+            EvidenceItem(
+                kind="source_operation",
+                literal=name,
+                raw_anchor_span=Span(start=m.start("name"), end=m.end("name")),
                 must_cover_class="source_operation",
                 source="api_signatures",
             )

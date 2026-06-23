@@ -1179,3 +1179,101 @@ MAX_REPAIR_ROUNDS=3; DISTILL_TIMEOUT_SECONDS=60; GRADER_TIMEOUT_SECONDS=120; MAX
         assert meta.get("grader_fallback_used") is True, (
             f"final_grader_meta 应标记 fallback_used，实际: {meta}"
         )
+
+
+# ---------------------------------------------------------------------------
+# SC-6 step-6: 周抽检 _regrade_sample 拒收 degraded grader 的空缺陷 PASS
+# ---------------------------------------------------------------------------
+
+
+class TestRegradeSampleRejectsDegradedGrader:
+    """_regrade_sample 必须用 run_grader_detailed，拒收 fallback_used/suspended 的 PASS。
+
+    旧 API run_grader() 只返回 (defects, model, suspended)，丢弃 fallback_used，
+    会把 gemini 兜底的空缺陷当 pass，导致周抽检达标率虚高。step-6 要求
+    runner/repair/promote 全链拒收 degraded PASS。
+    """
+
+    @staticmethod
+    def _make_sample(tmp_path: Path) -> dict[str, str]:
+        sample_path = tmp_path / "candidate.md"
+        sample_path.write_text("# candidate\n\nbody\n", encoding="utf-8")
+        return {"path": str(sample_path), "slug": "candidate"}
+
+    def test_fallback_used_empty_defects_returns_false(self, tmp_path: Path) -> None:
+        """fallback_used=True 且 defects=[] → False（degraded PASS 不可信）。"""
+        from src.akb2.quality.grader import GraderResult
+        from src.akb2.quality.runner import _regrade_sample
+
+        sample = self._make_sample(tmp_path)
+        degraded = GraderResult(
+            defects=[],
+            model_used="gemini-flash",
+            suspended=False,
+            fallback_used=True,
+        )
+        with mock.patch(
+            "src.akb2.quality.grader.run_grader_detailed", return_value=degraded
+        ):
+            results = _regrade_sample([sample])
+
+        assert results == [False], "fallback_used 的空缺陷必须判 fail"
+
+    def test_suspended_empty_defects_returns_false(self, tmp_path: Path) -> None:
+        """suspended=True 且 defects=[] → False（双不可用挂起）。"""
+        from src.akb2.quality.grader import GraderResult
+        from src.akb2.quality.runner import _regrade_sample
+
+        sample = self._make_sample(tmp_path)
+        suspended = GraderResult(
+            defects=[], model_used="none", suspended=True
+        )
+        with mock.patch(
+            "src.akb2.quality.grader.run_grader_detailed", return_value=suspended
+        ):
+            results = _regrade_sample([sample])
+
+        assert results == [False], "suspended 的空缺陷必须判 fail"
+
+    def test_clean_empty_defects_returns_true(self, tmp_path: Path) -> None:
+        """fallback_used=False + suspended=False + defects=[] → True（正常 PASS 回归）。"""
+        from src.akb2.quality.grader import GraderResult
+        from src.akb2.quality.runner import _regrade_sample
+
+        sample = self._make_sample(tmp_path)
+        clean = GraderResult(
+            defects=[], model_used="gpt-5.4", suspended=False, fallback_used=False
+        )
+        with mock.patch(
+            "src.akb2.quality.grader.run_grader_detailed", return_value=clean
+        ):
+            results = _regrade_sample([sample])
+
+        assert results == [True], "正常 PASS 不应被误拒"
+
+    def test_clean_with_defects_returns_false(self, tmp_path: Path) -> None:
+        """回归: 非 degraded 但有缺陷 → False（len(defects)==0 判定仍生效）。"""
+        from src.akb2.quality.checks_structural import Defect
+        from src.akb2.quality.grader import GraderResult
+        from src.akb2.quality.runner import _regrade_sample
+
+        sample = self._make_sample(tmp_path)
+        with_defects = GraderResult(
+            defects=[
+                Defect(
+                    dimension="论断锚定率",
+                    location="## TLDR",
+                    defect="缺 anchor",
+                    suggestion="补 anchor",
+                )
+            ],
+            model_used="gpt-5.4",
+            suspended=False,
+            fallback_used=False,
+        )
+        with mock.patch(
+            "src.akb2.quality.grader.run_grader_detailed", return_value=with_defects
+        ):
+            results = _regrade_sample([sample])
+
+        assert results == [False], "有缺陷的非 degraded 结果必须判 fail"

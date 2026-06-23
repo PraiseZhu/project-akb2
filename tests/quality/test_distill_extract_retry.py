@@ -131,9 +131,14 @@ class TestExtractRetry:
         assert "非 JSON" in result.error or "重试" in result.error or "失败" in result.error
 
     def test_extract_retry_on_missing_anchor(
-        self, sample_raw_content, extract_fail_missing_anchor_response
+        self, monkeypatch, sample_raw_content, extract_fail_missing_anchor_response
     ):
-        """claims 缺少 anchor 字段走重试并失败。"""
+        """claims 缺少 anchor 字段走重试并失败。
+
+        本用例聚焦 claims 校验重试路径，关闭语义 retake 以隔离该特性
+        （retake 默认开由 test_semantic_jitter 专门覆盖）。
+        """
+        monkeypatch.setenv("AKB2_DISTILL_SEMANTIC_RETAKE", "0")
         from tests.quality.conftest import make_mock_route_llm
 
         mock_fn = make_mock_route_llm(extract_fail_missing_anchor_response)
@@ -184,7 +189,9 @@ class TestExtractRetry:
         result = extract_claims(sample_raw_content, route_llm_fn=tracking_mock)
 
         assert result.success is True
-        assert len(calls) == 2
+        # retake 默认开：1 claims + 2 how_params（SEMANTIC_RETAKE_MAX 取交集）= 3 次调用。
+        # mock 对每次调用返回同一份合法响应，两份 how_params 交集非空 → 成功。
+        assert len(calls) == 3
         assert {c["response_schema"]["required"][0] for c in calls} == {
             "claims",
             "how_steps",
@@ -215,9 +222,13 @@ class TestExtractRetry:
         assert "总时限" in result.error or "超" in result.error
 
     def test_segmented_extract_preserves_params_external_shape(
-        self, sample_raw_content
+        self, monkeypatch, sample_raw_content
     ):
-        """分段 schema 用 param_entries，合并后仍输出旧 params dict。"""
+        """分段 schema 用 param_entries，合并后仍输出旧 params dict。
+
+        本用例聚焦 params 外部形状，关闭语义 retake 以隔离该特性。
+        """
+        monkeypatch.setenv("AKB2_DISTILL_SEMANTIC_RETAKE", "0")
         from src.akb2.quality.llm_router import LLMResponse
         from tests.quality.conftest import make_mock_route_llm
 
@@ -298,6 +309,8 @@ class TestExtractRetry:
             )
 
         monkeypatch.setenv("AKB2_DISTILL_DEEPSEEK_BETA_TOOL", "1")
+        # 聚焦 beta_tool 路由，关闭语义 retake 隔离该特性（retake 默认开由 test_semantic_jitter 覆盖）。
+        monkeypatch.setenv("AKB2_DISTILL_SEMANTIC_RETAKE", "0")
         monkeypatch.setattr(
             "src.akb2.quality.llm_router.route_deepseek_beta_tool",
             fake_beta_tool,
@@ -353,6 +366,8 @@ class TestExtractRetry:
             )
 
         monkeypatch.setenv("AKB2_DISTILL_DEEPSEEK_JSON_MODE", "1")
+        # 聚焦 JSON mode loose shape 归一化，关闭语义 retake 隔离该特性。
+        monkeypatch.setenv("AKB2_DISTILL_SEMANTIC_RETAKE", "0")
         monkeypatch.setattr(
             "src.akb2.quality.llm_router.route_deepseek_json_object",
             fake_json_mode,
@@ -414,6 +429,8 @@ class TestExtractRetry:
             )
 
         monkeypatch.setenv("AKB2_DISTILL_DEEPSEEK_JSON_MODE", "1")
+        # 聚焦本地 enrichment 按 claim 顺序对齐，关闭语义 retake 隔离该特性。
+        monkeypatch.setenv("AKB2_DISTILL_SEMANTIC_RETAKE", "0")
         monkeypatch.setattr(
             "src.akb2.quality.llm_router.route_deepseek_json_object",
             fake_json_mode,

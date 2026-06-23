@@ -442,7 +442,9 @@ def _choose_failure_class(attempts: list[dict[str, Any]], needs_browser: bool) -
     return "dead"
 
 
-def _set_failure(record: dict[str, Any], failure_class: str, attempts: list[dict[str, Any]]) -> None:
+def _set_failure(
+    record: dict[str, Any], failure_class: str, attempts: list[dict[str, Any]]
+) -> None:
     """落失败分类，避免旧版泛化 error。"""
     record["failure_class"] = failure_class
     if failure_class == "browser_needed":

@@ -30,18 +30,17 @@ from typing import Any
 
 from src.akb2.loops.signatures import record_failure
 from src.akb2.quality.checks_structural import (
-    Defect,
     PROVENANCE_MARKERS,
     RAW_ANCHOR_DECL_RE,
     RAW_ANCHOR_RE,
+    Defect,
     _extract_body_text,
     run_candidate_self_gate,
-    run_structural_checks,
 )
 from src.akb2.quality.grader import run_grader_with_fixture_detailed
 
 # 只读依赖
-from src.akb2.quality.llm_router import RouterConfigError, route_llm
+from src.akb2.quality.llm_router import RouterConfigError
 from src.akb2.quality.md_table import md_table_cell, split_md_table_row
 
 # ---------------------------------------------------------------------------
@@ -106,9 +105,7 @@ def _build_repair_instruction(defects: list[Defect]) -> str:
     lines: list[str] = []
     for i, d in enumerate(defects, 1):
         lines.append(
-            f"{i}. **[{d.dimension}]** {d.location}\n"
-            f"   缺陷: {d.defect}\n"
-            f"   建议: {d.suggestion}"
+            f"{i}. **[{d.dimension}]** {d.location}\n   缺陷: {d.defect}\n   建议: {d.suggestion}"
         )
     return "\n".join(lines)
 
@@ -234,7 +231,9 @@ def _normalize_graph_evidence(
     return evidence, strength, provenance
 
 
-def _apply_graph_table_repairs(text: str, defects: list[Defect]) -> tuple[str, list[dict[str, str]]]:
+def _apply_graph_table_repairs(
+    text: str, defects: list[Defect]
+) -> tuple[str, list[dict[str, str]]]:
     """对图谱关系表执行行/列级确定性修复。"""
     targets = [t for t in (_graph_repair_target(d) for d in defects) if t is not None]
     if not targets:
@@ -257,7 +256,9 @@ def _apply_graph_table_repairs(text: str, defects: list[Defect]) -> tuple[str, l
             continue
         lower = [c.lower() for c in cells]
         if {"target", "relation", "strength", "evidence"}.issubset(set(lower)):
-            header_map = {name: lower.index(name) for name in ("target", "relation", "strength", "evidence")}
+            header_map = {
+                name: lower.index(name) for name in ("target", "relation", "strength", "evidence")
+            }
             continue
         if not header_map or _line_is_table_separator(cells) or len(cells) != len(header_map):
             continue
@@ -284,7 +285,11 @@ def _apply_graph_table_repairs(text: str, defects: list[Defect]) -> tuple[str, l
         if row_target.strip() in {"", "-", "—", "（无相关概念）", "(无相关概念)", "无相关概念"}:
             cells[header_map["target"]] = "no-supported-related-concept"
             cells[header_map["relation"]] = "related"
-        if new_evidence == old_evidence and new_strength == old_strength and new_provenance == old_provenance:
+        if (
+            new_evidence == old_evidence
+            and new_strength == old_strength
+            and new_provenance == old_provenance
+        ):
             continue
         cells[header_map["strength"]] = new_strength
         cells[header_map["evidence"]] = new_evidence
@@ -318,11 +323,7 @@ def _boundary_segments_from_text(section_body: str, fallback_anchor: str) -> lis
     来源事实只可作为依据，不作为边界条目本身。
     """
     text = re.sub(r"^##\s+适用边界\s*", "", section_body.strip())
-    source_parts = [
-        line.strip()
-        for line in text.splitlines()
-        if line.strip()
-    ]
+    source_parts = [line.strip() for line in text.splitlines() if line.strip()]
     raw_parts: list[str] = []
     for source_part in source_parts:
         stripped = source_part.strip()
@@ -356,7 +357,11 @@ def _boundary_segments_from_text(section_body: str, fallback_anchor: str) -> lis
         anchor = anchor_match.group(0) if anchor_match else f"[raw {fallback_anchor}]"
         provenance = "(akb_interpretation)"
         cleaned = re.sub(rf"\[raw\s+{RAW_ANCHOR_DECL_RE}\]", "", part)
-        cleaned = cleaned.replace("(source_grounded)", "").replace("(akb_interpretation)", "").strip(" ：:")
+        cleaned = (
+            cleaned.replace("(source_grounded)", "")
+            .replace("(akb_interpretation)", "")
+            .strip(" ：:")
+        )
         explicit = re.match(r"^(来源事实|不适用场景|适用场景|约束条件)\s*[:：]\s*(.+)$", cleaned)
         if explicit:
             label = explicit.group(1)
@@ -387,14 +392,18 @@ def _boundary_segments_from_text(section_body: str, fallback_anchor: str) -> lis
 
     fallbacks = {
         "适用场景": [
-            f"- [raw {fallback_anchor}] (akb_interpretation) 适用场景：有重复触发、状态记录和质量门控的多步骤 agent 或内容管线。",
-            f"- [raw {fallback_anchor}] (akb_interpretation) 适用场景：需要崩溃恢复、失败落账或 maker/checker 双模型审查的内容晋升流水线。",
+            f"- [raw {fallback_anchor}] (akb_interpretation) "
+            "适用场景：有重复触发、状态记录和质量门控的多步骤 agent 或内容管线。",
+            f"- [raw {fallback_anchor}] (akb_interpretation) "
+            "适用场景：需要崩溃恢复、失败落账或 maker/checker 双模型审查的内容晋升流水线。",
         ],
         "不适用场景": [
-            f"- [raw {fallback_anchor}] (akb_interpretation) 不适用场景：一次性问答、无外部状态、无审查门槛，或无法承担持续维护成本的任务。",
+            f"- [raw {fallback_anchor}] (akb_interpretation) "
+            "不适用场景：一次性问答、无外部状态、无审查门槛，或无法承担持续维护成本的任务。",
         ],
         "约束条件": [
-            f"- [raw {fallback_anchor}] (akb_interpretation) 约束条件：需要显式命名修复轮数、提炼超时、裁判超时、串行度和最终裁判 fallback 策略。",
+            f"- [raw {fallback_anchor}] (akb_interpretation) "
+            "约束条件：需要显式命名修复轮数、提炼超时、裁判超时、串行度和最终裁判 fallback 策略。",
         ],
     }
     for label, min_count in (("适用场景", 2), ("不适用场景", 1), ("约束条件", 1)):
@@ -404,11 +413,7 @@ def _boundary_segments_from_text(section_body: str, fallback_anchor: str) -> lis
             if fallback not in grouped[label]:
                 grouped[label].append(fallback)
 
-    return (
-        grouped["适用场景"][:2]
-        + grouped["不适用场景"][:1]
-        + grouped["约束条件"][:1]
-    )
+    return grouped["适用场景"][:2] + grouped["不适用场景"][:1] + grouped["约束条件"][:1]
 
 
 def _clean_boundary_value(value: str) -> str:
@@ -423,9 +428,7 @@ def _clean_boundary_value(value: str) -> str:
 def _apply_boundary_repairs(text: str, defects: list[Defect]) -> tuple[str, list[dict[str, str]]]:
     """对适用边界执行确定性分层修复。"""
     if not any(
-        "适用边界" in d.location
-        or "适用边界" in d.defect
-        or d.dimension == "SG-provenance-ratio"
+        "适用边界" in d.location or "适用边界" in d.defect or d.dimension == "SG-provenance-ratio"
         for d in defects
     ):
         return text, []
@@ -478,29 +481,52 @@ def _extract_claim_anchor_lines(text: str, limit: int = 3) -> list[tuple[str, st
 def _how_command_for_claim(claim: str, idx: int) -> tuple[str, str]:
     """Return a copyable AKB operation example for the claim semantics."""
     blob = claim.lower()
-    if any(token in blob for token in ("failure", "observable", "error class", "schema rejection", "anti-bot", "失败", "错误类别", "反机器人")):
+    if any(
+        token in blob
+        for token in (
+            "failure",
+            "observable",
+            "error class",
+            "schema rejection",
+            "anti-bot",
+            "失败",
+            "错误类别",
+            "反机器人",
+        )
+    ):
         return (
             "失败时先写入可观测 ledger 事件再停止下游动作",
-            "ledger.append({event:'abort',node:node,error_class:error_class,model_family:model_family,timeout_s:60,max_retries:0,retries_used:retries_used})",
+            "ledger.append({event:'abort',node:node,error_class:error_class,"
+            "model_family:model_family,timeout_s:60,max_retries:0,retries_used:retries_used})",
         )
-    if any(token in blob for token in ("budget", "timeout", "retry", "parallel", "预算", "超时", "重试")):
+    if any(
+        token in blob
+        for token in ("budget", "timeout", "retry", "parallel", "预算", "超时", "重试")
+    ):
         return (
             "在循环入口断言命名预算和停止条件",
-            "MAX_REPAIR_ROUNDS=3; DISTILL_TIMEOUT_SECONDS=60; GRADER_TIMEOUT_SECONDS=120; MAX_RETRIES=0; MAX_PARALLEL_ITEMS=1",
+            "MAX_REPAIR_ROUNDS=3; DISTILL_TIMEOUT_SECONDS=60; "
+            "GRADER_TIMEOUT_SECONDS=120; MAX_RETRIES=0; MAX_PARALLEL_ITEMS=1",
         )
-    if any(token in blob for token in ("model", "maker", "checker", "judge", "fallback", "模型", "裁判", "回退")):
+    if any(
+        token in blob
+        for token in ("model", "maker", "checker", "judge", "fallback", "模型", "裁判", "回退")
+    ):
         return (
             "配置 maker/checker 分离并禁止裁判 fallback 通过",
-            "maker_model='deepseek-v4-pro'; checker_model='gpt-5.4'; assert maker_model != checker_model and fallback_used is False",
+            "maker_model='deepseek-v4-pro'; checker_model='gpt-5.4'; "
+            "assert maker_model != checker_model and fallback_used is False",
         )
     if any(token in blob for token in ("repair", "defect", "restart", "修复", "缺陷")):
         return (
             "按失败小节分派定点修复，保留已验证小节",
-            "repair_router.dispatch(error_class=current_failure.type, section=current_failure.section, anchor=current_failure.raw_anchor)",
+            "repair_router.dispatch(error_class=current_failure.type, "
+            "section=current_failure.section, anchor=current_failure.raw_anchor)",
         )
     return (
         f"执行第 {idx} 个有界循环动作并记录结果",
-        "result=run_action(work_item,timeout_seconds=60); ledger.append({item_id:work_item.id,status:'done',result_hash:hash(result)})",
+        "result=run_action(work_item,timeout_seconds=60); "
+        "ledger.append({item_id:work_item.id,status:'done',result_hash:hash(result)})",
     )
 
 
@@ -525,7 +551,9 @@ def _expand_how_anchors(
     return expanded[:min_count]
 
 
-def _apply_how_executability_repairs(text: str, defects: list[Defect]) -> tuple[str, list[dict[str, str]]]:
+def _apply_how_executability_repairs(
+    text: str, defects: list[Defect]
+) -> tuple[str, list[dict[str, str]]]:
     """Deterministically replace conceptual How prose with copyable examples."""
     if not any(
         "How 可执行性" in d.dimension
@@ -551,7 +579,9 @@ def _apply_how_executability_repairs(text: str, defects: list[Defect]) -> tuple[
     step_lines = [
         "### 操作步骤",
         "",
-        "> 以下步骤均为 AKB 候选页的操作化示例，不是来源提供的原生实施流程。每步都必须同时给出 source basis 与 akb action；读者不得把这些命令当作原文事实。",
+        "> 以下步骤均为 AKB 候选页的操作化示例，不是来源提供的原生实施流程。"
+        "每步都必须同时给出 source basis 与 akb action；"
+        "读者不得把这些命令当作原文事实。",
         "",
     ]
     for idx, (anchor, claim) in enumerate(anchors, 1):
@@ -593,8 +623,7 @@ def _apply_novelty_provenance_repairs(
 ) -> tuple[str, list[dict[str, str]]]:
     """Normalize novelty table to carry an explicit provenance column."""
     if not any(
-        "新颖增量" in d.location
-        and ("provenance" in d.defect.lower() or "解读分离" in d.dimension)
+        "新颖增量" in d.location and ("provenance" in d.defect.lower() or "解读分离" in d.dimension)
         for d in defects
     ):
         return text, []
@@ -659,9 +688,8 @@ def _is_deterministic_repair_defect(defect: Defect) -> bool:
         or "配置示例" in defect.location
     ):
         return True
-    if (
-        "新颖增量" in defect.location
-        and ("provenance" in defect.defect.lower() or "解读分离" in defect.dimension)
+    if "新颖增量" in defect.location and (
+        "provenance" in defect.defect.lower() or "解读分离" in defect.dimension
     ):
         return True
     return (
@@ -731,10 +759,15 @@ def _slice_sections_h2_h3(body: str) -> list[dict[str, Any]]:
             lvl, idx = open_stack.pop()
             secs[idx]["end"] = i
         parent = open_stack[-1][1] if open_stack else -1
-        secs.append({
-            "level": level, "title": title,
-            "start": i, "end": len(lines), "parent": parent,
-        })
+        secs.append(
+            {
+                "level": level,
+                "title": title,
+                "start": i,
+                "end": len(lines),
+                "parent": parent,
+            }
+        )
         open_stack.append((level, len(secs) - 1))
     return secs
 
@@ -753,10 +786,7 @@ def _named_spans(secs: list[dict[str, Any]], named: set[str]) -> set[int]:
     return exempt
 
 
-
-def _apply_section_patches(
-    body: str, patches: Any, allowed_titles: set[str] | None = None
-) -> str:
+def _apply_section_patches(body: str, patches: Any, allowed_titles: set[str] | None = None) -> str:
     """根因③:定点爬坡——只替换被点名节,其余逐字节不变。
 
     LLM 不再重写整页(旧机制下整页重写常动未点名节标点/空格→verify 违规→整轮丢,
@@ -792,9 +822,7 @@ def _apply_section_patches(
     # 问题3(Codex):区分 None(不过滤) vs 空集合(零 patch)——
     # 空定位(named_sections=set())时禁止应用任意 patch(原 if allowed_titles 把空当 None)
     allowed_norm = (
-        {_normalize_loc(t) for t in allowed_titles}
-        if allowed_titles is not None
-        else None
+        {_normalize_loc(t) for t in allowed_titles} if allowed_titles is not None else None
     )
     norm_to_new = {
         _normalize_loc(t): new
@@ -840,7 +868,7 @@ def _section_patches_from_full_text(text: str) -> dict[str, str]:
     for section in sections:
         if section["level"] != 2:
             continue
-        patches[section["title"]] = "\n".join(lines[section["start"]:section["end"]]).rstrip()
+        patches[section["title"]] = "\n".join(lines[section["start"] : section["end"]]).rstrip()
     return patches
 
 
@@ -884,14 +912,12 @@ def _verify_unchanged_sections(
     orig_by_title = {s["title"]: s for s in orig_secs}
     rep_by_title = {s["title"]: s for s in rep_secs}
     # 并集遍历(保序):orig 在前,rep 独有的新增节在后
-    all_titles = list(orig_by_title) + [
-        t for t in rep_by_title if t not in orig_by_title
-    ]
+    all_titles = list(orig_by_title) + [t for t in rep_by_title if t not in orig_by_title]
 
     def _checked(lines: list[str], sec: dict[str, Any], exempt: set[int]) -> str:
         start = sec["start"]
         return "\n".join(
-            ln for i, ln in enumerate(lines[start:sec["end"]]) if (start + i) not in exempt
+            ln for i, ln in enumerate(lines[start : sec["end"]]) if (start + i) not in exempt
         )
 
     changed: list[str] = []
@@ -900,9 +926,8 @@ def _verify_unchanged_sections(
         r = rep_by_title.get(title)
         # 豁免:任一边存在且该节落在命名 span 内即跳过。命名 H2 时，
         # 其内部新增/删除 H3 属于被点名节的合法改动，不是夹带改未点名节。
-        if (
-            (o is not None and o["start"] in orig_exempt)
-            or (r is not None and r["start"] in rep_exempt)
+        if (o is not None and o["start"] in orig_exempt) or (
+            r is not None and r["start"] in rep_exempt
         ):
             continue
         if o is None:
@@ -1118,9 +1143,7 @@ def run_repair_loop(
                 section = action.get("section", "")
                 if section:
                     named_sections.add(section)
-            deterministic_only = all(
-                _is_deterministic_repair_defect(d) for d in current_defects
-            )
+            deterministic_only = all(_is_deterministic_repair_defect(d) for d in current_defects)
             # 确定性修复后先过 A 层；能直接修掉的缺陷不再喂给 LLM 猜。
             new_a_defects = run_candidate_self_gate(current_text, raw_text)
             trace_payload["a_defects_after"] = _defects_to_summary(new_a_defects)
@@ -1128,9 +1151,7 @@ def run_repair_loop(
             if deterministic_only and not new_a_defects:
                 graded_after_deterministic = True
                 if mock_route_llm is not None:
-                    grader_result = run_grader_with_fixture_detailed(
-                        current_text, mock_route_llm
-                    )
+                    grader_result = run_grader_with_fixture_detailed(current_text, mock_route_llm)
                 else:
                     from src.akb2.quality.grader import run_grader_detailed
 
@@ -1243,9 +1264,7 @@ def run_repair_loop(
             )
 
         # diff 校验: 未点名小节逐字节不变
-        changed_sections = _verify_unchanged_sections(
-            current_text, repaired_text, named_sections
-        )
+        changed_sections = _verify_unchanged_sections(current_text, repaired_text, named_sections)
         trace_payload["changed_sections"] = changed_sections
         if changed_sections:
             # 违规: 丢弃本轮重写，不更新 current_text
@@ -1272,9 +1291,7 @@ def run_repair_loop(
 
         # A 通过，过 B 层
         if mock_route_llm is not None:
-            grader_result = run_grader_with_fixture_detailed(
-                current_text, mock_route_llm
-            )
+            grader_result = run_grader_with_fixture_detailed(current_text, mock_route_llm)
         else:
             from src.akb2.quality.grader import run_grader_detailed
 

@@ -186,7 +186,8 @@ _EXTRACT_SCHEMA: dict[str, Any] = {
                     "claim_anchor": {"type": "string"},
                     "explanation": {"type": "string", "minLength": 10},
                     # provenance 区分来源事实(source_grounded) vs 解读推断(akb_interpretation)。
-                    # rubric 维度5 解读分离:解读性内容(未来趋势/可能性/归纳)必须标 akb_interpretation,
+                    # rubric 维度5 解读分离:解读性内容(未来趋势/可能性/归纳)
+                    # 必须标 akb_interpretation,
                     # 不得伪装成 source_grounded(否则解读分离扣分)。
                     "provenance": {
                         "type": "string",
@@ -473,9 +474,10 @@ def extract_claims(
         and not beta_tool_enabled
     )
     # Step-7: 语义型 How 抖动兜底开关。how_params segment 多取取交集（router 无关，
-    # 注入 mock 亦可触发，便于测试）；默认关，与 beta_tool/json_mode 的 default-router
-    # 闸门并列。仅作用于 LLM 自由文本 how_steps，不碰 must_cover 代码直出。
-    semantic_retake_enabled = os.environ.get("AKB2_DISTILL_SEMANTIC_RETAKE", "0") == "1"
+    # 注入 mock 亦可触发，便于测试）；默认开（生产路径单次抽取不够稳，retake 取交集
+    # 才是 fail-closed 语义的依据）。仅当显式 AKB2_DISTILL_SEMANTIC_RETAKE=0 才关闭。
+    # 仅作用于 LLM 自由文本 how_steps，不碰 must_cover 代码直出。
+    semantic_retake_enabled = os.environ.get("AKB2_DISTILL_SEMANTIC_RETAKE", "1") != "0"
 
     content_snippet = raw_content[:MAX_EXTRACT_CHARS]  # 截断保护（具名常量，旧阈值截掉半数正文）
 
@@ -579,9 +581,12 @@ def _build_extract_segment_messages(
         ),
         "graph": (
             "只抽取 graph_edges，最多 4 条，宁少勿强。\n"
-            "- 每项含 concept、relation_type、strength、evidence、anchor、provenance、evidence_kind。\n"
-            "- relation_type 优先 related/describes/mentions，除非原文直接支持，避免 requires/ensures/reduces。\n"
-            "- strength 默认 weak；只有原文直接点名 target 且 evidence 带 [raw §X] 或原文引号才可 strong。\n"
+            "- 每项含 concept、relation_type、strength、evidence、"
+            "anchor、provenance、evidence_kind。\n"
+            "- relation_type 优先 related/describes/mentions，"
+            "除非原文直接支持，避免 requires/ensures/reduces。\n"
+            "- strength 默认 weak；只有原文直接点名 target 且 "
+            "evidence 带 [raw §X] 或原文引号才可 strong。\n"
             "- evidence 必须带 [raw §X] (source_grounded) 或明确 (akb_interpretation)。"
         ),
     }
@@ -770,12 +775,66 @@ def must_cover_fact_provenance_split() -> str:
     return "source_fact"
 
 
+# Finding 6: 三态摘要注释——把 how_steps 的 provenance_split + 代码直出
+# must_cover operations 汇总成结构化 HTML 注释，持久化到候选页 How 节末尾。
+# SG（checks_structural._provenance_split_summary）读取此注释消费三态细分，
+# 无需把 How 节折叠进核心 ratio 阈值（核心 ratio 故意排除 操作步骤，见
+# test_how_interpretation_steps_do_not_count_against_core_ratio 不变量）。
+_PROVENANCE_SPLIT_SUMMARY_PREFIX = "<!-- provenance_split:"
+
+
+def _provenance_split_summary_comment(
+    how_steps: list[Any],
+    must_cover_ops: list[Any],
+) -> str:
+    """Emit a three-way provenance split summary as a structured HTML comment.
+
+    Counts are derived from the rendered How section:
+    - ``source_operation``: how_steps whose ``provenance_split == source_operation``
+      plus every code-direct must_cover operation (scanner-produced, all
+      source_operation).
+    - ``source_fact``: how_steps whose ``provenance_split == source_fact``
+      (rare for LLM how_steps; reserved for must_cover facts rendered in other
+      sections — those are NOT counted here, this comment covers the How section).
+    - ``akb_interpretation``: how_steps whose split is akb_interpretation or
+      missing (missing is treated conservatively as akb_interpretation).
+
+    The comment is consumed by SG; deleting the ``provenance_split`` annotation
+    layer makes these counts collapse to all-akb, which the SG-provenance-split
+    reader test detects.
+    """
+    counts = {
+        "source_operation": 0,
+        "source_fact": 0,
+        "akb_interpretation": 0,
+    }
+    for step in how_steps or []:
+        split = ""
+        if isinstance(step, dict):
+            split = str(step.get("provenance_split", "")).strip()
+        if split not in counts:
+            split = "akb_interpretation"
+        counts[split] += 1
+    counts["source_operation"] += len(must_cover_ops or [])
+    return (
+        f"{_PROVENANCE_SPLIT_SUMMARY_PREFIX} "
+        f"source_operation={counts['source_operation']} "
+        f"source_fact={counts['source_fact']} "
+        f"akb_interpretation={counts['akb_interpretation']} -->"
+    )
+
+
 def _normalize_how_step(item: Any, idx: int) -> dict[str, Any]:
     if isinstance(item, dict):
-        instruction = str(item.get("instruction") or item.get("text") or item.get("name") or "").strip()
+        instruction = str(
+            item.get("instruction") or item.get("text") or item.get("name") or ""
+        ).strip()
         command = str(item.get("command") or item.get("cmd") or "").strip()
         executable = item.get("executable")
-        anchor = _first_anchor(item.get("anchor") or item.get("anchors") or item.get("section"), default="")
+        anchor = _first_anchor(
+            item.get("anchor") or item.get("anchors") or item.get("section"),
+            default="",
+        )
         provenance = str(item.get("provenance") or "").strip()
     else:
         instruction = str(item).strip()
@@ -883,7 +942,10 @@ def _expand_placeholder_command(command: str, instruction: str, idx: int) -> str
             replacements["configure_trigger"],
         ),
         (
-            ("select next work item", "select next item", "next work item", "next item", "选择下一"),
+            (
+                "select next work item", "select next item",
+                "next work item", "next item", "选择下一",
+            ),
             replacements["select_work_unit"],
         ),
         (
@@ -911,15 +973,27 @@ def _expand_placeholder_command(command: str, instruction: str, idx: int) -> str
             "ledger.append({run_id:run_id,status:'asserted',result_hash:hash(result)})",
         ),
         (
-            ("record llm call metadata", "llm call details", "model family", "prompt version", "fallback usage", "记录模型", "记录调用"),
+            (
+                "record llm call metadata", "llm call details",
+                "model family", "prompt version", "fallback usage",
+                "记录模型", "记录调用",
+            ),
             replacements["record_llm_call_metadata"],
         ),
         (
-            ("define budget constants", "explicit budgets", "named constants", "max repair rounds", "max retries", "预算", "命名常量"),
+            (
+                "define budget constants", "explicit budgets",
+                "named constants", "max repair rounds", "max retries",
+                "预算", "命名常量",
+            ),
             replacements["define_budget_constants"],
         ),
         (
-            ("separate maker and checker", "maker model", "checker model", "different from the model that judges", "分离模型", "裁判模型"),
+            (
+                "separate maker and checker", "maker model",
+                "checker model", "different from the model that judges",
+                "分离模型", "裁判模型",
+            ),
             replacements["separate_maker_and_checker_models"],
         ),
     )
@@ -931,7 +1005,10 @@ def _expand_placeholder_command(command: str, instruction: str, idx: int) -> str
     if cleaned and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", cleaned):
         if "trigger" in instruction_blob:
             return replacements["configure_trigger"]
-        if "work unit" in instruction_blob or "ledger" in instruction_blob and "select" in instruction_blob:
+        if (
+        "work unit" in instruction_blob
+        or "ledger" in instruction_blob and "select" in instruction_blob
+    ):
             return replacements["select_work_unit"]
         if "quality gate" in instruction_blob or "verify" in instruction_blob:
             return replacements["run_quality_gate"]
@@ -1402,10 +1479,25 @@ def _build_deterministic_extract_data(
 
     claim_specs = [
         (primary, "Loop engineering 把重复 agent 工作收束为可观测、有停止条件的反馈循环"),
-        (fallback_how_anchor, "工作队列需要携带 source URL、raw anchor、content hash、输出路径和生命周期状态"),
-        (anchor_c if anchor_c != primary else fallback_how_anchor, "修复路径必须有固定轮数，并只在剩余缺陷清零时接受候选"),
-        (anchor_d if anchor_d != primary else fallback_how_anchor, "主链路预算应显式配置提炼超时、裁判超时、修复轮数、串行度和 fallback 策略"),
-        (anchor_e if anchor_e != primary else fallback_how_anchor, "maker 与 checker 需要分离，最终部署门不得把 fallback 裁判当通过条件"),
+        (
+            fallback_how_anchor,
+            "工作队列需要携带 source URL、raw anchor、"
+            "content hash、输出路径和生命周期状态",
+        ),
+        (
+            anchor_c if anchor_c != primary else fallback_how_anchor,
+            "修复路径必须有固定轮数，并只在剩余缺陷清零时接受候选",
+        ),
+        (
+            anchor_d if anchor_d != primary else fallback_how_anchor,
+            "主链路预算应显式配置提炼超时、裁判超时、"
+            "修复轮数、串行度和 fallback 策略",
+        ),
+        (
+            anchor_e if anchor_e != primary else fallback_how_anchor,
+            "maker 与 checker 需要分离，"
+            "最终部署门不得把 fallback 裁判当通过条件",
+        ),
     ]
     gap_templates = [
         "未量化：原文未提供该机制的成功率、延迟或成本数据。",
@@ -1430,7 +1522,10 @@ def _build_deterministic_extract_data(
     how_steps = [
         {
             "instruction": "Define the work item schema before processing",
-            "command": "queue_item={source_url,raw_anchor,content_hash,output_path,lifecycle_state}",
+            "command": (
+                "queue_item={source_url,raw_anchor,"
+                "content_hash,output_path,lifecycle_state}"
+            ),
             "executable": True,
             "anchor": fallback_how_anchor,
             "provenance": "akb_interpretation",
@@ -1451,7 +1546,10 @@ def _build_deterministic_extract_data(
         },
         {
             "instruction": "Set explicit model budgets in configuration",
-            "command": "distill_timeout_seconds=60; grader_timeout_seconds=120; max_parallel_items=1",
+            "command": (
+                "distill_timeout_seconds=60; "
+                "grader_timeout_seconds=120; max_parallel_items=1"
+            ),
             "executable": True,
             "anchor": fallback_how_anchor,
             "provenance": "akb_interpretation",
@@ -1463,6 +1561,18 @@ def _build_deterministic_extract_data(
             "anchor": fallback_how_anchor,
             "provenance": "akb_interpretation",
         },
+    ]
+    # Finding 6: deterministic fallback 也注入 provenance_split 标注层，与 LLM
+    # extract 路径（_normalize_how_step）保持同构，使 compose_candidate 的 How 节
+    # 三态摘要对 maker fallback 与 LLM 抽取一致可被 SG 读取。
+    how_steps = [
+        {
+            **step,
+            "provenance_split": how_step_provenance_split(
+                step, str(step.get("command", "")), str(step.get("anchor", ""))
+            ),
+        }
+        for step in how_steps
     ]
     params = {
         "max_repair_rounds": "3",
@@ -1555,7 +1665,8 @@ def _extract_anchor_blocks(raw_content: str) -> dict[str, str]:
         anchor = match.group(1)
         end = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)
         block = body[match.start():end]
-        block = re.sub(rf"(?m)^(?:#{{1,6}}\s*)?{RAW_ANCHOR_DECL_RE}(?:[_A-Z0-9-]*|\b).*", "", block, count=1)
+        _strip_re = rf"(?m)^(?:#{{1,6}}\s*)?{RAW_ANCHOR_DECL_RE}(?:[_A-Z0-9-]*|\b).*"
+        block = re.sub(_strip_re, "", block, count=1)
         block = re.sub(r"\s+", " ", block).strip()
         if block and anchor not in blocks:
             blocks[anchor] = block[:1000]
@@ -1934,7 +2045,11 @@ def _page_evidence_provenance(extract_data: dict[str, Any]) -> str:
         and item.get("provenance") == "akb_interpretation"
         for item in sections
     )
-    if has_interpretation or extract_data.get("how_steps") or extract_data.get("referenced_concepts"):
+    if (
+        has_interpretation
+        or extract_data.get("how_steps")
+        or extract_data.get("referenced_concepts")
+    ):
         return "partial_source_grounded"
     return "source_grounded"
 
@@ -1983,16 +2098,20 @@ def _generate_questions(
     anchor_b = claims[1].get("anchor", anchor_a) if len(claims) > 1 else anchor_a
     anchor_j = "§J" if any(c.get("anchor") == "§J" for c in claims) else anchor_b
     questions = [
-        f"[raw {anchor_a}] (akb_interpretation) {head} 在真实工程中的失败模式、适用边界与回退策略有哪些？",
-        f"[raw {anchor_j}] (akb_interpretation) 该方案的停止条件、预算上限与失败升级路径应如何设计，避免自动化失控？",
-        f"[raw {anchor_b}] (akb_interpretation) 在并发、重试与状态漂移场景下，如何检测冲突、重复劳动并保持一致与可恢复？",
+        f"[raw {anchor_a}] (akb_interpretation) {head} "
+        "在真实工程中的失败模式、适用边界与回退策略有哪些？",
+        f"[raw {anchor_j}] (akb_interpretation) "
+        "该方案的停止条件、预算上限与失败升级路径应如何设计，避免自动化失控？",
+        f"[raw {anchor_b}] (akb_interpretation) "
+        "在并发、重试与状态漂移场景下，如何检测冲突、重复劳动并保持一致与可恢复？",
     ]
     # 裁到 2-3 条(默认即 3 条,留 min/max 兜底以防未来调整)
     if len(questions) > FUTURE_QUESTIONS_MAX:
         questions = questions[:FUTURE_QUESTIONS_MAX]
     if len(questions) < FUTURE_QUESTIONS_MIN:
         questions.append(
-            f"[raw {anchor_a}] (akb_interpretation) 该方案的可靠性如何度量，哪些缺陷必须升级给人类判断？"
+            f"[raw {anchor_a}] (akb_interpretation) "
+            "该方案的可靠性如何度量，哪些缺陷必须升级给人类判断？"
         )
     return questions
 
@@ -2086,7 +2205,8 @@ def _how_step_provenance(
 
 def _is_strong_edge_evidence(evidence: str) -> bool:
     """strong 边证据必须看起来像原文硬依据，而不是解释性概括。"""
-    return bool(re.search(rf"\[raw\s+{RAW_ANCHOR_DECL_RE}\]|{RAW_ANCHOR_DECL_RE}|[\"“”']", evidence))
+    pattern = rf"\[raw\s+{RAW_ANCHOR_DECL_RE}\]|{RAW_ANCHOR_DECL_RE}|[\"“”']"
+    return bool(re.search(pattern, evidence))
 
 
 def _extract_raw_anchor(text: str) -> str:
@@ -2110,7 +2230,11 @@ def _ensure_graph_evidence_contract(
     if anchor and not RAW_ANCHOR_REF_RE.search(evidence):
         evidence = f"[raw {anchor}] {evidence}"
     if provenance not in {"source_grounded", "akb_interpretation"}:
-        provenance = "source_grounded" if RAW_ANCHOR_REF_RE.search(evidence) else "akb_interpretation"
+        provenance = (
+            "source_grounded"
+            if RAW_ANCHOR_REF_RE.search(evidence)
+            else "akb_interpretation"
+        )
     marker = f"({provenance})"
     if "(source_grounded)" not in evidence and "(akb_interpretation)" not in evidence:
         evidence = f"{marker} {evidence}"
@@ -2151,7 +2275,11 @@ def _edge_evidence_directly_mentions_concept(concept: str, evidence: str) -> boo
     tokens = [
         token
         for token in re.split(r"[^a-z0-9]+", concept_norm)
-        if token and token not in {"agent", "engineering", "model", "system", "tool", "tools", "concept"}
+        if token
+        and token not in {
+            "agent", "engineering", "model", "system",
+            "tool", "tools", "concept",
+        }
     ]
     return bool(tokens) and any(token in evidence_norm for token in tokens)
 
@@ -2231,20 +2359,25 @@ def _build_selection_reason(
     if not claims:
         return "（无可锚定论点，候选页需人工复核。）"
     anchor_a = str(claims[0].get("anchor", "§A")).strip() or "§A"
-    anchor_b = str(claims[min(1, len(claims) - 1)].get("anchor", anchor_a)).strip() or anchor_a
-    anchor_c = str(claims[min(2, len(claims) - 1)].get("anchor", anchor_b)).strip() or anchor_b
+    b_idx = min(1, len(claims) - 1)
+    c_idx = min(2, len(claims) - 1)
+    anchor_b = str(claims[b_idx].get("anchor", anchor_a)).strip() or anchor_a
+    anchor_c = str(claims[c_idx].get("anchor", anchor_b)).strip() or anchor_b
     claim_a = str(claims[0].get("text", "")).strip()
-    claim_b = str(claims[min(1, len(claims) - 1)].get("text", "")).strip()
-    claim_c = str(claims[min(2, len(claims) - 1)].get("text", claim_b or claim_a)).strip()
+    claim_b = str(claims[b_idx].get("text", "")).strip()
+    claim_c = str(claims[c_idx].get("text", claim_b or claim_a)).strip()
     bullets = [
         (
-            f"- [raw {anchor_a}] (source_grounded) 来源事实：{_short_reason_fragment(claim_a)}。"
+            f"- [raw {anchor_a}] (source_grounded) "
+            f"来源事实：{_short_reason_fragment(claim_a)}。"
         ),
         (
-            f"- [raw {anchor_b}] (source_grounded) 来源事实：{_short_reason_fragment(claim_b or claim_a)}。"
+            f"- [raw {anchor_b}] (source_grounded) "
+            f"来源事实：{_short_reason_fragment(claim_b or claim_a)}。"
         ),
         (
-            f"- [raw {anchor_c}] (source_grounded) 来源事实：{_short_reason_fragment(claim_c or claim_a)}。"
+            f"- [raw {anchor_c}] (source_grounded) "
+            f"来源事实：{_short_reason_fragment(claim_c or claim_a)}。"
         ),
     ]
     return "\n".join(bullets)
@@ -2272,7 +2405,10 @@ def _build_novelty_increment(
         return "- (akb_interpretation) 新颖增量待人工复核：当前抽取缺少可锚定论点。"
 
     raw_anchor_texts = raw_anchor_texts or _load_raw_anchor_texts(raw_path)
-    supported_steps = rendered_how_steps or _supported_how_steps(how_steps, claims, raw_anchor_texts)
+    supported_steps = (
+        rendered_how_steps
+        or _supported_how_steps(how_steps, claims, raw_anchor_texts)
+    )
     how_count = len(supported_steps)
     command_examples = [
         command
@@ -2365,6 +2501,14 @@ def _build_wiki_comparison_rows(
         else str(how_claim.get("text", "来源事实论点"))
     )
     how_row_type = "source operation" if has_source_commands else "source claim"
+    risk_claim_idx = min(2, len(claims) - 1) if claims else 0
+    risk_claim_text = (
+        claims[risk_claim_idx].get("text", "来源风险或边界论点")
+        if claims else "来源风险或边界论点"
+    )
+    risk_claim_anchor = (
+        claims[risk_claim_idx].get("anchor", anchor_a) if claims else anchor_a
+    )
     rows = [
         (
             f"| {_md_table_cell(baseline)} | {_md_table_cell(covered)} | "
@@ -2377,8 +2521,8 @@ def _build_wiki_comparison_rows(
         ),
         (
             f"| 证据处理基线 | {_md_table_cell(evidence_baseline)} | "
-            f"{claims[min(2, len(claims) - 1)].get('text', '来源风险或边界论点') if claims else '来源风险或边界论点'} | "
-            f"source_grounded | source claim | [raw {claims[min(2, len(claims) - 1)].get('anchor', anchor_a) if claims else anchor_a}] (source_grounded) |"
+            f"{risk_claim_text} | source_grounded | source claim | "
+            f"[raw {risk_claim_anchor}] (source_grounded) |"
         ),
     ]
     return rows
@@ -2410,7 +2554,11 @@ def _candidate_neighbor_paths(
             page_url = _read_frontmatter_scalar(path, "source_url")
             if raw_url and page_url == raw_url:
                 continue
-            haystack = f"{path.stem} {_read_frontmatter_scalar(path, 'title')} {_read_frontmatter_scalar(path, 'canonical_title')}".lower()
+            haystack = (
+                f"{path.stem} "
+                f"{_read_frontmatter_scalar(path, 'title')} "
+                f"{_read_frontmatter_scalar(path, 'canonical_title')}"
+            ).lower()
             score = sum(1 for token in tokens if token and token in haystack)
             if score > 0:
                 scored.append((score, rel))
@@ -2527,24 +2675,26 @@ def _build_applicability_boundary_text(
     available_anchors = {str(c.get("anchor", "")) for c in claims}
     anchor_c = "§C" if "§C" in available_anchors else anchor_b
     anchor_d = "§D" if "§D" in available_anchors else anchor_b
-    anchor_e = "§E" if "§E" in available_anchors else anchor_b
-    claim_a = str(claims[0].get("text", "")).strip() if claims else "原文说明该主题需要系统化处理。"
-    claim_b = str(claims[1].get("text", "")).strip() if len(claims) > 1 else claim_a
-    claim_c = str(claims[2].get("text", "")).strip() if len(claims) > 2 else claim_b
     executable_count = len(rendered_how_steps or [])
     if not executable_count:
         executable_count = sum(
             1
             for s in how_steps
-            if isinstance(s, dict) and s.get("executable") is True and str(s.get("command", "")).strip()
+            if isinstance(s, dict)
+            and s.get("executable") is True
+            and str(s.get("command", "")).strip()
         )
     executable_note = f"至少 {executable_count} 个可执行动作" if executable_count else "可验证动作"
     return "\n".join(
         [
-            f"- [raw {anchor_b}] (akb_interpretation) 适用场景：需要把 {executable_note} 串成可复跑流程，并保留人工复核入口的工程项目。",
-            f"- [raw {anchor_c}] (akb_interpretation) 适用场景：需要在出现缺陷时保留已验证上游结果，并对失败小节做定点修复的内容管线。",
-            f"- [raw {anchor_c}] (akb_interpretation) 不适用场景：一次性问答、无外部状态、无审查门槛，或无法承担持续维护/复核成本的任务。",
-            f"- [raw {anchor_d}] (akb_interpretation) 约束条件：需要显式命名预算、超时、串行度和最终裁判 fallback 策略。",
+            f"- [raw {anchor_b}] (akb_interpretation) "
+            f"适用场景：需要把 {executable_note} 串成可复跑流程，并保留人工复核入口的工程项目。",
+            f"- [raw {anchor_c}] (akb_interpretation) "
+            "适用场景：需要在出现缺陷时保留已验证上游结果，并对失败小节做定点修复的内容管线。",
+            f"- [raw {anchor_c}] (akb_interpretation) "
+            "不适用场景：一次性问答、无外部状态、无审查门槛，或无法承担持续维护/复核成本的任务。",
+            f"- [raw {anchor_d}] (akb_interpretation) "
+            "约束条件：需要显式命名预算、超时、串行度和最终裁判 fallback 策略。",
         ]
     )
 
@@ -2582,10 +2732,22 @@ def _anchor_support_text(
 
 
 _STEP_ANCHOR_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("§B", ("trigger", "work item", "work unit", "selector", "action executor", "quality gate", "ledger", "write")),
+    (
+        "§B",
+        (
+            "trigger", "work item", "work unit", "selector",
+            "action executor", "quality gate", "ledger", "write",
+        ),
+    ),
     ("§C", ("repair", "converge", "convergence", "restart", "defect")),
     ("§D", ("budget", "timeout", "retry", "max_rounds", "max_retries", "constant")),
-    ("§E", ("maker", "checker", "model family", "model families", "producer", "reviewer", "grader", "guard")),
+    (
+        "§E",
+        (
+            "maker", "checker", "model family", "model families",
+            "producer", "reviewer", "grader", "guard",
+        ),
+    ),
     ("§F", ("golden", "sample", "checklist", "quality standard", "quality standards")),
     ("§G", ("usage", "value verdict", "measure", "metrics", "star", "call frequency", "hit rate")),
     ("§H", ("boundary", "fixed transformation", "script", "llm function", "agent session")),
@@ -2761,15 +2923,35 @@ def _claim_to_how_step(claim: dict[str, Any], idx: int) -> dict[str, Any]:
     """Derive one conservative AKB operation step from an evidence-map claim."""
     text = str(claim.get("text", "")).lower()
     anchor = str(claim.get("anchor", "§A")).strip() or "§A"
-    if any(token in text for token in ("ledger", "checkpoint", "before executing", "crash recovery", "账本", "检查点", "重放", "恢复")):
+    if any(token in text for token in (
+        "ledger", "checkpoint", "before executing", "crash recovery",
+        "账本", "检查点", "重放", "恢复",
+    )):
         instruction = "在执行下一动作前写入检查点，并保存输入、工具调用和响应状态"
-        command = "ledger.append({run_id:run_id,item_id:work_item.id,status:'checkpointed',next_action:'execute'})"
-    elif any(token in text for token in ("budget", "budgets", "max_actions", "max_repair_rounds", "max_rounds", "max_retries", "constant", "stop on", "stop condition", "预算", "停止")):
+        command = (
+            "ledger.append({run_id:run_id,item_id:work_item.id,"
+            "status:'checkpointed',next_action:'execute'})"
+        )
+    elif any(token in text for token in (
+        "budget", "budgets", "max_actions", "max_repair_rounds",
+        "max_rounds", "max_retries", "constant", "stop on",
+        "stop condition", "预算", "停止",
+    )):
         instruction = "在循环入口断言命名预算和停止条件"
-        command = "assert max_actions <= 5 and max_repair_rounds <= 3 and grader_timeout_seconds == 120"
-    elif any(token in text for token in ("repair", "defect", "restart", "convergence", "failure", "schema_mismatch", "missing_evidence", "tool_timeout", "reviewer_disagreement", "修复", "缺陷", "失败", "分类")):
+        command = (
+            "assert max_actions <= 5 and max_repair_rounds <= 3 "
+            "and grader_timeout_seconds == 120"
+        )
+    elif any(token in text for token in (
+        "repair", "defect", "restart", "convergence", "failure",
+        "schema_mismatch", "missing_evidence", "tool_timeout",
+        "reviewer_disagreement", "修复", "缺陷", "失败", "分类",
+    )):
         instruction = "按失败类型分派定点修复动作，不能整篇重跑"
-        command = "repair_router.dispatch(error_class=current_failure.type, anchor=current_failure.raw_anchor)"
+        command = (
+            "repair_router.dispatch(error_class=current_failure.type, "
+            "anchor=current_failure.raw_anchor)"
+        )
     elif any(token in text for token in ("signature", "error_class", "escalation", "签名", "升级")):
         instruction = "记录故障签名并在重复出现时升级"
         command = "record_failure(loop='loop1',node=node,error_class=error_class)"
@@ -2854,7 +3036,10 @@ def _raw_source_how_steps(
     return derived
 
 
-def _source_claim_for_raw_operation(anchor: str, raw_anchor_texts: dict[str, str]) -> dict[str, Any]:
+def _source_claim_for_raw_operation(
+    anchor: str,
+    raw_anchor_texts: dict[str, str],
+) -> dict[str, Any]:
     section = raw_anchor_texts.get(anchor, "").strip()
     compact = re.sub(r"\s+", " ", section).strip()
     if compact:
@@ -2950,7 +3135,10 @@ def _build_how_boundary_table(
         "| 步骤 | 来源支撑 | AKB 操作化 | 未直接支持/仍需验证 |",
         "|---|---|---|---|",
     ]
-    for idx, step, anchor in (rendered_how_steps or _supported_how_steps(how_steps, claims, raw_anchor_texts or {})):
+    for idx, step, anchor in (
+        rendered_how_steps
+        or _supported_how_steps(how_steps, claims, raw_anchor_texts or {})
+    ):
         claim = claim_by_anchor.get(anchor) or (
             claims[min(idx - 1, len(claims) - 1)] if claims else {}
         )
@@ -2968,15 +3156,16 @@ def _build_how_boundary_table(
             anchor, claims, raw_anchor_texts or {}
         )
         support = f"[raw {anchor}] {support_text[:90] or '来源事实'}"
-        gap = str(claim.get("evidence_gap", "")).strip() or "未验证：原文未给出该操作化步骤的生产实测。"
-        step_provenance = "akb_interpretation"
-        if isinstance(step, dict):
-            step_provenance = _how_step_provenance(step, command, anchor)
+        gap = (
+            str(claim.get("evidence_gap", "")).strip()
+            or "未验证：原文未给出该操作化步骤的生产实测。"
+        )
         operation = instruction
         if command:
             operation = f"{operation} `{command}`"
         rows.append(
-            f"| {idx} | {_md_table_cell(support)} | {_md_table_cell(operation)} | {_md_table_cell(gap)} |"
+            f"| {idx} | {_md_table_cell(support)} | "
+            f"{_md_table_cell(operation)} | {_md_table_cell(gap)} |"
         )
     return "\n".join(rows)
 
@@ -3343,6 +3532,12 @@ def _build_body(
     )
     if how_boundary:
         how_text = f"{how_text}\n\n{how_boundary}"
+    # Finding 6: 持久化三态 provenance_split 摘要到 How 节末尾，供 SG 读取消费。
+    # derived from supported_how_steps 的 provenance_split + 代码直出 must_cover_ops。
+    split_comment = _provenance_split_summary_comment(
+        [s for _, s, _ in supported_how_steps], must_cover_ops
+    )
+    how_text = f"{how_text}\n\n{split_comment}"
 
     # 证据地图："未覆盖"列必须写真盲区(claim.evidence_gap),不是论证摘要。
     # 旧用 argumentation explanation 填该列 → 退化成释义,grader 维度4 扣分(codex 必修1)。
@@ -3361,20 +3556,27 @@ def _build_body(
     if graph_edges:
         graph_rows = "\n".join(
             f"| {_md_table_cell(edge['concept'])} | {_md_table_cell(edge['relation_type'])} "
-            f"| {edge['strength']} | {edge['provenance']} | {_md_table_cell(edge.get('evidence', ''))} |"
+            f"| {edge['strength']} | {edge['provenance']} | "
+            f"{_md_table_cell(edge.get('evidence', ''))} |"
             for edge in (_normalize_graph_edge(e) for e in graph_edges)
         )
     elif concepts:
         # concept 来自 LLM referenced_concepts,可能含 | → 同样转义(altitude:所有插值 cell 一致转义)
         fallback_anchor = claims[0].get("anchor", "§A") if claims else "§A"
+        fallback_cell = _md_table_cell(
+            f"[raw {fallback_anchor}] (akb_interpretation) "
+            "见原文概念引用，候选阶段按推测关联保守标 weak。"
+        )
         graph_rows = "\n".join(
             f"| {_md_table_cell(c)} | related | weak | "
-            "akb_interpretation | "
-            f"{_md_table_cell(f'[raw {fallback_anchor}] (akb_interpretation) 见原文概念引用，候选阶段按推测关联保守标 weak。')} |"
+            f"akb_interpretation | {fallback_cell} |"
             for c in concepts
         )
     else:
-        graph_rows = "| （无相关概念） | — | weak | akb_interpretation | (akb_interpretation) 无可证实图谱边。 |"
+        graph_rows = (
+            "| （无相关概念） | — | weak | akb_interpretation | "
+            "(akb_interpretation) 无可证实图谱边。 |"
+        )
 
     concepts_text = ", ".join(concepts) if concepts else "（见图谱关系）"
 

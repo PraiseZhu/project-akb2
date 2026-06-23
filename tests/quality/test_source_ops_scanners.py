@@ -222,3 +222,101 @@ class TestModuleStructure:
         for item in items:
             assert item.kind in valid_kinds, f"Invalid kind: {item.kind}"
             assert item.must_cover_class == item.kind
+
+
+# ---------------------------------------------------------------------------
+# SC-1: Finding 4 — bare API calls + fenced Python/JS calls coverage
+# ---------------------------------------------------------------------------
+
+
+class TestApiAndCodeBlockScannerCoverage:
+    """Finding 4: scanner now catches bare ``func(...)`` and fenced call sites.
+
+    Covers the coverage gap left by the original dotted-only / JSON-only scan:
+    - ``searchFlights(...)`` bare camelCase call in prose → source_operation.
+    - ``client.callTool(...)`` dotted call in prose → source_operation.
+    - ``func(...)`` / ``obj.method(...)`` inside fenced Python blocks.
+    - span traceable back to raw; natural-language parentheticals excluded.
+    """
+
+    def test_bare_camelcase_func_in_prose_enters_source_operation(self) -> None:
+        raw = (
+            "To query flights, call searchFlights(origin, dest) and inspect "
+            "the returned itineraries."
+        )
+        items = scan_all(raw)
+        ops = [i for i in items if i.kind == "source_operation"]
+        literals = {i.literal for i in ops}
+        assert "searchFlights" in literals, (
+            f"bare camelCase func not captured: {literals}"
+        )
+        # span traceable: raw[span.start:span.end] == literal
+        sf = next(i for i in ops if i.literal == "searchFlights")
+        assert raw[sf.raw_anchor_span.start : sf.raw_anchor_span.end] == "searchFlights"
+        assert sf.source == "api_signatures"
+
+    def test_dotted_call_in_prose_enters_source_operation(self) -> None:
+        raw = (
+            "The client invokes client.callTool(tool=\"search\") to dispatch."
+        )
+        items = scan_all(raw)
+        ops = [i for i in items if i.kind == "source_operation"]
+        literals = {i.literal for i in ops}
+        assert "client.callTool" in literals, (
+            f"dotted call not captured: {literals}"
+        )
+        dc = next(i for i in ops if i.literal == "client.callTool")
+        assert raw[dc.raw_anchor_span.start : dc.raw_anchor_span.end] == "client.callTool"
+        assert dc.source == "api_signatures"
+
+    def test_fenced_python_calls_enter_source_operation(self) -> None:
+        """fenced Python block: bare + dotted calls both captured, spans valid."""
+        raw = (
+            "```python\n"
+            "result = searchFlights(\"SFO\", \"JFK\")\n"
+            "client.callTool(name=\"search\")\n"
+            "for item in result:\n"
+            "    process(item)\n"
+            "```\n"
+        )
+        items = scan_all(raw)
+        ops = [i for i in items if i.kind == "source_operation"]
+        literals = {i.literal for i in ops}
+        assert "searchFlights" in literals, f"fenced bare call missing: {literals}"
+        assert "client.callTool" in literals, (
+            f"fenced dotted call missing: {literals}"
+        )
+        # control-flow keyword `for` must NOT be captured
+        assert "for" not in literals, f"`for` keyword leaked: {literals}"
+        # spans traceable back to raw
+        for lit in ("searchFlights", "client.callTool"):
+            item = next(i for i in ops if i.literal == lit)
+            slice_text = raw[item.raw_anchor_span.start : item.raw_anchor_span.end]
+            assert slice_text == lit, (
+                f"span mismatch for {lit}: {slice_text!r}"
+            )
+            assert item.source == "code_blocks"
+
+    def test_natural_language_parenthetical_excluded(self) -> None:
+        """``tools (e.g., ...)`` must not produce a bare-func source_operation."""
+        raw = (
+            "The agent exposes tools (e.g., search and call) for the user. "
+            "This is plain prose without any camelCase call."
+        )
+        items = scan_all(raw)
+        ops = [i for i in items if i.kind == "source_operation"]
+        literals = {i.literal for i in ops}
+        # ``tools`` is lowercase (no uppercase) → not camelCase → excluded.
+        assert "tools" not in literals, (
+            f"natural-language parenthetical leaked: {literals}"
+        )
+
+    def test_bare_lowercase_func_still_excluded(self) -> None:
+        """Plain lowercase ``func(...)`` without camelCase stays excluded (保守)."""
+        raw = "Run run(x) and do(y) to test the path."
+        items = scan_all(raw)
+        ops = [i for i in items if i.kind == "source_operation"]
+        literals = {i.literal for i in ops}
+        assert "run" not in literals and "do" not in literals, (
+            f"plain lowercase func leaked (should be excluded): {literals}"
+        )

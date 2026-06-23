@@ -570,7 +570,10 @@ def check_a4_graph_edges(text: str) -> list[Defect]:
                             dimension="A4-图谱边",
                             location="图谱关系表 表头",
                             defect=f"图谱关系表缺少列: {', '.join(missing_cols)}",
-                            suggestion="补齐列: target | relation | strength | provenance | evidence",
+                            suggestion=(
+                                "补齐列: target | relation | "
+                                "strength | provenance | evidence"
+                            ),
                         )
                     )
                     continue
@@ -592,7 +595,8 @@ def check_a4_graph_edges(text: str) -> list[Defect]:
                                 f"（evidence 含未转义的 | 会拆列）"
                             ),
                             suggestion=(
-                                "补齐/收齐列: target | relation | strength | provenance | evidence；"
+                                "补齐/收齐列: target | relation | "
+                                "strength | provenance | evidence；"
                                 "evidence 含 | 时转义为 \\|"
                             ),
                         )
@@ -659,7 +663,10 @@ def check_a4_graph_edges(text: str) -> list[Defect]:
                                     Defect(
                                         dimension="A7-图谱证据",
                                         location=f"图谱关系/evidence/{target}",
-                                        defect="图谱 evidence 未同步标注 provenance 列对应的 marker",
+                                        defect=(
+                                            "图谱 evidence 未同步标注 "
+                                            "provenance 列对应的 marker"
+                                        ),
                                         suggestion=f"在 evidence 中加入 {marker}",
                                     )
                                 )
@@ -669,7 +676,10 @@ def check_a4_graph_edges(text: str) -> list[Defect]:
                                 Defect(
                                     dimension="A7-图谱证据",
                                     location=f"图谱关系/evidence/{target}",
-                                    defect="图谱 evidence 缺少 [raw §X] 锚点，也未明确标注 akb_interpretation",
+                                    defect=(
+                                        "图谱 evidence 缺少 [raw §X] 锚点，"
+                                        "也未明确标注 akb_interpretation"
+                                    ),
                                     suggestion=(
                                         "补充 [raw §X] 来源锚点；若只是库内推断，"
                                         "必须标注 (akb_interpretation)"
@@ -922,6 +932,36 @@ def _provenance_counts(body: str) -> tuple[int, int]:
     return body.count("(source_grounded)"), body.count("(akb_interpretation)")
 
 
+_PROVENANCE_SPLIT_SUMMARY_RE = re.compile(
+    r"<!--\s*provenance_split:\s*"
+    r"source_operation=(?P<op>\d+)\s+"
+    r"source_fact=(?P<fact>\d+)\s+"
+    r"akb_interpretation=(?P<akb>\d+)\s*-->"
+)
+
+
+def _provenance_split_summary(text: str) -> dict[str, int] | None:
+    """Read the three-way provenance split summary comment (Finding 6).
+
+    compose_candidate emits ``<!-- provenance_split: source_operation=N
+    source_fact=M akb_interpretation=K -->`` at the end of the How section,
+    derived from how_steps' ``provenance_split`` annotation + code-direct
+    must_cover operations. This is the SG consumer of the three-state split.
+
+    Returns ``{source_operation, source_fact, akb_interpretation}`` or ``None``
+    when the comment is absent (e.g. hand-written fixtures, or how_steps lacked
+    the ``provenance_split`` annotation layer).
+    """
+    m = _PROVENANCE_SPLIT_SUMMARY_RE.search(text)
+    if m is None:
+        return None
+    return {
+        "source_operation": int(m.group("op")),
+        "source_fact": int(m.group("fact")),
+        "akb_interpretation": int(m.group("akb")),
+    }
+
+
 def _core_provenance_body(text: str) -> str:
     """Return only source-claim sections for the AKB interpretation ratio.
 
@@ -1007,16 +1047,31 @@ def run_candidate_self_gate(
     provenance_body = _core_provenance_body(text)
     source_count, akb_count = _provenance_counts(provenance_body)
     total_provenance = source_count + akb_count
+    # Finding 6: 消费三态 provenance_split 摘要（compose_candidate 持久化到 How 节末尾）。
+    # 核心比例阈值仍按二态 marker（操作步骤故意排除，见不变量
+    # test_how_interpretation_steps_do_not_count_against_core_ratio）；三态在此只读报告，
+    # 让 SG 能区分 source_operation / source_fact / akb_interpretation。
+    split_summary = _provenance_split_summary(text)
     if total_provenance > 0 and akb_count / total_provenance > MAX_AKB_INTERPRETATION_RATIO:
+        split_note = ""
+        if split_summary is not None:
+            split_note = (
+                f"（三态细分：source_operation={split_summary['source_operation']} "
+                f"source_fact={split_summary['source_fact']} "
+                f"akb_interpretation={split_summary['akb_interpretation']}）"
+            )
         defects.append(
             Defect(
                 dimension="SG-provenance-ratio",
                 location="核心知识区 provenance",
                 defect=(
                     f"akb_interpretation 占比 {akb_count}/{total_provenance} "
-                    f"> {MAX_AKB_INTERPRETATION_RATIO:.0%}"
+                    f"> {MAX_AKB_INTERPRETATION_RATIO:.0%}{split_note}"
                 ),
-                suggestion="减少编辑解释，优先改写为 source_grounded 来源事实或删除无原文支撑的判断",
+                suggestion=(
+                    "减少编辑解释，优先改写为 source_grounded 来源事实"
+                    "或删除无原文支撑的判断"
+                ),
             )
         )
 
@@ -1028,7 +1083,10 @@ def run_candidate_self_gate(
                     dimension="SG-generic-command",
                     location="操作步骤",
                     defect=f"候选页包含通用 AKB 内部命令: {marker}",
-                    suggestion="How 步骤只能使用来源明确给出的操作、协议、API 或配置，不能用 AKB 内部检查命令补齐",
+                    suggestion=(
+                        "How 步骤只能使用来源明确给出的操作、协议、API 或配置，"
+                        "不能用 AKB 内部检查命令补齐"
+                    ),
                 )
             )
 
@@ -1040,7 +1098,10 @@ def run_candidate_self_gate(
                 dimension="SG-how-density",
                 location="### 操作步骤",
                 defect="候选页缺少操作步骤小节",
-                suggestion="compose 阶段必须生成至少 3 条带 raw anchor/provenance/code command 的可执行 How 步骤",
+                suggestion=(
+                    "compose 阶段必须生成至少 3 条带 raw anchor/provenance/"
+                    "code command 的可执行 How 步骤"
+                ),
             )
         )
     elif len(commands) < MIN_HOW_EXECUTABLE_STEPS:
@@ -1051,7 +1112,10 @@ def run_candidate_self_gate(
                 defect=(
                     f"可执行 How 步骤 {len(commands)} < {MIN_HOW_EXECUTABLE_STEPS}"
                 ),
-                suggestion="补足至少 3 条带反引号命令、raw anchor 和 provenance 的可复制步骤",
+                suggestion=(
+                    "补足至少 3 条带反引号命令、"
+                    "raw anchor 和 provenance 的可复制步骤"
+                ),
             )
         )
     for marker in FORBIDDEN_HOW_FALLBACK_MARKERS:
@@ -1061,7 +1125,10 @@ def run_candidate_self_gate(
                     dimension="SG-how-executability",
                     location="### 操作步骤",
                     defect=f"操作步骤含放弃式占位: {marker}",
-                    suggestion="来源有协议/流程/配置操作时必须锚定并渲染；无足够 How 时 compose 应 fail-closed",
+                    suggestion=(
+                        "来源有协议/流程/配置操作时必须锚定并渲染；"
+                        "无足够 How 时 compose 应 fail-closed"
+                    ),
                 )
             )
 
@@ -1072,7 +1139,10 @@ def run_candidate_self_gate(
                     dimension="SG-novelty-hardcoded",
                     location="新颖增量",
                     defect=f"新颖性对照包含硬编码基线: {rel_path}",
-                    suggestion="改为按当前 vault 的 slug/source_url/concepts 动态选择相邻条目；无邻居时明确暂无本地基线",
+                    suggestion=(
+                        "改为按当前 vault 的 slug/source_url/concepts "
+                        "动态选择相邻条目；无邻居时明确暂无本地基线"
+                    ),
                 )
             )
 

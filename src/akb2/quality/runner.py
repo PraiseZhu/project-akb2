@@ -941,7 +941,10 @@ def _run_pipeline_segments(
                    {"error_class": error_class, "error": error_detail,
                     "repair_rounds": rounds,
                     "final_defects": final_defects_summary,
-                    "repair_trace_paths": quality_meta.get("repair_trace_paths", []) if quality_meta else []})
+                    "repair_trace_paths": (
+                        quality_meta.get("repair_trace_paths", []) if quality_meta else []
+                    ),
+                })
         return {
             "converged": False,
             "rounds": rounds,
@@ -954,7 +957,9 @@ def _run_pipeline_segments(
     _log_event(config, "repair_loop", "repair_loop", content_hash,
                {"converged": True,
                 "repair_rounds": rounds,
-                "repair_trace_paths": quality_meta.get("repair_trace_paths", []) if quality_meta else []})
+                "repair_trace_paths": (
+                    quality_meta.get("repair_trace_paths", []) if quality_meta else []
+                )})
 
     # Segment 7: 升格（传入段 5-6 落盘的 grader 结果供 Gate-5 复核）
     promoted, promotion_mode, promote_detail = _run_promote_segment(
@@ -1092,16 +1097,18 @@ def _regrade_sample(samples: list[dict[str, str]]) -> list[bool]:
             continue
 
         try:
-            from src.akb2.quality.grader import run_grader
-            defects, _model, suspended = run_grader(_text)
+            from src.akb2.quality.grader import run_grader_detailed
+            grader_result = run_grader_detailed(_text)
         except Exception:
             results.append(False)
             continue
 
-        if suspended:
+        # step-6: 拒收 degraded PASS — fallback_used/suspended 的空缺陷不可信，
+        # 否则 gemini 兜底的空缺陷会被当 pass，抽检达标率虚高。
+        if grader_result.suspended or grader_result.fallback_used:
             results.append(False)
         else:
-            results.append(len(defects) == 0)
+            results.append(len(grader_result.defects) == 0)
 
     return results
 

@@ -4,7 +4,7 @@
 - SC-7.1: how_params segment 产 SEMANTIC_RETAKE_MAX 次取交集（具名常量=2）
 - SC-7.2: 交集为空/连续不一致达阈值 → fail-closed（有界，不无限重试）
 - SC-7.3: must_cover kind 仍三类；DISTILL_MODEL_FAMILY / PRIMARY_GRADER_MODEL 未变
-- 回归护栏: 默认关（不设 env）时 extract_claims 仍只产 2 次 LLM 调用
+- 回归护栏: 默认开（不设 env）时 extract_claims 产 3 次 LLM 调用（claims + 2 次 how_params 取交集）；显式 =0 才关闭
 
 retake 仅作用于 LLM 自由文本 how_steps（语义 segment），不碰 must_cover 代码直出。
 """
@@ -105,10 +105,14 @@ class TestSemanticRetakeConstant:
             raise SemanticJitterError("test")
 
 
-class TestSemanticRetakeDefaultOff:
-    """回归护栏：默认不设 env 时 retake 关闭，extract_claims 行为与改前一致（2 次调用）。"""
+class TestSemanticRetakeDefaultOn:
+    """生产策略护栏：默认不设 env 时 retake 开启（SC-11 retake 默认开）。
 
-    def test_default_off_keeps_two_calls(
+    Finding 3：retake 必须默认开——单次抽取不够稳，取交集才是 fail-closed 的依据。
+    仅当显式 AKB2_DISTILL_SEMANTIC_RETAKE=0 才关闭。
+    """
+
+    def test_default_on_produces_retake(
         self, monkeypatch, sample_raw_content, extract_success_response
     ):
         monkeypatch.delenv("AKB2_DISTILL_SEMANTIC_RETAKE", raising=False)
@@ -124,7 +128,29 @@ class TestSemanticRetakeDefaultOff:
         result = extract_claims(sample_raw_content, route_llm_fn=tracking)
 
         assert result.success is True
-        # 默认关：仍只 claims + how_params 两次调用，无 retake 第 3 次。
+        # 默认开：claims(1) + how_params 取交集(SEMANTIC_RETAKE_MAX=2) = 3 次调用。
+        # mock 对每次返回同一份合法响应，两份 how_params 交集非空 → 成功。
+        assert calls == ["claims", "how_steps", "how_steps"]
+        assert len(calls) == 1 + SEMANTIC_RETAKE_MAX
+
+    def test_explicit_zero_disables_retake(
+        self, monkeypatch, sample_raw_content, extract_success_response
+    ):
+        """显式 AKB2_DISTILL_SEMANTIC_RETAKE=0 关闭 retake，回退到单次 how_params。"""
+        monkeypatch.setenv("AKB2_DISTILL_SEMANTIC_RETAKE", "0")
+        from tests.quality.conftest import make_mock_route_llm
+
+        calls = []
+        base = make_mock_route_llm(extract_success_response)
+
+        def tracking(model_family, messages, response_schema=None, **kwargs):
+            calls.append(response_schema["required"][0])
+            return base(model_family, messages, response_schema, **kwargs)
+
+        result = extract_claims(sample_raw_content, route_llm_fn=tracking)
+
+        assert result.success is True
+        # 显式关闭：仅 claims + how_params 两次调用，无 retake 第 3 次。
         assert calls == ["claims", "how_steps"]
         assert len(calls) == 2
 
