@@ -242,21 +242,21 @@ def _parse_grader_output(
     for dim in dimensions:
         if not isinstance(dim, dict):
             return [], False
-        if set(dim.keys()) - {"dimension", "pass", "defects"}:
+        if set(dim.keys()) != {"dimension", "pass", "defects"}:
             return [], False
         dim_name = _canonical_dimension_name(dim.get("dimension"))
         if dim_name is None:
             return [], False
         seen_dimensions.add(dim_name)
-        passed = dim.get("pass", True)
+        passed = dim["pass"]
         if not isinstance(passed, bool):
             return [], False
         if passed:
-            if dim.get("defects", []) != []:
+            if dim["defects"] != []:
                 return [], False
             continue
 
-        dim_defects = dim.get("defects", [])
+        dim_defects = dim["defects"]
         if not isinstance(dim_defects, list):
             return [], False
         if not dim_defects:

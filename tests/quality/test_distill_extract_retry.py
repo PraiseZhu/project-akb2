@@ -207,6 +207,7 @@ class TestExtractRetry:
             assert call["kwargs"]["max_retries"] == DISTILL_MAX_RETRIES
             assert call["kwargs"]["reasoning_effort"] is None
             assert call["kwargs"]["strict_schema"] is True
+            assert call["kwargs"]["extra_body"] == {"enable_thinking": False}
 
     def test_extract_attempt_has_wall_clock_deadline(
         self, monkeypatch, sample_raw_content

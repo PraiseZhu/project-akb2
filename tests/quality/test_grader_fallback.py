@@ -10,8 +10,8 @@ import pytest
 from src.akb2.quality.grader import (
     FALLBACK_GRADER_MODEL,
     PRIMARY_GRADER_MODEL,
-    run_grader_with_fixture_detailed,
     run_grader_with_fixture,
+    run_grader_with_fixture_detailed,
 )
 from src.akb2.quality.llm_router import LLMResponse, RouterConfigError
 

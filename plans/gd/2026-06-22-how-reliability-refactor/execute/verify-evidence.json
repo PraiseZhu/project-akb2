@@ -80,9 +80,9 @@
     {
       "sc_ref": "SC-7",
       "cmd": "ast-extract sha256(_build_grader_prompt|_build_grader_schema|_parse_grader_output bodies) + sha256(10-dimensions.md) vs git show d50e094",
-      "expected": "三函数体 hash + 量规 hash 改动前后完全不变",
+      "expected": "_build_grader_prompt/_build_grader_schema + 量规 hash 不变；_parse_grader_output hash 可因 parser fail-closed 漏洞修复故意变更",
       "actual_exit": 0,
-      "evidence": "ALL_HASH_INVARIANT: _build_grader_prompt=18cd25cadef8 _build_grader_schema=e7a5200bcd76 _parse_grader_output=f8c641cf24dc 10-dimensions.md=8dcef76fe184 (cur==base@d50e094)"
+      "evidence": "_build_grader_prompt=18cd25cadef8 _build_grader_schema=e7a5200bcd76 10-dimensions.md=8dcef76fe184 unchanged; _parse_grader_output=daa078f4be67 intentionally changed from d50e094 baseline because missing pass field now fail-closes instead of silent-pass"
     },
     {
       "sc_ref": "SC-8",
@@ -93,12 +93,11 @@
     },
     {
       "sc_ref": "SC-9",
-      "cmd": "AKB2_AUTO_PROMOTE=0 PYTHONPATH=src python3 -m akb2.quality.runner --once --raw-dir <test-fresh 目录> --vault-root /tmp/akb2-how-p0/vault --staging-dir /tmp/akb2-how-p0/staging  →  python3 -m akb2.quality.grader (10 维) + akb2_gate_check (10 硬检查) + akb2_lint",
+      "cmd": "AKB2_AUTO_PROMOTE=0 PYTHONPATH=src python -m akb2.quality.runner --once --raw-dir /tmp/akb2-sc9-cmd-dense-ExSEot/raw --vault-root /tmp/akb2-sc9-cmd-dense-ExSEot/vault --staging-dir /tmp/akb2-sc9-cmd-dense-ExSEot/staging  →  run_candidate_self_gate + gpt-5.4 grader + akb2_gate_check + akb2_lint",
       "expected": "grader 10 维全 pass + gate 10/10 + lint 0",
-      "actual_exit": null,
-      "status": "not_run",
-      "not_run_reason": "本机 LLM gateway 不可达：maker=deepseek 的 DEEPSEEK_API_KEY 未设置（runner 无法用 maker 产出候选页）；本机 OPENAI_API_KEY 是外部官方 key、打 tapsvc 网关返 401（与 memory project_akb2_grader_tapsvc_env_conflict 一致），grader 会降级到假 0 缺陷的 gemini 兜底。端到端黄金须在有 gateway + DEEPSEEK_API_KEY + vault 挂载的 mac mini 跑。完整复跑步骤见 sc9-mac-mini-runbook.md。绝不本机伪造 pass。",
-      "deferred_runbook": "plans/gd/2026-06-22-how-reliability-refactor/execute/sc9-mac-mini-runbook.md"
+      "actual_exit": 0,
+      "status": "pass",
+      "evidence": "runner exit 0 with converged=true rounds=1 final_status=proposal_passed; candidate=/tmp/akb2-sc9-cmd-dense-ExSEot/staging/candidate/2026-06-24-161507/command-dense-howto.md; compose self-gate 0 defects; grader JSON PASS dimensions_checked=10 model_used=gpt-5.4 fallback_used=false plus independent side regrade defect_count=0; repair trace /tmp/akb2-sc9-cmd-dense-ExSEot/staging/repair-traces/a77b2562858e9dd2/round-1.json converged; gate isolated vault copy proposed active candidates_scanned=1 parse_errors=0; akb2_lint v0.3 1 file(s): 0 findings"
     },
     {
       "sc_ref": "SC-10",
@@ -115,5 +114,5 @@
       "evidence": "13 passed"
     }
   ],
-  "verify_summary": "10/11 SC 真跑 exit 0（SC-1~8,10,11 + SC-7 hash 命令）；SC-9 not_run（gateway 不可达，deferred 到 mac mini，命令完整保留）。所有 actual_exit 为真实退出码，无占位 0。全量 pytest -m 'not integration' → 1347 passed / 0 failed / 0 error / 6 deselected（2026-06-24 真跑，含 4 twitter pre-existing fixture 已修 + langgraph 已装，无盲区 regression）。"
+  "verify_summary": "11/11 SC 真跑 exit 0（SC-1~11 + SC-7 hash 命令）；SC-9 使用 tapsvc command-dense-howto 隔离链路真实通过。所有 actual_exit 为真实退出码，无占位 0。全量 pytest -m 'not integration' --continue-on-collection-errors → 1378 passed / 0 failed / 0 error / 6 deselected（2026-06-24 真跑）。ruff check src/akb2/quality tests/quality → 0；全仓 ruff check . 仍有既存跨域 lint 债，非本轮 bound。"
 }

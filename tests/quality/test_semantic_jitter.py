@@ -220,6 +220,38 @@ class TestSemanticRetakeIntersection:
         assert result.success is True
         assert [s["command"] for s in result.data["how_steps"]] == _SHARED_COMMANDS
 
+    def test_retake_intersects_normalized_command_and_instruction(
+        self, monkeypatch, sample_raw_content
+    ):
+        """命令写法轻微抖动或同 instruction 语义一致时，不因字面不同退兜底。"""
+        monkeypatch.setenv("AKB2_DISTILL_SEMANTIC_RETAKE", "1")
+        from tests.quality.conftest import make_mock_route_llm
+
+        sample_a = _how_params_response(
+            ["pip install akb2", "python -m akb2.quality.runner --once", "git status"]
+        )
+        sample_b = _how_params_response(
+            ["python -m pip install akb2", "python -m akb2.quality.runner --once", "git  status"]
+        )
+        # 第三条 command 归一化靠空白；前两条覆盖 pip 归一化 + instruction 语义兜底。
+        sample_b.content["how_steps"][0]["instruction"] = "Run pip install akb2"
+        sample_b.content["how_steps"][1]["instruction"] = "Run python quality runner once"
+        responses = {
+            f"{DISTILL_MODEL_FAMILY}:0": _claims_response(),
+            f"{DISTILL_MODEL_FAMILY}:1": sample_a,
+            f"{DISTILL_MODEL_FAMILY}:2": sample_b,
+        }
+        mock_fn = make_mock_route_llm(responses)
+
+        result = extract_claims(sample_raw_content, route_llm_fn=mock_fn)
+
+        assert result.success is True, result.error
+        assert [s["command"] for s in result.data["how_steps"]] == [
+            "pip install akb2",
+            "python -m akb2.quality.runner --once",
+            "git status",
+        ]
+
 
 class TestSemanticRetakeFailClosed:
     """SC-7.2: 交集为空/连续不一致达阈值 → fail-closed（不无限重试）。"""

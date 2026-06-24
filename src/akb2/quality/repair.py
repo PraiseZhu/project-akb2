@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import signal
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -40,8 +42,10 @@ from src.akb2.quality.checks_structural import (
 from src.akb2.quality.grader import run_grader_with_fixture_detailed
 from src.akb2.quality.llm_router import RouterConfigError
 from src.akb2.quality.md_table import md_table_cell, split_md_table_row
+from src.akb2.quality.source_ops_scanners import scan_all as scan_source_ops
 from src.akb2.quality.source_ops_scanners.raw_verify import (
     is_command_allowed_for_candidate,
+    verify_commands_in_raw,
 )
 
 # ---------------------------------------------------------------------------
@@ -53,6 +57,7 @@ REPAIR_MODEL = "deepseek-v4-pro"
 REPAIR_TIMEOUT_S: float = 60.0
 REPAIR_MAX_RETRIES: int = 0
 REPAIR_WORKER_TIMEOUT_S: float = 90.0
+REPAIR_WORKER_KILL_GRACE_S: float = 2.0
 REPAIR_WORKER_MODULE: str = "src.akb2.quality.repair_worker"
 # Repair 是定点重写(只改点名节,输出短 JSON patch),不需要思维链。
 # 根因(2026-06-24 实测): deepseek-v4-pro 默认产 reasoning_content,即使
@@ -63,6 +68,7 @@ REPAIR_WORKER_MODULE: str = "src.akb2.quality.repair_worker"
 # 注意: 这是 repair(重写)专属;提炼(distill)不设上限以免截断 claims/how_steps。
 REPAIR_MAX_TOKENS: int = 3000
 REPAIR_DISABLE_THINKING: bool = True
+MIN_REPAIR_HOW_EXECUTABLE_STEPS: int = 3
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +214,14 @@ def _find_section_line_range(lines: list[str], title: str) -> tuple[int, int] | 
             end = i
             break
     return start, end
+
+
+def _section_text_by_title(lines: list[str], title: str) -> str:
+    section_range = _find_section_line_range(lines, title)
+    if section_range is None:
+        return ""
+    start, end = section_range
+    return "\n".join(lines[start:end])
 
 
 def _normalize_graph_evidence(
@@ -426,6 +440,25 @@ def _boundary_segments_from_text(section_body: str, fallback_anchor: str) -> lis
     return grouped["适用场景"][:2] + grouped["不适用场景"][:1] + grouped["约束条件"][:1]
 
 
+def _raw_source_boundary_bullets(raw_text: str | None) -> list[str]:
+    """Render scanner-detected source_boundary facts for the applicability section."""
+    if not raw_text:
+        return []
+    decls = _declared_raw_anchors_with_pos(raw_text)
+    bullets: list[str] = []
+    seen: set[str] = set()
+    for item in scan_source_ops(raw_text):
+        if item.kind != "source_boundary":
+            continue
+        literal = re.sub(r"\s+", " ", item.literal).strip()
+        if not literal or literal.lower() in seen:
+            continue
+        seen.add(literal.lower())
+        anchor = _map_span_to_declared_anchor(raw_text, item.raw_anchor_span.start, decls)
+        bullets.append(f"- [raw {anchor}] (source_grounded) 来源事实：{literal}")
+    return bullets
+
+
 def _clean_boundary_value(value: str) -> str:
     """Remove template residue and repeated punctuation from boundary text."""
     cleaned = re.sub(r"#+\s*", "", str(value))
@@ -435,7 +468,11 @@ def _clean_boundary_value(value: str) -> str:
     return cleaned
 
 
-def _apply_boundary_repairs(text: str, defects: list[Defect]) -> tuple[str, list[dict[str, str]]]:
+def _apply_boundary_repairs(
+    text: str,
+    defects: list[Defect],
+    raw_text: str | None = None,
+) -> tuple[str, list[dict[str, str]]]:
     """对适用边界执行确定性分层修复。"""
     if not any(
         "适用边界" in d.location or "适用边界" in d.defect or d.dimension == "SG-provenance-ratio"
@@ -454,7 +491,18 @@ def _apply_boundary_repairs(text: str, defects: list[Defect]) -> tuple[str, list
         if raw_anchor:
             fallback_anchor = raw_anchor.group(0)
     section_body = "\n".join(lines[start:end])
-    bullets = _boundary_segments_from_text(section_body, fallback_anchor)
+    raw_bullets = _raw_source_boundary_bullets(raw_text)
+    parsed_bullets = _boundary_segments_from_text(section_body, fallback_anchor)
+    if raw_bullets:
+        akb_supplements: list[str] = []
+        for label in ("适用场景", "不适用场景", "约束条件"):
+            for bullet in parsed_bullets:
+                if "(akb_interpretation)" in bullet and f"{label}：" in bullet:
+                    akb_supplements.append(bullet)
+                    break
+        bullets = raw_bullets + akb_supplements
+    else:
+        bullets = parsed_bullets
     if not bullets:
         return text, []
     new_section = ["## 适用边界", "", *bullets]
@@ -540,6 +588,80 @@ def _how_command_for_claim(claim: str, idx: int) -> tuple[str, str]:
     )
 
 
+_RAW_ANCHOR_DECL_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(rf"(?m)^#{{1,6}}\s+({RAW_ANCHOR_DECL_RE})(?:[.\s:：]|$)"),
+    re.compile(rf"(?m)^\[raw\s+({RAW_ANCHOR_DECL_RE})\]"),
+    re.compile(rf"(?m)^({RAW_ANCHOR_DECL_RE})_[A-Z_]+\b"),
+    re.compile(rf"(?m)^\|\s*({RAW_ANCHOR_DECL_RE})\s*\|"),
+)
+
+
+def _declared_raw_anchors_with_pos(raw_text: str) -> list[tuple[int, str]]:
+    decls: list[tuple[int, str]] = []
+    for pattern in _RAW_ANCHOR_DECL_PATTERNS:
+        for match in pattern.finditer(raw_text):
+            decls.append((match.start(), match.group(1)))
+    return sorted(decls, key=lambda x: x[0])
+
+
+def _map_span_to_declared_anchor(
+    raw_text: str,
+    span_start: int,
+    decls: list[tuple[int, str]] | None = None,
+) -> str:
+    if not raw_text:
+        return "§A"
+    if decls is None:
+        decls = _declared_raw_anchors_with_pos(raw_text)
+    if not decls:
+        return "§A"
+    chosen = ""
+    for pos, anchor in decls:
+        if pos <= span_start:
+            chosen = anchor
+        else:
+            break
+    return chosen or decls[0][1]
+
+
+def _sanitize_source_operation_command(literal: str) -> str:
+    cleaned = literal.replace("`", "'").replace("\n", " ").strip()
+    return cleaned or literal
+
+
+def _raw_source_operation_steps(raw_text: str) -> list[dict[str, str]]:
+    """Render source_operation scanner output as repair-safe How commands."""
+    if not raw_text:
+        return []
+    decls = _declared_raw_anchors_with_pos(raw_text)
+    steps: list[dict[str, str]] = []
+    seen_commands: set[str] = set()
+    for item in scan_source_ops(raw_text):
+        if item.kind != "source_operation":
+            continue
+        command = _sanitize_source_operation_command(item.literal)
+        if not command:
+            continue
+        if not is_command_allowed_for_candidate(command, raw_text):
+            continue
+        command_key = command.lower()
+        if command_key in seen_commands:
+            continue
+        seen_commands.add(command_key)
+        steps.append(
+            {
+                "anchor": _map_span_to_declared_anchor(
+                    raw_text,
+                    item.raw_anchor_span.start,
+                    decls,
+                ),
+                "command": command,
+                "scanner": item.source,
+            }
+        )
+    return steps
+
+
 def _expand_how_anchors(
     anchors: list[tuple[str, str]],
     min_count: int = 3,
@@ -573,7 +695,9 @@ def _apply_how_executability_repairs(
     **同一口径**兜底——否则 repair 重建的 How 会再注入这些编造命令，被 SG-command-recheck
     判为「原文不存在此命令字面量（疑似编造）」→ repair 永不收敛（SC-9 卡点）。
 
-    护栏行为（与 compose 一致）：命令字面量在 raw 出现 → 渲染反引号命令（source-grounded
+    护栏行为（与 compose 一致）：优先复用 raw 中真实 source_operation 命令，防止 repair
+    重写把 compose 阶段的 must_cover How 命令删空；其次才尝试 claim-derived AKB
+    examples。命令字面量在 raw 出现 → 渲染反引号命令（source-grounded
     可执行步骤）；不在 raw → **剥离反引号命令**，只渲染 instruction + source_basis，并显式
     标注 ``无原文可锚定命令``，绝不把编造命令上稿。raw 为空（``raw_text`` None/空串）则
     一律 fail-closed 视为不接地，所有派生命令被剥离。
@@ -597,37 +721,49 @@ def _apply_how_executability_repairs(
         prefix, _tail = section.split("### 操作步骤", 1)
     else:
         prefix = section
+    raw_steps = _raw_source_operation_steps(raw_grounding_text)
     anchors = _expand_how_anchors(_extract_claim_anchor_lines(text, limit=3))
-    if not anchors:
+    if not raw_steps and not anchors:
         return text, []
     step_lines = [
         "### 操作步骤",
         "",
-        "> 以下步骤均为 AKB 候选页的操作化示例，不是来源提供的原生实施流程。"
-        "每步都必须同时给出 source basis 与 akb action；"
-        "读者不得把这些命令当作原文事实。",
+        "> 以下步骤按 provenance 分层：source_grounded 表示 raw 明确给出的协议/API/配置操作；"
+        "akb_interpretation 表示 AKB 候选页的操作化示例。"
+        "解读性步骤必须给出 source basis、akb action 与 unsupported assumptions。",
         "",
     ]
-    for idx, (anchor, claim) in enumerate(anchors, 1):
-        instruction, command = _how_command_for_claim(claim, idx)
-        # 治本2（砍编造源）：emission 前回查 raw，与 compose 同口径。命令字面量在 raw
-        # 出现才渲染反引号命令；否则剥离命令，降级为无命令 instruction（绝不上稿编造命令）。
-        if is_command_allowed_for_candidate(command, raw_grounding_text):
-            step_lines.append(
-                f"{idx}. [raw {anchor}] (akb_interpretation) AKB action: {instruction}; "
-                f"source_basis=[raw {anchor}]; "
-                "unsupported_assumptions=命令对象名与生产 API 需落地校准 "
-                f"`{command}`"
-                "（AKB 操作化，依据来源结构，不是原文逐字指令）"
-            )
-        else:
-            step_lines.append(
-                f"{idx}. [raw {anchor}] (akb_interpretation) AKB action: {instruction}; "
-                f"source_basis=[raw {anchor}]; "
-                "unsupported_assumptions=无原文可锚定命令，仅给出操作意图，"
-                "落地命令需结合生产代码补全"
-                "（AKB 操作化，依据来源结构，不是原文逐字指令）"
-            )
+    for idx, step in enumerate(raw_steps, 1):
+        step_lines.append(
+            f"{idx}. [raw {step['anchor']}] (source_grounded) "
+            f"原文操作（repair 代码直出，scanner={step['scanner']}） "
+            f"`{step['command']}`"
+        )
+    next_idx = len(raw_steps) + 1
+    if len(raw_steps) < MIN_REPAIR_HOW_EXECUTABLE_STEPS:
+        if raw_steps:
+            step_lines.append("")
+            step_lines.append("原文语义补充（仅在 raw 命令不足时启用）：")
+        for idx, (anchor, claim) in enumerate(anchors, next_idx):
+            instruction, command = _how_command_for_claim(claim, idx)
+            # 治本2（砍编造源）：emission 前回查 raw，与 compose 同口径。命令字面量在 raw
+            # 出现才渲染反引号命令；否则剥离命令，降级为无命令 instruction（绝不上稿编造命令）。
+            if is_command_allowed_for_candidate(command, raw_grounding_text):
+                step_lines.append(
+                    f"{idx}. [raw {anchor}] (akb_interpretation) AKB action: {instruction}; "
+                    f"source_basis=[raw {anchor}]; "
+                    "unsupported_assumptions=命令对象名与生产 API 需落地校准 "
+                    f"`{command}`"
+                    "（AKB 操作化，依据来源结构，不是原文逐字指令）"
+                )
+            else:
+                step_lines.append(
+                    f"{idx}. [raw {anchor}] (akb_interpretation) AKB action: {instruction}; "
+                    f"source_basis=[raw {anchor}]; "
+                    "unsupported_assumptions=无原文可锚定命令，仅给出操作意图，"
+                    "落地命令需结合生产代码补全"
+                    "（AKB 操作化，依据来源结构，不是原文逐字指令）"
+                )
     step_lines.extend(
         [
             "",
@@ -648,7 +784,84 @@ def _apply_how_executability_repairs(
     new_section = prefix.rstrip() + "\n\n" + "\n".join(step_lines)
     new_lines = lines[:start] + new_section.split("\n") + lines[end:]
     return "\n".join(new_lines), [
-        {"section": "论证与解释", "changed_sections": "论证与解释", "step_count": str(len(anchors))}
+        {
+            "section": "论证与解释",
+            "changed_sections": "论证与解释",
+            "raw_step_count": str(len(raw_steps)),
+            "step_count": str(
+                len(raw_steps)
+                + (
+                    len(anchors)
+                    if len(raw_steps) < MIN_REPAIR_HOW_EXECUTABLE_STEPS
+                    else 0
+                )
+            ),
+        }
+    ]
+
+
+def _apply_must_cover_repairs(
+    text: str,
+    defects: list[Defect],
+    raw_text: str | None = None,
+) -> tuple[str, list[dict[str, str]]]:
+    """Reinsert scanner-required source conclusions into core claims."""
+    if not any(d.dimension == "SG-must-cover" for d in defects):
+        return text, []
+    raw_grounding_text = raw_text or ""
+    if not raw_grounding_text:
+        return text, []
+    conclusion_items = [
+        item for item in scan_source_ops(raw_grounding_text) if item.kind == "source_conclusion"
+    ]
+    if not conclusion_items:
+        return text, []
+
+    lines = text.split("\n")
+    section_range = _find_section_line_range(lines, "核心论点")
+    if section_range is None:
+        return text, []
+    start, end = section_range
+    core_section = "\n".join(lines[start:end])
+    target_text = "\n".join(
+        section
+        for section in (
+            _section_text_by_title(lines, "TLDR"),
+            _section_text_by_title(lines, "关键发现"),
+            core_section,
+        )
+        if section
+    )
+    decls = _declared_raw_anchors_with_pos(raw_grounding_text)
+    existing_numbers = [
+        int(match.group(1))
+        for match in re.finditer(r"(?m)^\s*(\d+)\.\s+", core_section)
+    ]
+    next_num = max(existing_numbers, default=0) + 1
+    additions: list[str] = []
+    for item in conclusion_items:
+        literal = re.sub(r"\s+", " ", item.literal).strip()
+        if not literal or literal in target_text:
+            continue
+        anchor = _map_span_to_declared_anchor(
+            raw_grounding_text,
+            item.raw_anchor_span.start,
+            decls,
+        )
+        additions.append(f"{next_num}. [raw {anchor}] (source_grounded) {literal}")
+        next_num += 1
+    if not additions:
+        return text, []
+    insert_at = end
+    while insert_at > start and not lines[insert_at - 1].strip():
+        insert_at -= 1
+    new_lines = lines[:insert_at] + additions + lines[insert_at:]
+    return "\n".join(new_lines), [
+        {
+            "section": "核心论点",
+            "changed_sections": "核心论点",
+            "must_cover_conclusion_count": str(len(additions)),
+        }
     ]
 
 
@@ -711,15 +924,21 @@ def _apply_deterministic_repairs(
     （治本2 砍编造源，与 compose 同口径）。None/空串则 fail-closed 视为不接地。
     """
     repaired, graph_actions = _apply_graph_table_repairs(text, defects)
-    repaired, boundary_actions = _apply_boundary_repairs(repaired, defects)
+    repaired, boundary_actions = _apply_boundary_repairs(repaired, defects, raw_text)
     repaired, how_actions = _apply_how_executability_repairs(repaired, defects, raw_text)
+    repaired, must_cover_actions = _apply_must_cover_repairs(repaired, defects, raw_text)
     repaired, novelty_actions = _apply_novelty_provenance_repairs(repaired, defects)
-    return repaired, graph_actions + boundary_actions + how_actions + novelty_actions
+    return (
+        repaired,
+        graph_actions + boundary_actions + how_actions + must_cover_actions + novelty_actions,
+    )
 
 
 def _is_deterministic_repair_defect(defect: Defect) -> bool:
     """当前确定性 repair 覆盖的缺陷类型。"""
     if _graph_repair_target(defect) is not None:
+        return True
+    if defect.dimension == "SG-must-cover":
         return True
     if (
         "How 可执行性" in defect.dimension
@@ -1016,6 +1235,97 @@ def _write_repair_trace(
     return str(path)
 
 
+def _command_violation_key(v: Any) -> tuple[str, str]:
+    reason_class = "danger" if "危险" in str(getattr(v, "reason", "")) else "raw"
+    return str(getattr(v, "command", "")), reason_class
+
+
+def _new_command_violations(before: list[Any], after: list[Any]) -> list[Any]:
+    counts: dict[tuple[str, str], int] = {}
+    for v in before:
+        key = _command_violation_key(v)
+        counts[key] = counts.get(key, 0) + 1
+
+    new: list[Any] = []
+    for v in after:
+        key = _command_violation_key(v)
+        if counts.get(key, 0) > 0:
+            counts[key] -= 1
+            continue
+        new.append(v)
+    return new
+
+
+def _strip_command_markdown_at_offset(text: str, offset: int) -> str:
+    """Remove command syntax for one violation offset.
+
+    Inline code spans are demoted to plain text so SG-how-density can fail on a
+    missing executable command. Fenced-command violations remove the offending
+    line from the block.
+    """
+    if offset < 0 or offset >= len(text):
+        return text
+    line_start = text.rfind("\n", 0, offset) + 1
+    line_end = text.find("\n", offset)
+    if line_end == -1:
+        line_end = len(text)
+
+    before_tick = text.rfind("`", line_start, offset + 1)
+    after_tick = text.find("`", offset, line_end)
+    if before_tick != -1 and after_tick != -1 and before_tick < after_tick:
+        return text[:before_tick] + text[before_tick + 1 : after_tick] + text[after_tick + 1 :]
+
+    # Fenced block or other line-oriented command source: delete the whole line.
+    delete_end = line_end + (1 if line_end < len(text) and text[line_end] == "\n" else 0)
+    return text[:line_start] + text[delete_end:]
+
+
+def _filter_repair_command_violations(
+    current_text: str,
+    repaired_text: str,
+    raw_text: str | None,
+) -> tuple[str, dict[str, Any]]:
+    """Prevent repair patches from adding ungrounded or dangerous commands."""
+    details: dict[str, Any] = {
+        "checked": raw_text is not None,
+        "before_count": 0,
+        "after_count": 0,
+        "new_count": 0,
+        "stripped_commands": [],
+        "discarded_patch": False,
+    }
+    if raw_text is None:
+        return repaired_text, details
+
+    before = verify_commands_in_raw(current_text, raw_text)
+    after = verify_commands_in_raw(repaired_text, raw_text)
+    new_violations = _new_command_violations(before, after)
+    details["before_count"] = len(before)
+    details["after_count"] = len(after)
+    details["new_count"] = len(new_violations)
+    details["stripped_commands"] = [v.command for v in new_violations]
+    if not new_violations:
+        return repaired_text, details
+
+    filtered = repaired_text
+    for violation in sorted(
+        new_violations,
+        key=lambda v: v.candidate_offset,
+        reverse=True,
+    ):
+        filtered = _strip_command_markdown_at_offset(filtered, violation.candidate_offset)
+
+    residual = _new_command_violations(
+        before,
+        verify_commands_in_raw(filtered, raw_text),
+    )
+    if residual:
+        details["discarded_patch"] = True
+        details["residual_commands"] = [v.command for v in residual]
+        return current_text, details
+    return filtered, details
+
+
 def _grader_meta_from_result(result: Any) -> dict[str, Any]:
     """从 GraderResult 提取 runner 可落盘的最终评分 meta。"""
     return {
@@ -1041,24 +1351,31 @@ def _run_repair_route(messages: list[dict[str, str]], mock_route_llm: Any = None
 
     cmd = [sys.executable, "-m", REPAIR_WORKER_MODULE]
     payload = json.dumps({"messages": messages}, ensure_ascii=False)
+    proc: subprocess.Popen[str] | None = None
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
-            input=payload,
             text=True,
-            capture_output=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        stdout, stderr = proc.communicate(
+            input=payload,
             timeout=REPAIR_WORKER_TIMEOUT_S,
-            check=False,
         )
     except subprocess.TimeoutExpired as exc:
+        if proc is not None:
+            _kill_process_group(proc, REPAIR_WORKER_KILL_GRACE_S)
         raise RuntimeError(
             f"repair_worker_timeout: 修复子进程超过总时限 {REPAIR_WORKER_TIMEOUT_S}s"
         ) from exc
     except OSError as exc:
         raise RuntimeError(f"repair_worker_os_error: {exc}") from exc
 
-    stdout = (proc.stdout or "").strip()
-    stderr = (proc.stderr or "").strip()
+    stdout = (stdout or "").strip()
+    stderr = (stderr or "").strip()
     if proc.returncode != 0:
         detail = stderr[-1000:] or stdout[-1000:] or "no worker output"
         raise RuntimeError(f"repair_worker_exit_{proc.returncode}: {detail}")
@@ -1080,6 +1397,32 @@ def _run_repair_route(messages: list[dict[str, str]], mock_route_llm: Any = None
         model_used=str(result.get("model_used") or REPAIR_MODEL),
         calls_used=int(result.get("calls_used") or 1),
     )
+
+
+def _kill_process_group(proc: subprocess.Popen[Any], grace_s: float) -> None:
+    """Terminate a worker process group, escalating to SIGKILL after grace."""
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        proc.communicate(timeout=grace_s)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    try:
+        proc.communicate(timeout=grace_s)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
 
 
 # ---------------------------------------------------------------------------
@@ -1245,8 +1588,13 @@ def run_repair_loop(
                 current_defects = new_a_defects
             elif deterministic_only and not graded_after_deterministic:
                 current_defects = []
-            # mixed defects: keep current_defects so the remaining natural-language
-            # issues still go through LLM repair in this same round.
+            else:
+                # Mixed defects: deterministic repairs should not be handed back
+                # to the LLM in the same round, or the patch can overwrite the
+                # clean section with a fresh A-layer violation.
+                current_defects = [
+                    d for d in current_defects if not _is_deterministic_repair_defect(d)
+                ]
             body = _extract_body_text(current_text)
             title_norms = [(t, _normalize_loc(t)) for _, t in _find_sections_h2_h3(body)]
             for d in current_defects:
@@ -1281,6 +1629,12 @@ def run_repair_loop(
             new_body = _apply_section_patches(body, patches, allowed_titles=named_sections)
             fm_match = re.match(r"^---\s*\n.*?\n---\s*\n", current_text, re.DOTALL)
             repaired_text = (fm_match.group(0) + new_body) if fm_match else new_body
+            repaired_text, command_filter = _filter_repair_command_violations(
+                current_text,
+                repaired_text,
+                raw_text,
+            )
+            trace_payload["command_filter"] = command_filter
         except (RouterConfigError, RuntimeError) as exc:
             # 根因④(2026-06-18 修):路由失败/超时不再静默吞(违宪法 P4 失败可见)
             # route/worker 失败直接 fail-closed，避免 repair 阶段拖到外层 kill 前没有主账本 abort。

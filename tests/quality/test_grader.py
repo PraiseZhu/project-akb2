@@ -335,6 +335,18 @@ class TestParseGraderOutput:
         assert not ok
         assert defects == []
 
+    def test_parse_missing_pass_field_rejected(self):
+        """10 维都缺 pass 时拒收，避免 defects=[] 被静默当全 pass。"""
+        content = {
+            "dimensions": [
+                {"dimension": dim, "defects": []}
+                for dim in RUBRIC_DIMENSIONS
+            ]
+        }
+        defects, ok = _parse_grader_output(content)
+        assert not ok
+        assert defects == []
+
 
 class TestGraderSchema:
     def test_dimension_schema_is_canonical_enum(self):

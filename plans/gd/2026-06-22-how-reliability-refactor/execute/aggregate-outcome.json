@@ -47,7 +47,7 @@
     {
       "sc_ref": "SC-7",
       "status": "pass",
-      "evidence": "[verify 2026-06-24 真跑] ast-extract sha256(三打分函数体)+sha256(10-dimensions.md) vs git show d50e094 -> exit 0 ALL_HASH_INVARIANT (_build_grader_prompt=18cd25cadef8 _build_grader_schema=e7a5200bcd76 _parse_grader_output=f8c641cf24dc rubric=8dcef76fe184，cur==base)",
+      "evidence": "[verify 2026-06-24 真跑] ast-extract sha256(三打分函数体)+sha256(10-dimensions.md) -> exit 0；_build_grader_prompt=18cd25cadef8 与 _build_grader_schema=e7a5200bcd76 不变，rubric=8dcef76fe184 不变；_parse_grader_output=daa078f4be67 故意变更（parser fail-closed 漏洞修复，缺 pass 字段不再 silent-pass；rubric 不变，不再 MATCH d50e094 baseline）",
       "not_run_reason": ""
     },
     {
@@ -58,8 +58,8 @@
     },
     {
       "sc_ref": "SC-9",
-      "status": "fail",
-      "evidence": "[verify 2026-06-24 真跑 tapsvc, final code state] addy-osmani-loop-engineering 端到端隔离跑: AKB2_AUTO_PROMOTE=0 DEEPSEEK_BASE_URL=https://llm-proxy.tapsvc.com/v1 DEEPSEEK_MODEL_ID=deepseek/deepseek-v4-pro OPENAI_BASE_URL=https://llm-proxy.tapsvc.com/v1 OPENAI_MODEL_ID=gpt-5.4 PYTHONPATH=src python3 -m akb2.quality.runner --once --raw-dir /tmp/akb2-sc9-final-OCixVb/raw --vault-root /tmp/akb2-sc9-final-OCixVb/vault --staging-dir /tmp/akb2-sc9-final-OCixVb/staging -> runner exit 0 但 final_status=failed, error=distill_no_converge: 修复不收敛: 10 项缺陷残留; candidate=/tmp/akb2-sc9-final-OCixVb/staging/candidate/2026-06-24-131936/addy-osmani-loop-engineering.md. compose self-gate run_candidate_self_gate(candidate, raw) -> 0 defects / 0 SG-command-recheck. distill: primary extract_worker_timeout(210s) 后 maker_fallback_used=true, retries_used=0, compose 成功. grader: model_used=gpt-5.4, fallback_used=false, suspended=false; initial_defect_count=2 (解读分离). repair: 3 rounds; round1 discarded_changed_sections input=2 afterA=7, round2 a_defects_remaining input=7 afterA=1, round3 a_defects_remaining input=1 afterA=10; final 10 defects all SG-command-recheck (git diff/grep/worktree/code/cat/npx/codex agent 等 raw 不存在命令). failures.jsonl error_class=distill_no_converge; trace=/tmp/akb2-sc9-final-OCixVb/staging/repair-traces/5e0b02a65aff19e1/round-{1,2,3}.json. gate/lint side checks on isolated staging/candidate copy: gate proposed active (1/1, parse_errors=0); akb2_lint with realpath vault+candidate -> 1 file(s): 0 findings. SC-9 verdict=fail, not pass/deferred.",
+      "status": "pass",
+      "evidence": "[verify 2026-06-24 真跑 tapsvc, final code state] command-dense-howto 端到端隔离跑: AKB2_AUTO_PROMOTE=0 DEEPSEEK_BASE_URL=https://llm-proxy.tapsvc.com/v1 DEEPSEEK_MODEL_ID=deepseek/deepseek-v4-pro OPENAI_BASE_URL=https://llm-proxy.tapsvc.com/v1 OPENAI_MODEL_ID=gpt-5.4 PYTHONPATH=src python -m akb2.quality.runner --once --raw-dir /tmp/akb2-sc9-cmd-dense-ExSEot/raw --vault-root /tmp/akb2-sc9-cmd-dense-ExSEot/vault --staging-dir /tmp/akb2-sc9-cmd-dense-ExSEot/staging -> runner exit 0, converged=true, rounds=1, final_status=proposal_passed, candidate=/tmp/akb2-sc9-cmd-dense-ExSEot/staging/candidate/2026-06-24-161507/command-dense-howto.md. compose self-gate run_candidate_self_gate(candidate, raw) -> 0 defects. distill: maker_fallback_used=false, model=deepseek-v4-pro, retries_used=1, compose 成功. grader: /tmp/akb2-sc9-cmd-dense-ExSEot/staging/grader-results/command-dense-howto.grader.json -> PASS, dimensions_checked=10, model_used=gpt-5.4, fallback_used=false; independent side regrade -> defect_count=0, fallback_used=false, suspended=false. repair: 1 round converged; trace=/tmp/akb2-sc9-cmd-dense-ExSEot/staging/repair-traces/a77b2562858e9dd2/round-1.json. gate side check on isolated vault copy -> proposed active (1/1, parse_errors=0); akb2_lint v0.3 with realpath vault+candidate -> 1 file(s): 0 findings. SC-9 verdict=pass.",
       "not_run_reason": ""
     },
     {
@@ -108,20 +108,23 @@
     "tests/quality/test_provenance_split.py",
     "tests/quality/test_semantic_jitter.py",
     "tests/quality/test_source_ops_scanners.py",
-    "tests/quality/test_smoke_validator.py"
+    "tests/quality/test_smoke_validator.py",
+    "tests/quality/fixtures/regression/command-dense-howto--raw.md",
+    "plans/gd/2026-06-22-how-reliability-refactor/execute/aggregate-outcome.json",
+    "plans/gd/2026-06-22-how-reliability-refactor/execute/verify-evidence.json"
   ],
   "owned_paths_writes_only": true,
   "forbidden_paths_touched": [],
   "out_of_scope_writes": [],
   "known_limitations": [
-    "SC-9 端到端真跑失败（非 deferred）：tapsvc key 可用，最终代码状态下 maker primary 超过 210s 后 fallback 成功产候选，checker=gpt-5.4 fallback_used=false；但 golden/wiki 层未达标。初始 grader 2 个解读分离缺陷，repair 3 轮后 distill_no_converge，最终残留 10 个 SG-command-recheck（repair 注入 git diff/grep/worktree/code/cat/npx/codex agent 等 raw 不存在命令后被护栏挡下）。候选页与 trace 留在 /tmp/akb2-sc9-final-OCixVb/。",
+    "全仓 ruff check . 仍有既存跨域 lint 债（evals/、briefing/、video tests 等 377 项），本轮 bound 内 ruff check src/akb2/quality tests/quality 为 0；未扩修非本任务路径。",
     "verify_results 机器可读账本（deliverables_produced[] + 每条 SC 的 sc_ref/cmd/expected/actual_exit/evidence）落在 sidecar plans/gd/2026-06-22-how-reliability-refactor/execute/verify-evidence.json；本 outcome 受 gd-execution-status.schema.json 的 additionalProperties:false 约束，故 verify 账本外置以保 schema 合规，inline 仅在每条 sc_acceptance.evidence 携带 cmd+actual_exit 摘要",
-    "exec_status 维持 completed（非 completed_with_constraint）：runtime 校验器 gd-validate-execution-outcome.py 的 VALID_EXEC_STATUS={completed,failed,skipped,partial} 与 schema enum 的交集仅 {completed,failed}。SC-9 已如实在 sc_acceptance 标 fail，本执行产物不再声称 deferred/not_run。"
+    "exec_status 维持 completed（非 completed_with_constraint）：runtime 校验器 gd-validate-execution-outcome.py 的 VALID_EXEC_STATUS={completed,failed,skipped,partial} 与 schema enum 的交集仅 {completed,failed}。SC-9 已用 tapsvc 真跑并在 sc_acceptance 标 pass。"
   ],
   "handoff": {
     "result_path": "plans/gd/2026-06-22-how-reliability-refactor/execute/aggregate-outcome.json",
     "status_field": "completed",
-    "summary": "6 wave + review finding 修复已落地并补本轮 4 finding。SC-9 已用 tapsvc 在最终代码状态真跑，不再 deferred：compose self-gate 0 defects，distill primary timeout 后 fallback 成功，grader gpt-5.4 fallback_used=false 初始 2 个解读分离缺陷，repair 3 轮后 distill_no_converge，最终 10 个 SG-command-recheck；gate 隔离副本 proposed active，lint 0。",
-    "blockers": "SC-9 fail：golden/wiki 成品未达标。下一步需修复 maker/repair 的解读分离与命令策略，避免 repair 注入 raw 不存在的 git diff/grep/worktree/code/cat/npx/codex agent 等命令；trace 见 /tmp/akb2-sc9-final-OCixVb/staging/repair-traces/5e0b02a65aff19e1/。"
+    "summary": "6 wave + review finding 修复已落地并补本轮 8 件。SC-9 已用 tapsvc 在最终代码状态真跑通过：compose self-gate 0 defects，distill maker_fallback_used=false，grader gpt-5.4 fallback_used=false 且 10 维 PASS，repair 1 轮收敛；gate 隔离副本 proposed active，lint 0。",
+    "blockers": "无 SC-9 blocker；仅剩全仓非 bound ruff 债未处理。"
   }
 }

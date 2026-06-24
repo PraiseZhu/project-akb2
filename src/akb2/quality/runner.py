@@ -42,6 +42,7 @@ MAX_PROCESSING_LOCK_AGE_SEC: int = 3600  # 锁文件最大年龄（超时自动�
 DISTILL_TIMEOUT_S: float = 60.0
 DISTILL_MAX_RETRIES: int = 0
 DISTILL_EXTRACT_WORKER_TIMEOUT_S: float = 210.0
+DISTILL_EXTRACT_WORKER_KILL_GRACE_S: float = 2.0
 DISTILL_EXTRACT_WORKER_MODULE: str = "src.akb2.quality.distill_worker"
 
 # 避让窗口定义：三链路 launchd 触发时刻 (UTC hour, UTC minute)
@@ -500,16 +501,23 @@ def _run_extract_claims_worker(raw_content: str) -> Any:
     from src.akb2.quality.distill import ExtractResult
 
     cmd = [sys.executable, "-m", DISTILL_EXTRACT_WORKER_MODULE]
+    proc: subprocess.Popen[str] | None = None
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
-            input=raw_content,
             text=True,
-            capture_output=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        stdout, stderr = proc.communicate(
+            input=raw_content,
             timeout=DISTILL_EXTRACT_WORKER_TIMEOUT_S,
-            check=False,
         )
     except subprocess.TimeoutExpired:
+        if proc is not None:
+            _kill_process_group(proc, DISTILL_EXTRACT_WORKER_KILL_GRACE_S)
         return ExtractResult(
             success=False,
             retries_used=0,
@@ -525,8 +533,8 @@ def _run_extract_claims_worker(raw_content: str) -> Any:
             error=f"extract_worker_os_error: {exc}",
         )
 
-    stdout = (proc.stdout or "").strip()
-    stderr = (proc.stderr or "").strip()
+    stdout = (stdout or "").strip()
+    stderr = (stderr or "").strip()
     if proc.returncode != 0:
         detail = stderr[-1000:] or stdout[-1000:] or "no worker output"
         return ExtractResult(
@@ -560,6 +568,32 @@ def _run_extract_claims_worker(raw_content: str) -> Any:
         retries_used=int(payload.get("retries_used") or 0),
         error=str(payload.get("error") or ""),
     )
+
+
+def _kill_process_group(proc: subprocess.Popen[Any], grace_s: float) -> None:
+    """Terminate a worker process group, escalating to SIGKILL after grace."""
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        proc.communicate(timeout=grace_s)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    try:
+        proc.communicate(timeout=grace_s)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
 
 
 def _run_quality_segments(

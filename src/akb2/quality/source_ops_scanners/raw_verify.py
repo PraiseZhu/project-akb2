@@ -36,6 +36,12 @@ from dataclasses import dataclass
 # legitimate prose quoting (`` ` ``, `` ``` ``) is excluded by content rules
 # rather than by a brittle regex.
 _BACKTICK_COMMAND_RE = re.compile(r"`([^`\n]+)`")
+_FENCED_BLOCK_RE = re.compile(
+    r"(?ms)^```(?P<lang>[^\n`]*)\n(?P<body>.*?)(?:^```[ \t]*$|\Z)"
+)
+_SHELL_FENCE_LANGS: frozenset[str] = frozenset(
+    {"bash", "sh", "zsh", "shell", "console", "terminal"}
+)
 
 # Tokens that look like a backtick command but are structural / metadata, not
 # a copy-pasteable operation. These must NOT be subject to either layer.
@@ -194,6 +200,68 @@ def _is_dangerous_command(literal: str) -> bool:
     return False
 
 
+def _fence_lang(raw_lang: str) -> str:
+    """Normalize a fenced-code language tag to its first lowercase token."""
+    parts = raw_lang.strip().lower().split(maxsplit=1)
+    return parts[0] if parts else ""
+
+
+def _strip_shell_prompt(line: str) -> tuple[str, int]:
+    """Strip common shell prompts from fenced shell examples.
+
+    Returns the command and the offset delta from line start to command start.
+    """
+    stripped = line.strip()
+    base_offset = len(line) - len(line.lstrip())
+    if stripped.startswith("$ "):
+        return stripped[2:].strip(), base_offset + 2
+    return stripped, base_offset
+
+
+def _fenced_block_command_violations(
+    candidate_body: str,
+    raw_text: str,
+) -> list[Violation]:
+    """Return command violations from fenced code blocks.
+
+    Shell-like fences are command examples, so every non-empty command line is
+    checked with the same raw/dangerous classifier as inline backticks. Data or
+    programming fences are not shell-checked, but dangerous shell snippets inside
+    them are still intercepted.
+    """
+    violations: list[Violation] = []
+    for block in _FENCED_BLOCK_RE.finditer(candidate_body):
+        lang = _fence_lang(block.group("lang"))
+        body = block.group("body")
+        body_start = block.start("body")
+        offset = 0
+        for raw_line in body.splitlines(keepends=True):
+            line = raw_line.rstrip("\r\n")
+            command, line_delta = _strip_shell_prompt(line)
+            command_offset = body_start + offset + line_delta
+            offset += len(raw_line)
+            if not command or command.startswith("#"):
+                continue
+            if lang in _SHELL_FENCE_LANGS:
+                violation = _classify_command_violation(
+                    command,
+                    raw_text,
+                    candidate_offset=command_offset,
+                )
+                if violation is not None:
+                    violations.append(violation)
+            elif _is_dangerous_command(command):
+                violations.append(
+                    Violation(
+                        command=command,
+                        reason="含危险操作（破坏性/权限/网络/凭据）",
+                        candidate_offset=command_offset,
+                        raw_nearest_line=None,
+                    )
+                )
+    return violations
+
+
 def _raw_line_with_longest_common_prefix(
     raw_text: str, command: str
 ) -> str | None:
@@ -320,6 +388,9 @@ def verify_commands_in_raw(
         )
         if violation is not None:
             violations.append(violation)
+
+    violations.extend(_fenced_block_command_violations(candidate_body, raw_text))
+    violations.sort(key=lambda v: v.candidate_offset)
 
     return violations
 

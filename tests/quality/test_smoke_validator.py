@@ -12,8 +12,8 @@ import pytest
 
 from src.akb2.quality.smoke_validator import (
     SmokeValidationError,
-    validate_env_parity,
     validate_distill_failure,
+    validate_env_parity,
     validate_happy_path,
     validate_launchd_static,
     validate_root_isolation,

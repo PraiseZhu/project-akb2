@@ -9,7 +9,8 @@
 from __future__ import annotations
 
 import json
-import subprocess
+import os
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest import mock
@@ -95,6 +96,25 @@ MAX_REPAIR_ROUNDS=3; DISTILL_TIMEOUT_SECONDS=60; GRADER_TIMEOUT_SECONDS=120; MAX
     filepath = raw_dir / filename
     filepath.write_text(content, encoding="utf-8")
     return filepath
+
+
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _wait_pid_gone(pid: int, timeout_s: float = 3.0) -> bool:
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if not _pid_exists(pid):
+            return True
+        time.sleep(0.05)
+    return not _pid_exists(pid)
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +363,7 @@ class TestRunnerLifelineSegments:
         self, tmp_path: Path, monkeypatch
     ) -> None:
         """真实 DeepSeek 卡住时，runner 父进程必须能杀 worker 并 fail-closed。"""
+        from src.akb2.quality.distill import ExtractResult
         from src.akb2.quality.runner import _run_pipeline_segments
 
         monkeypatch.setenv("AKB2_MAKER_FALLBACK", "0")
@@ -355,8 +376,12 @@ class TestRunnerLifelineSegments:
             "src.akb2.quality.runner._run_admission_segment",
             return_value=(True, "", []),
         ), mock.patch(
-            "src.akb2.quality.runner.subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd=["python"], timeout=210),
+            "src.akb2.quality.runner._run_extract_claims_worker",
+            return_value=ExtractResult(
+                success=False,
+                retries_used=0,
+                error="extract_worker_timeout: 抽取子进程超过总时限 210.0s",
+            ),
         ), mock.patch(
             "src.akb2.quality.runner._run_quality_segments"
         ) as mock_quality, mock.patch(
@@ -386,8 +411,51 @@ class TestRunnerLifelineSegments:
         mock_quality.assert_not_called()
         mock_promote.assert_not_called()
 
+    def test_distill_worker_timeout_kills_grandchild_process(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """extract worker timeout 必须 killpg，连 sleep 30 孙进程也不能残留。"""
+        from src.akb2.quality import runner as runner_mod
+
+        pidfile = tmp_path / "sleep-child.pid"
+        module = tmp_path / "hanging_distill_worker.py"
+        module.write_text(
+            "\n".join(
+                [
+                    "import pathlib",
+                    "import subprocess",
+                    "import sys",
+                    "import time",
+                    "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])",
+                    f"pathlib.Path({str(pidfile)!r}).write_text(str(child.pid), encoding='utf-8')",
+                    "time.sleep(30)",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv(
+            "PYTHONPATH",
+            f"{tmp_path}{os.pathsep}{os.environ.get('PYTHONPATH', '')}",
+        )
+        monkeypatch.setattr(
+            runner_mod,
+            "DISTILL_EXTRACT_WORKER_MODULE",
+            "hanging_distill_worker",
+        )
+        monkeypatch.setattr(runner_mod, "DISTILL_EXTRACT_WORKER_TIMEOUT_S", 0.2)
+        monkeypatch.setattr(runner_mod, "DISTILL_EXTRACT_WORKER_KILL_GRACE_S", 0.1)
+
+        result = runner_mod._run_extract_claims_worker("raw")
+
+        assert result.success is False
+        assert "extract_worker_timeout" in result.error
+        assert pidfile.exists(), "worker 应先启动 sleep 30 孙进程并写 pidfile"
+        child_pid = int(pidfile.read_text(encoding="utf-8"))
+        assert _wait_pid_gone(child_pid), f"sleep 30 孙进程仍存在: pid={child_pid}"
+
     def test_distill_worker_timeout_can_use_maker_fallback(self, tmp_path: Path, monkeypatch) -> None:
         """maker fallback 开启时，DeepSeek timeout 可转为候选，但必须继续过质量门。"""
+        from src.akb2.quality.distill import ExtractResult
         from src.akb2.quality.runner import _run_pipeline_segments
 
         monkeypatch.setenv("AKB2_MAKER_FALLBACK", "1")
@@ -400,8 +468,12 @@ class TestRunnerLifelineSegments:
             "src.akb2.quality.runner._run_admission_segment",
             return_value=(True, "", []),
         ), mock.patch(
-            "src.akb2.quality.runner.subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd=["python"], timeout=210),
+            "src.akb2.quality.runner._run_extract_claims_worker",
+            return_value=ExtractResult(
+                success=False,
+                retries_used=0,
+                error="extract_worker_timeout: 抽取子进程超过总时限 210.0s",
+            ),
         ), mock.patch(
             "src.akb2.quality.runner._run_quality_segments",
             return_value=(
@@ -449,6 +521,7 @@ class TestRunnerLifelineSegments:
         self, tmp_path: Path, monkeypatch
     ) -> None:
         """maker fallback 关闭时，DeepSeek timeout 仍必须 fail-closed。"""
+        from src.akb2.quality.distill import ExtractResult
         from src.akb2.quality.runner import _run_pipeline_segments
 
         monkeypatch.setenv("AKB2_MAKER_FALLBACK", "0")
@@ -461,8 +534,12 @@ class TestRunnerLifelineSegments:
             "src.akb2.quality.runner._run_admission_segment",
             return_value=(True, "", []),
         ), mock.patch(
-            "src.akb2.quality.runner.subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd=["python"], timeout=210),
+            "src.akb2.quality.runner._run_extract_claims_worker",
+            return_value=ExtractResult(
+                success=False,
+                retries_used=0,
+                error="extract_worker_timeout: 抽取子进程超过总时限 210.0s",
+            ),
         ):
             _run_pipeline_segments(str(f), f.read_text(encoding="utf-8"), config)
 

@@ -19,6 +19,7 @@ SC-8.2 三类行为: 有操作→捞全 / 无 How→fail-closed / 枚举带偏�
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -33,7 +34,41 @@ CORPUS_FILES = (
     "test-fresh--raw.md",
     "pure-opinion--raw.md",
     "trap-sample--raw.md",
+    "command-dense-howto--raw.md",
 )
+
+EXPECTED_FIXTURE_HASHES = {
+    Path("tests/quality/fixtures/test-fresh-golden-ops.json"):
+        "53d65299f1da49d6ec2c17aca647c0857853b4bad09b26c8eb50b2b9c8fae2a0",
+    Path("tests/quality/fixtures/regression/trap-sample--raw.md"):
+        "00642c04002a0b2036b67e44e973b88e1e774082a9d212a87c8824473d2c1e3b",
+    Path("tests/quality/fixtures/regression/test-fresh--raw.md"):
+        "d0d28eb642e407826fd5288d1b2b8d67233ff86cfb06eee55596d98a5f5983a8",
+}
+
+TRAP_MINOR_COMMANDS = [
+    "git clone https://github.com/example/repo.git",
+    "cd repo",
+    "npm install",
+    "npm run build",
+    "ls -la",
+    "cat package.json",
+    "echo $PATH",
+    "mkdir -p ~/.config/mcp",
+    "cp config.json ~/.config/mcp/",
+    "chmod 600 ~/.config/mcp/config.json",
+    "git status",
+    "git log --oneline -5",
+    "curl -s localhost:8080/health",
+    "docker ps",
+    "docker images",
+]
+
+TRAP_CORE_COMMANDS = [
+    "mcp-server init --config ~/.config/mcp/config.json",
+    "mcp-server tools list",
+    "mcp-server tools call search",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -60,6 +95,11 @@ def trap_sample_raw() -> str:
     return _load("trap-sample--raw.md")
 
 
+@pytest.fixture(scope="module")
+def command_dense_howto_raw() -> str:
+    return _load("command-dense-howto--raw.md")
+
+
 # ---------------------------------------------------------------------------
 # SC-8.1: 语料就位
 # ---------------------------------------------------------------------------
@@ -73,6 +113,15 @@ class TestCorpusFilesPresent:
         path = REGRESSION_DIR / filename
         assert path.is_file(), f"语料文件缺失: {path}"
         assert path.stat().st_size > 0, f"语料文件为空: {path}"
+
+    @pytest.mark.parametrize("relative_path,expected_hash", EXPECTED_FIXTURE_HASHES.items())
+    def test_fixture_hashes_match_baseline(
+        self, relative_path: Path, expected_hash: str
+    ) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        path = repo_root / relative_path
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        assert digest == expected_hash, f"{relative_path} hash drifted: {digest}"
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +166,27 @@ class TestFreshOperationsFullyCaught:
             assert item.literal in covered, (
                 f"span 不可追溯: literal={item.literal!r} covered={covered!r}"
             )
+
+
+class TestCommandDenseHowToCorpus:
+    """SC-9 正向语料：命令充足时有足够 source_operation 可供 compose 使用。"""
+
+    def test_pip_git_python_commands_are_caught(
+        self, command_dense_howto_raw: str
+    ) -> None:
+        items = scan_all(command_dense_howto_raw)
+        ops = [i.literal for i in items if i.kind == "source_operation"]
+        expected = [
+            "git clone https://github.com/example/ai-agent-eval-loop.git",
+            "python -m pip install --upgrade pip",
+            "python -m pip install -e \".[dev]\"",
+            "python -m pytest tests -q",
+            "python -m ruff check src tests",
+            "python -m agent_eval run --scenario repair-loop --max-rounds 3",
+        ]
+        for command in expected:
+            assert command in ops, f"命令密集 how-to 语料漏捞: {command!r}; ops={ops}"
+        assert len(ops) >= 8
 
 
 # ---------------------------------------------------------------------------
@@ -230,9 +300,15 @@ class TestTrapSampleCoreNotDropped:
         """次要操作也被捞全（不因只盯核心而漏次要）。"""
         items = scan_all(trap_sample_raw)
         ops = [i.literal for i in items if i.kind == "source_operation"]
-        assert any("git clone" in o for o in ops), f"次要 git clone 漏掉: {ops}"
-        assert any("npm install" in o for o in ops), f"次要 npm install 漏掉: {ops}"
-        assert any("docker ps" in o for o in ops), f"次要 docker ps 漏掉: {ops}"
+        for command in TRAP_MINOR_COMMANDS:
+            assert command in ops, f"次要操作漏掉: {command!r}; ops={ops}"
+
+    def test_core_operations_exact_commands_caught(self, trap_sample_raw: str) -> None:
+        """3 条核心命令 exact 命中，不只靠子串 must-contain。"""
+        items = scan_all(trap_sample_raw)
+        ops = [i.literal for i in items if i.kind == "source_operation"]
+        for command in TRAP_CORE_COMMANDS:
+            assert command in ops, f"核心操作 exact 漏掉: {command!r}; ops={ops}"
 
     def test_operations_count_full_not_truncated(
         self, trap_sample_raw: str

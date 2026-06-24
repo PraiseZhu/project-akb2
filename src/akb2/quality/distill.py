@@ -59,6 +59,7 @@ DISTILL_MODEL_FAMILY: str = "deepseek-v4-pro"
 DISTILL_TIMEOUT_S: float = 60.0
 DISTILL_MAX_RETRIES: int = 0
 DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S: float = 180.0
+DISTILL_DISABLE_THINKING: bool = True
 # Step-7: 语义型 How 抖动兜底。how_params segment（LLM 自由文本 how_steps，
 # 非 must_cover 代码直出）多取取交集，抵抗单次 LLM 抖动。有界：SEMANTIC_RETAKE_MAX 次。
 SEMANTIC_RETAKE_MAX: int = 2
@@ -1140,6 +1141,7 @@ def _extract_segment_once(
             max_retries=DISTILL_MAX_RETRIES,
             reasoning_effort=None,
             strict_schema=True,
+            extra_body={"enable_thinking": False} if DISTILL_DISABLE_THINKING else None,
         )
     parsed = _coerce_json_dict(response.content)
     segment_data = _normalize_extract_segment(segment_name, parsed, previous_segments)
@@ -1183,35 +1185,98 @@ def _extract_how_params_with_retake(
 
 
 def _intersect_how_steps(samples: list[dict[str, Any]]) -> dict[str, Any]:
-    """多取取交集：以 command 为 key 对齐，保留所有 sample 共有的 step。
+    """多取取交集：以归一化 command / instruction 语义 key 对齐共有 step。
 
     取首次出现的 step（instruction/command/anchor/provenance/provenance_split），
-    保留首次 param_entries。command 为空或仅单次出现的 step 舍弃；交集为空由调用方
-    fail-closed。
+    保留首次 param_entries。仅单次出现的 step 舍弃；交集为空由调用方 fail-closed。
     """
     if not samples:
         return {"how_steps": [], "param_entries": []}
     first = samples[0]
-    by_command: dict[str, dict[str, Any]] = {}
-    order: list[str] = []
+    by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    step_keys: list[tuple[dict[str, Any], list[tuple[str, str]]]] = []
     for step in first.get("how_steps", []):
-        cmd = str(step.get("command", "")).strip()
-        if cmd and cmd not in by_command:
-            by_command[cmd] = step
-            order.append(cmd)
-    common = set(by_command)
+        keys = _how_step_intersection_keys(step)
+        if not keys:
+            continue
+        for key in keys:
+            by_key.setdefault(key, step)
+        step_keys.append((step, keys))
+    common = set(by_key)
     for sample in samples[1:]:
-        sample_commands = {
-            str(step.get("command", "")).strip()
+        sample_keys = {
+            key
             for step in sample.get("how_steps", [])
-            if str(step.get("command", "")).strip()
+            for key in _how_step_intersection_keys(step)
         }
-        common &= sample_commands
-    intersected_steps = [by_command[cmd] for cmd in order if cmd in common]
+        common &= sample_keys
+
+    intersected_steps: list[dict[str, Any]] = []
+    seen_keys: set[tuple[str, str]] = set()
+    for step, keys in step_keys:
+        shared = [key for key in keys if key in common]
+        if not shared:
+            continue
+        if any(key in seen_keys for key in shared):
+            continue
+        seen_keys.update(shared)
+        intersected_steps.append(step)
     return {
         "how_steps": intersected_steps,
         "param_entries": first.get("param_entries", []),
     }
+
+
+def _normalize_how_command_for_intersection(command: str) -> str:
+    cleaned = str(command or "").strip()
+    if not cleaned:
+        return ""
+    cleaned = re.sub(r"^\$\s+", "", cleaned)
+    cleaned = cleaned.replace("python3 -m pip", "pip")
+    cleaned = cleaned.replace("python -m pip", "pip")
+    cleaned = cleaned.replace("--upgrade", "-U")
+    cleaned = cleaned.replace(" --user", "")
+    cleaned = re.sub(r"\s+", " ", cleaned.lower()).strip()
+    cleaned = re.sub(r"\s*=\s*", "=", cleaned)
+    cleaned = re.sub(r"\s*,\s*", ",", cleaned)
+    return cleaned
+
+
+def _normalize_how_instruction_for_intersection(instruction: str) -> str:
+    text = str(instruction or "").lower()
+    text = re.sub(r"`[^`]+`", " ", text)
+    text = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", " ", text)
+    words = [
+        word
+        for word in text.split()
+        if word
+        not in {
+            "the",
+            "a",
+            "an",
+            "to",
+            "with",
+            "and",
+            "then",
+            "run",
+            "use",
+            "step",
+        }
+    ]
+    return " ".join(words)
+
+
+def _how_step_intersection_keys(step: dict[str, Any]) -> list[tuple[str, str]]:
+    command_key = _normalize_how_command_for_intersection(str(step.get("command", "")))
+    instruction_key = _normalize_how_instruction_for_intersection(
+        str(step.get("instruction", "") or step.get("text", ""))
+    )
+    keys: list[tuple[str, str]] = []
+    if command_key:
+        keys.append(("command", command_key))
+    if instruction_key:
+        keys.append(("instruction", instruction_key))
+    return keys
 
 
 def _merge_extract_segments(

@@ -6,13 +6,16 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
 
 from src.akb2.quality.checks_structural import (
     Defect,
+    run_candidate_self_gate,
     run_structural_checks,
 )
 from src.akb2.quality.llm_router import LLMResponse
@@ -20,6 +23,8 @@ from src.akb2.quality.repair import (
     MAX_REPAIR_ROUNDS,
     _apply_boundary_repairs,
     _apply_graph_table_repairs,
+    _apply_how_executability_repairs,
+    _apply_must_cover_repairs,
     _build_repair_instruction,
     _verify_unchanged_sections,
     run_repair_loop,
@@ -455,6 +460,132 @@ class TestRepairLoopConverge:
         assert result["final_text"] == candidate_with_defects
 
 
+class TestRepairCommandFilter:
+    def test_deterministic_how_repair_rehydrates_raw_source_commands(
+        self, candidate_with_defects
+    ):
+        """SG-how-density repair prefers raw source_operation commands over AKB inventions."""
+        raw_text = """---
+artifact_type: raw
+---
+
+# §S Setup
+
+```bash
+python -m pytest tests -q
+python -m ruff check src tests
+python -m agent_eval run --scenario repair-loop --max-rounds 3
+```
+"""
+        repaired, actions = _apply_how_executability_repairs(
+            candidate_with_defects,
+            [
+                Defect(
+                    dimension="SG-how-density",
+                    location="### 操作步骤",
+                    defect="可执行 How 步骤 0 < 3",
+                    suggestion="补足 raw-grounded commands",
+                )
+            ],
+            raw_text=raw_text,
+        )
+
+        assert actions[0]["raw_step_count"] == "3"
+        assert "`python -m pytest tests -q`" in repaired
+        assert "`python -m ruff check src tests`" in repaired
+        assert "`python -m agent_eval run --scenario repair-loop --max-rounds 3`" in repaired
+        assert "ledger.append({event:'abort'" not in repaired
+        assert not [
+            d
+            for d in run_candidate_self_gate(repaired, raw_content=raw_text)
+            if d.dimension == "SG-how-density"
+        ]
+
+    def test_deterministic_must_cover_repair_reinserts_source_conclusion(
+        self, candidate_with_defects
+    ):
+        """SG-must-cover source_conclusion defects are repaired without TLDR bloat."""
+        raw_text = """---
+artifact_type: raw
+---
+
+# §C Conclusion
+
+Therefore the reliable AI agent loop is: clone the evaluation harness, isolate
+"""
+        defects = run_candidate_self_gate(candidate_with_defects, raw_content=raw_text)
+        assert any(d.dimension == "SG-must-cover" for d in defects)
+
+        repaired, actions = _apply_must_cover_repairs(
+            candidate_with_defects,
+            [d for d in defects if d.dimension == "SG-must-cover"],
+            raw_text=raw_text,
+        )
+
+        assert actions[0]["must_cover_conclusion_count"] == "1"
+        assert (
+            "Therefore the reliable AI agent loop is: clone the evaluation harness, isolate"
+            in repaired
+        )
+        assert not [
+            d
+            for d in run_candidate_self_gate(repaired, raw_content=raw_text)
+            if d.dimension == "SG-must-cover"
+        ]
+
+    def test_llm_patch_fabricated_commands_are_stripped_to_how_density_fail(
+        self, candidate_with_defects, temp_failures_path, repair_raw_text
+    ):
+        """Repair 不得把 raw 不存在的命令拼回；剥离后明确落 SG-how-density。"""
+        from tests.quality.conftest import make_mock_route_llm
+
+        mock_llm = make_mock_route_llm(
+            {
+                "deepseek-v4-pro": LLMResponse(
+                    content={
+                        "论证与解释": (
+                            "## 论证与解释\n\n"
+                            "### 操作步骤\n"
+                            "1. [raw §B] (akb_interpretation) inspect `git diff --stat`\n"
+                            "2. [raw §B] (akb_interpretation) search `grep -R TODO .`\n"
+                            "3. [raw §B] (akb_interpretation) run `npx made-up-cli audit`\n"
+                        )
+                    },
+                    model_used="deepseek-v4-pro",
+                    calls_used=1,
+                )
+            }
+        )
+
+        result = run_repair_loop(
+            candidate_text=candidate_with_defects,
+            a_defects=[],
+            b_defects=[
+                Defect(
+                    dimension="解读分离",
+                    location="论证与解释",
+                    defect="操作步骤需要重写",
+                    suggestion="只保留 raw 可回查的命令",
+                )
+            ],
+            failures_path=temp_failures_path,
+            mock_route_llm=mock_llm,
+            raw_text=repair_raw_text,
+        )
+
+        assert not result["converged"]
+        assert any(d.dimension == "SG-how-density" for d in result["final_defects"])
+        assert not any(d.dimension == "SG-command-recheck" for d in result["final_defects"])
+        assert "`git diff --stat`" not in result["final_text"]
+        trace = json.loads(Path(result["trace_paths"][0]).read_text(encoding="utf-8"))
+        assert trace["command_filter"]["new_count"] == 3
+        assert trace["command_filter"]["stripped_commands"] == [
+            "git diff --stat",
+            "grep -R TODO .",
+            "npx made-up-cli audit",
+        ]
+
+
 # ---------------------------------------------------------------------------
 # 修复循环: 不收敛
 # ---------------------------------------------------------------------------
@@ -875,12 +1006,10 @@ class TestRouteFailureVisible:
         self, candidate_with_defects, temp_failures_path, monkeypatch
     ):
         """live repair worker 超时必须第一轮 fail-closed，不得拖到外层 kill。"""
-        import subprocess
-
         monkeypatch.setattr(
-            "src.akb2.quality.repair.subprocess.run",
+            "src.akb2.quality.repair._run_repair_route",
             lambda *args, **kwargs: (_ for _ in ()).throw(
-                subprocess.TimeoutExpired(cmd=["python"], timeout=90)
+                RuntimeError("repair_worker_timeout: 修复子进程超过总时限 90.0s")
             ),
         )
         b_defects = [
@@ -1690,3 +1819,59 @@ class TestNormalizeCompare:
             assert "关键发现" in changed, (
                 f"{name}({fullwidth!r}↔{ascii_equiv!r})应判 changed,实际: {changed}"
             )
+
+
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _wait_pid_gone(pid: int, timeout_s: float = 3.0) -> bool:
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if not _pid_exists(pid):
+            return True
+        time.sleep(0.05)
+    return not _pid_exists(pid)
+
+
+class TestRepairWorkerProcessGroupKill:
+    def test_timeout_kills_repair_worker_grandchild(self, tmp_path, monkeypatch):
+        """repair worker 超时必须 killpg，连 sleep 30 孙进程也不能残留。"""
+        from src.akb2.quality import repair as repair_mod
+
+        pidfile = tmp_path / "sleep-child.pid"
+        module = tmp_path / "hanging_repair_worker.py"
+        module.write_text(
+            "\n".join(
+                [
+                    "import pathlib",
+                    "import subprocess",
+                    "import sys",
+                    "import time",
+                    "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])",
+                    f"pathlib.Path({str(pidfile)!r}).write_text(str(child.pid), encoding='utf-8')",
+                    "time.sleep(30)",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv(
+            "PYTHONPATH",
+            f"{tmp_path}{os.pathsep}{os.environ.get('PYTHONPATH', '')}",
+        )
+        monkeypatch.setattr(repair_mod, "REPAIR_WORKER_MODULE", "hanging_repair_worker")
+        monkeypatch.setattr(repair_mod, "REPAIR_WORKER_TIMEOUT_S", 0.2)
+        monkeypatch.setattr(repair_mod, "REPAIR_WORKER_KILL_GRACE_S", 0.1)
+
+        with pytest.raises(RuntimeError, match="repair_worker_timeout"):
+            repair_mod._run_repair_route([{"role": "user", "content": "x"}])
+
+        assert pidfile.exists(), "worker 应先启动 sleep 30 孙进程并写 pidfile"
+        child_pid = int(pidfile.read_text(encoding="utf-8"))
+        assert _wait_pid_gone(child_pid), f"sleep 30 孙进程仍存在: pid={child_pid}"
