@@ -16,26 +16,24 @@ from pathlib import Path
 import pytest
 
 from src.akb2.quality.distill import (
-    DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S,
+    _DISTILL_SEGMENT_SCHEMAS,
     DISTILL_MAX_RETRIES,
     DISTILL_TIMEOUT_S,
     MAX_EXTRACT_CHARS,
     MAX_EXTRACT_RETRIES,
-    _DISTILL_SEGMENT_SCHEMAS,
     ExtractResult,
-    build_deterministic_extract_result,
-    compose_candidate,
     _build_body,
     _claim_to_how_step,
     _command_grounded_in_raw,
     _ground_how_step_commands_in_raw,
     _validate_extract_output,
+    build_deterministic_extract_result,
+    compose_candidate,
     extract_claims,
 )
 from src.akb2.quality.source_ops_scanners.raw_verify import (
     verify_commands_in_raw,
 )
-
 
 # AKB 操作化命令字面量集（fenced text block），供测试 raw 补全后通过 SG-command-recheck
 # 全文回查。fenced block 不被 must_cover scanner 拾取，不引入新 must_cover 项。
@@ -990,10 +988,11 @@ class TestThorough2CommandGrounding:
     """
 
     def test_command_grounded_predicate_substring_semantics(self):
-        """谓词与 SG-command-recheck 同口径:字面子串在 raw → True，否则 False；空命令 True。"""
-        raw = "the raw mentions queue.next() inline somewhere"
+        """谓词与 SG-command-recheck 同口径:字面子串在 raw 且非危险 → True。"""
+        raw = "the raw mentions queue.next() and rm -rf / inline somewhere"
         assert _command_grounded_in_raw("queue.next()", raw) is True
         assert _command_grounded_in_raw("ledger.append(event)", raw) is False
+        assert _command_grounded_in_raw("rm -rf /", raw) is False
         assert _command_grounded_in_raw("", raw) is True  # 空命令无需回查
         assert _command_grounded_in_raw("anything", "") is False  # raw 空 → fail-closed
 
@@ -1023,6 +1022,20 @@ class TestThorough2CommandGrounding:
         assert out[1][1]["instruction"] == "在循环入口断言命名预算和停止条件"
         # 原对象不被 mutate（surgical：返回新 dict）
         assert ungrounded_step["command"] == "assert max_actions <= 5 and max_repair_rounds <= 3"
+
+    def test_guard_strips_dangerous_command_even_when_present_in_raw(self):
+        """compose 护栏复用 SG 口径:危险命令即使在 raw 中出现，也必须剥离。"""
+        raw = "The source quotes a bad example: rm -rf /"
+        step = {
+            "instruction": "do not run destructive cleanup",
+            "command": "rm -rf /",
+            "executable": True,
+            "provenance": "source_grounded",
+        }
+        out = _ground_how_step_commands_in_raw([(1, step, "§A")], raw)
+        assert out[0][1]["command"] == ""
+        assert out[0][1]["executable"] is False
+        assert step["command"] == "rm -rf /"
 
     def test_deterministic_fallback_body_has_zero_fabricated_commands(self):
         """deterministic fallback + 无命令 raw → 候选 body 的反引号命令 0 条不接地 raw。

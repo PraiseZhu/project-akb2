@@ -29,7 +29,6 @@ from src.akb2.quality.llm_router import (
     route_llm,
 )
 
-
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
@@ -330,12 +329,16 @@ class TestRouteLLMRuntimeOptions:
             timeout_s=60,
             max_retries=0,
             reasoning_effort=None,
+            max_tokens=3000,
+            extra_body={"enable_thinking": False},
         )
 
         assert result.content == {"ok": True}
         assert captured_client["timeout"] == 60
         assert captured_client["max_retries"] == 0
         assert "reasoning_effort" not in captured_create
+        assert captured_create["max_tokens"] == 3000
+        assert captured_create["extra_body"] == {"enable_thinking": False}
 
 
 class TestMainPipelineEnv:

@@ -37,16 +37,12 @@ from src.akb2.quality.checks_structural import (
     _extract_body_text,
     run_candidate_self_gate,
 )
-
-# 治本2（砍编造源）共享护栏：repair 重建 How 段时复用 distill 的单条命令回查谓词，
-# 口径与 compose 的 emission-前回查 + SG-command-recheck 的 verify_commands_in_raw 完全一致
-# （字面子串、raw 空则 fail-closed）。不重复实现，避免两份口径漂移。
-from src.akb2.quality.distill import _command_grounded_in_raw
 from src.akb2.quality.grader import run_grader_with_fixture_detailed
-
-# 只读依赖
 from src.akb2.quality.llm_router import RouterConfigError
 from src.akb2.quality.md_table import md_table_cell, split_md_table_row
+from src.akb2.quality.source_ops_scanners.raw_verify import (
+    is_command_allowed_for_candidate,
+)
 
 # ---------------------------------------------------------------------------
 # 具名常量（宪法 P1/P4: 有界 + 预算显式）
@@ -616,7 +612,7 @@ def _apply_how_executability_repairs(
         instruction, command = _how_command_for_claim(claim, idx)
         # 治本2（砍编造源）：emission 前回查 raw，与 compose 同口径。命令字面量在 raw
         # 出现才渲染反引号命令；否则剥离命令，降级为无命令 instruction（绝不上稿编造命令）。
-        if _command_grounded_in_raw(command, raw_grounding_text):
+        if is_command_allowed_for_candidate(command, raw_grounding_text):
             step_lines.append(
                 f"{idx}. [raw {anchor}] (akb_interpretation) AKB action: {instruction}; "
                 f"source_basis=[raw {anchor}]; "

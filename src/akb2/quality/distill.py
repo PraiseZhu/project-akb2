@@ -33,6 +33,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import yaml
+
+from src.akb2.quality.source_ops_scanners.raw_verify import (
+    is_command_allowed_for_candidate,
+)
+
 # ---------------------------------------------------------------------------
 # 具名常量（宪法 P1/P4）
 # ---------------------------------------------------------------------------
@@ -83,6 +89,13 @@ class DistillAttemptTimeoutError(TimeoutError):
 
 class SemanticJitterError(Exception):
     """语义 segment 多取交集为空/连续不一致达阈值，fail-closed（不无限重试）。"""
+
+
+class _FrontmatterDumper(yaml.SafeDumper):
+    """PyYAML dumper that keeps block-list indentation compatible with local lint."""
+
+    def increase_indent(self, flow: bool = False, indentless: bool = False):
+        return super().increase_indent(flow=flow, indentless=False)
 
 
 @contextmanager
@@ -3416,18 +3429,13 @@ def _read_full_raw_text(raw_path: str) -> str:
 
 
 def _command_grounded_in_raw(command: str, raw_text: str) -> bool:
-    """判断一条反引号命令是否字面接地于 raw（与 SG-command-recheck 同口径）。
+    """判断一条反引号命令是否允许进候选页（与 SG-command-recheck 同口径）。
 
-    治本2（砍编造源）核心谓词：命令字面量必须作为子串出现在 raw_text 中才算
-    source-grounded。空命令视为无需回查（True，渲染层自然不输出反引号）。raw 为空
-    则一律不接地（fail-closed），任何派生命令都会被剥离。
+    治本2（砍编造源）核心谓词：空命令/保留 token 允许；危险命令即使在 raw
+    出现也不允许；其他命令字面量必须作为子串出现在 raw_text 中才算
+    source-grounded。raw 为空则一律不接地（fail-closed），任何派生命令都会被剥离。
     """
-    cmd = command.strip()
-    if not cmd:
-        return True
-    if not raw_text:
-        return False
-    return cmd in raw_text
+    return is_command_allowed_for_candidate(command, raw_text)
 
 
 def _ground_how_step_commands_in_raw(
@@ -3764,27 +3772,11 @@ def _build_body(
 
 def _assemble_page(frontmatter: dict[str, Any], body: str) -> str:
     """组装 frontmatter + 正文为完整候选页。"""
-    # 将 None 转为 null 字符串
-    fm_lines = ["---"]
-    for key, value in frontmatter.items():
-        if value is None:
-            fm_lines.append(f"{key}: null")
-        elif isinstance(value, bool):
-            fm_lines.append(f"{key}: {str(value).lower()}")
-        elif isinstance(value, list):
-            if key.startswith("related_"):
-                # 轻量 wikilink list 内联渲染（GRAPH-LINKING §3.8.1 + 控 frontmatter 行数）
-                inline = ", ".join(f'"{item}"' for item in value)
-                fm_lines.append(f"{key}: [{inline}]")
-            else:
-                fm_lines.append(f"{key}:")
-                for item in value:
-                    fm_lines.append(f"  - {item}")
-        elif isinstance(value, (int, float)):
-            fm_lines.append(f"{key}: {value}")
-        else:
-            fm_lines.append(f"{key}: {value}")
-    fm_lines.append("---")
-
-    fm_str = "\n".join(fm_lines)
-    return f"{fm_str}\n\n{body}\n"
+    fm_str = yaml.dump(
+        frontmatter,
+        Dumper=_FrontmatterDumper,
+        allow_unicode=True,
+        sort_keys=False,
+        default_flow_style=False,
+    ).rstrip()
+    return f"---\n{fm_str}\n---\n\n{body}\n"

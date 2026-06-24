@@ -1234,6 +1234,45 @@ keep me unchanged
         assert "ledger.append({event:'abort'" not in repaired
         assert "无原文可锚定命令" in repaired
 
+    def test_how_executability_repair_strips_dangerous_command_even_when_raw_has_it(self, monkeypatch):
+        """repair 护栏复用 SG 口径:危险命令即使在 raw 中出现，也不得渲染。"""
+        import src.akb2.quality.repair as repair_mod
+
+        text = _wrap("""## 关键发现
+- [raw §D] (source_grounded) Dangerous cleanup must be rejected.
+
+## 论证与解释
+**[raw §D]** (source_grounded) 来源事实：Dangerous cleanup must be rejected.
+
+### 操作步骤
+
+1. [raw §D] (akb_interpretation) Clean up. `placeholder`
+
+## 新颖增量
+keep me unchanged
+""")
+        monkeypatch.setattr(
+            repair_mod,
+            "_how_command_for_claim",
+            lambda _claim, _idx: ("拒绝危险清理命令", "rm -rf /"),
+        )
+        repaired, actions = repair_mod._apply_deterministic_repairs(
+            text,
+            [
+                Defect(
+                    dimension="How 可执行性",
+                    location="### 操作步骤",
+                    defect="步骤缺少安全可复制命令",
+                    suggestion="补充真实命令与具体参数值",
+                ),
+            ],
+            "The raw quotes rm -rf / as a dangerous anti-example.",
+        )
+
+        assert actions
+        assert "`rm -rf /`" not in repaired
+        assert "无原文可锚定命令" in repaired
+
     def test_novelty_provenance_repair_adds_explicit_column(self):
         """新颖增量 provenance 缺陷应本地修复，不依赖 repair LLM。"""
         from src.akb2.quality.repair import _apply_deterministic_repairs

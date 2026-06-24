@@ -254,6 +254,32 @@ class TestA2Frontmatter:
         defects = check_a2_frontmatter(valid_candidate_page)
         assert len(defects) == 0, f"Expected 0 defects, got: {defects}"
 
+    def test_invalid_yaml_frontmatter_produces_a2_defect(self):
+        """负: PyYAML 解析失败时不得假绿，必须返回 A2 frontmatter defect。"""
+        text = """---
+status: candidate
+gate_decision: null
+source_refs:
+  - raw/test.md
+key_findings:
+  - [raw §A] (source_grounded) unsafe: unquoted
+future_questions:
+  - q1
+  - q2
+related_concepts:
+  - c1
+  - c2
+---
+
+## TLDR
+test [raw §A]
+"""
+        defects = check_a2_frontmatter(text)
+        assert len(defects) == 1
+        assert defects[0].dimension == "A2-frontmatter"
+        assert defects[0].location == "frontmatter"
+        assert "YAML" in defects[0].defect
+
     def test_missing_source_refs(self):
         """负: source_refs 为空 → 缺陷。"""
         text = """---
@@ -1371,3 +1397,11 @@ class TestSGCommandRecheckFailClosed:
         # raw=None 时 recheck 块不执行（raw_content falsy），不产 recheck Defect。
         assert recheck == []
 
+    def test_empty_raw_still_runs_command_recheck(self):
+        """raw_content="" 是存在但为空的 raw，必须由 raw_verify 产 SG-command-recheck。"""
+        steps = "- [raw §A] (source_grounded) 1. Run npm install `npm install`"
+        text = _candidate_with_how_steps(steps)
+        defects = run_candidate_self_gate(text, raw_content="")
+        recheck = [d for d in defects if d.dimension == "SG-command-recheck"]
+        assert recheck, "空 raw 不得跳过 SG-command-recheck"
+        assert any("npm install" in d.defect for d in recheck)

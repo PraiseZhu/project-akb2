@@ -8,32 +8,120 @@
   "executed_at": "2026-06-23T16:57:49Z",
   "exec_status": "completed",
   "sc_acceptance": [
-    {"sc_ref": "SC-1", "status": "pass", "evidence": "[verify 2026-06-24 真跑] PYTHONPATH=src pytest tests/quality/test_source_ops_scanners.py -q -> exit 0 (20 passed); scanner 补 API/code-block 覆盖后三类 inventory ⊇ golden", "not_run_reason": ""},
-    {"sc_ref": "SC-2", "status": "pass", "evidence": "[verify 2026-06-24 真跑] PYTHONPATH=src pytest tests/quality/test_distill_must_cover.py -q -> exit 0 (3 passed); must_cover 代码直出，how_steps=[] 时 How 仍含 operation", "not_run_reason": ""},
-    {"sc_ref": "SC-3", "status": "pass", "evidence": "[verify 2026-06-24 真跑] PYTHONPATH=src pytest tests/quality/test_checks_structural.py -q -> exit 0 (68 passed); SG-must-cover raw=None->Defect + 5 调用点 provenance", "not_run_reason": ""},
-    {"sc_ref": "SC-4", "status": "pass", "evidence": "[verify 2026-06-24 真跑] PYTHONPATH=src pytest tests/quality/test_raw_verify.py -q -> exit 0 (30 passed); 全文回查，deploy-preview 编造命令被挡", "not_run_reason": ""},
-    {"sc_ref": "SC-5", "status": "pass", "evidence": "[verify 2026-06-24 真跑] PYTHONPATH=src pytest tests/quality/test_repair_loop.py tests/quality/test_runner_lifecycle.py -q -> exit 0 (58 passed); degraded(fallback_used/suspended) 在 repair/runner/promote 三处 fail-closed 不判收敛", "not_run_reason": ""},
-    {"sc_ref": "SC-6", "status": "pass", "evidence": "[verify 2026-06-24 真跑] PYTHONPATH=src pytest tests/quality/test_how_regression.py -q -> exit 0 (21 passed); test-fresh + 纯观点博客 + 陷阱样本三类语料就位且通过", "not_run_reason": ""},
-    {"sc_ref": "SC-7", "status": "pass", "evidence": "[verify 2026-06-24 真跑] ast-extract sha256(三打分函数体)+sha256(10-dimensions.md) vs git show d50e094 -> exit 0 ALL_HASH_INVARIANT (_build_grader_prompt=18cd25cadef8 _build_grader_schema=e7a5200bcd76 _parse_grader_output=f8c641cf24dc rubric=8dcef76fe184，cur==base)", "not_run_reason": ""},
-    {"sc_ref": "SC-8", "status": "pass", "evidence": "[verify 2026-06-24 真跑] PYTHONPATH=src pytest tests/quality/ tests/loops/ -q -m 'not integration' -> exit 0 (679 passed) AND ruff check src/akb2/quality/ -> exit 0 (No issues found); DISTILL_MODEL_FAMILY='deepseek-v4-pro' != PRIMARY_GRADER_MODEL='gpt-5.4' (异族 PASS)", "not_run_reason": ""},
-    {"sc_ref": "SC-9", "status": "not_run", "evidence": "", "not_run_reason": "deferred 到 mac mini，不在本机伪造。本机 LLM gateway 不可达：maker=deepseek 的 DEEPSEEK_API_KEY 未设置(runner 无法产候选页)，本机 OPENAI_API_KEY 是外部官方 key 打 tapsvc 网关返 401(与 memory project_akb2_grader_tapsvc_env_conflict 一致)->grader 降级假 0 缺陷 gemini。deferred 命令: AKB2_AUTO_PROMOTE=0 PYTHONPATH=src python3 -m akb2.quality.runner --once --raw-dir <test-fresh 目录> --vault-root /tmp/akb2-how-p0/vault --staging-dir /tmp/akb2-how-p0/staging; 再对候选页跑 grader(10 维)+akb2_gate_check(10 硬检查)+akb2_lint; 期望 grader 10 维全 pass + gate 10/10 + lint 0。完整前置/步骤/回填见 plans/gd/2026-06-22-how-reliability-refactor/execute/sc9-mac-mini-runbook.md"},
-    {"sc_ref": "SC-10", "status": "pass", "evidence": "[verify 2026-06-24 真跑] PYTHONPATH=src pytest tests/quality/test_provenance_split.py -q -> exit 0 (13 passed); provenance 三态被 SG 真实消费 (持久化摘要注释 + 读取器)", "not_run_reason": ""},
-    {"sc_ref": "SC-11", "status": "pass", "evidence": "[verify 2026-06-24 真跑] PYTHONPATH=src pytest tests/quality/test_semantic_jitter.py -q -> exit 0 (13 passed); retake 默认开 (SEMANTIC_RETAKE_MAX=2)，空交集 fail-closed", "not_run_reason": ""}
+    {
+      "sc_ref": "SC-1",
+      "status": "pass",
+      "evidence": "[verify 2026-06-24 真跑] PYTHONPATH=src pytest tests/quality/test_source_ops_scanners.py -q -> exit 0 (20 passed); scanner 补 API/code-block 覆盖后三类 inventory ⊇ golden",
+      "not_run_reason": ""
+    },
+    {
+      "sc_ref": "SC-2",
+      "status": "pass",
+      "evidence": "[verify 2026-06-24 真跑] PYTHONPATH=src pytest tests/quality/test_distill_must_cover.py -q -> exit 0 (3 passed); must_cover 代码直出，how_steps=[] 时 How 仍含 operation",
+      "not_run_reason": ""
+    },
+    {
+      "sc_ref": "SC-3",
+      "status": "pass",
+      "evidence": "[verify 2026-06-24 真跑] PYTHONPATH=src pytest tests/quality/test_checks_structural.py -q -> exit 0 (68 passed); SG-must-cover raw=None->Defect + 5 调用点 provenance",
+      "not_run_reason": ""
+    },
+    {
+      "sc_ref": "SC-4",
+      "status": "pass",
+      "evidence": "[verify 2026-06-24 真跑] PYTHONPATH=src pytest tests/quality/test_raw_verify.py -q -> exit 0 (30 passed); 全文回查，deploy-preview 编造命令被挡",
+      "not_run_reason": ""
+    },
+    {
+      "sc_ref": "SC-5",
+      "status": "pass",
+      "evidence": "[verify 2026-06-24 真跑] PYTHONPATH=src pytest tests/quality/test_repair_loop.py tests/quality/test_runner_lifecycle.py -q -> exit 0 (58 passed); degraded(fallback_used/suspended) 在 repair/runner/promote 三处 fail-closed 不判收敛",
+      "not_run_reason": ""
+    },
+    {
+      "sc_ref": "SC-6",
+      "status": "pass",
+      "evidence": "[verify 2026-06-24 真跑] PYTHONPATH=src pytest tests/quality/test_how_regression.py -q -> exit 0 (21 passed); test-fresh + 纯观点博客 + 陷阱样本三类语料就位且通过",
+      "not_run_reason": ""
+    },
+    {
+      "sc_ref": "SC-7",
+      "status": "pass",
+      "evidence": "[verify 2026-06-24 真跑] ast-extract sha256(三打分函数体)+sha256(10-dimensions.md) vs git show d50e094 -> exit 0 ALL_HASH_INVARIANT (_build_grader_prompt=18cd25cadef8 _build_grader_schema=e7a5200bcd76 _parse_grader_output=f8c641cf24dc rubric=8dcef76fe184，cur==base)",
+      "not_run_reason": ""
+    },
+    {
+      "sc_ref": "SC-8",
+      "status": "pass",
+      "evidence": "[verify 2026-06-24 真跑] PYTHONPATH=src pytest tests/quality/ tests/loops/ -q -m 'not integration' -> exit 0 (679 passed) AND ruff check src/akb2/quality/ -> exit 0 (No issues found); DISTILL_MODEL_FAMILY='deepseek-v4-pro' != PRIMARY_GRADER_MODEL='gpt-5.4' (异族 PASS)",
+      "not_run_reason": ""
+    },
+    {
+      "sc_ref": "SC-9",
+      "status": "fail",
+      "evidence": "[verify 2026-06-24 真跑 tapsvc, final code state] addy-osmani-loop-engineering 端到端隔离跑: AKB2_AUTO_PROMOTE=0 DEEPSEEK_BASE_URL=https://llm-proxy.tapsvc.com/v1 DEEPSEEK_MODEL_ID=deepseek/deepseek-v4-pro OPENAI_BASE_URL=https://llm-proxy.tapsvc.com/v1 OPENAI_MODEL_ID=gpt-5.4 PYTHONPATH=src python3 -m akb2.quality.runner --once --raw-dir /tmp/akb2-sc9-final-OCixVb/raw --vault-root /tmp/akb2-sc9-final-OCixVb/vault --staging-dir /tmp/akb2-sc9-final-OCixVb/staging -> runner exit 0 但 final_status=failed, error=distill_no_converge: 修复不收敛: 10 项缺陷残留; candidate=/tmp/akb2-sc9-final-OCixVb/staging/candidate/2026-06-24-131936/addy-osmani-loop-engineering.md. compose self-gate run_candidate_self_gate(candidate, raw) -> 0 defects / 0 SG-command-recheck. distill: primary extract_worker_timeout(210s) 后 maker_fallback_used=true, retries_used=0, compose 成功. grader: model_used=gpt-5.4, fallback_used=false, suspended=false; initial_defect_count=2 (解读分离). repair: 3 rounds; round1 discarded_changed_sections input=2 afterA=7, round2 a_defects_remaining input=7 afterA=1, round3 a_defects_remaining input=1 afterA=10; final 10 defects all SG-command-recheck (git diff/grep/worktree/code/cat/npx/codex agent 等 raw 不存在命令). failures.jsonl error_class=distill_no_converge; trace=/tmp/akb2-sc9-final-OCixVb/staging/repair-traces/5e0b02a65aff19e1/round-{1,2,3}.json. gate/lint side checks on isolated staging/candidate copy: gate proposed active (1/1, parse_errors=0); akb2_lint with realpath vault+candidate -> 1 file(s): 0 findings. SC-9 verdict=fail, not pass/deferred.",
+      "not_run_reason": ""
+    },
+    {
+      "sc_ref": "SC-10",
+      "status": "pass",
+      "evidence": "[verify 2026-06-24 真跑] PYTHONPATH=src pytest tests/quality/test_provenance_split.py -q -> exit 0 (13 passed); provenance 三态被 SG 真实消费 (持久化摘要注释 + 读取器)",
+      "not_run_reason": ""
+    },
+    {
+      "sc_ref": "SC-11",
+      "status": "pass",
+      "evidence": "[verify 2026-06-24 真跑] PYTHONPATH=src pytest tests/quality/test_semantic_jitter.py -q -> exit 0 (13 passed); retake 默认开 (SEMANTIC_RETAKE_MAX=2)，空交集 fail-closed",
+      "not_run_reason": ""
+    }
   ],
-  "files_added": ["src/akb2/quality/source_ops_scanners/", "tests/quality/test_source_ops_scanners.py", "tests/quality/fixtures/test-fresh-golden-ops.json", "tests/quality/test_distill_must_cover.py", "tests/quality/test_raw_verify.py", "tests/quality/test_provenance_split.py", "tests/quality/test_semantic_jitter.py", "tests/quality/test_how_regression.py", "tests/quality/fixtures/regression/"],
-  "files_modified": ["src/akb2/quality/distill.py", "src/akb2/quality/checks_structural.py", "src/akb2/quality/grader.py", "src/akb2/quality/repair.py", "src/akb2/quality/runner.py", "src/akb2/quality/promote.py", "src/akb2/quality/intake/source_validator.py", "src/akb2/quality/smoke_validator.py", "src/akb2/quality/source_ops_scanners/operations.py", "tests/quality/conftest.py", "tests/quality/test_checks_structural.py", "tests/quality/test_grader.py", "tests/quality/test_runner_lifecycle.py", "tests/quality/test_repair_loop.py", "tests/quality/test_distill_must_cover.py", "tests/quality/test_distill_extract_retry.py", "tests/quality/test_distill_frontmatter.py", "tests/quality/test_raw_verify.py", "tests/quality/test_provenance_split.py", "tests/quality/test_semantic_jitter.py", "tests/quality/test_source_ops_scanners.py", "tests/quality/test_smoke_validator.py"],
+  "files_added": [
+    "src/akb2/quality/source_ops_scanners/",
+    "tests/quality/test_source_ops_scanners.py",
+    "tests/quality/fixtures/test-fresh-golden-ops.json",
+    "tests/quality/test_distill_must_cover.py",
+    "tests/quality/test_raw_verify.py",
+    "tests/quality/test_provenance_split.py",
+    "tests/quality/test_semantic_jitter.py",
+    "tests/quality/test_how_regression.py",
+    "tests/quality/fixtures/regression/"
+  ],
+  "files_modified": [
+    "src/akb2/quality/distill.py",
+    "src/akb2/quality/checks_structural.py",
+    "src/akb2/quality/grader.py",
+    "src/akb2/quality/repair.py",
+    "src/akb2/quality/runner.py",
+    "src/akb2/quality/promote.py",
+    "src/akb2/quality/intake/source_validator.py",
+    "src/akb2/quality/smoke_validator.py",
+    "src/akb2/quality/source_ops_scanners/operations.py",
+    "tests/quality/conftest.py",
+    "tests/quality/test_checks_structural.py",
+    "tests/quality/test_grader.py",
+    "tests/quality/test_runner_lifecycle.py",
+    "tests/quality/test_repair_loop.py",
+    "tests/quality/test_distill_must_cover.py",
+    "tests/quality/test_distill_extract_retry.py",
+    "tests/quality/test_distill_frontmatter.py",
+    "tests/quality/test_raw_verify.py",
+    "tests/quality/test_provenance_split.py",
+    "tests/quality/test_semantic_jitter.py",
+    "tests/quality/test_source_ops_scanners.py",
+    "tests/quality/test_smoke_validator.py"
+  ],
   "owned_paths_writes_only": true,
   "forbidden_paths_touched": [],
   "out_of_scope_writes": [],
   "known_limitations": [
-    "SC-9（端到端达黄金，计划最终判据）deferred_to_mac_mini：本机 LLM gateway 不可达（DEEPSEEK_API_KEY 未设置 + 官方 OPENAI_API_KEY 打 tapsvc 网关 401 致 grader 降级假 0 缺陷 gemini），runner 无法产出真实候选页。SC-9 真跑通前永远是 not_run，绝不本机伪造 pass。完整复跑/前置/回填步骤见 plans/gd/2026-06-22-how-reliability-refactor/execute/sc9-mac-mini-runbook.md",
+    "SC-9 端到端真跑失败（非 deferred）：tapsvc key 可用，最终代码状态下 maker primary 超过 210s 后 fallback 成功产候选，checker=gpt-5.4 fallback_used=false；但 golden/wiki 层未达标。初始 grader 2 个解读分离缺陷，repair 3 轮后 distill_no_converge，最终残留 10 个 SG-command-recheck（repair 注入 git diff/grep/worktree/code/cat/npx/codex agent 等 raw 不存在命令后被护栏挡下）。候选页与 trace 留在 /tmp/akb2-sc9-final-OCixVb/。",
     "verify_results 机器可读账本（deliverables_produced[] + 每条 SC 的 sc_ref/cmd/expected/actual_exit/evidence）落在 sidecar plans/gd/2026-06-22-how-reliability-refactor/execute/verify-evidence.json；本 outcome 受 gd-execution-status.schema.json 的 additionalProperties:false 约束，故 verify 账本外置以保 schema 合规，inline 仅在每条 sc_acceptance.evidence 携带 cmd+actual_exit 摘要",
-    "exec_status 维持 completed（非 completed_with_constraint）：runtime 校验器 gd-validate-execution-outcome.py 的 VALID_EXEC_STATUS={completed,failed,skipped,partial} 与 schema enum 的交集仅 {completed,failed}，completed_with_constraint 会让 validator exit 1。SC-9 deferred 不是 failure（10/11 机制 SC 真跑 pass），故 completed + known_limitations/blockers 显式标注"
+    "exec_status 维持 completed（非 completed_with_constraint）：runtime 校验器 gd-validate-execution-outcome.py 的 VALID_EXEC_STATUS={completed,failed,skipped,partial} 与 schema enum 的交集仅 {completed,failed}。SC-9 已如实在 sc_acceptance 标 fail，本执行产物不再声称 deferred/not_run。"
   ],
   "handoff": {
     "result_path": "plans/gd/2026-06-22-how-reliability-refactor/execute/aggregate-outcome.json",
     "status_field": "completed",
-    "summary": "6 wave + 7 finding 修复全落地。F-P2-A: 11 条 SC verify 命令本机真跑(2026-06-24)拿真实 exit code，10 条 exit 0(SC-1~8,10,11 含 SC-7 hash 不变命令)，机器可读账本见 sidecar verify-evidence.json。F-P2-B: conftest sample_raw_path autouse fixture 改 tmp_path+monkeypatch.chdir 隔离 CWD 消除共享 raw/ 竞态，全套件 679 passed/0 failed。SC-9 not_run（本机 gateway 不可达，deferred 到 mac mini，命令完整保留，不伪造）。",
-    "blockers": "SC-9 端到端达黄金需在有 LLM gateway + DEEPSEEK_API_KEY + vault 挂载的 mac mini 跑；前置/步骤/回填见 sc9-mac-mini-runbook.md。pending_verification: [SC-9]"
+    "summary": "6 wave + review finding 修复已落地并补本轮 4 finding。SC-9 已用 tapsvc 在最终代码状态真跑，不再 deferred：compose self-gate 0 defects，distill primary timeout 后 fallback 成功，grader gpt-5.4 fallback_used=false 初始 2 个解读分离缺陷，repair 3 轮后 distill_no_converge，最终 10 个 SG-command-recheck；gate 隔离副本 proposed active，lint 0。",
+    "blockers": "SC-9 fail：golden/wiki 成品未达标。下一步需修复 maker/repair 的解读分离与命令策略，避免 repair 注入 raw 不存在的 git diff/grep/worktree/code/cat/npx/codex agent 等命令；trace 见 /tmp/akb2-sc9-final-OCixVb/staging/repair-traces/5e0b02a65aff19e1/。"
   }
 }

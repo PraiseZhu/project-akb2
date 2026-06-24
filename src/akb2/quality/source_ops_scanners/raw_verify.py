@@ -21,7 +21,9 @@ absent from raw) + "destructive" (command that would harm the system if
 executed). Together they form a two-sided anchor: nothing is dropped, nothing
 is fabricated, and nothing destructive slips through.
 
-Public API: verify_commands_in_raw(candidate_body, raw_text) -> list[Violation].
+Public API:
+  - is_command_allowed_for_candidate(command, raw_text) -> bool
+  - verify_commands_in_raw(candidate_body, raw_text) -> list[Violation].
 """
 
 from __future__ import annotations
@@ -220,6 +222,55 @@ def _raw_line_with_longest_common_prefix(
     return best_line
 
 
+def _classify_command_violation(
+    command: str,
+    raw_text: str,
+    *,
+    candidate_offset: int = 0,
+) -> Violation | None:
+    """Return the shared single-command violation, or None when allowed."""
+    literal = command.strip()
+    if _is_reserved_token(literal):
+        return None
+
+    if _is_dangerous_command(literal):
+        return Violation(
+            command=literal,
+            reason="含危险操作（破坏性/权限/网络/凭据）",
+            candidate_offset=candidate_offset,
+            raw_nearest_line=None,
+        )
+
+    if not raw_text or literal not in raw_text:
+        nearest = (
+            _raw_line_with_longest_common_prefix(raw_text, literal)
+            if raw_text
+            else None
+        )
+        reason = (
+            "raw 文本为空，无法回查命令字面量"
+            if not raw_text
+            else "原文不存在此命令字面量（疑似编造）"
+        )
+        return Violation(
+            command=literal,
+            reason=reason,
+            candidate_offset=candidate_offset,
+            raw_nearest_line=nearest,
+        )
+
+    return None
+
+
+def is_command_allowed_for_candidate(command: str, raw_text: str) -> bool:
+    """Shared compose/repair predicate matching ``verify_commands_in_raw``.
+
+    Empty/reserved literals are allowed; dangerous commands are denied even when
+    present in raw; all other commands must be verbatim substrings of raw_text.
+    """
+    return _classify_command_violation(command, raw_text) is None
+
+
 def verify_commands_in_raw(
     candidate_body: str, raw_text: str
 ) -> list[Violation]:
@@ -262,44 +313,15 @@ def verify_commands_in_raw(
     violations: list[Violation] = []
 
     for m in _BACKTICK_COMMAND_RE.finditer(candidate_body):
-        literal = m.group(1).strip()
-        if _is_reserved_token(literal):
-            continue
-
-        # 附加拦截层: dangerous-command blocklist. Flagged even if in raw.
-        if _is_dangerous_command(literal):
-            violations.append(
-                Violation(
-                    command=literal,
-                    reason="含危险操作（破坏性/权限/网络/凭据）",
-                    candidate_offset=m.start(1),
-                    raw_nearest_line=None,
-                )
-            )
-            continue
-
-        # 全文回查: command must appear verbatim in raw. Absent = fabricated.
-        if not raw_text or literal not in raw_text:
-            nearest = (
-                _raw_line_with_longest_common_prefix(raw_text, literal)
-                if raw_text
-                else None
-            )
-            reason = (
-                "raw 文本为空，无法回查命令字面量"
-                if not raw_text
-                else "原文不存在此命令字面量（疑似编造）"
-            )
-            violations.append(
-                Violation(
-                    command=literal,
-                    reason=reason,
-                    candidate_offset=m.start(1),
-                    raw_nearest_line=nearest,
-                )
-            )
+        violation = _classify_command_violation(
+            m.group(1),
+            raw_text,
+            candidate_offset=m.start(1),
+        )
+        if violation is not None:
+            violations.append(violation)
 
     return violations
 
 
-__all__ = ["Violation", "verify_commands_in_raw"]
+__all__ = ["Violation", "is_command_allowed_for_candidate", "verify_commands_in_raw"]

@@ -24,6 +24,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+import yaml
+
 from src.akb2.quality.md_table import split_md_table_row
 from src.akb2.quality.source_ops_scanners import scan_all as _scan_source_evidence
 from src.akb2.quality.source_ops_scanners.raw_verify import (
@@ -153,80 +155,22 @@ TEMPLATE_RESIDUE_MARKERS: tuple[str, ...] = (
 def _parse_frontmatter(text: str) -> dict[str, object]:
     """解析 YAML frontmatter（两 --- 之间的内容）。
 
-    返回 dict；解析失败返回空 dict。
+    返回 dict；缺失 frontmatter 返回空 dict；YAML 非法时抛 ValueError。
     """
-    # 匹配开头的 --- ... ---
     m = re.match(r"^---\s*\n(.*?)\n---", text, re.DOTALL)
     if not m:
         return {}
 
     raw = m.group(1)
-    result: dict[str, object] = {}
-
-    # 简单 YAML 解析（仅处理本检查需要的字段）
-    # 支持: key: value, key: [list], key: null, key: "string"
-    lines = raw.split("\n")
-    current_key: str | None = None
-    current_list: list[str] = []
-
-    for line in lines:
-        # 跳过空行和注释
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-
-        # 列表项:   - item
-        list_match = re.match(r"^\s+-\s+(.+)", line)
-        if list_match and current_key is not None:
-            current_list.append(list_match.group(1).strip().strip("\"'"))
-            continue
-
-        # 如果之前在收集列表，先保存
-        if current_key is not None and current_list:
-            result[current_key] = list(current_list)
-            current_list = []
-            current_key = None
-
-        # key: value
-        kv_match = re.match(r"^(\w[\w_]*)\s*:\s*(.+)", line)
-        if kv_match:
-            key = kv_match.group(1)
-            value = kv_match.group(2).strip()
-
-            if value == "null" or value == "~":
-                result[key] = None
-            elif value.startswith("[") and value.endswith("]"):
-                # 内联列表: [a, b, c]
-                inner = value[1:-1]
-                items = [x.strip().strip("\"'") for x in inner.split(",") if x.strip()]
-                result[key] = items
-            elif value.startswith('"') and value.endswith('"'):
-                result[key] = value[1:-1]
-            elif value.startswith("'") and value.endswith("'"):
-                result[key] = value[1:-1]
-            else:
-                # 尝试解析数字
-                try:
-                    if "." in value:
-                        result[key] = float(value)
-                    else:
-                        result[key] = int(value)
-                except ValueError:
-                    result[key] = value
-            continue
-
-        # 可能是列表开始: key:
-        list_key_match = re.match(r"^(\w[\w_]*)\s*:\s*$", line)
-        if list_key_match:
-            current_key = list_key_match.group(1)
-            current_list = []
-            continue
-
-    # 保存最后一个列表
-    if current_key is not None and current_list:
-        result[current_key] = list(current_list)
-
-    return result
+    try:
+        parsed = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"frontmatter YAML 解析失败: {exc}") from exc
+    if parsed is None:
+        return {}
+    if not isinstance(parsed, dict):
+        raise ValueError("frontmatter YAML 必须是 mapping/object")
+    return {str(key): value for key, value in parsed.items()}
 
 
 def _find_section_boundaries(text: str) -> list[tuple[str, int, int]]:
@@ -340,7 +284,21 @@ def check_a2_frontmatter(text: str) -> list[Defect]:
         gate_decision 必须 null, gate_reason≤150 字符
     """
     defects: list[Defect] = []
-    fm = _parse_frontmatter(text)
+    try:
+        fm = _parse_frontmatter(text)
+    except ValueError as exc:
+        defects.append(
+            Defect(
+                dimension="A2-frontmatter",
+                location="frontmatter",
+                defect=str(exc),
+                suggestion=(
+                    "修复 YAML frontmatter 语法；含冒号、方括号或括号的字符串"
+                    "必须合法转义/引用"
+                ),
+            )
+        )
+        return defects
 
     # source_refs >= 1
     source_refs = fm.get("source_refs", [])
@@ -1219,9 +1177,10 @@ def run_candidate_self_gate(
     #   不出现 = 编造 = Defect。不区分 source_grounded/akb_interpretation——
     #   之前的"代码直出 only"收窄让安全但 raw 不存在的编造命令漏过（审查 Finding 1）。
     # 危险黑名单附加: 命中危险命令即使 raw 有也算 Defect（双重拦截）。
-    # raw_content=None 已被 SG-must-cover 块 fail-closed（保持现状），本块在 raw 存在时才执行。
-    if raw_content:
-        command_violations = _verify_commands_in_raw(body, raw_content)
+    # raw_content=None 已被 SG-must-cover 块 fail-closed（保持现状）；空字符串 raw
+    # 仍必须执行 recheck，让 raw_verify 把每条非 reserved 命令判为 violation。
+    if raw_content is not None:
+        command_violations = _verify_commands_in_raw(body, raw_content or "")
         for v in command_violations:
             if "危险" in v.reason:
                 defect_text = f"派生命令含危险操作: `{v.command}`"

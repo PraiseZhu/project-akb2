@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from src.akb2.quality.source_ops_scanners.raw_verify import (
     Violation,
+    is_command_allowed_for_candidate,
     verify_commands_in_raw,
 )
 
@@ -93,6 +94,14 @@ class TestFullLiteralRecheck:
         body = "跑 `npm test` 验证"
         raw = "$ npm test\n"
         assert verify_commands_in_raw(body, raw) == []
+
+    def test_single_command_allowed_api_matches_full_recheck(self):
+        """共享单命令 API:安全命令需在 raw；危险命令即使在 raw 也不允许。"""
+        raw = "$ npm test\nrm -rf /\n"
+        assert is_command_allowed_for_candidate("npm test", raw) is True
+        assert is_command_allowed_for_candidate("npm run build", raw) is False
+        assert is_command_allowed_for_candidate("rm -rf /", raw) is False
+        assert is_command_allowed_for_candidate("", raw) is True
 
 
 class TestSafeFabricatedBlocked:

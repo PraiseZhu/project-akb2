@@ -17,12 +17,14 @@ import os
 import tempfile
 from pathlib import Path
 
+import yaml
+
+from src.akb2.quality.checks_structural import run_candidate_self_gate
 from src.akb2.quality.distill import (
     GATE_REASON_MAX_CHARS,
     ExtractResult,
     compose_candidate,
 )
-from src.akb2.quality.checks_structural import run_candidate_self_gate
 
 
 def _valid_extract_result(extract_success_response) -> ExtractResult:
@@ -616,6 +618,33 @@ class TestFrontmatterActiveRequiredFields:
         assert isinstance(fm["key_findings"], list)
         assert len(fm["key_findings"]) >= 3, f"3 条 claims 应产 ≥3 key_findings: {fm['key_findings']}"
 
+    def test_assemble_page_frontmatter_is_valid_yaml_with_key_findings_punctuation(self):
+        """_assemble_page 必须输出 PyYAML 可解析的 frontmatter，不因 key_findings 标点炸。"""
+        from src.akb2.quality.distill import _assemble_page
+
+        frontmatter = {
+            "status": "candidate",
+            "gate_decision": None,
+            "source_refs": ["raw/test.md"],
+            "gate_reason": "[raw §A] GPT-5.4 裁判待评审",
+            "future_questions": [
+                "[raw §A] (akb_interpretation) 如何验证: A/B?",
+                "[raw §B] (akb_interpretation) 如何处理 [edge]?",
+            ],
+            "related_concepts": ["[[loop-engineering]]", "[[quality-gate]]"],
+            "key_findings": [
+                "[raw §A] (source_grounded) Loop shape: trigger/selector/gate",
+                "[raw §B] (source_grounded) Evidence [bracket] must be quoted",
+            ],
+        }
+        page = _assemble_page(frontmatter, "## TLDR\nbody [raw §A]")
+        fm_raw = page.split("---\n", 2)[1]
+        parsed = yaml.safe_load(fm_raw)
+
+        assert parsed["key_findings"] == frontmatter["key_findings"]
+        assert parsed["future_questions"] == frontmatter["future_questions"]
+        assert parsed["gate_decision"] is None
+
     def test_related_concepts_wikilink_format(self):
         """related_concepts 统一 [[wikilink]] 格式（GRAPH-LINKING §3.8.1）。"""
         from src.akb2.quality.distill import _build_frontmatter
@@ -1071,7 +1100,10 @@ class TestBodyContractAlignment:
 
     def test_graph_evidence_gets_provenance_and_local_contract_passes(self):
         """回归真实 smoke: 图谱 evidence 必须补 provenance，并通过本地 A7/A8 契约。"""
-        from src.akb2.quality.checks_structural import check_a4_graph_edges, check_a8_applicability_boundary
+        from src.akb2.quality.checks_structural import (
+            check_a4_graph_edges,
+            check_a8_applicability_boundary,
+        )
         from src.akb2.quality.distill import ExtractResult, compose_candidate
         from tests.quality.conftest import make_mock_route_llm
 
