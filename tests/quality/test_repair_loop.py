@@ -1049,7 +1049,13 @@ class TestDeterministicGraphRepair:
         assert "harness is one floor below loop" in repaired
 
     def test_how_executability_repair_replaces_conceptual_steps(self):
-        """How 可执行性缺陷应由本地确定性修复收敛，不依赖 repair LLM 猜。"""
+        """How 可执行性缺陷应由本地确定性修复收敛，不依赖 repair LLM 猜。
+
+        治本2（砍编造源）：repair 重建 How 的反引号命令必须 emission 前回查 raw。
+        本用例提供含这些命令的 raw_text → 命令接地 → 反引号命令保留（防回归：不误杀
+        真正可锚定的操作命令）。conceptual 占位 prose 被替换、配置示例占位值被改成
+        明确数值的核心行为不变。
+        """
         from src.akb2.quality.repair import _apply_deterministic_repairs
 
         text = _wrap("""## 关键发现
@@ -1074,6 +1080,16 @@ max_repair_rounds: explicit budget constant
 ## 新颖增量
 keep me unchanged
 """)
+        # raw 含 _how_command_for_claim 三个分支会产出的命令字面量 → 命令接地 raw。
+        raw_with_commands = (
+            "Loops need budgets: "
+            "MAX_REPAIR_ROUNDS=3; DISTILL_TIMEOUT_SECONDS=60; "
+            "GRADER_TIMEOUT_SECONDS=120; MAX_RETRIES=0; MAX_PARALLEL_ITEMS=1\n"
+            "maker_model='deepseek-v4-pro'; checker_model='gpt-5.4'; "
+            "assert maker_model != checker_model and fallback_used is False\n"
+            "ledger.append({event:'abort',node:node,error_class:error_class,"
+            "model_family:model_family,timeout_s:60,max_retries:0,retries_used:retries_used})\n"
+        )
         repaired, actions = _apply_deterministic_repairs(
             text,
             [
@@ -1090,12 +1106,14 @@ keep me unchanged
                     suggestion="替换为明确数值",
                 ),
             ],
+            raw_with_commands,
         )
 
         assert actions and actions[-1]["section"] == "论证与解释"
         assert "`Define budget constants`" not in repaired
         assert "source_basis=[raw" in repaired
         assert "unsupported_assumptions=" in repaired
+        # 命令接地 raw → 反引号命令保留（防回归：治本2 不误杀真可锚定命令）
         assert "MAX_REPAIR_ROUNDS=3" in repaired
         assert "maker_model='deepseek-v4-pro'; checker_model='gpt-5.4'" in repaired
         assert "ledger.append({event:'abort'" in repaired
@@ -1104,6 +1122,117 @@ keep me unchanged
         assert "max_retries: 0" in repaired
         assert "checker_model: gpt-5.4" in repaired
         assert "## 新颖增量\nkeep me unchanged" in repaired
+
+    def test_how_executability_repair_strips_fabricated_commands_when_absent_from_raw(self):
+        """治本2 核心：raw 不含命令时，repair 重建 How 不得注入编造的反引号命令。
+
+        痛点（SC-9 卡点）：repair 重建 How 段调 _how_command_for_claim 合成
+        ledger.append(...) / MAX_REPAIR_ROUNDS=3 / run_action(...) 等命令，这些不字面
+        存在于真实 raw → SG-command-recheck 判为「原文不存在此命令字面量（疑似编造）」
+        → repair 永不收敛。护栏（与 compose 同口径）在 emission 前回查 raw 剥离不接地命令。
+        断言绑定可观测行为：SG-command-recheck 同实现 verify_commands_in_raw 对重建段
+        回查 0 违规 + 候选 body 不含编造命令字面量 + 步骤仍保留 instruction（降级不丢步）。
+        """
+        from src.akb2.quality.repair import _apply_deterministic_repairs
+        from src.akb2.quality.source_ops_scanners.raw_verify import (
+            verify_commands_in_raw,
+        )
+
+        text = _wrap("""## 关键发现
+- [raw §D] (source_grounded) Every loop must have explicit budgets for max repair rounds, timeout per model call, max retries, and maximum parallel workers.
+- [raw §E] (source_grounded) The model that produces content must be different from the model that judges it.
+- [raw §I] (source_grounded) A loop is deployable only when failure is observable.
+
+## 论证与解释
+**[raw §D]** (source_grounded) 来源事实：Every loop must have explicit budgets.
+
+### 操作步骤
+
+1. [raw §D] (akb_interpretation) Define explicit budgets. `Define budget constants`
+2. [raw §E] (akb_interpretation) Use maker/checker. `Separate maker and checker models`
+3. [raw §I] (akb_interpretation) Record failures. `Record LLM call metadata`
+
+## 新颖增量
+keep me unchanged
+""")
+        # raw 完全不含任何 _how_command_for_claim 会产出的命令字面量。
+        raw_no_commands = (
+            "Loops should have bounded budgets and separate maker/checker models, "
+            "and failures must be observable. This source gives prose only, "
+            "no copy-pasteable code commands at all."
+        )
+        repaired, actions = _apply_deterministic_repairs(
+            text,
+            [
+                Defect(
+                    dimension="How 可执行性",
+                    location="### 操作步骤",
+                    defect="步骤为概念性英文描述，缺少可复制执行的命令",
+                    suggestion="补充真实命令与具体参数值",
+                ),
+            ],
+            raw_no_commands,
+        )
+
+        # 仍发生重建（占位 prose 被替换、步骤未被整体丢弃）
+        assert actions and actions[-1]["section"] == "论证与解释"
+        assert "`Define budget constants`" not in repaired
+        assert "source_basis=[raw" in repaired
+        # 编造命令字面量被剥离：候选 body 不含它们
+        assert "MAX_REPAIR_ROUNDS=3" not in repaired
+        assert "maker_model='deepseek-v4-pro'" not in repaired
+        assert "ledger.append({event:'abort'" not in repaired
+        assert "run_action(work_item" not in repaired
+        # 降级标记出现 + 步骤数不减（不丢步，只降级为无命令 instruction）
+        assert "无原文可锚定命令" in repaired
+        # SG-command-recheck 同实现回查重建段：0 违规（compose/repair 同口径）
+        body = repaired.split("---", 2)[-1]
+        violations = verify_commands_in_raw(body, raw_no_commands)
+        assert violations == [], (
+            "repair 重建 How 不得注入不接地 raw 的编造命令，实际违规: "
+            f"{[v.command for v in violations]}"
+        )
+
+    def test_how_executability_repair_strips_commands_when_raw_text_none(self):
+        """raw_text None（缺原文）→ fail-closed：所有派生命令视为不接地被剥离。
+
+        防御：run_repair_loop 在未提供 raw_text 时不得让 repair 偷偷上稿编造命令。
+        与 _command_grounded_in_raw 的 raw 空 → False 口径一致。
+        """
+        from src.akb2.quality.repair import _apply_deterministic_repairs
+
+        text = _wrap("""## 关键发现
+- [raw §D] (source_grounded) Every loop must have explicit budgets.
+- [raw §E] (source_grounded) Maker differs from checker.
+- [raw §I] (source_grounded) Failure must be observable.
+
+## 论证与解释
+**[raw §D]** (source_grounded) 来源事实：budgets.
+
+### 操作步骤
+
+1. [raw §D] (akb_interpretation) Define budgets. `x`
+
+## 新颖增量
+keep me unchanged
+""")
+        repaired, actions = _apply_deterministic_repairs(
+            text,
+            [
+                Defect(
+                    dimension="How 可执行性",
+                    location="### 操作步骤",
+                    defect="步骤为概念性英文描述，缺少可复制执行的命令",
+                    suggestion="补充真实命令与具体参数值",
+                ),
+            ],
+            None,
+        )
+        assert actions
+        assert "MAX_REPAIR_ROUNDS=3" not in repaired
+        assert "maker_model='deepseek-v4-pro'" not in repaired
+        assert "ledger.append({event:'abort'" not in repaired
+        assert "无原文可锚定命令" in repaired
 
     def test_novelty_provenance_repair_adds_explicit_column(self):
         """新颖增量 provenance 缺陷应本地修复，不依赖 repair LLM。"""

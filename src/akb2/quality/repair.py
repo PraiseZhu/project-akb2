@@ -37,6 +37,11 @@ from src.akb2.quality.checks_structural import (
     _extract_body_text,
     run_candidate_self_gate,
 )
+
+# 治本2（砍编造源）共享护栏：repair 重建 How 段时复用 distill 的单条命令回查谓词，
+# 口径与 compose 的 emission-前回查 + SG-command-recheck 的 verify_commands_in_raw 完全一致
+# （字面子串、raw 空则 fail-closed）。不重复实现，避免两份口径漂移。
+from src.akb2.quality.distill import _command_grounded_in_raw
 from src.akb2.quality.grader import run_grader_with_fixture_detailed
 
 # 只读依赖
@@ -552,9 +557,23 @@ def _expand_how_anchors(
 
 
 def _apply_how_executability_repairs(
-    text: str, defects: list[Defect]
+    text: str, defects: list[Defect], raw_text: str | None = None
 ) -> tuple[str, list[dict[str, str]]]:
-    """Deterministically replace conceptual How prose with copyable examples."""
+    """Deterministically replace conceptual How prose with copyable examples.
+
+    治本2（砍编造源）：repair 重建 How 段时，每条 ``_how_command_for_claim`` 产出的
+    反引号命令（``ledger.append(...)`` / ``MAX_REPAIR_ROUNDS=3`` / ``run_action(...)`` 等）
+    都是 AKB 对来源结构的保守映射，**不一定字面出现在 raw**。compose 已在 emission 前
+    回查 raw 剥离不接地命令（distill._ground_how_step_commands_in_raw），repair 必须用
+    **同一口径**兜底——否则 repair 重建的 How 会再注入这些编造命令，被 SG-command-recheck
+    判为「原文不存在此命令字面量（疑似编造）」→ repair 永不收敛（SC-9 卡点）。
+
+    护栏行为（与 compose 一致）：命令字面量在 raw 出现 → 渲染反引号命令（source-grounded
+    可执行步骤）；不在 raw → **剥离反引号命令**，只渲染 instruction + source_basis，并显式
+    标注 ``无原文可锚定命令``，绝不把编造命令上稿。raw 为空（``raw_text`` None/空串）则
+    一律 fail-closed 视为不接地，所有派生命令被剥离。
+    """
+    raw_grounding_text = raw_text or ""
     if not any(
         "How 可执行性" in d.dimension
         or "How 可执行性" in d.defect
@@ -586,13 +605,24 @@ def _apply_how_executability_repairs(
     ]
     for idx, (anchor, claim) in enumerate(anchors, 1):
         instruction, command = _how_command_for_claim(claim, idx)
-        step_lines.append(
-            f"{idx}. [raw {anchor}] (akb_interpretation) AKB action: {instruction}; "
-            f"source_basis=[raw {anchor}]; "
-            "unsupported_assumptions=命令对象名与生产 API 需落地校准 "
-            f"`{command}`"
-            "（AKB 操作化，依据来源结构，不是原文逐字指令）"
-        )
+        # 治本2（砍编造源）：emission 前回查 raw，与 compose 同口径。命令字面量在 raw
+        # 出现才渲染反引号命令；否则剥离命令，降级为无命令 instruction（绝不上稿编造命令）。
+        if _command_grounded_in_raw(command, raw_grounding_text):
+            step_lines.append(
+                f"{idx}. [raw {anchor}] (akb_interpretation) AKB action: {instruction}; "
+                f"source_basis=[raw {anchor}]; "
+                "unsupported_assumptions=命令对象名与生产 API 需落地校准 "
+                f"`{command}`"
+                "（AKB 操作化，依据来源结构，不是原文逐字指令）"
+            )
+        else:
+            step_lines.append(
+                f"{idx}. [raw {anchor}] (akb_interpretation) AKB action: {instruction}; "
+                f"source_basis=[raw {anchor}]; "
+                "unsupported_assumptions=无原文可锚定命令，仅给出操作意图，"
+                "落地命令需结合生产代码补全"
+                "（AKB 操作化，依据来源结构，不是原文逐字指令）"
+            )
     step_lines.extend(
         [
             "",
@@ -668,11 +698,16 @@ def _apply_novelty_provenance_repairs(
 def _apply_deterministic_repairs(
     text: str,
     defects: list[Defect],
+    raw_text: str | None = None,
 ) -> tuple[str, list[dict[str, str]]]:
-    """先修机器可判定的表格/边界契约，减少 LLM 猜测。"""
+    """先修机器可判定的表格/边界契约，减少 LLM 猜测。
+
+    ``raw_text`` 透传给 How 可执行性 repair，用于 emission 前回查 raw 剥离不接地命令
+    （治本2 砍编造源，与 compose 同口径）。None/空串则 fail-closed 视为不接地。
+    """
     repaired, graph_actions = _apply_graph_table_repairs(text, defects)
     repaired, boundary_actions = _apply_boundary_repairs(repaired, defects)
-    repaired, how_actions = _apply_how_executability_repairs(repaired, defects)
+    repaired, how_actions = _apply_how_executability_repairs(repaired, defects, raw_text)
     repaired, novelty_actions = _apply_novelty_provenance_repairs(repaired, defects)
     return repaired, graph_actions + boundary_actions + how_actions + novelty_actions
 
@@ -1135,6 +1170,7 @@ def run_repair_loop(
         deterministic_text, deterministic_actions = _apply_deterministic_repairs(
             current_text,
             current_defects,
+            raw_text,
         )
         trace_payload["deterministic_actions"] = deterministic_actions
         if deterministic_actions:
