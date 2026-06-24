@@ -58,6 +58,15 @@ REPAIR_TIMEOUT_S: float = 60.0
 REPAIR_MAX_RETRIES: int = 0
 REPAIR_WORKER_TIMEOUT_S: float = 90.0
 REPAIR_WORKER_MODULE: str = "src.akb2.quality.repair_worker"
+# Repair 是定点重写(只改点名节,输出短 JSON patch),不需要思维链。
+# 根因(2026-06-24 实测): deepseek-v4-pro 默认产 reasoning_content,即使
+# reasoning_effort=None 也照样推理,导致 completion token 失控(reason 5-8k)、
+# 单次 repair 60-100s 拖过 REPAIR_TIMEOUT_S。关思维链后 reason=0、~30s、JSON 有效。
+# extra_body.enable_thinking=False 是 OpenAI-compatible 网关关 DeepSeek 推理的开关;
+# max_tokens 作为二次安全上限(repair patch 远小于此),防任何残留 runaway。
+# 注意: 这是 repair(重写)专属;提炼(distill)不设上限以免截断 claims/how_steps。
+REPAIR_MAX_TOKENS: int = 3000
+REPAIR_DISABLE_THINKING: bool = True
 
 
 # ---------------------------------------------------------------------------

@@ -440,6 +440,8 @@ def route_llm(
     max_retries: int | None = None,
     reasoning_effort: str | None = _DEFAULT_REASONING_EFFORT,
     strict_schema: bool = True,
+    max_tokens: int | None = None,
+    extra_body: dict[str, Any] | None = None,
 ) -> LLMResponse:
     """OpenAI 兼容端点路由入口。
 
@@ -451,6 +453,11 @@ def route_llm(
         max_retries: SDK 层重试次数；None 时显式使用 MAX_RETRIES。
         reasoning_effort: "__default__" 保持旧 DeepSeek max 行为；None 表示不发送。
         strict_schema: response_schema 是否以 strict json_schema 发送。
+        max_tokens: completion token 上限；None 时不发送（不限）。提炼链路应留空
+            以免截断 claims/how_steps；重写（repair）链路设上限防推理失控拖超时。
+        extra_body: 透传到 OpenAI-compatible 端点的额外字段（如 DeepSeek 推理模型的
+            ``{"enable_thinking": False}``，关闭思维链，让 token 预算落到 content 而非
+            reasoning，避免 repair 重写被 reasoning 吃光 token / 拖超时）。None 时不发送。
 
     Returns:
         LLMResponse: 含 content / model_used / calls_used。
@@ -491,6 +498,14 @@ def route_llm(
             kwargs["reasoning_effort"] = "max"
     elif reasoning_effort is not None:
         kwargs["reasoning_effort"] = reasoning_effort
+
+    # completion token 上限（仅 repair 等需要硬上限的链路传入；提炼链路留空不截断）
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+
+    # 透传额外字段（如关闭 DeepSeek 推理 enable_thinking=False）
+    if extra_body is not None:
+        kwargs["extra_body"] = extra_body
 
     # 结构化输出（OpenAI 兼容端）
     if response_schema is not None:
