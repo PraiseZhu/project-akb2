@@ -446,6 +446,7 @@ def _run_distill_segment(
         raw_path=raw_path,
         batch_id=batch_id,
         output_dir=config.staging_dir,
+        raw_content=raw_content,
     )
     if not compose_result.success:
         return (

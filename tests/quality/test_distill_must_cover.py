@@ -214,6 +214,47 @@ class TestMustCoverCodeDirectRender:
                 + "; ".join(f"{d.dimension}@{d.location}: {d.defect}" for d in defects)
             )
 
+    def test_raw_pass_through_must_cover_when_raw_file_absent(self):
+        """阶段1: raw_path 文件不存在但传入 raw_content 时，must_cover 仍渲染。
+
+        模拟 calibration 链路（只构造 raw_path 但不落地文件）。回归前 compose_candidate
+        只 read_text(raw_path)，文件缺失 → raw_content=None → scan_all 跳过 → must_cover
+        operation 不渲染（How 节空，间接导致 SG-how-density 假 0）。修复后调用方传入的
+        raw_content 是权威源，read_text 仅 fallback，所以 must_cover 不再静默失真。
+        """
+        data = _valid_compose_data()
+        extract_result = ExtractResult(success=True, data=data, retries_used=1)
+        mock_fn = _mock_llm(data)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # 关键：raw_path 指向一个不存在的文件（calibration 只拼路径不写盘）
+            missing_raw_path = os.path.join(tmp_dir, "never-written--raw--calibration.md")
+            assert not Path(missing_raw_path).exists()
+
+            result = compose_candidate(
+                extract_result=extract_result,
+                raw_path=missing_raw_path,
+                batch_id="raw-passthrough",
+                output_dir=tmp_dir,
+                route_llm_fn=mock_fn,
+                raw_content=_MUST_COVER_RAW,  # 权威源：磁盘没有，靠传入
+            )
+
+            assert result.success is True, f"compose 失败: {result.error}"
+            page = Path(result.candidate_path).read_text(encoding="utf-8")
+            how_section = _extract_section(page, "### 操作步骤")
+
+            # must_cover operation 字面量仍被渲染（证明 raw_content pass-through 生效）
+            for op_literal in (
+                "1. Initialize the gateway with explicit timeout",
+                "2. Call tools/list to enumerate available tools",
+                "3. Validate responses against the schema",
+            ):
+                assert op_literal in how_section, (
+                    f"raw 文件缺失但传了 raw_content 时 must_cover 未渲染: {op_literal!r}"
+                    "（raw pass-through 修复失效）"
+                )
+
     def test_canonical_sample_raw_fires_must_cover(self, sample_raw_content):
         """回归保护：既有 sample_raw_content fixture 也能触发 must_cover 渲染。
 
