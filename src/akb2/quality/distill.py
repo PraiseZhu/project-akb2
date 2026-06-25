@@ -1804,6 +1804,7 @@ def compose_candidate(
     batch_id: str,
     output_dir: str | None = None,
     route_llm_fn: Any = None,
+    raw_content: str | None = None,
 ) -> ComposeResult:
     """段 2: 按模板成稿 10 节，落 staging/candidate/<batch>/。
 
@@ -1815,6 +1816,11 @@ def compose_candidate(
         batch_id: 批次标识（如 "2026-06-13-001"）。
         output_dir: 输出根目录（None 时从 vault.toml 解析 staging）。
         route_llm_fn: LLM 路由函数注入（fixture 测试用）。
+        raw_content: 调用方持有的 raw 全文（**权威来源**）。must_cover 扫描与
+            self-gate A3 锚点校验用它。传入时优先于磁盘 raw_path 读取——这样
+            calibration 等只构造 raw_path 但不落地文件的链路也能拿到原文，
+            避免 must_cover/命令接地因 read_text 失败而静默失真。None 时回退
+            读磁盘 raw_path（生产 7 段链路 raw 已落地，行为不变）。
 
     Returns:
         ComposeResult: 含 success / candidate_path / frontmatter。
@@ -1857,10 +1863,14 @@ def compose_candidate(
 
     # raw_content 同源读取：must_cover 扫描与 self-gate A3 锚点校验共用同一份原文，
     # 避免截断/不一致导致 must_cover 账本与锚点校验脱节。
-    try:
-        raw_content = Path(raw_path).read_text(encoding="utf-8")
-    except OSError:
-        raw_content = None
+    # 优先用调用方传入的 raw_content（权威源）；未传才回退读磁盘 raw_path。
+    # calibration 等链路只构造 raw_path 不落地文件，必须靠传入值，否则 read_text
+    # 失败 → raw_content=None → must_cover 跳过 / 命令接地剥离，静默失真。
+    if raw_content is None:
+        try:
+            raw_content = Path(raw_path).read_text(encoding="utf-8")
+        except OSError:
+            raw_content = None
 
     # must_cover 代码直出账本（step-2）：scan_all 扫 raw 建 evidence inventory，
     # 不依赖 LLM 抽取。_build_body 据此把 source_operation/boundary/conclusion 三类
