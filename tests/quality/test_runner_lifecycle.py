@@ -1257,6 +1257,286 @@ MAX_REPAIR_ROUNDS=3; DISTILL_TIMEOUT_SECONDS=60; GRADER_TIMEOUT_SECONDS=120; MAX
             f"final_grader_meta 应标记 fallback_used，实际: {meta}"
         )
 
+    # ------------------------------------------------------------------
+    # B 层主路径孪生分支（repair.py:1696 / 1712）的 fail-closed 覆盖。
+    #
+    # 上面的 test_repair_loop_degraded_grader_fail_closed 走的是「确定性快速
+    # 路径」：图谱关系缺陷 → _apply_deterministic_repairs → A 通过 → grader
+    # 在 if deterministic_actions 块内触发（repair.py:1544/1558，分支 A）。
+    #
+    # 下面两个测试走「LLM 定点重写主路径」：B 缺陷非确定性（论断锚定率/TLDR
+    # 无锚点，_is_deterministic_repair_defect=False）→ deterministic_actions
+    # 为空 → 跳过整个 if deterministic_actions 块 → 走 deepseek 定点重写 →
+    # 重写后 A 层 run_candidate_self_gate 通过 → 到达 repair.py:1688 的 B 层
+    # grader → degraded/suspended 命中 1712/1696（分支 B）。两条分支的 grader
+    # fail-closed 语义必须与分支 A 一致，本组测试守住这条孪生路径。
+    #
+    # _MAIN_PATH_CANDIDATE 必须本身 A-clean（run_candidate_self_gate 返回空），
+    # 否则重写后 A 层仍有缺陷会走 1679 a_defects_remaining 而非到达 B。其结构
+    # 直接对齐 test_repair_loop.py 的 candidate_with_defects fixture（已知 A-clean，
+    # B 层 TLDR 无锚点），_MAIN_PATH_RAW 对齐 repair_raw_text。
+    # ------------------------------------------------------------------
+
+    _MAIN_PATH_CANDIDATE = """---
+status: candidate
+gate_decision: null
+source_refs:
+  - raw/loop-engineering.md
+gate_reason: 待评审
+future_questions:
+  - Loop 在实时系统如何适配？
+  - 多 agent 故障隔离设计？
+related_concepts:
+  - harness-engineering
+  - agent-collaboration
+---
+
+## TLDR
+Loop Engineering is important for AI agents. It helps with bounded loops.
+
+## 关键发现
+1. [raw §A] (source_grounded) Bounded loops are important
+2. [raw §C] (source_grounded) Convergence matters
+
+## 入选理由
+- [raw §A] (source_grounded) 来源事实：Loop Engineering describes bounded, observable loops.
+- [raw §B] (source_grounded) 来源事实：The loop shape includes trigger, selector, executor, gate, and ledger.
+
+## 证据地图
+| 论点 | 锚点 | 证据强度 | 未覆盖 |
+|------|------|---------|--------|
+| §A | Bounded loop | source_grounded | 未量化：原文未提供效果数据 |
+| §B | Loop shape | source_grounded | 未比较：原文未比较不同组件实现 |
+
+## 核心论点
+1. Bounded loops: must have explicit stop conditions (source_grounded)
+2. Convergence: Fix defects, not restart (source_grounded)
+
+## 论证与解释
+**[raw §A]** (source_grounded) 来源事实：Bounded loops need explicit stop conditions.
+**[raw §C]** (source_grounded) 来源事实：Convergence matters more than full restart.
+
+### 操作步骤
+1. [raw §B] (akb_interpretation) Configure trigger type `trigger={type:'schedule',cron:'0 * * * *'}`
+2. [raw §B] (akb_interpretation) Select the next work item `work_item=ledger.next(status='pending',limit=1)`
+3. [raw §B] (akb_interpretation) Run the quality gate `assert run_quality_gate(result,grader='gpt-5.4').defects == []`
+
+## 适用边界
+- [raw §A] (source_grounded) 来源事实：Loop engineering frames the work as bounded loops.
+- [raw §B] (source_grounded) 来源事实：The source lists trigger, selector, executor, gate, and ledger.
+- [raw §A] (akb_interpretation) 适用场景：Agent pipelines with repeatable gates.
+- [raw §C] (akb_interpretation) 不适用场景：Simple scripts.
+- [raw §B] (akb_interpretation) 约束条件：Need explicit ledger and gate.
+
+## 图谱关系
+| target | relation | strength | provenance | evidence |
+|--------|----------|----------|------------|----------|
+| harness-engineering | related | weak | source_grounded | [raw §B] (source_grounded) The source lists the loop components. |
+
+## Future Questions
+1. Loop engineering in real-time?
+2. Multi-agent fault isolation?
+
+## 维护记录
+- 2026-06-13: created
+"""
+
+    _MAIN_PATH_RAW = """---
+artifact_type: raw
+source_slug: loop-engineering
+source_url: https://example.com/loop-engineering
+source_title: Loop Engineering
+source_authors: Addy Osmani
+source_publisher: Addy Osmani's Blog
+source_published_at: 2026-06-07
+fetched_at: 2026-06-13T00:00:00Z
+fetched_via: defuddle
+---
+
+# §A Loop Engineering
+
+Loop engineering is the practice of designing AI agent loops that are bounded,
+convergent, and observable. An agent loop without explicit stopping conditions is
+a runaway cost generator.
+
+# §B How: A Complete Loop Shape
+
+A well-designed loop has five components: a trigger, a work unit selector, an action
+executor, a quality gate, and a ledger writer.
+
+原文操作示例（AKB 操作化命令字面量，供 SG-command-recheck 回查锚定）：
+
+```text
+trigger={type:'schedule',cron:'0 * * * *'}
+work_item=ledger.next(status='pending',limit=1)
+assert run_quality_gate(result,grader='gpt-5.4').defects == []
+```
+
+# §C Convergence Over Restart
+
+When a step produces defects, fix the specific defects rather than restarting the
+entire pipeline. This is the principle of convergence over restart.
+"""
+
+    # 非确定性 B 缺陷：TLDR 无 [raw §X] 锚点（论断锚定率）。
+    # _is_deterministic_repair_defect 对该缺陷返回 False，故走 LLM 重写主路径。
+    @staticmethod
+    def _main_path_b_defect():
+        from src.akb2.quality.checks_structural import Defect
+
+        return Defect(
+            dimension="论断锚定率",
+            location="TLDR",
+            defect="TLDR 无 [raw §X] 锚点",
+            suggestion="为 TLDR 加 [raw §A] 锚点",
+        )
+
+    # deepseek 定点重写返回的 JSON patch：只改点名节 TLDR（加锚点），
+    # 重写后该候选页仍 A-clean，从而到达 B 层 grader。
+    @staticmethod
+    def _main_path_repair_patch():
+        from src.akb2.quality.llm_router import LLMResponse
+
+        return LLMResponse(
+            content={"TLDR": "## TLDR\nLoop Engineering: bounded loops [raw §A]."},
+            model_used="deepseek-v4-pro",
+            calls_used=1,
+        )
+
+    @staticmethod
+    def _grader_all_pass_dims():
+        return [
+            {"dimension": dim, "pass": True, "defects": []}
+            for dim in [
+                "论断锚定率", "How 密度", "How 可执行性", "证据诚实",
+                "解读分离", "TLDR 密度", "新颖增量", "边强度匹配",
+                "Future Questions 质量", "适用边界",
+            ]
+        ]
+
+    def test_repair_loop_main_path_degraded_fail_closed(self, tmp_path: Path) -> None:
+        """SC-6.2 孪生:B 层主路径(LLM 定点重写)后 grader fallback_used=True → 不判收敛。
+
+        走 repair.py:1712(分支 B,非确定性快速路径 1558)：
+        非确定性 B 缺陷 → deepseek 重写 TLDR → A 通过 → gpt-5.4 坏 JSON
+        → gemini 兜底 pass(defects=[]) → fallback_used=True → fail-closed。
+        断言绑定可观测行为：not converged + final_grader_meta.grader_fallback_used。
+        """
+        from src.akb2.quality.llm_router import LLMResponse
+        from src.akb2.quality.repair import run_repair_loop
+        from tests.quality.conftest import make_mock_route_llm
+
+        # gpt-5.4 评分返回坏 JSON → 走 gemini 兜底 → fallback_used=True, defects=[]
+        bad_grader = LLMResponse(
+            content="not valid json", model_used="gpt-5.4", calls_used=1
+        )
+        gemini_pass = LLMResponse(
+            content={"dimensions": self._grader_all_pass_dims()},
+            model_used="gemini-flash",
+            calls_used=1,
+        )
+        # deepseek 重写(主路径) + gpt-5.4 坏 JSON + gemini 兜底 pass，按 model_family 路由。
+        mock_llm = make_mock_route_llm(
+            {
+                "deepseek-v4-pro": self._main_path_repair_patch(),
+                "gpt-5.4": bad_grader,
+                "gemini-flash": gemini_pass,
+            }
+        )
+
+        failures_path = tmp_path / "failures.jsonl"
+        failures_path.write_text("", encoding="utf-8")
+
+        result = run_repair_loop(
+            candidate_text=self._MAIN_PATH_CANDIDATE,
+            a_defects=[],
+            b_defects=[self._main_path_b_defect()],
+            failures_path=str(failures_path),
+            mock_route_llm=mock_llm,
+            raw_text=self._MAIN_PATH_RAW,
+        )
+
+        # 证明走了主路径(分支 B)而非确定性快速路径(分支 A)：
+        # trace 状态必须是 grader_degraded 且本轮 deterministic_actions 为空。
+        assert result.get("trace_paths"), "应写出 repair trace"
+        last_trace = json.loads(
+            Path(result["trace_paths"][-1]).read_text(encoding="utf-8")
+        )
+        assert last_trace["status"] == "grader_degraded", (
+            f"应命中 B 层主路径 grader_degraded 分支(repair.py:1712)，实际: {last_trace['status']}"
+        )
+        assert last_trace["deterministic_actions"] == [], (
+            "B 层主路径不得经过确定性修复(否则会走分支 A:1558)，"
+            f"deterministic_actions 应为空，实际: {last_trace['deterministic_actions']}"
+        )
+
+        # fail-closed: fallback_used 的 grader 不可信，即使 defects=[] 也不判收敛
+        assert not result["converged"], "主路径 fallback_used 的 grader 不应判收敛"
+        meta = result.get("final_grader_meta") or {}
+        assert meta.get("grader_fallback_used") is True, (
+            f"final_grader_meta 应标记 fallback_used，实际: {meta}"
+        )
+
+    def test_repair_loop_main_path_suspended_fail_closed(self, tmp_path: Path) -> None:
+        """SC-6.2 孪生:B 层主路径(LLM 定点重写)后 grader 双挂 suspended → 不判收敛。
+
+        走 repair.py:1696(分支 B,非确定性快速路径 1544)：
+        非确定性 B 缺陷 → deepseek 重写 TLDR → A 通过 → gpt-5.4 与 gemini 均
+        返回坏 JSON → suspended=True → fail-closed(grader_all_down)。
+        断言绑定可观测行为：not converged + final_grader_meta.grader_suspended。
+        """
+        from src.akb2.quality.llm_router import LLMResponse
+        from src.akb2.quality.repair import run_repair_loop
+        from tests.quality.conftest import make_mock_route_llm
+
+        # gpt-5.4 与 gemini 兜底都返回坏 JSON → 双不可用 → suspended=True
+        bad_primary = LLMResponse(
+            content="not valid json", model_used="gpt-5.4", calls_used=1
+        )
+        bad_fallback = LLMResponse(
+            content="also not valid json", model_used="gemini-flash", calls_used=1
+        )
+        mock_llm = make_mock_route_llm(
+            {
+                "deepseek-v4-pro": self._main_path_repair_patch(),
+                "gpt-5.4": bad_primary,
+                "gemini-flash": bad_fallback,
+            }
+        )
+
+        failures_path = tmp_path / "failures.jsonl"
+        failures_path.write_text("", encoding="utf-8")
+
+        result = run_repair_loop(
+            candidate_text=self._MAIN_PATH_CANDIDATE,
+            a_defects=[],
+            b_defects=[self._main_path_b_defect()],
+            failures_path=str(failures_path),
+            mock_route_llm=mock_llm,
+            raw_text=self._MAIN_PATH_RAW,
+        )
+
+        # 证明走了主路径(分支 B:1696)而非确定性快速路径(分支 A:1544)：
+        # trace 状态必须是 grader_suspended 且本轮 deterministic_actions 为空。
+        assert result.get("trace_paths"), "应写出 repair trace"
+        last_trace = json.loads(
+            Path(result["trace_paths"][-1]).read_text(encoding="utf-8")
+        )
+        assert last_trace["status"] == "grader_suspended", (
+            f"应命中 B 层主路径 grader_suspended 分支(repair.py:1696)，实际: {last_trace['status']}"
+        )
+        assert last_trace["deterministic_actions"] == [], (
+            "B 层主路径不得经过确定性修复(否则会走分支 A:1544)，"
+            f"deterministic_actions 应为空，实际: {last_trace['deterministic_actions']}"
+        )
+
+        # fail-closed: 双挂的 grader 必须挂起，不判收敛
+        assert not result["converged"], "主路径 suspended 的 grader 不应判收敛"
+        meta = result.get("final_grader_meta") or {}
+        assert meta.get("grader_suspended") is True, (
+            f"final_grader_meta 应标记 suspended，实际: {meta}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # SC-6 step-6: 周抽检 _regrade_sample 拒收 degraded grader 的空缺陷 PASS

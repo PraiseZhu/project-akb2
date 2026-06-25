@@ -218,6 +218,53 @@ class TestRunnerQueue:
         assert _acquire_processing_lock(config)
         _release_processing_lock(config)
 
+    def test_stale_lock_is_reclaimed_after_max_age(self, tmp_path: Path) -> None:
+        """worker 崩溃留死锁 → 超 MAX_PROCESSING_LOCK_AGE_SEC 后自动回收。
+
+        这是 worker 崩溃后队列不被永久卡死的唯一兜底（runner.py 过期锁 unlink 分支）。
+        现有测试只走「未过期 → 拒绝」分支，过期回收分支零覆盖：改坏了单次崩溃就永久卡死。
+        造一个 mtime 改老到超龄的锁文件，断言 acquire 能回收它。
+        """
+        import os
+
+        from src.akb2.quality.runner import (
+            MAX_PROCESSING_LOCK_AGE_SEC,
+            RunnerConfig,
+            _acquire_processing_lock,
+            _release_processing_lock,
+        )
+
+        lock_dir = tmp_path / "locks"
+        config = RunnerConfig(
+            raw_dir=str(tmp_path / "raw"),
+            ledger_path=str(tmp_path / "quality-ledger.jsonl"),
+            staging_dir=str(tmp_path / "staging"),
+            vault_root=str(tmp_path),
+            failures_path=str(tmp_path / "failures.jsonl"),
+            grader_result_dir=str(tmp_path / "grader-results"),
+            poll_interval_seconds=1,
+            auto_promote=False,
+            lock_dir=str(lock_dir),
+        )
+
+        # 模拟崩溃 worker 留下的锁。
+        assert _acquire_processing_lock(config)
+        lock_file = lock_dir / "processing.lock"
+        assert lock_file.exists()
+
+        # 新鲜锁：第二次 acquire 必须被拒（未过期分支）。
+        assert not _acquire_processing_lock(config)
+
+        # 把锁 mtime 改老到「超龄 + 余量」→ 视为崩溃残留死锁。
+        import time as _time
+
+        stale = _time.time() - (MAX_PROCESSING_LOCK_AGE_SEC + 60)
+        os.utime(lock_file, (stale, stale))
+
+        # 过期锁被回收 → acquire 成功（兜底分支）。
+        assert _acquire_processing_lock(config), "过期死锁未被回收 → 队列会永久卡死"
+        _release_processing_lock(config)
+
 
 class TestRunnerAvoidWindows:
     """避让窗口测试。"""
