@@ -494,3 +494,50 @@ def test_flock_usage():
     collector_src = Path(__file__).parent.parent / "src" / "akb2" / "video" / "collector.py"
     src = collector_src.read_text()
     assert "fcntl" in src or "flock" in src or "LOCK_EX" in src, "collector.py 必须使用文件锁"
+
+
+def test_corrupt_pending_is_backed_up_not_silently_dropped(temp_config):
+    """损坏的 pending_research.json（git 冲突标记）必须备份历史，绝不静默清空。
+
+    回归前：except JSONDecodeError → pass → existing=[] → truncate+dump 全量覆盖，
+    历史视频队列无声丢失。修复后：原文备份到 .corrupt-*，历史可追回。
+    """
+    collector = VideoCollector(temp_config)
+    pending_path = collector._pending_path()
+    pending_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # 写入「含真实历史 + git 冲突标记」的损坏文件。
+    corrupt_content = (
+        "[\n"
+        '  {"url": "https://youtube.com/watch?v=HIST1", "title": "历史视频1", '
+        '"platform": "youtube", "creator": "C", "retry_count": 2},\n'
+        "<<<<<<< HEAD\n"
+        '  {"url": "https://youtube.com/watch?v=HIST2", "title": "历史视频2"}\n'
+        "=======\n"
+        "]\n"
+    )
+    pending_path.write_text(corrupt_content, encoding="utf-8")
+
+    # 追加一个新失败视频。
+    new_result = {
+        "video": {
+            "url": "https://youtube.com/watch?v=NEW1",
+            "title": "新失败视频",
+            "platform": "youtube",
+            "creator": "C",
+        }
+    }
+    collector._save_pending([new_result])
+
+    # 1) 新文件必须是合法 JSON 数组，且含新视频。
+    saved = json.loads(pending_path.read_text(encoding="utf-8"))
+    assert isinstance(saved, list)
+    saved_urls = {item.get("url") for item in saved}
+    assert "https://youtube.com/watch?v=NEW1" in saved_urls
+
+    # 2) 历史必须被保全到 .corrupt-* 备份（不是无声丢失）。
+    backups = list(pending_path.parent.glob("pending_research.corrupt-*.json"))
+    assert backups, "损坏的 pending 历史必须备份，而非静默清空"
+    backup_text = backups[0].read_text(encoding="utf-8")
+    assert "HIST1" in backup_text, "备份必须保留原始历史内容"
+    assert "<<<<<<< HEAD" in backup_text, "备份必须是原始损坏原文"
