@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from src.akb2.loops.signatures import record_failure
+
 # 注意：run_candidate_self_gate 故意不在此处 name-binding，而是通过模块限定
 # checks_structural.run_candidate_self_gate(...) 调用。否则测试 mock.patch
 # checks_structural.run_candidate_self_gate 后若首次 import 本模块，mock 会被永久

@@ -17,7 +17,6 @@ from src.akb2.video.collector import CatalogDBAdapter, VideoCollector
 from src.akb2.video.config import VideoConfig
 from src.akb2.video.llm_adapter import LLMAdapter
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -496,15 +495,15 @@ def test_flock_usage():
     assert "fcntl" in src or "flock" in src or "LOCK_EX" in src, "collector.py 必须使用文件锁"
 
 
-def test_corrupt_pending_is_backed_up_not_silently_dropped(temp_config):
+def test_corrupt_pending_is_backed_up_not_silently_dropped(temp_config, tmp_path):
     """损坏的 pending_research.json（git 冲突标记）必须备份历史，绝不静默清空。
 
     回归前：except JSONDecodeError → pass → existing=[] → truncate+dump 全量覆盖，
     历史视频队列无声丢失。修复后：原文备份到 .corrupt-*，历史可追回。
     """
     collector = VideoCollector(temp_config)
-    pending_path = collector._pending_path()
-    pending_path.parent.mkdir(parents=True, exist_ok=True)
+    # 隔离 pending 路径到 tmp_path，避免污染工作区 staging/。
+    pending_path = tmp_path / "pending_research.json"
 
     # 写入「含真实历史 + git 冲突标记」的损坏文件。
     corrupt_content = (
@@ -527,7 +526,8 @@ def test_corrupt_pending_is_backed_up_not_silently_dropped(temp_config):
             "creator": "C",
         }
     }
-    collector._save_pending([new_result])
+    with mock.patch.object(collector, "_pending_path", return_value=pending_path):
+        collector._save_pending([new_result])
 
     # 1) 新文件必须是合法 JSON 数组，且含新视频。
     saved = json.loads(pending_path.read_text(encoding="utf-8"))
