@@ -488,6 +488,38 @@ class TestGraderRetryAndIsolation:
         assert len(result.defects) == 0
         assert result.model_used == "gpt-5.4"
 
+    def test_run_grader_detailed_both_models_unavailable_suspends(
+        self, monkeypatch, valid_candidate_page
+    ):
+        """FR-008 fail-closed: primary+fallback 都挂 → suspended=True + 空缺陷。
+
+        这是「评分器双不可用 → 稿件挂起，绝不当通过」的核心闸门（grader.py 双挂出口）。
+        现有 test_both_unavailable_suspends 走的是 fixture 版函数(run_grader_with_fixture)，
+        真实路径 run_grader_detailed 的双挂出口零覆盖：少这个检查就会把「两模型全挂」
+        误判成「0 缺陷通过」，账本骗人。让 route_llm 对两家都抛 RuntimeError 证伪。
+        """
+        from src.akb2.quality import grader as grader_mod
+        from src.akb2.quality.grader import run_grader_detailed
+
+        calls: dict[str, int] = {}
+
+        def boom_route_llm(model_family, messages, response_schema=None, **kwargs):
+            calls[model_family] = calls.get(model_family, 0) + 1
+            raise RuntimeError(f"{model_family} gateway 401/unreachable")
+
+        monkeypatch.setattr(grader_mod, "route_llm", boom_route_llm)
+
+        result = run_grader_detailed(valid_candidate_page)
+
+        # 双不可用 → fail-closed 挂起，不可信缺陷列表必须为空（不得当通过）。
+        assert result.suspended is True, "双模型全挂必须 suspended=True，不得放行"
+        assert result.defects == [], "挂起态缺陷列表必须为空，不得伪造 0 缺陷通过"
+        # primary 和 fallback 都被尝试过（确实走到双挂出口而非提前返回）。
+        assert calls.get("gpt-5.4", 0) >= 1, "primary gpt-5.4 必须被尝试"
+        assert calls.get("gemini-flash", 0) >= 1, "fallback gemini 必须被尝试"
+        assert result.primary_failed is True
+        assert result.fallback_failed is True
+
     def test_grader_distill_model_family_isolation(self):
         """SC-6.4: Maker/Checker 异族分离 — distill(deepseek) != grader(gpt-5.4)。"""
         from src.akb2.quality.distill import DISTILL_MODEL_FAMILY

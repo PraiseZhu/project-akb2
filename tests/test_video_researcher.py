@@ -6,6 +6,7 @@ pending 文件锁、无 durable write、孤儿进程清理。
 
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 from unittest import mock
@@ -191,6 +192,67 @@ def test_pending_file_lock(temp_config, sample_video_result):
     src = Path(__file__).parent.parent / "src" / "akb2" / "video" / "researcher.py"
     content = src.read_text()
     assert "fcntl" in content or "flock" in content or "LOCK_EX" in content
+
+
+def test_corrupt_pending_is_backed_up_not_silently_dropped(temp_config, tmp_path):
+    """损坏的 pending_research.json 必须备份历史，绝不静默清空（researcher 孪生 bug）。"""
+    r = VideoResearcher(temp_config)
+    pending_path = tmp_path / "pending_research.json"
+    corrupt_content = (
+        "[\n"
+        '  {"url": "https://youtube.com/watch?v=HIST1", "title": "历史视频1", '
+        '"retry_count": 3},\n'
+        "<<<<<<< HEAD\n"
+        "]\n"
+    )
+    pending_path.write_text(corrupt_content, encoding="utf-8")
+
+    new_result = {
+        "video": {
+            "url": "https://youtube.com/watch?v=NEW1",
+            "title": "新失败视频",
+            "platform": "youtube",
+            "creator": "C",
+        }
+    }
+    with mock.patch.object(r, "_pending_path", return_value=pending_path):
+        r._save_pending([new_result])
+
+    saved = json.loads(pending_path.read_text(encoding="utf-8"))
+    assert isinstance(saved, list)
+    assert "https://youtube.com/watch?v=NEW1" in {item.get("url") for item in saved}
+
+    backups = list(tmp_path.glob("pending_research.corrupt-*.json"))
+    assert backups, "损坏的 pending 历史必须备份，而非静默清空"
+    assert "HIST1" in backups[0].read_text(encoding="utf-8"), "备份必须保留原始历史"
+
+
+def test_non_array_pending_is_backed_up_not_silently_dropped(temp_config, tmp_path):
+    """合法 JSON 但非数组（dict）也必须备份历史（researcher 非数组分支直测）。"""
+    r = VideoResearcher(temp_config)
+    pending_path = tmp_path / "pending_research.json"
+    pending_path.write_text(
+        '{"url": "https://youtube.com/watch?v=HISTDICT", "title": "误写成dict"}',
+        encoding="utf-8",
+    )
+    new_result = {
+        "video": {
+            "url": "https://youtube.com/watch?v=NEW2",
+            "title": "新失败视频",
+            "platform": "youtube",
+            "creator": "C",
+        }
+    }
+    with mock.patch.object(r, "_pending_path", return_value=pending_path):
+        r._save_pending([new_result])
+
+    saved = json.loads(pending_path.read_text(encoding="utf-8"))
+    assert isinstance(saved, list)
+    assert "https://youtube.com/watch?v=NEW2" in {item.get("url") for item in saved}
+
+    backups = list(tmp_path.glob("pending_research.corrupt-*.json"))
+    assert backups, "非数组损坏也必须备份历史"
+    assert "HISTDICT" in backups[0].read_text(encoding="utf-8"), "备份必须保留原始内容"
 
 
 # ---------------------------------------------------------------------------

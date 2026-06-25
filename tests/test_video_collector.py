@@ -17,7 +17,6 @@ from src.akb2.video.collector import CatalogDBAdapter, VideoCollector
 from src.akb2.video.config import VideoConfig
 from src.akb2.video.llm_adapter import LLMAdapter
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -494,3 +493,86 @@ def test_flock_usage():
     collector_src = Path(__file__).parent.parent / "src" / "akb2" / "video" / "collector.py"
     src = collector_src.read_text()
     assert "fcntl" in src or "flock" in src or "LOCK_EX" in src, "collector.py 必须使用文件锁"
+
+
+def test_corrupt_pending_is_backed_up_not_silently_dropped(temp_config, tmp_path):
+    """损坏的 pending_research.json（git 冲突标记）必须备份历史，绝不静默清空。
+
+    回归前：except JSONDecodeError → pass → existing=[] → truncate+dump 全量覆盖，
+    历史视频队列无声丢失。修复后：原文备份到 .corrupt-*，历史可追回。
+    """
+    collector = VideoCollector(temp_config)
+    # 隔离 pending 路径到 tmp_path，避免污染工作区 staging/。
+    pending_path = tmp_path / "pending_research.json"
+
+    # 写入「含真实历史 + git 冲突标记」的损坏文件。
+    corrupt_content = (
+        "[\n"
+        '  {"url": "https://youtube.com/watch?v=HIST1", "title": "历史视频1", '
+        '"platform": "youtube", "creator": "C", "retry_count": 2},\n'
+        "<<<<<<< HEAD\n"
+        '  {"url": "https://youtube.com/watch?v=HIST2", "title": "历史视频2"}\n'
+        "=======\n"
+        "]\n"
+    )
+    pending_path.write_text(corrupt_content, encoding="utf-8")
+
+    # 追加一个新失败视频。
+    new_result = {
+        "video": {
+            "url": "https://youtube.com/watch?v=NEW1",
+            "title": "新失败视频",
+            "platform": "youtube",
+            "creator": "C",
+        }
+    }
+    with mock.patch.object(collector, "_pending_path", return_value=pending_path):
+        collector._save_pending([new_result])
+
+    # 1) 新文件必须是合法 JSON 数组，且含新视频。
+    saved = json.loads(pending_path.read_text(encoding="utf-8"))
+    assert isinstance(saved, list)
+    saved_urls = {item.get("url") for item in saved}
+    assert "https://youtube.com/watch?v=NEW1" in saved_urls
+
+    # 2) 历史必须被保全到 .corrupt-* 备份（不是无声丢失）。
+    backups = list(pending_path.parent.glob("pending_research.corrupt-*.json"))
+    assert backups, "损坏的 pending 历史必须备份，而非静默清空"
+    backup_text = backups[0].read_text(encoding="utf-8")
+    assert "HIST1" in backup_text, "备份必须保留原始历史内容"
+    assert "<<<<<<< HEAD" in backup_text, "备份必须是原始损坏原文"
+
+
+def test_non_array_pending_is_backed_up_not_silently_dropped(temp_config, tmp_path):
+    """合法 JSON 但被写成非数组（dict/null）也必须备份历史，不静默清空。
+
+    覆盖 _save_pending 的「非数组」损坏分支（json.loads 成功但不是 list），与
+    JSONDecodeError 分支共用 corrupt_reason→备份→truncate 路径，但单独直测让该
+    分支有独立护栏（reviewer finding：原仅靠共用分支间接覆盖）。
+    """
+    collector = VideoCollector(temp_config)
+    pending_path = tmp_path / "pending_research.json"
+    # 合法 JSON object（非数组）——历史被误写成 dict。
+    pending_path.write_text(
+        '{"url": "https://youtube.com/watch?v=HISTDICT", "title": "误写成dict的历史"}',
+        encoding="utf-8",
+    )
+
+    new_result = {
+        "video": {
+            "url": "https://youtube.com/watch?v=NEW2",
+            "title": "新失败视频",
+            "platform": "youtube",
+            "creator": "C",
+        }
+    }
+    with mock.patch.object(collector, "_pending_path", return_value=pending_path):
+        collector._save_pending([new_result])
+
+    saved = json.loads(pending_path.read_text(encoding="utf-8"))
+    assert isinstance(saved, list)
+    assert "https://youtube.com/watch?v=NEW2" in {item.get("url") for item in saved}
+
+    backups = list(pending_path.parent.glob("pending_research.corrupt-*.json"))
+    assert backups, "非数组损坏也必须备份历史"
+    assert "HISTDICT" in backups[0].read_text(encoding="utf-8"), "备份必须保留原始内容"

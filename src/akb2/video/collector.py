@@ -605,12 +605,31 @@ class VideoCollector:
             try:
                 f.seek(0)
                 existing: list[dict] = []
-                try:
-                    raw = f.read()
-                    if raw.strip():
-                        existing = json.loads(raw)
-                except (json.JSONDecodeError, OSError):
-                    pass
+                raw = f.read()
+                if raw.strip():
+                    # 损坏文件（git 冲突标记 / 半写 / 被写成非数组）绝不静默丢历史：
+                    # 先把原文备份到 .corrupt-<ts>，再以空集继续，历史可从备份追回。
+                    corrupt_reason: str | None = None
+                    try:
+                        parsed = json.loads(raw)
+                    except json.JSONDecodeError as exc:
+                        parsed = None
+                        corrupt_reason = f"JSON 解析失败: {exc}"
+                    else:
+                        if isinstance(parsed, list):
+                            existing = parsed
+                        else:
+                            corrupt_reason = f"非数组(实际 {type(parsed).__name__})"
+                    if corrupt_reason is not None:
+                        backup = pending_path.with_suffix(
+                            f".corrupt-{datetime.now().strftime('%Y%m%d%H%M%S')}.json"
+                        )
+                        backup.write_text(raw, encoding="utf-8")
+                        logger.error(
+                            "pending_research.json 损坏(%s),已备份历史到 %s 后继续",
+                            corrupt_reason,
+                            backup,
+                        )
 
                 url_to_idx: dict[str, int] = {
                     item.get("url"): idx

@@ -31,13 +31,18 @@ from pathlib import Path
 from typing import Any
 
 from src.akb2.loops.signatures import record_failure
+
+# 注意：run_candidate_self_gate 故意不在此处 name-binding，而是通过模块限定
+# checks_structural.run_candidate_self_gate(...) 调用。否则测试 mock.patch
+# checks_structural.run_candidate_self_gate 后若首次 import 本模块，mock 会被永久
+# 焊死进 repair 命名空间，patch 退出不还原 → 污染后续走真实 run_repair_loop 的测试。
+from src.akb2.quality import checks_structural
 from src.akb2.quality.checks_structural import (
     PROVENANCE_MARKERS,
     RAW_ANCHOR_DECL_RE,
     RAW_ANCHOR_RE,
     Defect,
     _extract_body_text,
-    run_candidate_self_gate,
 )
 from src.akb2.quality.grader import run_grader_with_fixture_detailed
 from src.akb2.quality.llm_router import RouterConfigError
@@ -1529,7 +1534,7 @@ def run_repair_loop(
                     named_sections.add(section)
             deterministic_only = all(_is_deterministic_repair_defect(d) for d in current_defects)
             # 确定性修复后先过 A 层；能直接修掉的缺陷不再喂给 LLM 猜。
-            new_a_defects = run_candidate_self_gate(current_text, raw_text)
+            new_a_defects = checks_structural.run_candidate_self_gate(current_text, raw_text)
             trace_payload["a_defects_after"] = _defects_to_summary(new_a_defects)
             graded_after_deterministic = False
             if deterministic_only and not new_a_defects:
@@ -1673,7 +1678,7 @@ def run_repair_loop(
         current_text = repaired_text
 
         # 重新过 A 层
-        new_a_defects = run_candidate_self_gate(current_text, raw_text)
+        new_a_defects = checks_structural.run_candidate_self_gate(current_text, raw_text)
         trace_payload["a_defects_after"] = _defects_to_summary(new_a_defects)
 
         if new_a_defects:

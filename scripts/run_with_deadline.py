@@ -15,6 +15,8 @@ import subprocess
 import sys
 import time
 from datetime import datetime
+from types import FrameType
+from typing import Any
 from zoneinfo import ZoneInfo
 
 _TZ = ZoneInfo("Asia/Shanghai")
@@ -90,6 +92,20 @@ def main(argv: list[str] | None = None) -> int:
 
     _log(args.name, f"start; deadline={deadline.isoformat()}; cmd={args.cmd[0]}")
     proc = subprocess.Popen(args.cmd, start_new_session=True)
+
+    # launchd 停止任务/系统关机发 SIGTERM（非 SIGINT）。若不挂 handler，默认行为是
+    # 直接终止本 wrapper，start_new_session=True 创建的子进程组会成为孤儿继续运行，
+    # 简报管线卡死白占资源。捕获 SIGTERM/SIGHUP，先杀整个进程组再带信号退出。
+    def _handle_termination_signal(signum: int, _frame: FrameType | None) -> None:
+        _log(args.name, f"received signal {signum}; terminating process group")
+        _terminate_group(proc, args.term_grace_seconds)
+        # 以 128+signum 退出，向 launchd 暴露可见的非零状态（被信号终止的约定）。
+        sys.exit(128 + signum)
+
+    previous_handlers: list[tuple[int, Any]] = []
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        previous_handlers.append((sig, signal.signal(sig, _handle_termination_signal)))
+
     try:
         while True:
             rc = proc.poll()
@@ -104,6 +120,9 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         _terminate_group(proc, args.term_grace_seconds)
         raise
+    finally:
+        for sig, handler in previous_handlers:
+            signal.signal(sig, handler)
 
 
 if __name__ == "__main__":
