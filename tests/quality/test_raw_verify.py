@@ -246,6 +246,77 @@ rm -rf /
         assert "curl" in violations[0].command
         assert "危险" in violations[0].reason
 
+    def test_console_fence_command_output_lines_not_flagged(self):
+        """console 转写里命令输出行（On branch / nothing to commit 等）不误报。
+
+        prompt 转写约定：仅 ``$ `` 行是命令，其余是捕获输出。git status 输出行
+        几乎不会逐字出现在 raw，旧逻辑会把它们当编造命令挡下 → repair 误跑。
+        """
+        body = """### 操作步骤
+
+```console
+$ git status
+On branch main
+Your branch is up to date with 'origin/main'.
+nothing to commit, working tree clean
+```
+"""
+        raw = "$ git status\n"  # 仅命令在 raw；输出行不在 raw
+        assert verify_commands_in_raw(body, raw) == []
+
+    def test_shell_fence_pytest_summary_output_not_flagged(self):
+        """无 prompt 的 bash fence：pytest 汇总行按 known-output 模式跳过，不误报。"""
+        body = (
+            "```bash\n"
+            "python -m pytest -q\n"
+            "5 passed, 1 skipped in 0.12s\n"
+            "```\n"
+        )
+        raw = "python -m pytest -q\n"
+        assert verify_commands_in_raw(body, raw) == []
+
+    def test_shell_fence_backslash_continuation_merged_in_raw_passes(self):
+        """``\\`` 续行命令合并后整条在 raw → 不误报（逐物理行回查会假报编造）。"""
+        body = (
+            "```bash\n"
+            "pytest tests/quality \\\n"
+            "    tests/loops \\\n"
+            "    -v\n"
+            "```\n"
+        )
+        raw = "pytest tests/quality tests/loops -v\n"
+        assert verify_commands_in_raw(body, raw) == []
+
+    def test_shell_fence_backslash_continuation_absent_from_raw_is_violation(self):
+        """``\\`` 续行命令合并后不在 raw → 仍报 SG-command-recheck（不放编造）。"""
+        body = (
+            "```bash\n"
+            "made-up-cli deploy \\\n"
+            "    --target prod \\\n"
+            "    --force\n"
+            "```\n"
+        )
+        raw = "pytest tests/quality tests/loops -v\n"
+        violations = verify_commands_in_raw(body, raw)
+        assert len(violations) == 1
+        assert violations[0].command == "made-up-cli deploy --target prod --force"
+        assert "原文不存在" in violations[0].reason
+
+    def test_shell_fence_continuation_inside_prompt_transcript_merges(self):
+        """prompt 转写里 ``$ `` 命令的 ``\\`` 续行行被并入命令，不当输出跳过。"""
+        body = (
+            "```console\n"
+            "$ made-up-cli deploy \\\n"
+            "    --target prod\n"
+            "Deploying to prod...\n"
+            "```\n"
+        )
+        raw = "$ git status\n"  # 续行合并后的命令不在 raw
+        violations = verify_commands_in_raw(body, raw)
+        assert len(violations) == 1
+        assert violations[0].command == "made-up-cli deploy --target prod"
+        assert "原文不存在" in violations[0].reason
+
 
 class TestDangerousBlocklistAdditional:
     """危险黑名单附加拦截: 命中危险命令即使 raw 有也算 Violation。"""
@@ -307,6 +378,24 @@ class TestDangerousBlocklistAdditional:
         raw = "anything"
         violations = verify_commands_in_raw(body, raw)
         assert len(violations) == 1
+
+    def test_dangerous_rm_rf_oldpwd_flagged_even_when_in_raw(self):
+        """rm -rf $OLDPWD：$ 曾被当 regex 行尾锚漏放，转义 \\$OLDPWD 后命中危险。
+
+        即使该命令字面出现在 raw，危险黑名单也应双重拦截（修复前因 ``$OLDPWD``
+        未转义而既非危险又在 raw → 完全漏过）。
+        """
+        body = "清理 `rm -rf $OLDPWD`"
+        raw = "rm -rf $OLDPWD\n"
+        violations = verify_commands_in_raw(body, raw)
+        assert len(violations) == 1
+        assert "危险" in violations[0].reason
+        assert is_command_allowed_for_candidate("rm -rf $OLDPWD", raw) is False
+
+    def test_bare_oldpwd_usage_not_dangerous(self):
+        """精度守卫：裸 $OLDPWD（无 rm -r）不算危险，避免转义后过度拦截。"""
+        raw = "echo $OLDPWD\n"
+        assert is_command_allowed_for_candidate("echo $OLDPWD", raw) is True
 
 
 class TestReservedTokensExempt:

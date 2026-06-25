@@ -43,6 +43,37 @@ _SHELL_FENCE_LANGS: frozenset[str] = frozenset(
     {"bash", "sh", "zsh", "shell", "console", "terminal"}
 )
 
+# Well-known command-OUTPUT line shapes (git / pytest / diff / push transcripts).
+# These are captured output, not copy-pasteable commands, so inside a shell
+# fence they are exempt from the raw recheck — otherwise a transcript like
+# ``$ git status`` followed by ``On branch main`` / ``nothing to commit`` would
+# flag the output lines as "fabricated" (they are rarely echoed verbatim in
+# raw), making repair churn or never converge. Each pattern is anchored to the
+# line start and kept specific so a real command is never mistaken for output
+# (fail-closed: skipping happens only for unmistakable output shapes). The
+# dangerous-command blocklist still runs on skipped lines (defensive).
+_OUTPUT_LINE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^On branch \S"),
+    re.compile(r"^HEAD detached at \S"),
+    re.compile(r"^Already up[- ]to[- ]date\.?$", re.IGNORECASE),
+    re.compile(r"^nothing to commit\b"),
+    re.compile(r"^no changes added to commit\b"),
+    re.compile(r"^Untracked files:"),
+    re.compile(r"^Changes (not staged for commit|to be committed):"),
+    re.compile(r"^Your branch is (up to date|ahead|behind)\b"),
+    re.compile(r"^\s*\d+ files? changed\b"),
+    re.compile(r"^diff --git\b"),
+    re.compile(r"^index [0-9a-f]{6,}\b"),
+    re.compile(r"^(---|\+\+\+) "),
+    re.compile(r"^@@ .* @@"),
+    re.compile(r"^remote:\s"),
+    re.compile(r"^To \S+\.git\b"),
+    re.compile(r"^Cloning into '"),
+    re.compile(r"^\s*\d+ (passed|failed|error|errors|skipped|deselected)\b"),
+    re.compile(r"^=+.*\b(passed|failed|error)\b.*=+$", re.IGNORECASE),
+    re.compile(r"^(PASSED|FAILED|ERROR|SKIPPED)\b"),
+)
+
 # Tokens that look like a backtick command but are structural / metadata, not
 # a copy-pasteable operation. These must NOT be subject to either layer.
 # - raw anchor tokens: §A, §B1, [raw §A]
@@ -101,7 +132,10 @@ _RESERVED_LITERAL_TOKENS: frozenset[str] = frozenset(
 #   - iptables -F / ufw disable (firewall teardown)
 _DANGEROUS_COMMAND_PATTERNS: tuple[re.Pattern[str], ...] = (
     # rm -rf / rm -fr targeting root or with no-preserve-root
-    re.compile(r"\brm\b.*\s-r[dfr]\b.*(/(\s|$)|--no-preserve-root|\*|\$HOME|$OLDPWD)"),
+    # NOTE: $OLDPWD must be escaped as \$OLDPWD — a bare ``$`` is a regex
+    # end-anchor, so the unescaped form matched "end-of-string then literal
+    # OLDPWD" (impossible) and let ``rm -rf $OLDPWD`` slip past this layer.
+    re.compile(r"\brm\b.*\s-r[dfr]\b.*(/(\s|$)|--no-preserve-root|\*|\$HOME|\$OLDPWD)"),
     re.compile(r"\brm\b.*\s--no-preserve-root"),
     re.compile(r"\brm\s+-[rf][rf]?\s+/\s*$"),
     re.compile(r"\brm\s+-[rf][rf]?\s+/\s"),
@@ -218,6 +252,77 @@ def _strip_shell_prompt(line: str) -> tuple[str, int]:
     return stripped, base_offset
 
 
+def _iter_logical_command_lines(body: str) -> list[tuple[str, int, bool]]:
+    """Split a fenced block body into logical command lines.
+
+    Physical lines joined by a trailing backslash (``\\``) are a single logical
+    command wrapped across lines for readability; they are merged into one unit
+    (parts joined by a single space, indentation collapsed). Without merging,
+    each fragment (``pytest foo \\``, ``  bar``) is recheck'd separately and
+    flagged as "fabricated" because the wrapped fragments are not verbatim
+    substrings of a raw source that holds the command on one line.
+
+    Returns ``(command, offset_in_body, is_prompt)`` tuples where ``command`` is
+    prompt-stripped and stripped, ``offset_in_body`` points at the command start
+    of the unit's first physical line, and ``is_prompt`` is True when that first
+    line carried a ``$ `` shell prompt.
+    """
+    units: list[tuple[str, int, bool]] = []
+    pos = 0
+    parts: list[str] = []  # non-empty => currently merging a `\`-continuation
+    start_offset = 0
+    start_is_prompt = False
+    for raw_line in body.splitlines(keepends=True):
+        line = raw_line.rstrip("\r\n")
+        line_start = pos
+        pos += len(raw_line)
+        if parts:
+            # Continuation line: merge verbatim (no prompt stripping).
+            part = line.strip()
+            continues = part.endswith("\\")
+            if continues:
+                part = part[:-1].rstrip()
+            parts.append(part)
+            if not continues:
+                units.append(
+                    (" ".join(p for p in parts if p).strip(), start_offset, start_is_prompt)
+                )
+                parts = []
+            continue
+        stripped = line.strip()
+        if not stripped:
+            continue
+        command, line_delta = _strip_shell_prompt(line)
+        is_prompt = stripped.startswith("$ ")
+        if command.endswith("\\"):
+            parts = [command[:-1].rstrip()]
+            start_offset = line_start + line_delta
+            start_is_prompt = is_prompt
+        else:
+            units.append((command, line_start + line_delta, is_prompt))
+    if parts:  # unterminated trailing continuation — flush what we have
+        units.append((" ".join(p for p in parts if p).strip(), start_offset, start_is_prompt))
+    return units
+
+
+def _is_shell_output_line(command: str, *, is_prompt: bool, has_prompt: bool) -> bool:
+    """True when a shell-fence line is captured output, not a command.
+
+    Two fail-closed signals (only unmistakable output is skipped):
+
+    1. Prompt transcript: when the block uses ``$ `` prompts at all, only the
+       prompt lines are commands; every other line is captured output. This
+       cleanly handles multi-line ``git status`` / ``pytest`` transcripts where
+       output lines (``modified: ...``, ``no changes added...``) are not in the
+       fixed pattern list.
+    2. Known-output shapes: lines matching git / pytest / diff / push output
+       patterns are output even in prompt-less blocks.
+    """
+    if has_prompt and not is_prompt:
+        return True
+    return any(pattern.search(command) for pattern in _OUTPUT_LINE_PATTERNS)
+
+
 def _fenced_block_command_violations(
     candidate_body: str,
     raw_text: str,
@@ -225,24 +330,42 @@ def _fenced_block_command_violations(
     """Return command violations from fenced code blocks.
 
     Shell-like fences are command examples, so every non-empty command line is
-    checked with the same raw/dangerous classifier as inline backticks. Data or
-    programming fences are not shell-checked, but dangerous shell snippets inside
-    them are still intercepted.
+    checked with the same raw/dangerous classifier as inline backticks, with two
+    false-positive guards: ``\\``-continued physical lines are merged into one
+    logical command before rechecking, and captured-output lines (shell prompts'
+    output, diff/pytest transcripts) are exempt from the raw recheck (the
+    dangerous blocklist still runs on them). Data or programming fences are not
+    shell-checked, but dangerous shell snippets inside them are still
+    intercepted.
     """
     violations: list[Violation] = []
     for block in _FENCED_BLOCK_RE.finditer(candidate_body):
         lang = _fence_lang(block.group("lang"))
         body = block.group("body")
         body_start = block.start("body")
-        offset = 0
-        for raw_line in body.splitlines(keepends=True):
-            line = raw_line.rstrip("\r\n")
-            command, line_delta = _strip_shell_prompt(line)
-            command_offset = body_start + offset + line_delta
-            offset += len(raw_line)
+        is_shell = lang in _SHELL_FENCE_LANGS
+        units = _iter_logical_command_lines(body)
+        has_prompt = any(is_prompt for _, _, is_prompt in units)
+        for command, offset_in_body, is_prompt in units:
+            command_offset = body_start + offset_in_body
             if not command or command.startswith("#"):
                 continue
-            if lang in _SHELL_FENCE_LANGS:
+            if is_shell:
+                if _is_shell_output_line(
+                    command, is_prompt=is_prompt, has_prompt=has_prompt
+                ):
+                    # Captured output, not a command — never raw-recheck it, but
+                    # still intercept an unmistakably destructive shape.
+                    if _is_dangerous_command(command):
+                        violations.append(
+                            Violation(
+                                command=command,
+                                reason="含危险操作（破坏性/权限/网络/凭据）",
+                                candidate_offset=command_offset,
+                                raw_nearest_line=None,
+                            )
+                        )
+                    continue
                 violation = _classify_command_violation(
                     command,
                     raw_text,
