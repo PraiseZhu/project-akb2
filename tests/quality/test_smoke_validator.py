@@ -394,6 +394,79 @@ def test_validate_happy_path_gate(tmp_path: Path) -> None:
     assert result["grader_result_status"] == "PASS"
 
 
+def _happy_ledger(vault: Path) -> Path:
+    """构造一条最小 happy-path ledger（含 grader PASS + manifest），返回 ledger 路径。"""
+    ledger = vault / "staging" / "quality-ledger.jsonl"
+    raw, candidate = _write_candidate_fixture(vault)
+    _write_manifest(vault, candidate)
+    _write_grader_pass(vault, candidate)
+    _write_ledger(
+        ledger,
+        [
+            _row("intake_raw", "intake_raw", {"raw_path": str(raw)}),
+            _row("distill_compose", "distill_compose", {"candidate_path": str(candidate)}),
+            _row(
+                "grade_llm",
+                "grade_llm",
+                {
+                    "model_used": "gpt-5.4",
+                    "fallback_used": False,
+                    "defect_count": 0,
+                    "suspended": False,
+                },
+            ),
+            _row("promote", "promote", {"mode": "proposal"}),
+            _row("finalize", "finalize", {"mode": "proposal"}),
+        ],
+    )
+    return ledger
+
+
+def test_validate_happy_path_rejects_changed_active_tree(tmp_path: Path) -> None:
+    """proposal smoke 最该保证「绝不碰 active 库」：active tree hash 变了必须 fail。
+
+    回归前：所有 happy-path 测试都不传 active_tree_before/after → 早退分支永不执行，
+    比较逻辑（smoke_validator._assert_active_tree_unchanged）坏了也无人发现。本测试
+    传不同 hash 证伪：相同输入下，hash 不同必须抛 SmokeValidationError。
+    """
+    vault = tmp_path / "AKB2.0"
+    ledger = _happy_ledger(vault)
+    before = tmp_path / "active-before.txt"
+    after = tmp_path / "active-after.txt"
+    before.write_text("hash_AAAA\n", encoding="utf-8")
+    after.write_text("hash_BBBB\n", encoding="utf-8")  # active 库被改动 → hash 变
+
+    with pytest.raises(SmokeValidationError, match="active tree hash changed"):
+        validate_happy_path(
+            ledger,
+            vault,
+            require_candidate_quality=True,
+            require_proposal_manifest=True,
+            active_tree_before=before,
+            active_tree_after=after,
+        )
+
+
+def test_validate_happy_path_accepts_unchanged_active_tree(tmp_path: Path) -> None:
+    """active tree hash 未变（before==after）时 happy-path 正常通过，不误报。"""
+    vault = tmp_path / "AKB2.0"
+    ledger = _happy_ledger(vault)
+    before = tmp_path / "active-before.txt"
+    after = tmp_path / "active-after.txt"
+    before.write_text("hash_SAME\n", encoding="utf-8")
+    after.write_text("hash_SAME\n", encoding="utf-8")
+
+    result = validate_happy_path(
+        ledger,
+        vault,
+        require_candidate_quality=True,
+        require_proposal_manifest=True,
+        active_tree_before=before,
+        active_tree_after=after,
+    )
+    assert result["passed"] is True
+
+
 def test_validate_happy_path_normalizes_tmp_symlink_root(tmp_path: Path) -> None:
     """macOS /tmp -> /private/tmp should not break manifest matching."""
     vault = tmp_path / "AKB2.0"
