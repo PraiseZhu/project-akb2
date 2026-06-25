@@ -72,6 +72,9 @@ def _run_gate_check(
     if not _GATE_SCRIPT.exists():
         return False, f"gate CLI not found at {_GATE_SCRIPT}", {}
 
+    candidate_path = candidate_path.expanduser().resolve()
+    vault_root = vault_root.expanduser().resolve()
+
     # 确保 input 是相对路径（gate CLI 的 guard_input_path 会检查）
     try:
         rel_input = candidate_path.relative_to(vault_root)
@@ -189,6 +192,9 @@ def _read_grader_result(grader_result_path: Path) -> tuple[bool, str]:
 
     status = data.get("status", "")
     if status == "PASS":
+        # fail-closed: degraded grader 的 PASS 拒收（fallback_used/suspended 不可作为通过条件）
+        if data.get("fallback_used") or data.get("suspended"):
+            return False, "degraded grader, fail-closed"
         dims = data.get("dimensions_checked", "?")
         return True, f"grader: PASS ({dims} dimensions checked, 0 findings)"
     else:
@@ -1029,6 +1035,9 @@ def _run_gate_manifest_write(candidate_path: Path, vault_root: Path) -> None:
     """提议模式：写 gate manifest（不写 active）。"""
     if not _GATE_SCRIPT.exists():
         return
+
+    candidate_path = candidate_path.expanduser().resolve()
+    vault_root = vault_root.expanduser().resolve()
 
     try:
         rel_input = candidate_path.relative_to(vault_root)

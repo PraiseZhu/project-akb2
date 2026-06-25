@@ -1,0 +1,118 @@
+{
+  "schema_note": "Sidecar verify ledger for aggregate-outcome.json. Lives OUTSIDE the strict gd-execution-status.schema.json outcome (which sets additionalProperties:false and forbids these arrays inline) so the outcome stays schema-compliant while L3 still gets a machine-readable deliverables + verify ledger. Every actual_exit below was produced by a real local rerun on 2026-06-24 (no placeholder zeros).",
+  "result_id": "how-reliability-refactor-final-2026-06-24",
+  "parent_plan": "plans/gd/2026-06-22-how-reliability-refactor/master-plan.md",
+  "reran_at": "2026-06-24T02:25:00+08:00",
+  "rerun_host": "local-dev (no LLM gateway; DEEPSEEK_API_KEY unset, official OPENAI_API_KEY hits tapsvc 401)",
+  "interpreter": "python3.13 (>=3.11)",
+  "deliverables_produced": [
+    {"path": "src/akb2/quality/source_ops_scanners/", "kind": "dir", "exists": true},
+    {"path": "tests/quality/test_source_ops_scanners.py", "kind": "file", "exists": true},
+    {"path": "tests/quality/fixtures/test-fresh-golden-ops.json", "kind": "file", "exists": true},
+    {"path": "tests/quality/test_distill_must_cover.py", "kind": "file", "exists": true},
+    {"path": "tests/quality/test_raw_verify.py", "kind": "file", "exists": true},
+    {"path": "tests/quality/test_provenance_split.py", "kind": "file", "exists": true},
+    {"path": "tests/quality/test_semantic_jitter.py", "kind": "file", "exists": true},
+    {"path": "tests/quality/test_how_regression.py", "kind": "file", "exists": true},
+    {"path": "tests/quality/fixtures/regression/", "kind": "dir", "exists": true},
+    {"path": "src/akb2/quality/distill.py", "kind": "file", "exists": true},
+    {"path": "src/akb2/quality/checks_structural.py", "kind": "file", "exists": true},
+    {"path": "src/akb2/quality/grader.py", "kind": "file", "exists": true},
+    {"path": "src/akb2/quality/repair.py", "kind": "file", "exists": true},
+    {"path": "src/akb2/quality/runner.py", "kind": "file", "exists": true},
+    {"path": "src/akb2/quality/promote.py", "kind": "file", "exists": true},
+    {"path": "src/akb2/quality/intake/source_validator.py", "kind": "file", "exists": true},
+    {"path": "src/akb2/quality/smoke_validator.py", "kind": "file", "exists": true},
+    {"path": "src/akb2/quality/source_ops_scanners/operations.py", "kind": "file", "exists": true},
+    {"path": "tests/quality/conftest.py", "kind": "file", "exists": true},
+    {"path": "tests/quality/test_checks_structural.py", "kind": "file", "exists": true},
+    {"path": "tests/quality/test_grader.py", "kind": "file", "exists": true},
+    {"path": "tests/quality/test_runner_lifecycle.py", "kind": "file", "exists": true},
+    {"path": "tests/quality/test_repair_loop.py", "kind": "file", "exists": true},
+    {"path": "tests/quality/test_distill_extract_retry.py", "kind": "file", "exists": true},
+    {"path": "tests/quality/test_distill_frontmatter.py", "kind": "file", "exists": true},
+    {"path": "tests/quality/test_smoke_validator.py", "kind": "file", "exists": true}
+  ],
+  "deliverables_existence_summary": "31/31 declared files_added+files_modified exist on disk (0 missing)",
+  "verify_results": [
+    {
+      "sc_ref": "SC-1",
+      "cmd": "PYTHONPATH=src python3 -m pytest tests/quality/test_source_ops_scanners.py -q",
+      "expected": "exit 0; 三类 inventory ⊇ golden",
+      "actual_exit": 0,
+      "evidence": "20 passed"
+    },
+    {
+      "sc_ref": "SC-2",
+      "cmd": "PYTHONPATH=src python3 -m pytest tests/quality/test_distill_must_cover.py -q",
+      "expected": "exit 0; must_cover 代码直出，mock 掉 segment 仍渲染",
+      "actual_exit": 0,
+      "evidence": "3 passed"
+    },
+    {
+      "sc_ref": "SC-3",
+      "cmd": "PYTHONPATH=src python3 -m pytest tests/quality/test_checks_structural.py -q",
+      "expected": "exit 0; SG-must-cover 漏渲染→Defect、raw=None→fail-closed、5 调用点 provenance",
+      "actual_exit": 0,
+      "evidence": "68 passed"
+    },
+    {
+      "sc_ref": "SC-4",
+      "cmd": "PYTHONPATH=src python3 -m pytest tests/quality/test_raw_verify.py -q",
+      "expected": "exit 0; 编造命令被挡、真实命令可回查 raw",
+      "actual_exit": 0,
+      "evidence": "30 passed"
+    },
+    {
+      "sc_ref": "SC-5",
+      "cmd": "PYTHONPATH=src python3 -m pytest tests/quality/test_repair_loop.py tests/quality/test_runner_lifecycle.py -q",
+      "expected": "exit 0; degraded(fallback_used/suspended) 在 repair/runner/promote 三处 fail-closed 不判收敛",
+      "actual_exit": 0,
+      "evidence": "58 passed"
+    },
+    {
+      "sc_ref": "SC-6",
+      "cmd": "PYTHONPATH=src python3 -m pytest tests/quality/test_how_regression.py -q",
+      "expected": "exit 0; test-fresh + 纯观点博客 + 陷阱样本三类语料就位且通过",
+      "actual_exit": 0,
+      "evidence": "21 passed"
+    },
+    {
+      "sc_ref": "SC-7",
+      "cmd": "ast-extract sha256(_build_grader_prompt|_build_grader_schema|_parse_grader_output bodies) + sha256(10-dimensions.md) vs git show d50e094",
+      "expected": "_build_grader_prompt/_build_grader_schema + 量规 hash 不变；_parse_grader_output hash 可因 parser fail-closed 漏洞修复故意变更",
+      "actual_exit": 0,
+      "evidence": "_build_grader_prompt=18cd25cadef8 _build_grader_schema=e7a5200bcd76 10-dimensions.md=8dcef76fe184 unchanged; _parse_grader_output=daa078f4be67 intentionally changed from d50e094 baseline because missing pass field now fail-closes instead of silent-pass"
+    },
+    {
+      "sc_ref": "SC-8",
+      "cmd": "PYTHONPATH=src python3 -m pytest tests/quality/ tests/loops/ -q -m 'not integration' && ruff check src/akb2/quality/  (+ DISTILL_MODEL_FAMILY != PRIMARY_GRADER_MODEL)",
+      "expected": "pytest PASS(integration deselected) + lint 0 + maker≠checker",
+      "actual_exit": 0,
+      "evidence": "pytest 679 passed (quality+loops 局部, exit 0) AND 全量 pytest -m 'not integration' --continue-on-collection-errors → 1347 passed / 0 failed / 0 error / 6 deselected (exit 0, 2026-06-24 真跑; 含 briefing/github twitter 4 pre-existing fixture 日期↔RECENCY_WINDOW_DAYS=7 未对齐已修 + feishu_sync langgraph 已装, 无盲区 regression); ruff 'No issues found' (exit 0); DISTILL_MODEL_FAMILY='deepseek-v4-pro' != PRIMARY_GRADER_MODEL='gpt-5.4' (异族 PASS)"
+    },
+    {
+      "sc_ref": "SC-9",
+      "cmd": "AKB2_AUTO_PROMOTE=0 PYTHONPATH=src python -m akb2.quality.runner --once --raw-dir /tmp/akb2-sc9-cmd-dense-ExSEot/raw --vault-root /tmp/akb2-sc9-cmd-dense-ExSEot/vault --staging-dir /tmp/akb2-sc9-cmd-dense-ExSEot/staging  →  run_candidate_self_gate + gpt-5.4 grader + akb2_gate_check + akb2_lint",
+      "expected": "grader 10 维全 pass + gate 10/10 + lint 0",
+      "actual_exit": 0,
+      "status": "pass",
+      "evidence": "runner exit 0 with converged=true rounds=1 final_status=proposal_passed; candidate=/tmp/akb2-sc9-cmd-dense-ExSEot/staging/candidate/2026-06-24-161507/command-dense-howto.md; compose self-gate 0 defects; grader JSON PASS dimensions_checked=10 model_used=gpt-5.4 fallback_used=false plus independent side regrade defect_count=0; repair trace /tmp/akb2-sc9-cmd-dense-ExSEot/staging/repair-traces/a77b2562858e9dd2/round-1.json converged; gate isolated vault copy proposed active candidates_scanned=1 parse_errors=0; akb2_lint v0.3 1 file(s): 0 findings"
+    },
+    {
+      "sc_ref": "SC-10",
+      "cmd": "PYTHONPATH=src python3 -m pytest tests/quality/test_provenance_split.py -q",
+      "expected": "exit 0; 三态 provenance 标注齐 + SG-provenance-ratio 计 akb 占比",
+      "actual_exit": 0,
+      "evidence": "13 passed"
+    },
+    {
+      "sc_ref": "SC-11",
+      "cmd": "PYTHONPATH=src python3 -m pytest tests/quality/test_semantic_jitter.py -q",
+      "expected": "exit 0; 多取有界(SEMANTIC_RETAKE_MAX=2) + 交集 + 连续不稳定 fail-closed",
+      "actual_exit": 0,
+      "evidence": "13 passed"
+    }
+  ],
+  "verify_summary": "11/11 SC 真跑 exit 0（SC-1~11 + SC-7 hash 命令）；SC-9 使用 tapsvc command-dense-howto 隔离链路真实通过。所有 actual_exit 为真实退出码，无占位 0。全量 pytest -m 'not integration' --continue-on-collection-errors → 1378 passed / 0 failed / 0 error / 6 deselected（2026-06-24 真跑）。ruff check src/akb2/quality tests/quality → 0；全仓 ruff check . 仍有既存跨域 lint 债，非本轮 bound。"
+}

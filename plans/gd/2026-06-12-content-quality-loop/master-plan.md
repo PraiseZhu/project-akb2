@@ -5,7 +5,7 @@ GOAL_SOURCE: Project GD/docs/gd-v7-project-goal.md
 TEMPLATE_KIND: gd-master-plan
 
 日期:2026-06-12
-状态:draft
+状态:draft（2026-06-17 实测修订见文末「实测修订」节：step-4 repair 需重写为 agent 爬坡，SC-3 受 repair 阻塞待解锁）
 负责人:Claude 执行;Codex cross-review
 
 > 规格输入(参照 spec1-2):`docs/constitution.md` v1.1.0(8 原则)+ `specs/content-quality-loop/spec.md`(FR-001~018 / SC-001~008 / 4 轮澄清)。
@@ -188,3 +188,23 @@ bash scripts/akb2-watchdog.sh --self-test                # SC-5 watchdog 自检
 - 部署目标 Mac mini 24h 常驻、串行单工;launchd 加载由用户执行
 - 前 50 条自动入库留快照(FR-015);抽检阈值 80%/周 3 篇为初值,参数级可调
 - 76 源清单以 `docs/loops-design-decisions.md` §11 为唯一书面权威（该文档 §11 含完整源 ID、类型、分类、优先级），`config/main_sources.yaml` 必须从该文档派生；验证报告以实测为准
+
+---
+
+## 实测修订（2026-06-17 · Plan 1 进度与方向校准）
+
+> 权威细节见 `docs/loops-design-decisions.md` §12 与 `specs/content-quality-loop/spec.md` 顶部修订块。本节只记本 Plan 1 受影响处。
+
+**进度实测（真 API · tapsvc 网关）**
+- step-1（循环7 骨架）/ step-2（抓取 raw）/ step-3（准入提炼）/ step-5（升格）/ step-6（daemon 骨架）：地基实测可用，~80% 贯通。intake archived 0→4。
+- **step-4（质量评估与修复）= 唯一撞墙**：grader（B 层）可用，**repair 子循环空转**——黄金样张 addy 卡 grade 7→修后 10→12，3 轮不收敛。
+- **repair 空转 4 根因**：① grader location 词表 ≠ repair 小节定位 ② 只认 H2 不认 H3 ③「整页重写+逐字节 diff」自相矛盾→整轮丢弃 ④ 超时静默吞（`repair.py:246`）。
+
+**方向校准：C+ → B（不推倒重来）**
+- **C+（最小可出货，授权改 `repair.py`）**：重写 step-4 的 repair 节点为「缺陷清单 + 黄金样本 → agent 定点爬坡 → grader 作 `/goal` 停止条件」；统一 grader↔repair location 契约；认 H3；超时不静默。`grader.py`/量规零改动（forbidden 不变）。
+- **B（根治，C+ 收敛后）**：范式分层 + 重估架构裁决（驱动/收敛/修复还权给模型）+ 修三缺口 + 补 2-3 张真实卡。
+
+**SC 影响**
+- **SC-3**（≥90% 正样本 ≤3 轮走完全链）：当前实测受 repair 阻塞，**C+ 让 addy 卡收敛是 SC-3 解锁前提**。
+- **SC-1/SC-9**（样张回归 / 真实源专项）：同受 repair 阻塞。
+- **收敛口径**：「≤3 轮收敛=零缺陷」与「目标驱动=足够接近阈值」矛盾（三缺口③），碰宪法 P3，需修宪（L4 待批）；纪律=先让 C+ 实测能否到零，不能才据数据提案（原则 8）。

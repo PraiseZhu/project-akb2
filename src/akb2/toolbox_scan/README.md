@@ -40,7 +40,7 @@ The scanner never produces an `active` decision and never sets
 
 ```bash
 python -m akb2_toolbox_scan \
-  --akb-root "/Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0" \
+  --akb-root "/Volumes/AKB2/Obsidian/Praise Space/AKB2.0" \
   --root "/Users/praise/.codex/skills" \
   --root "/Users/praise/.claude/scripts" \
   --root "/Users/praise/.claude/scripts/hooks" \

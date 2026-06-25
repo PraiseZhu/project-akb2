@@ -28,6 +28,7 @@ class SyncState(TypedDict, total=False):
     vault_root: str
     target: str  # "dm" | "group"
     state_path: str
+    dry_run: bool
     briefings: list  # list[Briefing]
     errors: list  # list[str]：解析/发送失败（非空 → exit 1 + 告警）
     log: list  # list[str]：每份简报一行结果（sent/skip-*/fail）

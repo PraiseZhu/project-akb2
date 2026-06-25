@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 # Project AKB2
 
-AKB2.0 工程根：lint / gate / intake / briefing / video / feishu_sync 等管线 + CLI + MCP wrapper + eval harness。**不含知识库本体**——知识库在 Obsidian vault（`Praise Space/AKB2.0/`），本工程通过 `config/vault.toml` 解析 vault 路径，禁止硬编码。
+AKB2.0 工程根：lint / gate / intake / briefing / video / feishu_sync 等管线 + CLI + MCP wrapper + eval harness。**不含知识库本体**——知识库在 Obsidian vault（`/Volumes/AKB2/Obsidian/Praise Space/AKB2.0/`），本工程通过 `config/vault.toml` 解析 vault 路径，禁止硬编码。
+
+路径契约：`VAULT_ROOT` / `--vault-root` 指向 `/Volumes/AKB2/Obsidian`；`AKB2_ROOT` / `AKB2_VAULT_ROOT` / `vault.akb2_root` 指向 `/Volumes/AKB2/Obsidian/Praise Space/AKB2.0`。不要再把 AKB2 运行链路指回 iCloud vault。
 
 ## 常用命令
 

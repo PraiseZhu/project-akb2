@@ -24,9 +24,9 @@ OUTPUT_DIR="$SCRIPT_DIR"
 CLAUDE_CODE_ROOT="/Users/praise/AI-Agent/Claude"
 PROJ_AKB="$CLAUDE_CODE_ROOT/Project AKB"
 AKB2_BASE="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
-AKB2_ROOT="/Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0"
+AKB2_ROOT="/Volumes/AKB2/Obsidian/Praise Space/AKB2.0"
 
-TRANSCRIPT_DIR="/Users/praise/.claude/projects/-Users-praise-Library-Mobile-Documents-com-apple-CloudDocs-Claude-Code"
+TRANSCRIPT_DIR="${AKB2_TRANSCRIPT_DIR:-${HOME}/.claude/projects}"
 CATALOG_DB="$PROJ_AKB/index/catalog.db"
 SERVER_PY="$AKB2_BASE/toolbox/cc-akb-search/mcp_server/server.py"
 SEARCH_PY="$PROJ_AKB/scripts/core/search.py"
@@ -92,10 +92,10 @@ collect_queries() {
 
     local py_exit=0
     set +e
-    python3 - << 'PYEOF'
+TRANSCRIPT_DIR="$TRANSCRIPT_DIR" python3 - << 'PYEOF'
 import json, os, glob, sys
 
-TRANSCRIPT_DIR = "/Users/praise/.claude/projects/-Users-praise-Library-Mobile-Documents-com-apple-CloudDocs-Claude-Code"
+TRANSCRIPT_DIR = os.environ["TRANSCRIPT_DIR"]
 OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__)) if '__file__' in dir() else "."
 
 A4_CONTEXT_KEYWORDS = ["P1e A4", "P1c A4", "L1 eval", "A4 fixture", "V2 verify", "V1: 确认"]

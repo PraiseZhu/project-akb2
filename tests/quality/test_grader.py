@@ -9,6 +9,7 @@ import pytest
 
 from src.akb2.quality.grader import (
     RUBRIC_DIMENSIONS,
+    _build_grader_schema,
     _load_rubric_text,
     _parse_grader_output,
     run_grader_with_fixture,
@@ -231,6 +232,54 @@ class TestParseGraderOutput:
         for d in defects:
             assert d.location, f"Defect missing location: {d}"
 
+    def test_parse_accepts_canonical_name_with_english_suffix(self):
+        """gpt-5.4 常把维度名写成中文 canonical + 英文括注，应归一化后接收。"""
+        english_suffixes = [
+            "Claim Anchor Rate",
+            "How Density",
+            "How Actionability",
+            "Evidence Honesty",
+            "Interpretation Separation",
+            "TLDR Density",
+            "Novelty Increment",
+            "Edge Strength Matching",
+            "Future Questions Quality",
+            "Applicability Boundary",
+        ]
+        dims = []
+        for dim, suffix in zip(RUBRIC_DIMENSIONS, english_suffixes, strict=True):
+            dims.append({"dimension": f"{dim} ({suffix})", "pass": True, "defects": []})
+        dims[0] = {
+            "dimension": "论断锚定率 (Claim Anchor Rate)",
+            "pass": False,
+            "defects": [
+                {
+                    "location": "入选理由",
+                    "defect": "入选理由缺 raw 锚点",
+                    "suggestion": "补充 raw § 引用",
+                }
+            ],
+        }
+
+        defects, ok = _parse_grader_output({"dimensions": dims})
+
+        assert ok
+        assert len(defects) == 1
+        assert defects[0].dimension == "论断锚定率"
+
+    def test_parse_rejects_unknown_dimension_even_with_suffix(self):
+        """只接受已知 canonical 维度名的括注变体。"""
+        dims = [
+            {"dimension": dim, "pass": True, "defects": []}
+            for dim in RUBRIC_DIMENSIONS
+        ]
+        dims[0] = {"dimension": "论断覆盖率 (Claim Anchor Rate)", "pass": True, "defects": []}
+
+        defects, ok = _parse_grader_output({"dimensions": dims})
+
+        assert not ok
+        assert defects == []
+
     def test_parse_missing_location_rejected(self, missing_location_response):
         """FR-006: 缺 location 的条目整批拒收。"""
         response = missing_location_response["gpt-5.4"]
@@ -244,7 +293,13 @@ class TestParseGraderOutput:
 
     def test_parse_string_content(self):
         """解析字符串形式的 dict → 成功。"""
-        content = '{"dimensions": [{"dimension": "test", "pass": true, "defects": []}]}'
+        dims = [
+            {"dimension": dim, "pass": True, "defects": []}
+            for dim in RUBRIC_DIMENSIONS
+        ]
+        import json
+
+        content = json.dumps({"dimensions": dims}, ensure_ascii=False)
         defects, ok = _parse_grader_output(content)
         assert ok
 
@@ -252,6 +307,53 @@ class TestParseGraderOutput:
         """dimensions 不是 list → 失败。"""
         defects, ok = _parse_grader_output({"dimensions": "not_a_list"})
         assert not ok
+
+    def test_parse_rejects_partial_qwen_like_shape(self):
+        """网关模型只返回半结构化对象时必须拒收，不许当 0 缺陷通过。"""
+        content = {
+            "dimensions": [
+                {"id": 1, "pass": True, "defects": []},
+                {
+                    "id": 2,
+                    "pass": False,
+                    "defects": [{"location": "## Future Questions"}],
+                },
+            ]
+        }
+        defects, ok = _parse_grader_output(content)
+        assert not ok
+        assert defects == []
+
+    def test_parse_requires_all_10_dimensions(self):
+        """缺维度时拒收，避免单维 pass 被误作整体验收。"""
+        content = {
+            "dimensions": [
+                {"dimension": "论断锚定率", "pass": True, "defects": []},
+            ]
+        }
+        defects, ok = _parse_grader_output(content)
+        assert not ok
+        assert defects == []
+
+    def test_parse_missing_pass_field_rejected(self):
+        """10 维都缺 pass 时拒收，避免 defects=[] 被静默当全 pass。"""
+        content = {
+            "dimensions": [
+                {"dimension": dim, "defects": []}
+                for dim in RUBRIC_DIMENSIONS
+            ]
+        }
+        defects, ok = _parse_grader_output(content)
+        assert not ok
+        assert defects == []
+
+
+class TestGraderSchema:
+    def test_dimension_schema_is_canonical_enum(self):
+        """结构化输出 schema 固定 10 个 canonical 中文维度名。"""
+        schema = _build_grader_schema()
+        dim_schema = schema["properties"]["dimensions"]["items"]["properties"]["dimension"]
+        assert dim_schema["enum"] == RUBRIC_DIMENSIONS
 
 
 # ---------------------------------------------------------------------------
@@ -315,3 +417,84 @@ class TestRubricCoverage:
         dims = [d["dimension"] for d in data["dimensions"]]
         for expected in RUBRIC_DIMENSIONS:
             assert expected in dims, f"Missing dimension in response: {expected}"
+
+
+# ---------------------------------------------------------------------------
+# SC-6.1 重试 + SC-6.4 异族分离（step-6: grader degraded fail-closed 护栏）
+# ---------------------------------------------------------------------------
+
+
+class TestGraderRetryAndIsolation:
+    """重试循环（解析失败时按 MAX_GRADER_RETRIES 重试）+ Maker/Checker 异族守护。"""
+
+    def test_run_grader_detailed_retry_exhausted_to_degraded(
+        self, monkeypatch, valid_candidate_page
+    ):
+        """SC-6.1: primary 持续返回坏 JSON → 重试（≤MAX_GRADER_RETRIES），耗尽走兜底标 degraded。"""
+        from src.akb2.quality import grader as grader_mod
+        from src.akb2.quality.grader import MAX_GRADER_RETRIES, run_grader_detailed
+        from src.akb2.quality.llm_router import LLMResponse
+        from tests.quality.conftest import make_mock_route_llm
+
+        bad = LLMResponse(content="not valid json", model_used="gpt-5.4", calls_used=1)
+        good_dims = [
+            {"dimension": dim, "pass": True, "defects": []} for dim in RUBRIC_DIMENSIONS
+        ]
+        good_gemini = LLMResponse(
+            content={"dimensions": good_dims}, model_used="gemini-flash", calls_used=1
+        )
+        mock_llm = make_mock_route_llm({"gpt-5.4": bad, "gemini-flash": good_gemini})
+        monkeypatch.setattr(grader_mod, "route_llm", mock_llm)
+
+        result = run_grader_detailed(valid_candidate_page)
+
+        gpt_calls = mock_llm.call_counts.get("gpt-5.4", 0)
+        # 重试发生：至少 2 次（初试 + 重试）
+        assert gpt_calls >= 2, f"应触发重试，实际 gpt-5.4 调用 {gpt_calls} 次"
+        # 重试上限 ≤ MAX_GRADER_RETRIES
+        assert gpt_calls <= MAX_GRADER_RETRIES, (
+            f"重试次数超上限：{gpt_calls} > {MAX_GRADER_RETRIES}"
+        )
+        # 耗尽后走 gemini 兜底 → degraded（fallback_used=True）
+        assert result.fallback_used is True
+        assert result.suspended is False
+        assert len(result.defects) == 0
+
+    def test_run_grader_detailed_retry_then_succeed(
+        self, monkeypatch, valid_candidate_page
+    ):
+        """SC-6.1: 首次坏 JSON、重试后成功 → 不走兜底，未 degraded。"""
+        from src.akb2.quality import grader as grader_mod
+        from src.akb2.quality.grader import run_grader_detailed
+        from src.akb2.quality.llm_router import LLMResponse
+        from tests.quality.conftest import make_mock_route_llm
+
+        bad = LLMResponse(content="not valid json", model_used="gpt-5.4", calls_used=1)
+        good_dims = [
+            {"dimension": dim, "pass": True, "defects": []} for dim in RUBRIC_DIMENSIONS
+        ]
+        good = LLMResponse(
+            content={"dimensions": good_dims}, model_used="gpt-5.4", calls_used=1
+        )
+        # 首次（call_index 0）坏，第二次（call_index 1）好
+        mock_llm = make_mock_route_llm({"gpt-5.4:0": bad, "gpt-5.4:1": good})
+        monkeypatch.setattr(grader_mod, "route_llm", mock_llm)
+
+        result = run_grader_detailed(valid_candidate_page)
+
+        assert mock_llm.call_counts.get("gpt-5.4", 0) == 2  # 初试 + 1 重试
+        assert result.fallback_used is False
+        assert result.suspended is False
+        assert len(result.defects) == 0
+        assert result.model_used == "gpt-5.4"
+
+    def test_grader_distill_model_family_isolation(self):
+        """SC-6.4: Maker/Checker 异族分离 — distill(deepseek) != grader(gpt-5.4)。"""
+        from src.akb2.quality.distill import DISTILL_MODEL_FAMILY
+        from src.akb2.quality.grader import PRIMARY_GRADER_MODEL
+
+        assert DISTILL_MODEL_FAMILY != PRIMARY_GRADER_MODEL, (
+            "Maker/Checker 必须异族分离，distill 与 grader 不得同模型"
+        )
+        assert PRIMARY_GRADER_MODEL == "gpt-5.4"
+        assert DISTILL_MODEL_FAMILY == "deepseek-v4-pro"

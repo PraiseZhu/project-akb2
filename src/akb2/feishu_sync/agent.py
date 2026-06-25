@@ -44,10 +44,14 @@ def send_node(state: SyncState) -> dict:
     target = state.get("target", "dm")
     date = state["date"]
     state_path = Path(state["state_path"])
+    dry_run = bool(state.get("dry_run", False))
     log = list(state.get("log", []))
     errors = list(state.get("errors", []))
 
     for b in state.get("briefings", []):
+        if dry_run:
+            log.append(f"{b.kind} dry-run → {target}")
+            continue
         try:
             is_dup = idempotency.already_sent(state_path, date, b.kind, target)
         except idempotency.StateCorruptError as exc:
@@ -97,7 +101,14 @@ def build_agent():
     return g.compile()
 
 
-def run_sync(*, date: str, vault_root: Path, target: str, state_path: Path) -> int:
+def run_sync(
+    *,
+    date: str,
+    vault_root: Path,
+    target: str,
+    state_path: Path,
+    dry_run: bool = False,
+) -> int:
     """运行同步，返回退出码（0=成功/静默无内容，1=有失败）。"""
     agent = build_agent()
     init: SyncState = {
@@ -105,6 +116,7 @@ def run_sync(*, date: str, vault_root: Path, target: str, state_path: Path) -> i
         "vault_root": str(vault_root),
         "target": target,
         "state_path": str(state_path),
+        "dry_run": dry_run,
         "briefings": [],
         "errors": [],
         "log": [],
@@ -115,9 +127,12 @@ def run_sync(*, date: str, vault_root: Path, target: str, state_path: Path) -> i
         notify.log_line(line)
 
     errors = final.get("errors", [])
-    sent_any = any("sent →" in line for line in final.get("log", []))
+    acted_any = any(
+        "sent →" in line or "dry-run →" in line
+        for line in final.get("log", [])
+    )
 
-    if not sent_any and not errors:
+    if not acted_any and not errors:
         notify.log_line(f"今日无可发布简报，静默退出 ({date}/{target})")
 
     if errors:

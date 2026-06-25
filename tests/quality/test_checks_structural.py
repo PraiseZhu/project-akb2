@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from src.akb2.quality.checks_structural import (
@@ -15,8 +17,10 @@ from src.akb2.quality.checks_structural import (
     check_a4_graph_edges,
     check_a5_wikilinks,
     check_a6_maintenance_records,
+    run_candidate_self_gate,
     run_structural_checks,
 )
+from src.akb2.quality.source_ops_scanners import scan_all as scan_source_evidence
 
 # ---------------------------------------------------------------------------
 # 正样本: 完整的黄金样张风格候选页
@@ -38,6 +42,10 @@ future_questions:
 related_concepts:
   - harness-engineering
   - agent-collaboration
+key_findings:
+  - "[raw §A] (source_grounded) 每个 loop 必须有显式停止条件"
+  - "[raw §B] (source_grounded) loop 需要 trigger、selector、executor、quality gate、ledger writer"
+  - "[raw §C] (source_grounded) 定点修复优于整体重跑"
 artifact_type: wiki
 pipeline_version: v1
 ---
@@ -73,15 +81,18 @@ Loop engineering 的核心洞察是: 先写账本再执行，崩溃恢复只需�
 
 ## 适用边界
 
-适用: Agent pipeline、内容质量自动化
-不适用: 简单 CRUD 脚本、一次性数据迁移
+- [raw §A] (source_grounded) 来源事实：原文把任务从 prompt 上移为 loop/system 设计。
+- [raw §B] (source_grounded) 来源事实：原文列出 trigger、selector、executor、quality gate、ledger writer。
+- [raw §A] (akb_interpretation) 适用场景：Agent pipeline、内容质量自动化。
+- [raw §C] (akb_interpretation) 不适用场景：简单 CRUD 脚本、一次性数据迁移。
+- [raw §D] (akb_interpretation) 约束条件：需要显式预算、质量门和人工复核入口。
 
 ## 图谱关系
 
 | target | relation | strength | evidence |
 |--------|----------|----------|----------|
-| harness-engineering | 上游概念 | strong | 原文明示 "楼上一层" |
-| agent-collaboration | 相关领域 | medium | 场景应用 |
+| harness-engineering | upstream | strong | [raw §B] (source_grounded) 原文明示 "楼上一层" |
+| agent-collaboration | related | weak | [raw §E] (akb_interpretation) 多 agent 协作可复用 maker/checker separation，但原文未定义协作协议。 |
 
 ## Future Questions
 
@@ -243,6 +254,32 @@ class TestA2Frontmatter:
         defects = check_a2_frontmatter(valid_candidate_page)
         assert len(defects) == 0, f"Expected 0 defects, got: {defects}"
 
+    def test_invalid_yaml_frontmatter_produces_a2_defect(self):
+        """负: PyYAML 解析失败时不得假绿，必须返回 A2 frontmatter defect。"""
+        text = """---
+status: candidate
+gate_decision: null
+source_refs:
+  - raw/test.md
+key_findings:
+  - [raw §A] (source_grounded) unsafe: unquoted
+future_questions:
+  - q1
+  - q2
+related_concepts:
+  - c1
+  - c2
+---
+
+## TLDR
+test [raw §A]
+"""
+        defects = check_a2_frontmatter(text)
+        assert len(defects) == 1
+        assert defects[0].dimension == "A2-frontmatter"
+        assert defects[0].location == "frontmatter"
+        assert "YAML" in defects[0].defect
+
     def test_missing_source_refs(self):
         """负: source_refs 为空 → 缺陷。"""
         text = """---
@@ -358,6 +395,31 @@ test
         fq_defects = [d for d in defects if "future_questions" in d.location]
         assert len(fq_defects) >= 1
 
+    def test_key_findings_require_provenance_when_anchored(self):
+        """负: frontmatter key_findings 带 raw 锚点时也必须标 provenance。"""
+        text = """---
+status: candidate
+gate_decision: null
+source_refs:
+  - raw/test.md
+gate_reason: ok
+future_questions:
+  - q1
+  - q2
+related_concepts:
+  - c1
+  - c2
+key_findings:
+  - "[raw §A] a source claim without provenance"
+---
+
+## TLDR
+test
+"""
+        defects = check_a2_frontmatter(text)
+        key_defects = [d for d in defects if "key_findings" in d.location]
+        assert len(key_defects) >= 1
+
     def test_related_concepts_too_few(self):
         """负: related_concepts 只有 1 条 → 缺陷。"""
         text = """---
@@ -425,6 +487,110 @@ class TestA3RawAnchors:
         defects = check_a3_raw_anchors(valid_candidate_page, valid_raw_content)
         assert len(defects) == 0
 
+    def test_double_hash_dotted_anchor_headings_exist(self):
+        """正: 真实 raw 的 `## §A. 标题` 章节格式应被识别为锚点声明。"""
+        candidate = """---
+status: candidate
+gate_decision: null
+---
+
+## TLDR
+
+Loop 工程需要五个组件 [raw §B]，也需要保留人工验证边界 [raw §I]。
+"""
+        raw = """---
+artifact_type: raw
+---
+
+## 锚点目录
+
+| 锚点 | 内容 |
+|------|------|
+| §B | loop 五要素 |
+| §I | loop 不替你做的三件事 |
+
+---
+
+## §B. The five pieces, and then notes
+
+A loop needs five things.
+
+## §I. What the loop still does not do for you
+
+Verification is still on you.
+"""
+        defects = check_a3_raw_anchors(candidate, raw)
+        assert defects == []
+
+    def test_bracketed_raw_anchor_lines_exist(self):
+        """正: smoke/raw 常用的 `[raw §A] ...` 段落行应被识别为锚点声明。"""
+        candidate = """---
+status: candidate
+gate_decision: null
+---
+
+## TLDR
+
+Loop 工程需要显式停止条件 [raw §A]，也需要失败可观测 [raw §I]。
+"""
+        raw = """---
+artifact_type: raw
+---
+
+[raw §A] Loop engineering is bounded, convergent, and observable.
+
+[raw §I] A loop is deployable only when failure is observable.
+"""
+        assert check_a3_raw_anchors(candidate, raw) == []
+
+    def test_numeric_anchor_headings_exist(self):
+        """正: fresh raw 的 `§1/§2` 数字锚点必须被识别。"""
+        candidate = """---
+status: candidate
+gate_decision: null
+---
+
+## TLDR
+
+MCP 初始化和工具调用都来自原文数字锚点 [raw §1] [raw §2]。
+"""
+        raw = """---
+artifact_type: raw
+---
+
+# §1 Initialize
+
+Clients send initialize first.
+
+# §2 Tools
+
+Clients call tools/list before tools/call.
+"""
+        assert check_a3_raw_anchors(candidate, raw) == []
+
+    def test_inline_section_mentions_do_not_create_anchor(self):
+        """负: 正文里偶然提到 §Z 不能被当作合法 raw 锚点声明。"""
+        candidate = """---
+status: candidate
+gate_decision: null
+---
+
+## TLDR
+
+引用不存在的锚点 [raw §Z].
+"""
+        raw = """---
+artifact_type: raw
+---
+
+## §A. 开篇
+
+这段文字只是说不要引用 §Z，因为它不存在。
+"""
+        defects = check_a3_raw_anchors(candidate, raw)
+        assert len(defects) == 1
+        assert "§Z" in defects[0].defect
+
     def test_nonexistent_anchor(self, valid_raw_content):
         """负: 引用不存在的锚点 → 缺陷。"""
         text = """---
@@ -443,6 +609,99 @@ gate_decision: null
         """raw_content=None → 跳过检查，零缺陷。"""
         defects = check_a3_raw_anchors(valid_candidate_page, None)
         assert len(defects) == 0
+
+
+class TestCandidateSelfGate:
+    def test_rejects_excessive_akb_interpretation(self, valid_candidate_page, valid_raw_content):
+        text = valid_candidate_page.replace(
+            "## 关键发现\n\n"
+            "1. 每个 loop 必须有显式停止条件 [raw §A]\n"
+            "2. 定点修复优于整体重跑 [raw §C]\n\n"
+            "## 入选理由\n\n"
+            "本文提供了完整的 loop 设计模板，填补了 AKB 在 agent 工程方法论的空白。",
+            "## 关键发现\n\n"
+            "1. [raw §A] (akb_interpretation) 每个 loop 必须有显式停止条件。\n"
+            "2. [raw §C] (akb_interpretation) 定点修复优于整体重跑。\n\n"
+            "## 入选理由\n\n"
+            "- [raw §B] (akb_interpretation) 本文提供了完整的 loop 设计模板。\n"
+            "- [raw §D] (akb_interpretation) 该方法论可以泛化到多种 agent 管线。",
+        )
+        defects = run_candidate_self_gate(text, valid_raw_content)
+        assert any(d.dimension == "SG-provenance-ratio" for d in defects)
+
+    def test_rejects_core_section_akb_interpretation_ratio(
+        self, valid_candidate_page, valid_raw_content
+    ):
+        text = valid_candidate_page.replace(
+            "## 核心论点\n\n"
+            "1. 有界循环设计 [raw §A]: 每个 loop 必须有显式停止条件\n"
+            "2. 五组件模板 [raw §B]: trigger, work unit selector, action executor, quality gate, ledger writer\n"
+            "3. 收敛优先 [raw §C]: 定点修复成本远低于整体重跑",
+            "## 核心论点\n\n"
+            "1. [raw §A] (akb_interpretation) 有界循环设计可以推导出治理面。\n"
+            "2. [raw §B] (akb_interpretation) 五组件模板适合所有 agent 系统。\n"
+            "3. [raw §C] (akb_interpretation) 定点修复必然优于整体重跑。",
+        )
+        defects = run_candidate_self_gate(text, valid_raw_content)
+        assert any(d.dimension == "SG-provenance-ratio" for d in defects)
+
+    def test_allows_interpretation_markers_in_operational_sections(
+        self, valid_candidate_page, valid_raw_content
+    ):
+        text = valid_candidate_page.replace(
+            "## 适用边界\n\n"
+            "- [raw §A] (source_grounded) 来源事实：原文把任务从 prompt 上移为 loop/system 设计。\n"
+            "- [raw §B] (source_grounded) 来源事实：原文列出 trigger、selector、executor、quality gate、ledger writer。\n"
+            "- [raw §A] (akb_interpretation) 适用场景：Agent pipeline、内容质量自动化。\n"
+            "- [raw §C] (akb_interpretation) 不适用场景：简单 CRUD 脚本、一次性数据迁移。\n"
+            "- [raw §D] (akb_interpretation) 约束条件：需要显式预算、质量门和人工复核入口。",
+            "## 适用边界\n\n"
+            "- [raw §A] (akb_interpretation) 适用场景：Agent pipeline、内容质量自动化。\n"
+            "- [raw §B] (akb_interpretation) 适用场景：需要 trigger、selector、executor、quality gate、ledger writer 的多步骤系统。\n"
+            "- [raw §C] (akb_interpretation) 不适用场景：简单 CRUD 脚本、一次性数据迁移。\n"
+            "- [raw §D] (akb_interpretation) 约束条件：需要显式预算、质量门和人工复核入口。",
+        ).replace(
+            "| harness-engineering | upstream | strong | [raw §B] (source_grounded) 原文明示 \"楼上一层\" |\n"
+            "| agent-collaboration | related | weak | [raw §E] (akb_interpretation) 多 agent 协作可复用 maker/checker separation，但原文未定义协作协议。 |",
+            "| harness-engineering | related | weak | [raw §B] (akb_interpretation) 与 harness-engineering 保守相关，等待图谱校准。 |\n"
+            "| agent-collaboration | related | weak | [raw §E] (akb_interpretation) 多 agent 协作可复用 maker/checker separation，但原文未定义协作协议。 |",
+        )
+        defects = run_candidate_self_gate(text, valid_raw_content)
+        assert not any(d.dimension == "SG-provenance-ratio" for d in defects)
+
+    def test_how_interpretation_steps_do_not_count_against_core_ratio(
+        self, valid_candidate_page, valid_raw_content
+    ):
+        text = valid_candidate_page.replace(
+            "## Future Questions",
+            "### 操作步骤\n\n"
+            "1. [raw §A] (akb_interpretation) Record failure before stopping `ledger.append({event:'abort',node:node})`\n"
+            "2. [raw §B] (akb_interpretation) Assert loop budget before executing `assert max_repair_rounds <= 3 and timeout_s == 60`\n"
+            "3. [raw §C] (akb_interpretation) Dispatch section repair by defect `repair_router.dispatch(section=defect.section)`\n\n"
+            "## Future Questions",
+        )
+        defects = run_candidate_self_gate(text, valid_raw_content)
+        assert not any(d.dimension == "SG-provenance-ratio" for d in defects)
+
+    def test_rejects_generic_akb_command(self, valid_candidate_page, valid_raw_content):
+        text = valid_candidate_page.replace(
+            "## Future Questions",
+            "### 操作步骤\n\n"
+            "- [raw §A] (akb_interpretation) `assert evidence_map.contains('[raw §A]')`\n\n"
+            "## Future Questions",
+        )
+        defects = run_candidate_self_gate(text, valid_raw_content)
+        assert any(d.dimension == "SG-generic-command" for d in defects)
+
+    def test_rejects_hardcoded_novelty_baseline(self, valid_candidate_page, valid_raw_content):
+        text = valid_candidate_page.replace(
+            "## Future Questions",
+            "## 新颖增量\n\n"
+            "wiki/sources/addy-osmani-loop-engineering.md\n\n"
+            "## Future Questions",
+        )
+        defects = run_candidate_self_gate(text, valid_raw_content)
+        assert any(d.dimension == "SG-novelty-hardcoded" for d in defects)
 
 
 # ---------------------------------------------------------------------------
@@ -498,6 +757,98 @@ test
 """
         defects = check_a4_graph_edges(text)
         assert len(defects) == 0
+
+    def test_evidence_requires_raw_anchor_or_interpretation(self):
+        """负: 图谱 evidence 无 raw anchor 且无 provenance → 本地契约直接抓出。"""
+        text = """---
+status: candidate
+---
+
+## 图谱关系
+
+| target | relation | strength | evidence |
+|--------|----------|----------|----------|
+| agent-collaboration | related | medium | multi-agent loops require coordination primitives |
+"""
+        defects = check_a4_graph_edges(text)
+        assert any(d.dimension == "A7-图谱证据" for d in defects)
+        assert any(d.dimension == "A7-边强度匹配" for d in defects)
+
+    def test_weak_interpretation_edge_without_raw_anchor_is_allowed(self):
+        """正: 无 raw anchor 的 AKB 推断边必须降 weak 且标 provenance。"""
+        text = """---
+status: candidate
+---
+
+## 图谱关系
+
+| target | relation | strength | evidence |
+|--------|----------|----------|----------|
+| agent-collaboration | related | weak | (akb_interpretation) 多 agent 协作可复用账本模式，但原文未定义协作协议。 |
+"""
+        defects = check_a4_graph_edges(text)
+        assert defects == []
+
+    def test_five_column_graph_edge_with_provenance_is_allowed(self):
+        """正: 新图谱契约含 provenance 列，evidence 同步 marker。"""
+        text = """---
+status: candidate
+---
+
+## 图谱关系
+
+| target | relation | strength | provenance | evidence |
+|--------|----------|----------|------------|----------|
+| agent-collaboration | related | weak | akb_interpretation | (akb_interpretation) 多 agent 协作可复用账本模式，但原文未定义协作协议。 |
+"""
+        defects = check_a4_graph_edges(text)
+        assert defects == []
+
+    def test_five_column_graph_edge_requires_matching_marker(self):
+        """负: provenance 列与 evidence marker 必须一致，防止边界只写在表头里。"""
+        text = """---
+status: candidate
+---
+
+## 图谱关系
+
+| target | relation | strength | provenance | evidence |
+|--------|----------|----------|------------|----------|
+| agent-collaboration | related | weak | akb_interpretation | 多 agent 协作可复用账本模式。 |
+"""
+        defects = check_a4_graph_edges(text)
+        assert any("marker" in d.defect for d in defects)
+
+
+class TestA8ApplicabilityBoundary:
+    def test_boundary_bullets_require_anchor_and_provenance(self):
+        """负: 自由文本边界会被本地契约拒绝。"""
+        text = """---
+status: candidate
+---
+
+## 适用边界
+
+适用: Agent pipeline
+不适用: one-shot
+"""
+        defects = run_structural_checks(text)
+        assert any(d.dimension == "A8-适用边界" for d in defects)
+
+    def test_boundary_rejects_mixed_categories_in_one_bullet(self):
+        """负: 同一 bullet 混写适用/不适用/约束。"""
+        text = """---
+status: candidate
+---
+
+## 适用边界
+
+- [raw §A] (akb_interpretation) 适用场景：Agent pipeline。不适用场景：one-shot。约束条件：需要账本。
+"""
+        from src.akb2.quality.checks_structural import check_a8_applicability_boundary
+
+        defects = check_a8_applicability_boundary(text)
+        assert any("混写" in d.defect for d in defects)
 
 
 # ---------------------------------------------------------------------------
@@ -716,3 +1067,341 @@ source_refs: []
         for d in defects:
             assert d.location, f"Defect missing location: {d}"
             assert d.dimension, f"Defect missing dimension: {d}"
+
+
+# ---------------------------------------------------------------------------
+# SG-must-cover: 确定性证据覆盖（fail-closed）— step-3
+# ---------------------------------------------------------------------------
+
+
+# 与 5 处生产调用点对应的源文件路径（provenance 静态审计用）。
+# 锚定到 repo root（__file__ = tests/quality/，parents[2] = repo 根），不依赖进程
+# CWD——conftest 的 sample_raw_path autouse fixture 已把 CWD 切到 per-test tmp 子目录
+# 以消除共享 raw/ 竞态，这里若用 CWD 相对路径会读不到 src/。改绝对锚定，纯路径解析
+# 机制变更，断言内容不变。
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_CALLSITE_SOURCE_PATHS = {
+    "distill": str(_REPO_ROOT / "src/akb2/quality/distill.py"),
+    "repair": str(_REPO_ROOT / "src/akb2/quality/repair.py"),
+    "runner": str(_REPO_ROOT / "src/akb2/quality/runner.py"),
+    "smoke_validator": str(_REPO_ROOT / "src/akb2/quality/smoke_validator.py"),
+}
+
+# raw 含 operation/boundary/conclusion 三类 must_cover，scan_all 命中 4 项。
+_MUST_COVER_RAW = """\
+# §A Setup
+
+1. Run npm install
+2. Run npm test
+
+仅限生产环境使用。
+
+因此该方案只适合生产部署。
+"""
+
+# 操作/边界/结论的字面量，用于断言 scan_all 非空且命中预期 must_cover。
+_EXPECTED_MUST_COVER_LITERALS = (
+    "1. Run npm install",
+    "2. Run npm test",
+    "仅限生产环境使用",
+    "因此该方案只适合生产部署",
+)
+
+
+def _candidate_with_how_steps(steps_text: str) -> str:
+    """构造一个含 ### 操作步骤 / ## 适用边界 / TLDR 的候选页骨架。"""
+    return f"""---
+status: candidate
+gate_decision: null
+source_refs:
+  - raw/test-must-cover--raw.md
+gate_reason: 待评审
+future_questions:
+  - Q1?
+  - Q2?
+related_concepts:
+  - concept-a
+key_findings:
+  - "[raw §A] (source_grounded) finding"
+artifact_type: wiki
+pipeline_version: v1
+---
+
+## TLDR
+
+因此该方案只适合生产部署 [raw §A]。
+
+## 关键发现
+
+1. finding [raw §A]
+
+## 入选理由
+
+理由。
+
+## 证据地图
+
+| 论点 | 锚点 | 证据强度 | 未覆盖 |
+|------|------|---------|--------|
+| A | §A | strong | - |
+
+## 核心论点
+
+1. 因此该方案只适合生产部署 [raw §A]
+
+## 论证与解释
+
+解释。
+
+### 操作步骤
+
+{steps_text}
+
+## 适用边界
+
+- [raw §A] (source_grounded) 仅限生产环境使用。
+
+## 图谱关系
+
+| target | relation | strength | evidence |
+|--------|----------|----------|----------|
+| concept-a | related | weak | [raw §A] (source_grounded) x |
+
+## Future Questions
+
+1. Q1?
+2. Q2?
+
+## 维护记录
+
+- 2026-06-23: 初始创建（待评审）
+"""
+
+
+class TestSGMustCoverFailClosed:
+    """SC-3.1 / SC-3.2: must_cover 漏即挡 + raw 缺失 fail-closed。"""
+
+    def test_scan_all_hits_expected_must_cover(self):
+        """scan_all(_MUST_COVER_RAW) 非空且命中 4 个预期字面量。"""
+        items = scan_source_evidence(_MUST_COVER_RAW)
+        literals = {i.literal for i in items}
+        assert len(items) == 4
+        for expected in _EXPECTED_MUST_COVER_LITERALS:
+            assert expected in literals, f"scan_all 漏掉 must_cover: {expected!r}"
+
+    def test_missing_operation_is_defect(self):
+        """SC-3.1 漏即挡：原文有编号步骤但 ### 操作步骤 没渲染 → SG-must-cover Defect。"""
+        # How 步骤只渲染了第二条，漏了第一条 "1. Run npm install"。
+        steps = "- [raw §A] (source_grounded) 2. Run npm test `npm test`"
+        text = _candidate_with_how_steps(steps)
+        defects = run_candidate_self_gate(text, raw_content=_MUST_COVER_RAW)
+        must_cover = [d for d in defects if d.dimension == "SG-must-cover"]
+        assert must_cover, "漏渲染的 must_cover 未被挡下"
+        assert any("1. Run npm install" in d.defect for d in must_cover)
+        assert all(d.location == "### 操作步骤" for d in must_cover if "Run npm" in d.defect)
+
+    def test_rendered_operations_no_must_cover_defect(self):
+        """SC-3.1 不漏→空：How 步骤逐字渲染了所有 operation → 无 SG-must-cover Defect。"""
+        steps = (
+            "- [raw §A] (source_grounded) 1. Run npm install `npm install`\n"
+            "- [raw §A] (source_grounded) 2. Run npm test `npm test`"
+        )
+        text = _candidate_with_how_steps(steps)
+        defects = run_candidate_self_gate(text, raw_content=_MUST_COVER_RAW)
+        must_cover = [d for d in defects if d.dimension == "SG-must-cover"]
+        assert must_cover == [], f"已逐字渲染却报 must_cover 缺陷: {must_cover}"
+
+    def test_missing_boundary_is_defect(self):
+        """SC-3.1 边界漏渲染：适用边界节不含原文边界字面量 → SG-must-cover Defect。"""
+        # 用一个不含 "仅限生产环境使用" 的候选页（边界节改成别的文字）。
+        text = _candidate_with_how_steps(
+            "- [raw §A] (source_grounded) 1. Run npm install `npm install`\n"
+            "- [raw §A] (source_grounded) 2. Run npm test `npm test`"
+        ).replace("仅限生产环境使用。", "适用所有环境。")
+        defects = run_candidate_self_gate(text, raw_content=_MUST_COVER_RAW)
+        must_cover = [d for d in defects if d.dimension == "SG-must-cover"]
+        assert any("仅限生产环境使用" in d.defect for d in must_cover)
+        assert any(d.location == "## 适用边界" for d in must_cover)
+
+    def test_missing_conclusion_is_defect(self):
+        """SC-3.1 结论漏渲染：TLDR/关键发现/核心论点 不含原文结论字面量 → SG-must-cover Defect。"""
+        text = _candidate_with_how_steps(
+            "- [raw §A] (source_grounded) 1. Run npm install `npm install`\n"
+            "- [raw §A] (source_grounded) 2. Run npm test `npm test`"
+        ).replace("因此该方案只适合生产部署", "该方案通用")
+        defects = run_candidate_self_gate(text, raw_content=_MUST_COVER_RAW)
+        must_cover = [d for d in defects if d.dimension == "SG-must-cover"]
+        assert any("因此该方案只适合生产部署" in d.defect for d in must_cover)
+        assert any(
+            d.location == "TLDR/关键发现/核心论点" for d in must_cover
+        )
+
+    def test_raw_none_fail_closed(self):
+        """SC-3.2 raw 缺失 fail-closed：raw_content=None → 必产 SG-must-cover Defect，不静默跳过。"""
+        text = _candidate_with_how_steps(
+            "- [raw §A] (source_grounded) 1. Run npm install `npm install`"
+        )
+        defects = run_candidate_self_gate(text, raw_content=None)
+        must_cover = [d for d in defects if d.dimension == "SG-must-cover"]
+        assert len(must_cover) == 1
+        assert "raw_content 缺失" in must_cover[0].defect
+        assert must_cover[0].location == "raw_content"
+
+    def test_raw_none_not_silently_skipped_on_clean_page(self):
+        """SC-3.2 即使候选页本身结构完整，raw=None 仍必须报 fail-closed 缺陷。"""
+        # 一个能通过其他 SG 检查的候选页：raw=None 时唯一新缺陷就是 SG-must-cover。
+        text = _candidate_with_how_steps(
+            "- [raw §A] (source_grounded) 1. Run npm install `npm install`\n"
+            "- [raw §A] (source_grounded) 2. Run npm test `npm test`\n"
+            "- [raw §A] (source_grounded) 3. Run npm build `npm build`"
+        )
+        defects_none = run_candidate_self_gate(text, raw_content=None)
+        defects_raw = run_candidate_self_gate(text, raw_content=_MUST_COVER_RAW)
+        none_mc = [d for d in defects_none if d.dimension == "SG-must-cover"]
+        raw_mc = [d for d in defects_raw if d.dimension == "SG-must-cover"]
+        assert len(none_mc) == 1 and "raw_content 缺失" in none_mc[0].defect
+        # 有真实 raw 时，已逐字渲染 → 无 must_cover 缺陷（语义分离）。
+        assert raw_mc == []
+
+
+class TestSGMustCoverCallSiteProvenance:
+    """SC-3.3: 5 处 run_candidate_self_gate 调用点 raw provenance 静态审计。"""
+
+    @staticmethod
+    def _read(rel_path: str) -> str:
+        from pathlib import Path
+
+        return Path(rel_path).read_text(encoding="utf-8")
+
+    def test_distill_callsite_reads_real_raw_from_disk(self):
+        """distill.py: raw_content = Path(raw_path).read_text()，同源于原始 raw 文件。"""
+        src = self._read(_CALLSITE_SOURCE_PATHS["distill"])
+        assert "run_candidate_self_gate(full_page, raw_content=raw_content)" in src
+        assert "Path(raw_path).read_text(encoding=\"utf-8\")" in src
+        # OSError 时 raw_content=None → fail-closed（不静默跳过）。
+        assert "raw_content = None" in src
+
+    def test_repair_callsites_use_raw_text_param(self):
+        """repair.py 两处调用点：raw_text 来自 run_repair_loop 参数，同源 raw。"""
+        src = self._read(_CALLSITE_SOURCE_PATHS["repair"])
+        # 两处调用点都用 raw_text（非截断/异源）。
+        assert src.count("run_candidate_self_gate(current_text, raw_text)") == 2
+        # raw_text 是 run_repair_loop 的参数（非局部拼接/截断）。
+        assert "raw_text: str | None = None," in src
+
+    def test_runner_callsite_uses_non_none_raw_content(self):
+        """runner.py: raw_content 是 _run_quality_segments 的非可选 str 参数，源于磁盘读。"""
+        src = self._read(_CALLSITE_SOURCE_PATHS["runner"])
+        # 调用点用 raw_content（非 None）。
+        assert "run_candidate_self_gate(candidate_text, raw_content)" in src
+        # _run_quality_segments 接收非可选 raw_content: str（非 str | None）。
+        assert "raw_content: str," in src
+        # raw_content 源头是磁盘读真实 raw 文件。
+        assert "raw_content = raw_file.read_text(encoding=\"utf-8\")" in src
+        # run_repair_loop 接收的 raw_text 同源 raw_content。
+        assert "raw_text=raw_content," in src
+
+    def test_smoke_validator_callsite_reads_raw_from_disk_or_none(self):
+        """smoke_validator.py: raw_content 来自 _load_candidate_raw 读盘；缺失显式 None。"""
+        src = self._read(_CALLSITE_SOURCE_PATHS["smoke_validator"])
+        assert "run_candidate_self_gate(candidate_text, raw_content=raw_content)" in src
+        # _load_candidate_raw 读盘，raw_path 不存在时返回 None（fail-closed）。
+        assert "raw_path.read_text(encoding=\"utf-8\")" in src
+        assert "return None" in src
+
+    def test_scan_all_on_real_raw_fixture_is_nonempty(self):
+        """SC-3.3 fixture：scan_all(真实 raw) 非空且命中预期 must_cover。"""
+        items = scan_source_evidence(_MUST_COVER_RAW)
+        assert items, "scan_all(真实 raw) 不应为空"
+        kinds = {i.kind for i in items}
+        assert "source_operation" in kinds
+        assert "source_boundary" in kinds
+        assert "source_conclusion" in kinds
+        literals = {i.literal for i in items}
+        for expected in _EXPECTED_MUST_COVER_LITERALS:
+            assert expected in literals
+
+    def test_callsite_raw_not_truncated_or_alien(self):
+        """SC-3.3: 5 处调用点 raw 变量均追溯到 read_text 或非可选 raw 参数，无截断/异源。"""
+        # distill / smoke_validator: read_text 直读
+        distill_src = self._read(_CALLSITE_SOURCE_PATHS["distill"])
+        smoke_src = self._read(_CALLSITE_SOURCE_PATHS["smoke_validator"])
+        assert "read_text" in distill_src
+        assert "read_text" in smoke_src
+        # runner: read_text + 非可选 str 参数透传
+        runner_src = self._read(_CALLSITE_SOURCE_PATHS["runner"])
+        assert "read_text" in runner_src
+        # repair: raw_text 来自 runner 的 raw_content（非截断）
+        repair_src = self._read(_CALLSITE_SOURCE_PATHS["repair"])
+        assert "raw_text" in repair_src
+        # 无任何调用点传截断/异源 raw（无 [:N] / split 截断模式指向 raw_text/raw_content）。
+        assert "raw_text[: " not in repair_src
+        assert "raw_content[: " not in runner_src
+
+
+class TestSGCommandRecheckFailClosed:
+    """SC-4.2: 正文含"原文不存在命令" → run_candidate_self_gate 产 SG-command-recheck Defect。
+
+    SG-must-cover 治"漏"（raw 有 → 候选没渲染），SG-command-recheck 治"编"
+    （候选有 → raw 没有）。两者语义分离，互不替代。
+    """
+
+    def test_fabricated_command_produces_recheck_defect(self):
+        """正文 How 步骤含 raw 不存在的命令 → SG-command-recheck Defect。"""
+        # 所有 must_cover 字面量都已逐字渲染（npm install / npm test / 边界 / 结论），
+        # 额外注入一条 raw 不存在的命令 `rm -rf /`。
+        steps = (
+            "- [raw §A] (source_grounded) 1. Run npm install `npm install`\n"
+            "- [raw §A] (source_grounded) 2. Run npm test `npm test`\n"
+            "- [raw §A] (source_grounded) 3. 清理环境 `rm -rf /`"
+        )
+        text = _candidate_with_how_steps(steps)
+        defects = run_candidate_self_gate(text, raw_content=_MUST_COVER_RAW)
+        recheck = [d for d in defects if d.dimension == "SG-command-recheck"]
+        assert recheck, "正文含原文不存在的命令未被 SG-command-recheck 挡下"
+        assert any("rm -rf /" in d.defect for d in recheck)
+        assert all(d.location == "### 操作步骤" for d in recheck)
+
+    def test_real_commands_no_recheck_defect(self):
+        """正文命令都在 raw 中字面量存在 → 无 SG-command-recheck Defect。"""
+        steps = (
+            "- [raw §A] (source_grounded) 1. Run npm install `npm install`\n"
+            "- [raw §A] (source_grounded) 2. Run npm test `npm test`"
+        )
+        text = _candidate_with_how_steps(steps)
+        defects = run_candidate_self_gate(text, raw_content=_MUST_COVER_RAW)
+        recheck = [d for d in defects if d.dimension == "SG-command-recheck"]
+        assert recheck == [], f"命令都来自 raw 却报 SG-command-recheck: {recheck}"
+
+    def test_recheck_does_not_duplicate_must_cover(self):
+        """SG-command-recheck 与 SG-must-cover 语义分离：漏渲染不触发 recheck。"""
+        # 漏渲染第一条 npm install（must_cover 会报），但不注入编造命令 → recheck 不报。
+        steps = "- [raw §A] (source_grounded) 2. Run npm test `npm test`"
+        text = _candidate_with_how_steps(steps)
+        defects = run_candidate_self_gate(text, raw_content=_MUST_COVER_RAW)
+        must_cover = [d for d in defects if d.dimension == "SG-must-cover"]
+        recheck = [d for d in defects if d.dimension == "SG-command-recheck"]
+        assert must_cover, "漏渲染应触发 SG-must-cover"
+        # npm test 在 raw 中 → 不应触发 recheck。
+        assert all("npm test" not in d.defect for d in recheck)
+
+    def test_raw_none_does_not_duplicate_recheck(self):
+        """raw_content=None 已被 SG-must-cover 块 fail-closed，recheck 不重复报 raw 缺失。"""
+        steps = (
+            "- [raw §A] (source_grounded) 1. Run npm install `npm install`\n"
+            "- [raw §A] (source_grounded) 2. Run npm test `npm test`"
+        )
+        text = _candidate_with_how_steps(steps)
+        defects = run_candidate_self_gate(text, raw_content=None)
+        recheck = [d for d in defects if d.dimension == "SG-command-recheck"]
+        # raw=None 时 recheck 块不执行（raw_content falsy），不产 recheck Defect。
+        assert recheck == []
+
+    def test_empty_raw_still_runs_command_recheck(self):
+        """raw_content="" 是存在但为空的 raw，必须由 raw_verify 产 SG-command-recheck。"""
+        steps = "- [raw §A] (source_grounded) 1. Run npm install `npm install`"
+        text = _candidate_with_how_steps(steps)
+        defects = run_candidate_self_gate(text, raw_content="")
+        recheck = [d for d in defects if d.dimension == "SG-command-recheck"]
+        assert recheck, "空 raw 不得跳过 SG-command-recheck"
+        assert any("npm install" in d.defect for d in recheck)

@@ -19,9 +19,49 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-LOG_DIR="$PROJECT_ROOT/logs"
-RUNNER_LOG="$LOG_DIR/akb2-quality-runner.log"
-LOCK_FILE="$PROJECT_ROOT/staging/locks/runner.lock"
+LOG_DIR="${AKB2_LOG_DIR:-$PROJECT_ROOT/logs}"
+RUNNER_LOG="${AKB2_RUNNER_LOG:-$LOG_DIR/akb2-quality-runner.log}"
+LOCK_FILE="${AKB2_LOCK_FILE:-$PROJECT_ROOT/staging/locks/runner.lock}"
+ENV_FILE="${AKB2_ENV_FILE:-$HOME/.config/akb2/github-briefing.env}"
+
+# --- Env 加载 / 网关变量归一化 ---
+# launchd 不继承交互 shell 环境；runner 自己加载只含 key/base/model 的用户 env。
+# 不打印 secret，只把历史变量名归一到 quality llm_router 能识别的 OpenAI-compatible 命名。
+if [ -f "$ENV_FILE" ]; then
+    set -a
+    # shellcheck source=/dev/null
+    source "$ENV_FILE"
+    set +a
+fi
+
+if [ -n "${OPENROUTER_BASE_URL:-}" ] && [ -z "${AI_GATEWAY_BASE_URL:-}" ]; then
+    export AI_GATEWAY_BASE_URL="$OPENROUTER_BASE_URL"
+fi
+if [ -n "${TAPTAP_BASE_URL:-}" ] && [ -z "${AI_GATEWAY_BASE_URL:-}" ]; then
+    export AI_GATEWAY_BASE_URL="$TAPTAP_BASE_URL"
+fi
+if [ -n "${AI_GATEWAY_API_KEY:-}" ]; then
+    :
+elif [ -n "${OPENROUTER_API_KEY:-}" ]; then
+    export AI_GATEWAY_API_KEY="$OPENROUTER_API_KEY"
+elif [ -n "${TAPTAP_API_KEY:-}" ]; then
+    export AI_GATEWAY_API_KEY="$TAPTAP_API_KEY"
+elif [ -n "${DEEPSEEK_API_KEY:-}" ]; then
+    export AI_GATEWAY_API_KEY="$DEEPSEEK_API_KEY"
+fi
+if [ -z "${AI_GATEWAY_BASE_URL:-}" ] && [ -n "${AI_GATEWAY_API_KEY:-}" ]; then
+    export AI_GATEWAY_BASE_URL="https://llm-proxy.tapsvc.com"
+fi
+if [ -n "${AI_GATEWAY_BASE_URL:-}" ] && [ -z "${OPENAI_BASE_URL:-}" ]; then
+    GATEWAY_BASE_CLEAN="${AI_GATEWAY_BASE_URL%/}"
+    if [[ "$GATEWAY_BASE_CLEAN" == */v1 || "$GATEWAY_BASE_CLEAN" == */v1beta/openai ]]; then
+        export OPENAI_BASE_URL="$GATEWAY_BASE_CLEAN"
+    else
+        export OPENAI_BASE_URL="$GATEWAY_BASE_CLEAN/v1"
+    fi
+fi
+export OPENAI_MODEL_ID="${OPENAI_MODEL_ID:-gpt-5.4}"
+export DEEPSEEK_MODEL_ID="${DEEPSEEK_MODEL_ID:-deepseek/deepseek-v4-pro}"
 
 # --- Python 环境检测 ---
 PYTHON_BIN="${AKB2_PYTHON_BIN:-}"
@@ -68,6 +108,17 @@ mkdir -p "$LOG_DIR"
 exec >> "$RUNNER_LOG" 2>&1
 
 echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] runner starting: PID=$$ PYTHON=$PYTHON_BIN ($PY_VERSION)"
+if [ -f "$ENV_FILE" ]; then
+    ENV_STATUS="loaded"
+else
+    ENV_STATUS="missing"
+fi
+if [ -n "${AI_GATEWAY_API_KEY:-}" ] || [ -n "${OPENAI_API_KEY:-}" ]; then
+    GRADER_KEY_STATUS="present"
+else
+    GRADER_KEY_STATUS="missing"
+fi
+echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] runner env: env_file=$ENV_STATUS openai_base=${OPENAI_BASE_URL:-<unset>} openai_model=${OPENAI_MODEL_ID:-<unset>} grader_key=$GRADER_KEY_STATUS"
 
 # --- 启动 runner ---
 cd "$PROJECT_ROOT"

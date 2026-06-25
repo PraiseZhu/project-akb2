@@ -673,6 +673,45 @@ def test_needs_repair_preserves_staging_and_writes_pending(
     assert record["gate_decision"] == "needs_repair"
 
 
+def test_run_pipeline_classifies_relative_staging_needs_repair(
+    monkeypatch,
+    tmp_path,
+    sample_video_meta,
+    sample_research_output,
+    sample_extracted_fields,
+    sample_reasoned_links,
+):
+    """relative staging_dir + needs_repair 不能被误报为 ok/已发布。"""
+    monkeypatch.chdir(tmp_path)
+    config = VideoConfig(
+        staging_dir=Path("staging") / "candidate",
+        akb2_root=tmp_path,
+    )
+    assembler = Assembler(config)
+
+    class Collector:
+        def collect(self):
+            return [sample_video_meta]
+
+    class Researcher:
+        def run(self, _video_results):
+            return [sample_research_output]
+
+    class Extractor:
+        def extract(self, _markdown):
+            return sample_extracted_fields
+
+    class Reasoner:
+        def reason(self, _concepts, _context):
+            return sample_reasoned_links
+
+    with mock.patch.object(assembler, "_gate_decision", return_value="needs_repair"):
+        results = assembler.run_pipeline(Collector(), Researcher(), Extractor(), Reasoner())
+
+    assert results[0]["status"] == "needs_repair"
+    assert Path(results[0]["candidate_path"]).exists()
+
+
 def test_reject_deletes_staging_and_raises(
     temp_config, sample_video_meta, sample_research_output,
     sample_extracted_fields, sample_reasoned_links,

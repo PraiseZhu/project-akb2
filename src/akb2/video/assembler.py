@@ -428,6 +428,22 @@ class Assembler:
             repair_path.name, title or filename,
         )
 
+    def _is_staging_candidate(self, candidate_path: Path) -> bool:
+        """判断 commit 返回路径是否仍在 staging/candidate 内。
+
+        launchd 的 live 形态使用相对 staging_dir，commit() 返回值也可能是
+        相对路径；必须 resolve 后比较，避免 needs_repair 被误报为 ok。
+        """
+        try:
+            candidate_resolved = candidate_path.resolve()
+            staging_resolved = self.config.staging_dir.resolve()
+            return (
+                candidate_resolved == staging_resolved
+                or staging_resolved in candidate_resolved.parents
+            )
+        except OSError:
+            return False
+
     def run_pipeline(
         self,
         collector,
@@ -499,7 +515,7 @@ class Assembler:
                     # 6. 提交
                     candidate_path = self.commit(candidate_md)
                     # 判断 gate 决策：staging 路径 = needs_repair，promotion 路径 = active
-                    is_staging = str(self.config.staging_dir.resolve()) in str(candidate_path)
+                    is_staging = self._is_staging_candidate(candidate_path)
                     results.append({
                         "video": video_meta,
                         "candidate_path": str(candidate_path),

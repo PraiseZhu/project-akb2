@@ -445,14 +445,14 @@ sources:
     category: supplementary
     notes: "Jake Archibald — 浏览器 / 性能"
 
-  - slug: ryan-carniato
-    domain: ryancarniato.com
-    feed_url: https://ryancarniato.com/feed.xml
-    listing_url: https://ryancarniato.com
+  - slug: solidjs-blog
+    domain: solidjs.com
+    feed_url: ""
+    listing_url: https://www.solidjs.com/blog
     rate_limit: 3600
     status: trial
     category: supplementary
-    notes: "Ryan Carniato — SolidJS / 前端响应式"
+    notes: "SolidJS Blog — 官方博客 / 前端响应式"
 
   - slug: max-stoiber
     domain: mxstbr.com
@@ -603,9 +603,9 @@ sources:
     notes: "Radix UI — 无障碍组件库"
 
   - slug: shadcn-blog
-    domain: shadcn.com
-    feed_url: https://shadcn.com/feed.xml
-    listing_url: https://shadcn.com/blog
+    domain: ui.shadcn.com
+    feed_url: https://ui.shadcn.com/rss.xml
+    listing_url: https://ui.shadcn.com/docs/changelog
     rate_limit: 3600
     status: trial
     category: authority

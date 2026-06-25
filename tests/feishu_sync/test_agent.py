@@ -106,3 +106,23 @@ def test_group_target_uses_chat_id(monkeypatch, tmp_path, vault, feishu_env):
     )
     assert rc == 0
     assert sent_group and all(c == "oc_group_dummy" for c in sent_group)  # 用 chat_id 不是 DM
+
+
+def test_dry_run_does_not_send_or_write_state(monkeypatch, tmp_path, vault, feishu_env):
+    _redirect_logs(monkeypatch, tmp_path)
+    write_ai_trends(vault, "2026-06-03")
+    sent = []
+    monkeypatch.setattr(agent, "send_card_dm", lambda oid, card: sent.append(card))
+    sp = tmp_path / "state.json"
+
+    rc = agent.run_sync(
+        date="2026-06-03",
+        vault_root=vault,
+        target="dm",
+        state_path=sp,
+        dry_run=True,
+    )
+
+    assert rc == 0
+    assert sent == []
+    assert not sp.exists()

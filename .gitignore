@@ -50,12 +50,19 @@ htmlcov/
 
 # === AKB2 specific ===
 config/mcp-servers.local.json
+config/vault.local.toml
 reports/backups/**/*.tar.gz
 reports/intake/
 data/
 src/akb2/automation_gate/outputs/
 src/akb2/matrix/v0/outputs/current/
 src/akb2/closure/*/regression/*-test.json
+
+# === Staging 运行时产物(队列/锁/候选暂存，非源码) ===
+staging/locks/
+staging/candidate/
+staging/pending_research.json
+staging/assembler_repair_pending.jsonl
 
 # === Review tooling outputs (ephemeral; per-run capsules + final-status mappings) ===
 results/review-route-split/

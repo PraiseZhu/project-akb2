@@ -1,0 +1,35 @@
+template_kind: gd-execution-result
+result_id: w2-step-2-must-cover-render
+task_id: step-2
+parent_step: step-2
+parent_plan: plans/gd/2026-06-22-how-reliability-refactor/master-plan.md
+executor_role: claude_subagent
+executed_at: 2026-06-23T05:48:36Z
+exec_status: completed
+sc_acceptance:
+  - sc_ref: SC-2
+    status: pass
+    evidence: >
+      主 agent 独立复跑：PYTHONPATH=src python -m pytest
+      tests/quality/test_distill_must_cover.py -q → 3 passed exit=0。
+      SC-2.1 must_cover 三类字面量各归其节（operation→How / boundary→适用边界 /
+      conclusion→TLDR），self-gate 0 defects。SC-2.2 how_steps=[] 时 How 节仍含
+      全部 must_cover operation，无 FORBIDDEN 占位。compose_candidate 调 scan_all
+      建 must_cover 账本（raw 与 self-gate 同源），_build_body 三节代码直出，
+      LLM 无最终选择权。全 quality 套件 554 passed / 0 failed。
+    not_run_reason: ""
+files_added:
+  - tests/quality/test_distill_must_cover.py
+files_modified:
+  - src/akb2/quality/distill.py
+files_unchanged_in_scope: []
+owned_paths_writes_only: true
+forbidden_paths_touched: []
+out_of_scope_writes: []
+handoff:
+  result_path: plans/gd/2026-06-22-how-reliability-refactor/execute/w2-step-2-result.yaml
+  status_field: completed
+  summary: "step-2 must_cover 代码直出完成：compose 调 scan_all 建账本，_build_body 三节代码渲染 must_cover，LLM 无最终选择权；SC-2 全过，全套件绿。"
+  blockers: "none"
+known_limitations:
+  - "must_cover conclusion 代码直出会让 TLDR 多一条 (source_grounded)，与现有 test_tldr_has_sentence_boundaries_per_anchor 的 count 断言有张力——fix agent 通过从 sample_raw_content 删 source_conclusion 句规避，全套件绿。此张力点留 review 留意（是否应调 count 断言而非删 fixture 内容）。"

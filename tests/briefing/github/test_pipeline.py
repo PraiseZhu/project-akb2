@@ -114,6 +114,48 @@ class TestSC8Launchd:
         content = plist_path.read_text()
         assert "launchd_wrapper.sh" in content
 
+    def test_launchd_wrapper_missing_env_fails_visible(self, tmp_path):
+        """Missing user env is a deployment error, not a successful empty run."""
+        result = subprocess.run(
+            ["/bin/bash", str(SCRIPTS_DIR / "launchd_wrapper.sh")],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "HOME": str(tmp_path)},
+        )
+        assert result.returncode != 0
+        assert "missing env file" in result.stderr
+
+    def test_daily_github_accepts_vault_root_arg(self, tmp_path):
+        """Backstop/manual reruns can pass the vault root explicitly."""
+        vault = tmp_path / "vault"
+        result = subprocess.run(
+            [
+                "/bin/bash",
+                str(SCRIPTS_DIR / "daily_github_briefing.sh"),
+                "--vault-root",
+                str(vault),
+                "--mock",
+            ],
+            capture_output=True,
+            text=True,
+            env={
+                **os.environ,
+                "AKB2_DISABLE_DEADLINE": "1",
+                "AKB2_NOVELTY_DB": str(tmp_path / "novelty.sqlite"),
+                "PROJECT_ROOT": str(tmp_path),
+            },
+            cwd=str(PROJECT_ROOT),
+        )
+        assert result.returncode == 0, f"stdout={result.stdout}\nstderr={result.stderr}"
+        assert "briefing: WROTE" in result.stdout
+        assert (
+            vault
+            / "Praise Space"
+            / "AKB2.0"
+            / "AI TRENDS"
+            / "GitHub"
+        ).exists()
+
     def test_plist_hour_is_14(self):
         plist_path = PROJECT_ROOT / "launchd" / "com.akb2.github_briefing.plist"
         content = plist_path.read_text()

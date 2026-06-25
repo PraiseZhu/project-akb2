@@ -1,0 +1,29 @@
+{
+  "template_kind": "gd-execution-result",
+  "result_id": "step-4-raw-archive",
+  "task_id": "t4",
+  "parent_step": "step-4",
+  "parent_plan": "plans/gd/2026-06-14-cql-intake/master-plan.md",
+  "executor_role": "claude_subagent",
+  "exec_status": "completed",
+  "sc_acceptance": [
+    {
+      "sc_ref": "SC-6",
+      "status": "pass",
+      "evidence": "30 passed in 0.06s (exit 0) — frontmatter 9 字段齐、§A-§Z assert 全命中、frontmatter缺失→无文件、锚点缺失→无文件、failure签名有details/sample_error字段断言全过、article_id文件名格式断言通过"
+    }
+  ],
+  "files_added": [],
+  "files_modified": [
+    "src/akb2/quality/intake/raw_archiver.py",
+    "tests/quality/test_intake_raw.py"
+  ],
+  "owned_paths_writes_only": true,
+  "forbidden_paths_touched": [],
+  "handoff": {
+    "result_path": "plans/gd/2026-06-14-cql-intake/execute/e-step4-result.yaml",
+    "status_field": "exec_status",
+    "summary": "raw 文件名改为 <slug>--<article_id>--raw--<date>.md；archive_from_extract_result 新增 source_metadata 参数；failure 签名补 details/sample_error 字段；测试从22扩充至30个，全部通过",
+    "blockers": "none"
+  }
+}

@@ -1,0 +1,307 @@
+{
+  "dispatch_id": "how-reliability-refactor-2026-06-22",
+  "source_master_plan": "plans/gd/2026-06-22-how-reliability-refactor/master-plan.md",
+  "goal_chain": {
+    "PROJECT_GOAL": "wiki 层=AI 第二大脑，How 密度/准确/可靠/可执行第一，AI 读库更有效",
+    "CHAIN_GOAL": "现 How 靠 LLM 抽签式挑+意译，原文明示操作会漏、且会编造原文没有的命令，compose 频繁返回 None",
+    "PHASE_GOAL": "把确定性 How 从 LLM 选择变代码强制渲染——code 扫 raw 建账本、标 must_cover、代码直接摆进正文，机器校验覆盖，漏即 fail-closed"
+  },
+  "max_parallel_planning": 2,
+  "max_parallel_execution": 2,
+  "max_parallel_review": 2,
+  "max_parallel_validation": 2,
+  "tracks": [
+    {
+      "track_id": "step-1",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "src/akb2/quality/source_ops_scanners",
+        "tests/quality/test_source_ops_scanners.py",
+        "tests/quality/fixtures/test-fresh-golden-ops.json"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "src/akb2/quality/distill.py",
+        "src/akb2/quality/checks_structural.py",
+        "src/akb2/quality/grader.py",
+        "src/akb2/quality/repair.py",
+        "src/akb2/quality/runner.py",
+        "src/akb2/quality/promote.py"
+      ],
+      "required_context": [
+        "plans/gd/2026-06-22-how-reliability-refactor/step-1-scanner-module.md",
+        "src/akb2/quality/distill.py",
+        "/Users/praise/Obsidian/Praise Space/AKB2.0/raw/test-fresh-entry--raw--2026-06-21.md"
+      ],
+      "deliverables": [
+        {"path": "src/akb2/quality/source_ops_scanners", "kind": "directory", "must_exist": true},
+        {"path": "tests/quality/test_source_ops_scanners.py", "kind": "file", "must_exist": true},
+        {"path": "tests/quality/fixtures/test-fresh-golden-ops.json", "kind": "file", "must_exist": true}
+      ],
+      "blocked_by": [],
+      "can_parallel_with": [],
+      "sc_refs": ["SC-1"],
+      "verify": [
+        {"sc_ref": "SC-1", "method": "test", "cmd": "PYTHONPATH=src python -m pytest tests/quality/test_source_ops_scanners.py -q", "expect": "exit 0；三类 inventory ⊇ golden（operation/boundary/conclusion）"}
+      ]
+    },
+    {
+      "track_id": "step-2",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "src/akb2/quality/distill.py",
+        "tests/quality/test_distill_must_cover.py"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "src/akb2/quality/source_ops_scanners/**",
+        "src/akb2/quality/checks_structural.py",
+        "src/akb2/quality/grader.py",
+        "src/akb2/quality/repair.py",
+        "src/akb2/quality/runner.py",
+        "src/akb2/quality/promote.py"
+      ],
+      "required_context": [
+        "plans/gd/2026-06-22-how-reliability-refactor/step-2-must-cover-render.md",
+        "src/akb2/quality/source_ops_scanners",
+        "src/akb2/quality/distill.py"
+      ],
+      "deliverables": [
+        {"path": "tests/quality/test_distill_must_cover.py", "kind": "file", "must_exist": true}
+      ],
+      "blocked_by": ["step-1"],
+      "can_parallel_with": ["step-3"],
+      "sc_refs": ["SC-2"],
+      "verify": [
+        {"sc_ref": "SC-2", "method": "test", "cmd": "PYTHONPATH=src python -m pytest tests/quality/test_distill_must_cover.py -q", "expect": "must_cover 项 100% 出现在目标节；mock 掉语义 segment 后 must_cover 仍渲染"}
+      ]
+    },
+    {
+      "track_id": "step-3",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "src/akb2/quality/checks_structural.py",
+        "tests/quality/test_checks_structural.py",
+        "tests/quality/conftest.py",
+        "tests/quality/test_repair_loop.py"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "src/akb2/quality/source_ops_scanners/**",
+        "src/akb2/quality/distill.py",
+        "src/akb2/quality/grader.py",
+        "src/akb2/quality/repair.py",
+        "src/akb2/quality/runner.py",
+        "src/akb2/quality/promote.py",
+        "src/akb2/quality/smoke_validator.py"
+      ],
+      "required_context": [
+        "plans/gd/2026-06-22-how-reliability-refactor/step-3-sg-must-cover.md",
+        "src/akb2/quality/source_ops_scanners",
+        "src/akb2/quality/distill.py"
+      ],
+      "deliverables": [
+        {"path": "src/akb2/quality/checks_structural.py", "kind": "file", "must_exist": true}
+      ],
+      "blocked_by": ["step-1"],
+      "can_parallel_with": ["step-2"],
+      "sc_refs": ["SC-3"],
+      "verify": [
+        {"sc_ref": "SC-3", "method": "test", "cmd": "PYTHONPATH=src python -m pytest tests/quality/test_checks_structural.py -k 'must_cover or callsite' -q", "expect": "漏→defect；不漏→空；raw=None fail-closed；5 调用点 provenance 审计通过"}
+      ]
+    },
+    {
+      "track_id": "step-4",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "src/akb2/quality/source_ops_scanners/raw_verify.py",
+        "src/akb2/quality/checks_structural.py",
+        "tests/quality/test_raw_verify.py",
+        "tests/quality/test_distill_must_cover.py"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "src/akb2/quality/distill.py",
+        "src/akb2/quality/grader.py",
+        "src/akb2/quality/repair.py",
+        "src/akb2/quality/runner.py",
+        "src/akb2/quality/promote.py",
+        "src/akb2/quality/smoke_validator.py"
+      ],
+      "required_context": [
+        "plans/gd/2026-06-22-how-reliability-refactor/step-4-machine-recheck.md",
+        "src/akb2/quality/source_ops_scanners",
+        "src/akb2/quality/checks_structural.py"
+      ],
+      "deliverables": [
+        {"path": "src/akb2/quality/source_ops_scanners/raw_verify.py", "kind": "file", "must_exist": true},
+        {"path": "tests/quality/test_raw_verify.py", "kind": "file", "must_exist": true}
+      ],
+      "blocked_by": ["step-1", "step-3"],
+      "can_parallel_with": ["step-5"],
+      "sc_refs": ["SC-4"],
+      "verify": [
+        {"sc_ref": "SC-4", "method": "test", "cmd": "PYTHONPATH=src python -m pytest tests/quality/test_raw_verify.py -q", "expect": "编造命令被挡，真实命令可追溯 raw span"},
+        {"sc_ref": "SC-4", "method": "test", "cmd": "PYTHONPATH=src python -m pytest tests/quality/test_checks_structural.py -k command_recheck -q", "expect": "生产路径产 SG-command-recheck fail-closed Defect"}
+      ]
+    },
+    {
+      "track_id": "step-5",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "src/akb2/quality/distill.py",
+        "tests/quality/test_provenance_split.py"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "src/akb2/quality/source_ops_scanners/**",
+        "src/akb2/quality/checks_structural.py",
+        "src/akb2/quality/grader.py",
+        "src/akb2/quality/repair.py",
+        "src/akb2/quality/runner.py",
+        "src/akb2/quality/promote.py",
+        "skillpack/quality/rubric/10-dimensions.md"
+      ],
+      "required_context": [
+        "plans/gd/2026-06-22-how-reliability-refactor/step-5-provenance-split.md",
+        "tests/quality/test_distill_must_cover.py",
+        "src/akb2/quality/distill.py"
+      ],
+      "deliverables": [
+        {"path": "tests/quality/test_provenance_split.py", "kind": "file", "must_exist": true}
+      ],
+      "blocked_by": ["step-2"],
+      "can_parallel_with": ["step-4"],
+      "sc_refs": ["SC-10"],
+      "verify": [
+        {"sc_ref": "SC-10", "method": "test", "cmd": "PYTHONPATH=src python -m pytest tests/quality/test_provenance_split.py -q", "expect": "三态标注齐(source_operation/source_fact/akb_interpretation)；akb 占比可被 SG-provenance-ratio 正确计数(MAX_AKB_INTERPRETATION_RATIO=0.40)"}
+      ]
+    },
+    {
+      "track_id": "step-6",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "src/akb2/quality/grader.py",
+        "src/akb2/quality/repair.py",
+        "src/akb2/quality/runner.py",
+        "src/akb2/quality/promote.py",
+        "tests/quality/test_grader.py",
+        "tests/quality/test_runner_lifecycle.py"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "src/akb2/quality/source_ops_scanners/**",
+        "src/akb2/quality/distill.py",
+        "src/akb2/quality/checks_structural.py",
+        "src/akb2/quality/smoke_validator.py",
+        "src/akb2/quality/llm_router.py",
+        "skillpack/quality/rubric/10-dimensions.md"
+      ],
+      "required_context": [
+        "plans/gd/2026-06-22-how-reliability-refactor/step-6-grader-degraded-guard.md",
+        "src/akb2/quality/source_ops_scanners",
+        "tests/quality/test_distill_must_cover.py",
+        "src/akb2/quality/checks_structural.py",
+        "src/akb2/quality/repair.py",
+        "src/akb2/quality/runner.py"
+      ],
+      "deliverables": [
+        {"path": "src/akb2/quality/grader.py", "kind": "file", "must_exist": true}
+      ],
+      "blocked_by": ["step-1", "step-2", "step-3"],
+      "can_parallel_with": [],
+      "sc_refs": ["SC-5"],
+      "verify": [
+        {"sc_ref": "SC-5", "method": "test", "cmd": "PYTHONPATH=src python -m pytest tests/quality/ -k 'retry or degraded or repair' -q", "expect": "重试生效；degraded 在 repair/runner/promote 三处 fail-closed；maker!=checker 异族不变"}
+      ]
+    },
+    {
+      "track_id": "step-7",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "src/akb2/quality/distill.py",
+        "tests/quality/test_semantic_jitter.py"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "src/akb2/quality/source_ops_scanners/**",
+        "src/akb2/quality/checks_structural.py",
+        "src/akb2/quality/grader.py",
+        "src/akb2/quality/repair.py",
+        "src/akb2/quality/runner.py",
+        "src/akb2/quality/promote.py",
+        "skillpack/quality/rubric/10-dimensions.md"
+      ],
+      "required_context": [
+        "plans/gd/2026-06-22-how-reliability-refactor/step-7-semantic-jitter-fallback.md",
+        "tests/quality/test_provenance_split.py",
+        "src/akb2/quality/distill.py"
+      ],
+      "deliverables": [
+        {"path": "tests/quality/test_semantic_jitter.py", "kind": "file", "must_exist": true}
+      ],
+      "blocked_by": ["step-5"],
+      "can_parallel_with": [],
+      "sc_refs": ["SC-11"],
+      "verify": [
+        {"sc_ref": "SC-11", "method": "test", "cmd": "PYTHONPATH=src python -m pytest tests/quality/test_semantic_jitter.py -q", "expect": "多取有界(SEMANTIC_RETAKE_MAX=2)；交集逻辑正确；连续不稳定 fail-closed；must_cover kind 集合不变；两模型常量不变"}
+      ]
+    },
+    {
+      "track_id": "step-8",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "tests/quality/fixtures/regression",
+        "tests/quality/test_how_regression.py"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "src/akb2/**"
+      ],
+      "required_context": [
+        "plans/gd/2026-06-22-how-reliability-refactor/step-8-regression-corpus.md",
+        "src/akb2/quality/source_ops_scanners",
+        "tests/quality/test_distill_must_cover.py",
+        "src/akb2/quality/checks_structural.py",
+        "src/akb2/quality/source_ops_scanners/raw_verify.py",
+        "tests/quality/test_provenance_split.py",
+        "src/akb2/quality/grader.py"
+      ],
+      "deliverables": [
+        {"path": "tests/quality/fixtures/regression", "kind": "directory", "must_exist": true},
+        {"path": "tests/quality/test_how_regression.py", "kind": "file", "must_exist": true}
+      ],
+      "blocked_by": ["step-1", "step-2", "step-3", "step-4", "step-5", "step-6"],
+      "can_parallel_with": [],
+      "sc_refs": ["SC-6"],
+      "verify": [
+        {"sc_ref": "SC-6", "method": "path", "cmd": "ls tests/quality/fixtures/regression/", "expect": "test-fresh + 纯观点博客 + 陷阱样本三类语料文件存在"},
+        {"sc_ref": "SC-6", "method": "test", "cmd": "PYTHONPATH=src python -m pytest tests/quality/test_how_regression.py -q", "expect": "三类各自断言通过（有操作→捞全 / 无 How→fail-closed / 枚举带偏→抽核心）"}
+      ]
+    }
+  ],
+  "waves": [
+    {"wave_id": "w1", "track_ids": ["step-1"], "description": "P0-1 scanner 模块 + golden 基准（命根子，串行起步）"},
+    {"wave_id": "w2", "track_ids": ["step-2", "step-3"], "description": "P0-2 must_cover 渲染 + P0-3 SG-must-cover（并行：distill vs checks_structural 不重叠）"},
+    {"wave_id": "w3", "track_ids": ["step-4", "step-5"], "description": "P1-4 机器回查 + P1-5 provenance 细分（并行：raw_verify+checks块 vs distill provenance段 不重叠）"},
+    {"wave_id": "w4", "track_ids": ["step-6"], "description": "P1-6 grader degraded fail-closed 护栏（blocked_by P0 w1-w2）"},
+    {"wave_id": "w5", "track_ids": ["step-7"], "description": "P2-7 语义抖动兜底（blocked_by step-5 w3）"},
+    {"wave_id": "w6", "track_ids": ["step-8"], "description": "P2-8 回归测试三类语料（blocked_by 全 P0+P1 w1-w4）"}
+  ],
+  "merge_gates": [
+    {"gate_id": "G1", "description": "child 输出格式合规（execution result 含 files_added/modified/sc_refs_evidence）"},
+    {"gate_id": "G2", "description": "files_added/modified 全在 owned_paths 内（path audit 通过）"},
+    {"gate_id": "G3", "description": "execution result 无 REV_VERDICT/GD_REVIEW_DECISION 字段（agent 不自判通过）"},
+    {"gate_id": "G4", "description": "SC 有 evidence 或 not_run_reason（语料缺失标 not_run 不得 pass）"},
+    {"gate_id": "G5", "description": "并行 wave（w2/w3）全完才进串行 wave（w4/w5/w6）"},
+    {"gate_id": "G6", "description": "reviewer 冲突时 master 写仲裁理由（本期为单人开发，child_executor 自测 + SC verify 兜底）"}
+  ]
+}

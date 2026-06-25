@@ -523,20 +523,17 @@ def _sample_live_sources(
 
 def _default_config() -> dict[str, Any]:
     """获取默认配置。"""
-    vault_root = os.environ.get("AKB2_VAULT_ROOT", "")
+    vault_root = ""
     staging_dir = ""
     raw_dir = ""
 
-    if not vault_root:
-        try:
-            from src.akb2.loops.paths import get_akb2_root, get_staging_root
+    try:
+        from src.akb2.loops.paths import get_akb2_root, get_staging_root
 
-            vault_root = str(get_akb2_root())
-            staging_dir = str(get_staging_root())
-        except Exception:
-            vault_root = os.getcwd()
-            staging_dir = os.path.join(vault_root, "staging")
-    else:
+        vault_root = str(get_akb2_root())
+        staging_dir = str(get_staging_root())
+    except Exception:
+        vault_root = os.getcwd()
         staging_dir = os.path.join(vault_root, "staging")
 
     if not raw_dir:

@@ -1,0 +1,33 @@
+{
+  "template_kind": "gd-execution-result",
+  "result_id": "step-6-engineering-gate",
+  "task_id": "t6",
+  "parent_step": "step-6",
+  "parent_plan": "plans/gd/2026-06-14-cql-intake/master-plan.md",
+  "executor_role": "claude_subagent",
+  "exec_status": "completed",
+  "sc_acceptance": [
+    {
+      "sc_ref": "SC-11",
+      "status": "pass",
+      "evidence": "364 passed, 5 deselected (integration), 2 warnings in 5.88s\nruff check src/akb2/quality/intake/ tests/quality/ → All checks passed!\n_check_tool_available('json') → True; _check_tool_available('_nonexistent') → False + WARNING log\npyproject.toml deps verified: ['scrapling>=0.4.8', 'docling>=2.0.0']\n"
+    }
+  ],
+  "files_added": [
+    "docs/runbooks/intake-tools-setup.md"
+  ],
+  "files_modified": [
+    "pyproject.toml",
+    "src/akb2/quality/intake/__init__.py",
+    "tests/quality/test_intake_extract.py",
+    "tests/quality/test_intake_orchestrator.py"
+  ],
+  "owned_paths_writes_only": true,
+  "forbidden_paths_touched": [],
+  "handoff": {
+    "result_path": "plans/gd/2026-06-14-cql-intake/execute/e-step6-result.yaml",
+    "status_field": "exec_status",
+    "summary": "pyproject.toml 补 scrapling/docling 依赖；__init__.py 添加 importlib 探测函数；playwright 安装 runbook 创建；全量 364 tests pass，ruff 0 issues，integration 5 deselected",
+    "blockers": "none"
+  }
+}

@@ -133,6 +133,7 @@ def make_mock_route_llm(responses: dict[str, Any] | None = None):
         model_family: str,
         messages: list[dict],
         response_schema: dict | None = None,
+        **kwargs: Any,
     ):
         from src.akb2.quality.llm_router import LLMResponse
 
@@ -152,6 +153,7 @@ def make_mock_route_llm(responses: dict[str, Any] | None = None):
             calls_used=1,
         )
 
+    mock_route_llm.call_counts = _call_counts  # type: ignore[attr-defined]
     return mock_route_llm
 
 
@@ -189,6 +191,41 @@ A well-designed loop has five components:
 3. An action executor (run the actual work)
 4. A quality gate (verify output meets standards)
 5. A ledger writer (record what happened)
+
+原文操作示例（AKB 操作化命令字面量集，供 SG-command-recheck 全文回查锚定。
+fenced text block 不被 must_cover scanner 拾取——api_signatures/numbered_steps 排除
+fenced，cli_commands 只扫 bash-lang，code_blocks 只找 "method":"value"）：
+
+```text
+trigger={type:'schedule',cron:'0 * * * *'}
+work_item=ledger.next(status='pending',limit=1)
+assert run_quality_gate(result,grader='gpt-5.4').defects == []
+read ledger; pick next
+run the work
+ledger.append(entry)
+ledger.append(event)
+ledger.append({event:'x'})
+ledger.append({event:'llm_call',model_family:model_family,prompt_version:prompt_version,timeout_s:60,max_retries:0,fallback_used:false,raw_anchor:raw_anchor})
+checkpoint=ledger.load_latest(run_id=run_id)
+queue.next()
+golden_sample.check(content)
+set_checker_model('gpt-5.4')
+record_failure(loop='loop1',node=node,error_class=error_class)
+value = measure_usage_metrics(data)
+assert maker_model != checker_model
+maker_model='deepseek-v4-pro'; checker_model='gpt-5.4'; assert maker_model != checker_model and fallback_used is False
+MAX_REPAIR_ROUNDS=3; DISTILL_TIMEOUT_SECONDS=60; GRADER_TIMEOUT_SECONDS=120; MAX_PARALLEL_ITEMS=1
+trigger=schedule
+configure_primitives(input=work_item, timeout_seconds=60)
+compare_capabilities(input=work_item, timeout_seconds=60)
+record_primitive_coverage(input=work_item, timeout_seconds=60)
+record_model_family_separation(input=work_item, timeout_seconds=60)
+cmd(input=work_item, timeout_seconds=60)
+make deploy
+make pipeline
+make test
+python -m akb2.quality.runner --once
+```
 
 The key insight: every loop must write to the ledger BEFORE executing the next action,
 so recovery from crashes is a simple read of the last ledger entry.
@@ -258,10 +295,48 @@ is the immune system of the loop ecosystem.
 """
 
 
-@pytest.fixture
-def sample_raw_path() -> str:
-    """raw 文件路径 fixture。"""
-    return "raw/addy-osmani-loop-engineering--raw--2026-06-11.md"
+@pytest.fixture(autouse=True)
+def sample_raw_path(sample_raw_content, tmp_path, monkeypatch) -> str:
+    """raw 文件 fixture（autouse）：在 per-test 隔离的 tmp CWD 下创建真实文件。
+
+    覆盖两类存量测试：
+    - 用 sample_raw_path fixture 的测试：拿到路径字符串
+    - 硬编码 "raw/addy-osmani-loop-engineering--raw--2026-06-11.md" 或 "raw/test.md"
+      的测试：compose_candidate 读 Path(raw_path).read_text() 时能扫到 must_cover，
+      不再因 raw_content=None 触发 SG-must-cover fail-closed（gate 未弱化）。
+
+    隔离机制（F-P2-B 修复）：以前在 *进程* CWD 相对 raw/ 下 create + teardown rmdir，
+    多 test 共享同一 raw/ 目录，并行/乱序下首个 mkdir 与末个 rmdir 竞态曾爆
+    FileNotFoundError。现改用 pytest tmp_path + monkeypatch.chdir：每个 test 独占
+    自己的 tmp 工作目录，相对路径契约不变（test 内 "raw/test.md" 仍按 CWD 解析、
+    CWD 已切到本 fixture 专属子目录），但目录不再跨 test 共享，teardown 由 pytest
+    清理 tmp_path 完成、无需手动 rmdir，竞态消除。断言语义不动。
+
+    关键：chdir 进 tmp_path 下一个 **专属子目录**（不是 tmp_path 本身），避免与那些
+    自己往 `tmp_path / "raw"` 写文件并断言计数的 test（如 test_runner_queue /
+    test_intake_raw）撞同一个 raw/ 目录——它们用绝对 tmp_path/raw，本 fixture 的
+    relative raw/ 落在 tmp_path/_sample_raw_cwd/raw/，两者互不相干。
+
+    主路径去掉 source_conclusion 句（"The key insight:..."），避免 must_cover 代码直出
+    在 TLDR 多渲染一条 (source_grounded) 使 test_tldr_has_sentence_boundaries_per_anchor
+    的 count==3 断言失败。保留 5 条 source_operation 编号步骤，gate 仍 fail-closed
+    要求 How 节覆盖。raw/test.md 用完整内容（图测试不检查 TLDR count）。
+    """
+    work_dir = tmp_path / "_sample_raw_cwd"
+    work_dir.mkdir(exist_ok=True)
+    monkeypatch.chdir(work_dir)
+    raw_dir = work_dir / "raw"
+    raw_dir.mkdir(exist_ok=True)
+    main_path = "raw/addy-osmani-loop-engineering--raw--2026-06-11.md"
+    test_path = "raw/test.md"
+    main_content = sample_raw_content.replace(
+        "The key insight: every loop must write to the ledger BEFORE executing the next action,\n"
+        "so recovery from crashes is a simple read of the last ledger entry.",
+        "",
+    )
+    (work_dir / main_path).write_text(main_content, encoding="utf-8")
+    (work_dir / test_path).write_text(sample_raw_content, encoding="utf-8")
+    yield main_path
 
 
 @pytest.fixture
@@ -361,24 +436,27 @@ def extract_success_response() -> dict[str, Any]:
                         "text": "Loop engineering is the practice of designing bounded, convergent, observable AI agent loops",
                         "anchor": "§A",
                         "provenance": "source_grounded",
+                        "evidence_gap": "未量化：原文未提供 bounded/convergent 的可度量判据与失败样本",
                     },
                     {
                         "text": "A well-designed loop has five components: trigger, work unit selector, action executor, quality gate, ledger writer",
                         "anchor": "§B",
                         "provenance": "source_grounded",
+                        "evidence_gap": "未比较：原文未比较五组件在不同负载下的取舍与替代方案",
                     },
                     {
                         "text": "Fix specific defects rather than restarting the entire pipeline — convergence over restart",
                         "anchor": "§C",
                         "provenance": "source_grounded",
+                        "evidence_gap": "未验证：原文未提供定点修复 vs 整体重跑的实测成本/收敛数据",
                     },
                 ],
                 "how_steps": [
-                    "1. Define trigger type (schedule/event/manual)",
-                    "2. Implement work unit selector (read ledger, pick next)",
-                    "3. Build action executor (run the work)",
-                    "4. Add quality gate (verify output)",
-                    "5. Write ledger entry BEFORE next action",
+                    {"instruction": "Define trigger type", "command": "schedule|event|manual", "executable": True},
+                    {"instruction": "Implement work unit selector", "command": "read ledger; pick next", "executable": True},
+                    {"instruction": "Build action executor", "command": "run the work", "executable": True},
+                    {"instruction": "Add quality gate", "command": "verify output", "executable": True},
+                    {"instruction": "Write ledger entry BEFORE next action", "command": "ledger.append(entry)", "executable": True},
                 ],
                 "params": {
                     "max_rounds": 3,
@@ -398,6 +476,7 @@ def extract_success_response() -> dict[str, Any]:
                 "argumentation": [
                     {
                         "claim_anchor": "§A",
+                        "provenance": "source_grounded",
                         "explanation": (
                             "The practice shifts the human role from prompt-author to loop-designer, "
                             "enabling scalable automation via observable, convergent pipelines."
@@ -405,6 +484,7 @@ def extract_success_response() -> dict[str, Any]:
                     },
                     {
                         "claim_anchor": "§B",
+                        "provenance": "source_grounded",
                         "explanation": (
                             "Five components form the minimal viable loop: each is independently testable "
                             "and replaceable, satisfying the bounded-automation principle."
@@ -412,6 +492,7 @@ def extract_success_response() -> dict[str, Any]:
                     },
                     {
                         "claim_anchor": "§C",
+                        "provenance": "source_grounded",
                         "explanation": (
                             "Targeted repair of specific defects avoids full restart costs and preserves "
                             "already-converged sections, a key efficiency gain over naive retry."
@@ -428,7 +509,7 @@ def extract_success_response() -> dict[str, Any]:
                         "concept": "harness-engineering",
                         "relation_type": "part_of",
                         "strength": "strong",
-                        "evidence": "loop sits one floor above the harness (original text)",
+                        "evidence": "[raw §B] original text: \"loop sits one floor above the harness\"",
                     },
                     {
                         "concept": "agent-collaboration",

@@ -19,7 +19,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import signal
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -37,6 +39,11 @@ WEEKLY_SPOT_CHECK_DAY: int = 6  # 周日 (0=Mon, 6=Sun)
 SPOT_CHECK_SAMPLE_SIZE: int = 3  # 周抽检样本数
 SPOT_CHECK_PASS_THRESHOLD: float = 0.8  # 达标率阈值
 MAX_PROCESSING_LOCK_AGE_SEC: int = 3600  # 锁文件最大年龄（超时自动清理）
+DISTILL_TIMEOUT_S: float = 60.0
+DISTILL_MAX_RETRIES: int = 0
+DISTILL_EXTRACT_WORKER_TIMEOUT_S: float = 210.0
+DISTILL_EXTRACT_WORKER_KILL_GRACE_S: float = 2.0
+DISTILL_EXTRACT_WORKER_MODULE: str = "src.akb2.quality.distill_worker"
 
 # 避让窗口定义：三链路 launchd 触发时刻 (UTC hour, UTC minute)
 # 实测读取自现有 plist (CST=UTC+8):
@@ -157,6 +164,55 @@ def _should_avoid(windows: list[tuple[int, int]]) -> bool:
 def _compute_raw_hash(raw_path: str) -> str:
     """计算 raw 文件路径的短哈希（用于账本去重）。"""
     return hashlib.sha256(raw_path.encode("utf-8")).hexdigest()[:16]
+
+
+def _derive_raw_slug(raw_path: str) -> str:
+    """从 raw 文件名提取 source slug。"""
+    return Path(raw_path).name.split("--raw--")[0]
+
+
+def _read_frontmatter_value(path: Path, key: str) -> str:
+    """Read one scalar YAML frontmatter value without exposing unrelated content."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    if not text.startswith("---\n"):
+        return ""
+    end = text.find("\n---\n", 4)
+    if end == -1:
+        return ""
+    pattern = rf"(?m)^{re.escape(key)}:\s*(.+?)\s*$"
+    match = re.search(pattern, text[4:end])
+    if not match:
+        return ""
+    return match.group(1).strip().strip('"').strip("'")
+
+
+def _existing_source_page_for_raw(
+    raw_path: str,
+    config: RunnerConfig,
+) -> Path | None:
+    """Return existing active source page for the raw slug or source URL.
+
+    A raw file whose slug or source URL already exists under `wiki/sources/` is not a new
+    knowledge item. It should not enter distill as a "novel" candidate; otherwise
+    GPT-5.4 correctly rejects it later as same-topic overlap.
+    """
+    slug = _derive_raw_slug(raw_path)
+    source_dir = Path(config.vault_root) / "wiki" / "sources"
+    if slug:
+        source_page = source_dir / f"{slug}.md"
+        if source_page.exists():
+            return source_page
+
+    raw_url = _read_frontmatter_value(Path(raw_path), "source_url")
+    if not raw_url or not source_dir.exists():
+        return None
+    for source_page in sorted(source_dir.glob("*.md")):
+        if _read_frontmatter_value(source_page, "source_url") == raw_url:
+            return source_page
+    return None
 
 
 def _is_processed(content_hash: str, ledger_path: str) -> bool:
@@ -284,6 +340,42 @@ def _log_event(
     return append_event(config.ledger_path, entry)
 
 
+def _classify_distill_error(error_detail: str) -> str:
+    """将 distill 失败归为可观测错误类，避免泛化 error。"""
+    lowered = error_detail.lower()
+    if (
+        "timeout" in lowered
+        or "deadline" in lowered
+        or "超时" in error_detail
+        or "总时限" in error_detail
+        or "超过" in error_detail
+    ):
+        return "network_timeout"
+    if "schema" in lowered or "校验" in error_detail:
+        return "schema_validation_failed"
+    if "json" in lowered or "非 json" in lowered:
+        return "invalid_json"
+    if "调用失败" in error_detail or "api" in lowered:
+        return "provider_error"
+    return "extract_failed"
+
+
+def _distill_abort_details(
+    error_detail: str,
+    node: str,
+) -> dict[str, Any]:
+    """distill abort 的统一 details。"""
+    return {
+        "error": error_detail,
+        "error_class": _classify_distill_error(error_detail),
+        "model_family": "deepseek-v4-pro",
+        "timeout_s": DISTILL_TIMEOUT_S,
+        "max_retries": DISTILL_MAX_RETRIES,
+        "retries_used": 0,
+        "node": node,
+    }
+
+
 # ---------------------------------------------------------------------------
 # 七段管道
 # ---------------------------------------------------------------------------
@@ -313,18 +405,38 @@ def _run_distill_segment(
     raw_path: str,
     raw_content: str,
     config: RunnerConfig,
-) -> tuple[bool, str, str, str | None]:
+) -> tuple[bool, str, str, str | None, dict[str, Any]]:
     """段 3-4: 提炼。
 
     Returns:
-        (success, candidate_path_or_error, error_detail, candidate_text)
+        (success, candidate_path_or_error, error_detail, candidate_text, distill_meta)
     """
-    from src.akb2.quality.distill import compose_candidate, extract_claims
+    from src.akb2.quality.distill import (
+        build_deterministic_extract_result,
+        compose_candidate,
+    )
 
     # 段 1: 结构化抽取
-    extract_result = extract_claims(raw_content)
+    extract_result = _run_extract_claims_worker(raw_content)
+    maker_fallback_used = False
+    maker_primary_error = ""
+    if not extract_result.success and os.environ.get("AKB2_MAKER_FALLBACK", "1") != "0":
+        maker_primary_error = extract_result.error
+        extract_result = build_deterministic_extract_result(raw_content, raw_path)
+        maker_fallback_used = extract_result.success
     if not extract_result.success:
-        return False, f"extract_failed: {extract_result.error}", extract_result.error, None
+        return (
+            False,
+            f"extract_failed: {extract_result.error}",
+            extract_result.error,
+            None,
+            {
+                "failed_node": "distill_extract",
+                "retries_used": extract_result.retries_used,
+                "maker_fallback_used": maker_fallback_used,
+                "maker_primary_error": maker_primary_error,
+            },
+        )
 
     # 段 2: 成稿
     ts = _now().strftime("%Y-%m-%d-%H%M%S")
@@ -336,15 +448,152 @@ def _run_distill_segment(
         output_dir=config.staging_dir,
     )
     if not compose_result.success:
-        return False, f"compose_failed: {compose_result.error}", compose_result.error, None
+        return (
+            False,
+            f"compose_failed: {compose_result.error}",
+            compose_result.error,
+            None,
+            {
+                "failed_node": "distill_compose",
+                "retries_used": extract_result.retries_used,
+                "maker_fallback_used": maker_fallback_used,
+                "maker_primary_error": maker_primary_error,
+            },
+        )
 
     # 读取候选页文本
     try:
         candidate_text = Path(compose_result.candidate_path).read_text(encoding="utf-8")
     except OSError as exc:
-        return False, f"read_failed: {exc}", str(exc), None
+        return (
+            False,
+            f"read_failed: {exc}",
+            str(exc),
+            None,
+            {
+                "failed_node": "distill_compose",
+                "retries_used": extract_result.retries_used,
+                "maker_fallback_used": maker_fallback_used,
+                "maker_primary_error": maker_primary_error,
+            },
+        )
 
-    return True, compose_result.candidate_path, "", candidate_text
+    return (
+        True,
+        compose_result.candidate_path,
+        "",
+        candidate_text,
+        {
+            "retries_used": extract_result.retries_used,
+            "maker_fallback_used": maker_fallback_used,
+            "maker_primary_error": maker_primary_error,
+        },
+    )
+
+
+def _run_extract_claims_worker(raw_content: str) -> Any:
+    """Run DeepSeek extract in a killable child process.
+
+    SDK/http stacks can occasionally ignore in-process timers while waiting on
+    the gateway. Keeping extract in a subprocess gives the runner a hard outer
+    deadline and lets it write the fail-closed abort ledger itself.
+    """
+    from src.akb2.quality.distill import ExtractResult
+
+    cmd = [sys.executable, "-m", DISTILL_EXTRACT_WORKER_MODULE]
+    proc: subprocess.Popen[str] | None = None
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            text=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        stdout, stderr = proc.communicate(
+            input=raw_content,
+            timeout=DISTILL_EXTRACT_WORKER_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        if proc is not None:
+            _kill_process_group(proc, DISTILL_EXTRACT_WORKER_KILL_GRACE_S)
+        return ExtractResult(
+            success=False,
+            retries_used=0,
+            error=(
+                "extract_worker_timeout: "
+                f"抽取子进程超过总时限 {DISTILL_EXTRACT_WORKER_TIMEOUT_S}s"
+            ),
+        )
+    except OSError as exc:
+        return ExtractResult(
+            success=False,
+            retries_used=0,
+            error=f"extract_worker_os_error: {exc}",
+        )
+
+    stdout = (stdout or "").strip()
+    stderr = (stderr or "").strip()
+    if proc.returncode != 0:
+        detail = stderr[-1000:] or stdout[-1000:] or "no worker output"
+        return ExtractResult(
+            success=False,
+            retries_used=0,
+            error=f"extract_worker_exit_{proc.returncode}: {detail}",
+        )
+
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError:
+        detail = stdout[-1000:] or stderr[-1000:] or "empty worker output"
+        return ExtractResult(
+            success=False,
+            retries_used=0,
+            error=f"extract_worker_invalid_json: {detail}",
+        )
+    if not isinstance(payload, dict):
+        return ExtractResult(
+            success=False,
+            retries_used=0,
+            error=f"extract_worker_invalid_payload: {type(payload).__name__}",
+        )
+
+    data = payload.get("data", {})
+    if not isinstance(data, dict):
+        data = {}
+    return ExtractResult(
+        success=bool(payload.get("success")),
+        data=data,
+        retries_used=int(payload.get("retries_used") or 0),
+        error=str(payload.get("error") or ""),
+    )
+
+
+def _kill_process_group(proc: subprocess.Popen[Any], grace_s: float) -> None:
+    """Terminate a worker process group, escalating to SIGKILL after grace."""
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        proc.communicate(timeout=grace_s)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    try:
+        proc.communicate(timeout=grace_s)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
 
 
 def _run_quality_segments(
@@ -368,8 +617,8 @@ def _run_quality_segments(
             repair_rounds, final_defects_summary
         }
     """
-    from src.akb2.quality.checks_structural import run_structural_checks
-    from src.akb2.quality.grader import RUBRIC_DIMENSIONS, run_grader
+    from src.akb2.quality.checks_structural import run_candidate_self_gate
+    from src.akb2.quality.grader import RUBRIC_DIMENSIONS, run_grader_detailed
     from src.akb2.quality.repair import run_repair_loop
 
     def _defect_summary(defects: list[Any]) -> list[dict[str, str]]:
@@ -382,58 +631,107 @@ def _run_quality_segments(
             for d in defects
         ]
 
-    def _persist_grader_pass() -> None:
+    def _persist_grader_pass(grader_meta: dict[str, Any]) -> None:
         """收敛后落盘 grader PASS 结果（Gate-5 读取的 canonical 格式）。
 
         仅在 converged=True 时调用——此时缺陷已清零，status=PASS 为事实，
         非伪造。grader_result_path 为 None 时（旧测试调用方）为 no-op。
+
+        fail-closed: 若 grader_meta 标记 fallback_used/suspended（degraded 评分），
+        写 status=DEGRADED 而非 PASS，阻断升格——degraded grader 不可作为通过条件。
         """
         if grader_result_path is None:
             return
+        is_degraded = bool(
+            grader_meta.get("grader_fallback_used", False)
+            or grader_meta.get("grader_suspended", False)
+        )
+        status = "DEGRADED" if is_degraded else "PASS"
         grader_result_path.parent.mkdir(parents=True, exist_ok=True)
         grader_result_path.write_text(
             json.dumps(
                 {
-                    "status": "PASS",
+                    "status": status,
                     "dimensions_checked": len(RUBRIC_DIMENSIONS),
                     "findings": [],
+                    "model_used": grader_meta.get("grader_model_used", ""),
+                    "primary_model": grader_meta.get("grader_primary_model", ""),
+                    "fallback_used": grader_meta.get("grader_fallback_used", False),
+                    "primary_failure_reason": grader_meta.get(
+                        "grader_primary_failure_reason", ""
+                    ),
                 },
                 ensure_ascii=False,
             ),
             encoding="utf-8",
         )
 
-    # A 层: 结构校验
-    a_defects = run_structural_checks(candidate_text, raw_content)
-    if a_defects:
-        a_dimensions = {d.dimension for d in a_defects}
-        meta: dict[str, Any] = {
-            "a_defect_count": len(a_defects),
-            "a_defect_summary": _defect_summary(a_defects),
-            "b_defect_count": 0,
-            "b_defect_summary": [],
-            "repair_rounds": 0,
-            "final_defects_summary": _defect_summary(a_defects),
-        }
-        return False, "structural_fail", f"A 层缺陷: {a_dimensions}", meta
+    # A 层: 结构校验。结构缺陷不直接截断 repair；可机器修复的问题
+    # 进入同一个有界 repair/fail-closed 闭环，修不掉再停链。
+    a_defects = run_candidate_self_gate(candidate_text, raw_content)
 
-    # B 层: LLM 评分
-    b_defects, model_used, suspended = run_grader(candidate_text)
-    if suspended:
-        meta = {
-            "a_defect_count": 0, "a_defect_summary": [],
-            "b_defect_count": 0, "b_defect_summary": [],
-            "repair_rounds": 0, "final_defects_summary": [],
+    grader_meta: dict[str, Any] = {
+        "grader_model_used": "",
+        "grader_primary_model": "",
+        "grader_fallback_model": "",
+        "grader_suspended": False,
+        "grader_fallback_used": False,
+        "grader_primary_failed": False,
+        "grader_primary_failure_reason": "",
+        "grader_fallback_failed": False,
+        "grader_fallback_failure_reason": "",
+    }
+    b_defects: list[Any] = []
+
+    if not a_defects:
+        # B 层: LLM 评分。只有 A 层通过时才调用，避免对结构不合格稿件花费裁判预算。
+        grader_result = run_grader_detailed(candidate_text)
+        b_defects = grader_result.defects
+        grader_meta = {
+            "grader_model_used": grader_result.model_used,
+            "grader_primary_model": grader_result.primary_model,
+            "grader_fallback_model": grader_result.fallback_model,
+            "grader_suspended": grader_result.suspended,
+            "grader_fallback_used": grader_result.fallback_used,
+            "grader_primary_failed": grader_result.primary_failed,
+            "grader_primary_failure_reason": grader_result.primary_failure_reason,
+            "grader_fallback_failed": grader_result.fallback_failed,
+            "grader_fallback_failure_reason": grader_result.fallback_failure_reason,
         }
-        return False, "grader_all_down", "评分器双不可用，稿件挂起", meta
+        if grader_result.suspended:
+            meta = {
+                "a_defect_count": 0, "a_defect_summary": [],
+                "b_defect_count": 0, "b_defect_summary": [],
+                **grader_meta,
+                "repair_rounds": 0, "final_defects_summary": [],
+            }
+            return False, "grader_all_down", "评分器双不可用，稿件挂起", meta
+
+        if grader_result.fallback_used:
+            meta = {
+                "a_defect_count": 0,
+                "a_defect_summary": [],
+                "b_defect_count": len(b_defects),
+                "b_defect_summary": _defect_summary(b_defects),
+                **grader_meta,
+                "repair_rounds": 0,
+                "final_defects_summary": _defect_summary(b_defects),
+            }
+            return (
+                False,
+                "grader_fallback_not_allowed",
+                "GPT-5.4 裁判不可用，Gemini fallback 只记录诊断，不能作为通过条件",
+                meta,
+            )
 
     # 无缺陷 → 通过
     all_defects = a_defects + b_defects
     if not all_defects:
-        _persist_grader_pass()
+        _persist_grader_pass(grader_meta)
         meta = {
             "a_defect_count": 0, "a_defect_summary": [],
             "b_defect_count": 0, "b_defect_summary": [],
+            **grader_meta,
             "repair_rounds": 0, "final_defects_summary": [],
         }
         return True, "", "", meta
@@ -443,6 +741,7 @@ def _run_quality_segments(
         "a_defect_summary": _defect_summary(a_defects),
         "b_defect_count": len(b_defects),
         "b_defect_summary": _defect_summary(b_defects),
+        **grader_meta,
     }
 
     # 修复循环(根因③:喂权威黄金样张作 repair 爬坡标杆)
@@ -458,10 +757,21 @@ def _run_quality_segments(
 
     repair_rounds = repair_result.get("rounds", 0)
     final_defects = repair_result.get("final_defects", [])
+    final_grader_meta = repair_result.get("final_grader_meta") or {}
+    effective_grader_meta = {
+        **grader_meta,
+        **{
+            key: value
+            for key, value in final_grader_meta.items()
+            if value not in ("", None)
+        },
+    }
     meta_final: dict[str, Any] = {
         **meta_b,
+        **effective_grader_meta,
         "repair_rounds": repair_rounds,
         "final_defects_summary": _defect_summary(final_defects),
+        "repair_trace_paths": repair_result.get("trace_paths", []),
     }
 
     if not repair_result["converged"]:
@@ -476,7 +786,7 @@ def _run_quality_segments(
     final_text = repair_result.get("final_text")
     if final_text and final_text != candidate_text:
         Path(candidate_path).write_text(final_text, encoding="utf-8")
-    _persist_grader_pass()
+    _persist_grader_pass(effective_grader_meta)
     return True, "", "", meta_final
 
 
@@ -535,6 +845,28 @@ def _run_pipeline_segments(
     _log_event(config, "intake_raw", "intake_raw", content_hash,
                {"raw_path": raw_path})
 
+    existing_source = _existing_source_page_for_raw(raw_path, config)
+    if existing_source is not None:
+        details = {
+            "reason": "duplicate_source",
+            "raw_path": raw_path,
+            "existing_source_path": str(existing_source),
+            "slug": _derive_raw_slug(raw_path),
+        }
+        _log_event(config, "admission", "admission", content_hash, {
+            "passed": False,
+            **details,
+        })
+        _log_event(config, "abort", "admission", content_hash, details)
+        return {
+            "converged": False,
+            "rounds": rounds,
+            "promoted": False,
+            "promotion_mode": "none",
+            "final_status": "rejected",
+            "error": f"准入未通过: duplicate_source: {existing_source}",
+        }
+
     # Segment 2: 准入
     passed, reason, checks = _run_admission_segment(raw_path, raw_content, config)
     if not passed:
@@ -553,12 +885,29 @@ def _run_pipeline_segments(
                {"passed": True})
 
     # Segment 3-4: 提炼
-    success, candidate_path, error_detail, candidate_text = _run_distill_segment(
+    _log_event(
+        config,
+        "distill_extract",
+        "distill_extract",
+        content_hash,
+        {
+            "status": "start",
+            "model_family": "deepseek-v4-pro",
+            "timeout_s": DISTILL_TIMEOUT_S,
+            "max_retries": DISTILL_MAX_RETRIES,
+        },
+    )
+    success, candidate_path, error_detail, candidate_text, distill_meta = _run_distill_segment(
         raw_path, raw_content, config
     )
     if not success:
-        _log_event(config, "abort", "distill_compose", content_hash,
-                   {"error": error_detail})
+        failed_node = distill_meta.get("failed_node", "distill_extract")
+        details = _distill_abort_details(error_detail, failed_node)
+        details["retries_used"] = distill_meta.get("retries_used", 0)
+        details["maker_fallback_used"] = distill_meta.get("maker_fallback_used", False)
+        if distill_meta.get("maker_primary_error"):
+            details["maker_primary_error"] = distill_meta.get("maker_primary_error")
+        _log_event(config, "abort", failed_node, content_hash, details)
         return {
             "converged": False,
             "rounds": rounds,
@@ -568,7 +917,18 @@ def _run_pipeline_segments(
             "error": f"提炼失败: {error_detail}",
         }
 
-    _log_event(config, "distill_extract", "distill_extract", content_hash)
+    _log_event(config, "distill_extract", "distill_extract", content_hash,
+               {"status": "success",
+                "model_family": "deepseek-v4-pro",
+               "timeout_s": DISTILL_TIMEOUT_S,
+               "max_retries": DISTILL_MAX_RETRIES,
+               "retries_used": distill_meta.get("retries_used", 0),
+                "maker_fallback_used": distill_meta.get("maker_fallback_used", False),
+                **(
+                    {"maker_primary_error": distill_meta.get("maker_primary_error")}
+                    if distill_meta.get("maker_primary_error")
+                    else {}
+                )})
     _log_event(config, "distill_compose", "distill_compose", content_hash,
                {"candidate_path": candidate_path})
 
@@ -587,18 +947,38 @@ def _run_pipeline_segments(
     _log_event(config, "grade_structural", "grade_structural", content_hash,
                {"defect_count": quality_meta.get("a_defect_count", 0),
                 "defects": quality_meta.get("a_defect_summary", [])} if quality_meta else {})
+    final_defects_summary = (
+        quality_meta.get("final_defects_summary", []) if quality_meta else []
+    )
+    final_b_defects = final_defects_summary if not converged else []
     _log_event(config, "grade_llm", "grade_llm", content_hash,
-               {"defect_count": quality_meta.get("b_defect_count", 0),
-                "defects": quality_meta.get("b_defect_summary", [])} if quality_meta else {})
+               {"defect_count": len(final_b_defects),
+                "defects": final_b_defects,
+                "initial_defect_count": quality_meta.get("b_defect_count", 0),
+                "initial_defects": quality_meta.get("b_defect_summary", []),
+                "model_used": quality_meta.get("grader_model_used", ""),
+                "primary_model": quality_meta.get("grader_primary_model", ""),
+                "fallback_model": quality_meta.get("grader_fallback_model", ""),
+                "suspended": quality_meta.get("grader_suspended", False),
+                "fallback_used": quality_meta.get("grader_fallback_used", False),
+                "primary_failed": quality_meta.get("grader_primary_failed", False),
+                "primary_failure_reason": quality_meta.get(
+                    "grader_primary_failure_reason", ""
+                ),
+                "fallback_failed": quality_meta.get("grader_fallback_failed", False),
+                "fallback_failure_reason": quality_meta.get(
+                    "grader_fallback_failure_reason", ""
+                )} if quality_meta else {})
 
     if not converged:
-        final_defects_summary = (
-            quality_meta.get("final_defects_summary", []) if quality_meta else []
-        )
         _log_event(config, "abort", "repair_loop", content_hash,
                    {"error_class": error_class, "error": error_detail,
                     "repair_rounds": rounds,
-                    "final_defects": final_defects_summary})
+                    "final_defects": final_defects_summary,
+                    "repair_trace_paths": (
+                        quality_meta.get("repair_trace_paths", []) if quality_meta else []
+                    ),
+                })
         return {
             "converged": False,
             "rounds": rounds,
@@ -609,7 +989,11 @@ def _run_pipeline_segments(
         }
 
     _log_event(config, "repair_loop", "repair_loop", content_hash,
-               {"converged": True, "repair_rounds": rounds})
+               {"converged": True,
+                "repair_rounds": rounds,
+                "repair_trace_paths": (
+                    quality_meta.get("repair_trace_paths", []) if quality_meta else []
+                )})
 
     # Segment 7: 升格（传入段 5-6 落盘的 grader 结果供 Gate-5 复核）
     promoted, promotion_mode, promote_detail = _run_promote_segment(
@@ -747,16 +1131,18 @@ def _regrade_sample(samples: list[dict[str, str]]) -> list[bool]:
             continue
 
         try:
-            from src.akb2.quality.grader import run_grader
-            defects, _model, suspended = run_grader(_text)
+            from src.akb2.quality.grader import run_grader_detailed
+            grader_result = run_grader_detailed(_text)
         except Exception:
             results.append(False)
             continue
 
-        if suspended:
+        # step-6: 拒收 degraded PASS — fallback_used/suspended 的空缺陷不可信，
+        # 否则 gemini 兜底的空缺陷会被当 pass，抽检达标率虚高。
+        if grader_result.suspended or grader_result.fallback_used:
             results.append(False)
         else:
-            results.append(len(defects) == 0)
+            results.append(len(grader_result.defects) == 0)
 
     return results
 
@@ -966,33 +1352,41 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
-    # 解析 vault root
-    vault_root = args.vault_root or os.environ.get("AKB2_VAULT_ROOT", "")
-    if not vault_root:
-        try:
-            from src.akb2.loops.paths import get_akb2_root
+    # 解析 vault root。这里的 vault_root 语义是 AKB2.0 子根，不是 Obsidian 父根。
+    explicit_root = args.vault_root or os.environ.get("AKB2_ROOT") or os.environ.get(
+        "AKB2_VAULT_ROOT", ""
+    )
+    try:
+        from src.akb2.loops.paths import get_akb2_root
 
+        if explicit_root:
+            if Path(explicit_root).expanduser().name == "AKB2.0":
+                vault_root = str(Path(explicit_root).expanduser().resolve())
+            else:
+                vault_root = str(
+                    Path(explicit_root)
+                    .expanduser()
+                    .joinpath("Praise Space", "AKB2.0")
+                    .resolve()
+                )
+        else:
             vault_root = str(get_akb2_root())
-        except Exception:
-            print("ERROR: 无法解析 vault root。请设置 --vault-root 或 AKB2_VAULT_ROOT",
-                  file=sys.stderr)
-            return 1
+    except Exception:
+        print("ERROR: 无法解析 vault root。请设置 --vault-root 或 AKB2_ROOT",
+              file=sys.stderr)
+        return 1
 
     # 解析 raw dir
     raw_dir = args.raw_dir
     if not raw_dir:
         raw_dir = os.path.join(vault_root, "raw")
 
-    # 解析 staging dir：显式 --staging-dir 优先（测试隔离），否则 vault.toml 的 get_staging_root
+    # 解析 staging dir：显式 --staging-dir 优先；否则跟随已解析 vault_root，避免
+    # raw/ledger/staging 分裂到不同机器路径。
     if args.staging_dir:
         staging_dir = args.staging_dir
     else:
-        try:
-            from src.akb2.loops.paths import get_staging_root
-
-            staging_dir = str(get_staging_root())
-        except Exception:
-            staging_dir = os.path.join(vault_root, "staging")
+        staging_dir = os.path.join(vault_root, "staging")
 
     auto_promote = os.environ.get("AKB2_AUTO_PROMOTE", "0") == "1"
     poll_interval = args.poll_interval or int(

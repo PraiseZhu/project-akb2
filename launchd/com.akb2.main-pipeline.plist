@@ -19,7 +19,6 @@
 
   ==== 三链路触发时间对照表 (CST, UTC+8) ====
   | 链路              | Label                           | 触发时间 (CST) | 触发时间 (UTC) | AVOID_WINDOW (UTC ±15min) |
-  |-------------------|---------------------------------|----------------|----------------|---------------------------|
   | github_briefing   | com.akb2.github_briefing        | 05:30          | 21:30 (前日)   | 21:15 - 21:45             |
   | briefing          | com.akb2.briefing               | 07:30          | 23:30 (前日)   | 23:15 - 23:45             |
   | feishu-sync       | com.akb2.feishu-sync            | 10:00          | 02:00          | 01:45 - 02:15             |
@@ -29,7 +28,7 @@
   但在处理中的单篇做完不中断。
 
   ==== 环境变量 ====
-  AKB2_AUTO_PROMOTE=1  — 出厂形态，启用自动升格（五闸通过即入 active）
+  AKB2_AUTO_PROMOTE=0  — 部署前安全形态，只写 proposal manifest，不自动升格 active
   PYTHONPATH           — 指向 src/ 目录
   AKB2_VAULT_ROOT      — vault AKB2.0 根目录（从 vault.toml 解析的绝对路径）
 
@@ -73,15 +72,17 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>AKB2_AUTO_PROMOTE</key>
-        <string>1</string>
+        <string>0</string>
         <key>AKB2_AMENDMENT_APPLIED</key>
+        <string>0</string>
+        <key>AKB2_MAKER_FALLBACK</key>
         <string>1</string>
         <key>PYTHONPATH</key>
         <string>/Users/praise/AI-Agent/Claude/projects/Project AKB2/src</string>
         <key>PATH</key>
         <string>/Users/praise/.pyenv/shims:/Users/praise/.pyenv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>AKB2_VAULT_ROOT</key>
-        <string>/Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0</string>
+        <string>/Users/praise/Obsidian/Praise Space/AKB2.0</string>
     </dict>
 </dict>
 </plist>

@@ -3,8 +3,8 @@ name: "cc-review"
 description: "全中文结构化审查，用于计划或已完成工作的 review/final review/计划审查/代码验收。按计划或代码模板输出可复制的 fenced markdown 审查结果。"
 ---
 
-<!-- akb-backlink: /Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0/wiki/tools/cc-review.md -->
-<!-- akb-interface: /Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0/toolbox/interfaces/cc-review.md -->
+<!-- akb-backlink: /Volumes/AKB2/Obsidian/Praise Space/AKB2.0/wiki/tools/cc-review.md -->
+<!-- akb-interface: /Volumes/AKB2/Obsidian/Praise Space/AKB2.0/toolbox/interfaces/cc-review.md -->
 
 # review
 

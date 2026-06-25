@@ -1,0 +1,40 @@
+template_kind: gd-execution-result
+result_id: w3-step-5-provenance-split-with-schema
+task_id: step-5
+parent_step: step-5
+parent_plan: plans/gd/2026-06-22-how-reliability-refactor/master-plan.md
+executor_role: claude_subagent
+executed_at: 2026-06-23T19:57:00Z
+exec_status: completed
+sc_acceptance:
+  - sc_ref: SC-10
+    status: pass
+    evidence: >
+      主 agent 独立复核全 quality 套件 592 passed / 0 failed exit=0。
+      step-5 加 How provenance 三态标注（source_operation/source_fact/
+      akb_interpretation）叠加二态 provenance，不改渲染 marker（消费者
+      SG-provenance-ratio 仍按 (source_grounded)/(akb_interpretation) 计数）。
+      SC-5.1 test_provenance_split 8 passed（三态齐 + akb 占比可计数
+      MAX_AKB_INTERPRETATION_RATIO=0.40）。SC-5.2 10-dimensions.md hash 不变
+      （8dcef76f...，未碰 rubric）。schema fix：how_steps extract schema
+      properties 正式声明 provenance_split 字段（enum 三态对齐常量，非
+      additionalProperties=True 绕过），修 test_distill_extract_retry 9 红
+      （provenance_split was unexpected → 转绿 39 passed）。
+    not_run_reason: ""
+files_added:
+  - tests/quality/test_provenance_split.py
+files_modified:
+  - src/akb2/quality/distill.py
+files_unchanged_in_scope: []
+owned_paths_writes_only: true
+forbidden_paths_touched: []
+out_of_scope_writes: []
+handoff:
+  result_path: plans/gd/2026-06-22-how-reliability-refactor/execute/w3-step-5-result.yaml
+  status_field: completed
+  summary: "step-5 provenance 三态标注 + schema 同步补字段；SC-5.1/5.2 全过，extract_retry 9 红转绿。"
+  blockers: "none"
+known_limitations:
+  - "provenance_split 三态中 source_fact 仅由 must_cover 事实类产生（非 LLM how_step），设计取舍保证与渲染 marker 一致。"
+  - "distill.py 文件整体 ruff 55 个 pre-existing issue（E501/F841），非本 step 引入（stash 对比 55=55），建议后续清理。"
+  - "checks_structural SG-provenance-ratio 消费方仍按文本 marker 计数，未直接消费新 provenance_split 字段（消费接线留后续）。"

@@ -10,7 +10,7 @@ echo "=== Bootstrapping $PLIST_LABEL ==="
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-VAULT_ROOT="${VAULT_ROOT:-$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents}"
+VAULT_ROOT="${VAULT_ROOT:-/Volumes/AKB2/Obsidian}"
 PLIST_SRC="$SCRIPT_DIR/../launchd/com.akb2.briefing.plist"
 
 # Generate temp plist with dynamic paths (avoid hardcoded paths)

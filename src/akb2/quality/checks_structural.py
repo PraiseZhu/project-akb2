@@ -6,6 +6,8 @@
         related_concepts≥2, gate_decision 必须 null, gate_reason≤150 字符）
     A3: [raw §X] 锚点在 raw 文件中真实存在
     A4: 图谱边四列齐（target/relation/strength/evidence）
+    A7: 图谱 evidence 可追溯（raw anchor 或 akb_interpretation）
+    A8: 适用边界逐条 provenance 分层
     A5: wikilink 死链检测（需在 pending 队列或已知概念列表中）
     A6: 维护记录 ≤5 条
 
@@ -21,6 +23,14 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+
+import yaml
+
+from src.akb2.quality.md_table import split_md_table_row
+from src.akb2.quality.source_ops_scanners import scan_all as _scan_source_evidence
+from src.akb2.quality.source_ops_scanners.raw_verify import (
+    verify_commands_in_raw as _verify_commands_in_raw,
+)
 
 # ---------------------------------------------------------------------------
 # 公开类型
@@ -71,8 +81,70 @@ MIN_RELATED_CONCEPTS: int = 2
 # A6 约束
 MAX_MAINTENANCE_RECORDS: int = 5
 
-# A4 图谱边四列
-GRAPH_EDGE_COLUMNS: tuple[str, ...] = ("target", "relation", "strength", "evidence")
+# A4 图谱边契约。新候选页输出 5 列，legacy 4 列仍可读取并按
+# evidence 内的 provenance marker 校验，避免旧 fixture 全量失效。
+GRAPH_EDGE_REQUIRED_COLUMNS: tuple[str, ...] = ("target", "relation", "strength", "evidence")
+GRAPH_EDGE_COLUMNS: tuple[str, ...] = (
+    "target",
+    "relation",
+    "strength",
+    "provenance",
+    "evidence",
+)
+GRAPH_EDGE_STRENGTHS: set[str] = {"strong", "medium", "weak"}
+GRAPH_EDGE_PROVENANCES: set[str] = {"source_grounded", "akb_interpretation"}
+PROVENANCE_MARKERS: tuple[str, ...] = ("(source_grounded)", "(akb_interpretation)")
+RAW_ANCHOR_TOKEN_RE = re.compile(r"§[A-Z0-9]+")
+RAW_ANCHOR_RE = re.compile(r"\[raw\s+(§[A-Z0-9]+)\]")
+RAW_ANCHOR_DECL_RE = r"§[A-Z0-9]+"
+MD_TABLE_SEPARATOR_RE = re.compile(r":?-{3,}:?")
+
+# Candidate self-gate 约束：这些不是基础结构格式检查，而是 maker 侧出稿前
+# 必须满足的内容质量契约，防止坏候选流入 grader/promote。
+MAX_AKB_INTERPRETATION_RATIO: float = 0.40
+MIN_HOW_EXECUTABLE_STEPS: int = 3
+PROVENANCE_RATIO_CORE_SECTIONS: tuple[str, ...] = (
+    "关键发现",
+    "入选理由",
+    "证据地图",
+    "核心论点",
+    "论证与解释",
+    "新颖增量",
+)
+FORBIDDEN_GENERIC_COMMANDS: tuple[str, ...] = (
+    "assert evidence_map.contains",
+    "maker_family",
+    "checker_family",
+    "value_score=measure_usage",
+    "measure_usage(",
+    "akb2_step_",
+    "akb2_",
+)
+FORBIDDEN_HOW_FALLBACK_MARKERS: tuple[str, ...] = (
+    "原文无可安全锚定的操作步骤",
+    "候选阶段不强行生成 AKB 操作化步骤",
+    "无可复制命令",
+)
+HOW_STEP_COMMAND_RE = re.compile(
+    r"(?m)^\s*(?:[-*]\s*)?\d+\.\s+\[raw\s+§[A-Z0-9]+\]\s+"
+    r"\((source_grounded|akb_interpretation)\)\s+.+?`([^`\n]+)`"
+)
+FORBIDDEN_HARDCODED_COMPARISONS: tuple[str, ...] = (
+    "wiki/sources/addy-osmani-loop-engineering.md",
+    "wiki/concepts/concept-harness-engineering.md",
+    "wiki/concepts/concept-mcp-tool-use.md",
+    "wiki/sources/langchain-plan-and-execute-agents.md",
+    "wiki/sources/anthropic-multi-agent-research-system.md",
+)
+TEMPLATE_RESIDUE_MARKERS: tuple[str, ...] = (
+    "{{",
+    "}}",
+    "<TODO",
+    "TODO:",
+    "待补充",
+    "占位",
+    "lorem ipsum",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -83,80 +155,22 @@ GRAPH_EDGE_COLUMNS: tuple[str, ...] = ("target", "relation", "strength", "eviden
 def _parse_frontmatter(text: str) -> dict[str, object]:
     """解析 YAML frontmatter（两 --- 之间的内容）。
 
-    返回 dict；解析失败返回空 dict。
+    返回 dict；缺失 frontmatter 返回空 dict；YAML 非法时抛 ValueError。
     """
-    # 匹配开头的 --- ... ---
     m = re.match(r"^---\s*\n(.*?)\n---", text, re.DOTALL)
     if not m:
         return {}
 
     raw = m.group(1)
-    result: dict[str, object] = {}
-
-    # 简单 YAML 解析（仅处理本检查需要的字段）
-    # 支持: key: value, key: [list], key: null, key: "string"
-    lines = raw.split("\n")
-    current_key: str | None = None
-    current_list: list[str] = []
-
-    for line in lines:
-        # 跳过空行和注释
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-
-        # 列表项:   - item
-        list_match = re.match(r"^\s+-\s+(.+)", line)
-        if list_match and current_key is not None:
-            current_list.append(list_match.group(1).strip().strip("\"'"))
-            continue
-
-        # 如果之前在收集列表，先保存
-        if current_key is not None and current_list:
-            result[current_key] = list(current_list)
-            current_list = []
-            current_key = None
-
-        # key: value
-        kv_match = re.match(r"^(\w[\w_]*)\s*:\s*(.+)", line)
-        if kv_match:
-            key = kv_match.group(1)
-            value = kv_match.group(2).strip()
-
-            if value == "null" or value == "~":
-                result[key] = None
-            elif value.startswith("[") and value.endswith("]"):
-                # 内联列表: [a, b, c]
-                inner = value[1:-1]
-                items = [x.strip().strip("\"'") for x in inner.split(",") if x.strip()]
-                result[key] = items
-            elif value.startswith('"') and value.endswith('"'):
-                result[key] = value[1:-1]
-            elif value.startswith("'") and value.endswith("'"):
-                result[key] = value[1:-1]
-            else:
-                # 尝试解析数字
-                try:
-                    if "." in value:
-                        result[key] = float(value)
-                    else:
-                        result[key] = int(value)
-                except ValueError:
-                    result[key] = value
-            continue
-
-        # 可能是列表开始: key:
-        list_key_match = re.match(r"^(\w[\w_]*)\s*:\s*$", line)
-        if list_key_match:
-            current_key = list_key_match.group(1)
-            current_list = []
-            continue
-
-    # 保存最后一个列表
-    if current_key is not None and current_list:
-        result[current_key] = list(current_list)
-
-    return result
+    try:
+        parsed = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"frontmatter YAML 解析失败: {exc}") from exc
+    if parsed is None:
+        return {}
+    if not isinstance(parsed, dict):
+        raise ValueError("frontmatter YAML 必须是 mapping/object")
+    return {str(key): value for key, value in parsed.items()}
 
 
 def _find_section_boundaries(text: str) -> list[tuple[str, int, int]]:
@@ -205,6 +219,30 @@ def _extract_body_text(text: str) -> str:
     return text
 
 
+def _extract_raw_anchors(raw_content: str) -> set[str]:
+    """提取 raw 文件中声明过的 `§X` 锚点。
+
+    raw 归档当前存在四类合法声明形态：
+    - markdown 章节标题：`# §A Loop`、`## §A. 开篇`
+    - raw 段落行：`[raw §A] ...`
+    - defuddle/archiver 标记：`§A_CONTENT_START`
+    - 锚点目录表：`| §A | 开篇 |`
+
+    只把行首、标题、表格单元、`[raw §X]` 行和 `_CONTENT_START`
+    识别为声明，避免正文里偶然提到 `§A` 就被当作可引用锚点。
+    """
+    patterns = (
+        re.compile(rf"(?m)^#{{1,6}}\s+({RAW_ANCHOR_DECL_RE})(?:[.\s:：]|$)"),
+        re.compile(rf"(?m)^\[raw\s+({RAW_ANCHOR_DECL_RE})\]"),
+        re.compile(rf"(?m)^({RAW_ANCHOR_DECL_RE})_[A-Z_]+\b"),
+        re.compile(rf"(?m)^\|\s*({RAW_ANCHOR_DECL_RE})\s*\|"),
+    )
+    anchors: set[str] = set()
+    for pattern in patterns:
+        anchors.update(pattern.findall(raw_content))
+    return anchors
+
+
 # ---------------------------------------------------------------------------
 # A1: 模板 10 节齐
 # ---------------------------------------------------------------------------
@@ -246,7 +284,21 @@ def check_a2_frontmatter(text: str) -> list[Defect]:
         gate_decision 必须 null, gate_reason≤150 字符
     """
     defects: list[Defect] = []
-    fm = _parse_frontmatter(text)
+    try:
+        fm = _parse_frontmatter(text)
+    except ValueError as exc:
+        defects.append(
+            Defect(
+                dimension="A2-frontmatter",
+                location="frontmatter",
+                defect=str(exc),
+                suggestion=(
+                    "修复 YAML frontmatter 语法；含冒号、方括号或括号的字符串"
+                    "必须合法转义/引用"
+                ),
+            )
+        )
+        return defects
 
     # source_refs >= 1
     source_refs = fm.get("source_refs", [])
@@ -300,6 +352,27 @@ def check_a2_frontmatter(text: str) -> list[Defect]:
                 suggestion="添加 future_questions 列表，含 2-3 条",
             )
         )
+
+    key_findings = fm.get("key_findings", [])
+    if isinstance(key_findings, list):
+        for idx, item in enumerate(key_findings, 1):
+            item_text = str(item)
+            if RAW_ANCHOR_RE.search(item_text) and not any(
+                marker in item_text for marker in PROVENANCE_MARKERS
+            ):
+                defects.append(
+                    Defect(
+                        dimension="A2-frontmatter",
+                        location=f"frontmatter.key_findings[{idx}]",
+                        defect=(
+                            "key_findings 中带 raw 锚点的论点必须显式标注 provenance"
+                        ),
+                        suggestion=(
+                            "改为 [raw §X] (source_grounded) ... 或 "
+                            "[raw §X] (akb_interpretation) ..."
+                        ),
+                    )
+                )
 
     # related_concepts >= 2
     rc = fm.get("related_concepts", [])
@@ -371,13 +444,9 @@ def check_a3_raw_anchors(text: str, raw_content: str | None = None) -> list[Defe
     body = _extract_body_text(text)
 
     # 提取所有 [raw §X] 引用
-    anchor_pattern = re.compile(r"\[raw\s+(§[A-Z])\]")
-    referenced_anchors = set(anchor_pattern.findall(body))
+    referenced_anchors = set(RAW_ANCHOR_RE.findall(body))
 
-    # 提取 raw 文件中所有 §X 锚点
-    # 兼容两种格式: markdown heading ("# §A") 和 defuddle 纯文本锚点 ("§A_CONTENT_START")
-    raw_anchor_pattern = re.compile(r"(?:^#\s+|^)(§[A-Z])(?:[_A-Z]|\s|$)", re.MULTILINE)
-    raw_anchors = set(raw_anchor_pattern.findall(raw_content))
+    raw_anchors = _extract_raw_anchors(raw_content)
 
     for anchor in referenced_anchors:
         if anchor not in raw_anchors:
@@ -399,9 +468,9 @@ def check_a3_raw_anchors(text: str, raw_content: str | None = None) -> list[Defe
 
 
 def check_a4_graph_edges(text: str) -> list[Defect]:
-    """检查图谱关系表中每条边是否四列齐。
+    """检查图谱关系表中每条边是否列齐且 provenance 清晰。
 
-    A4: 图谱边四列齐（target/relation/strength/evidence）
+    A4: 图谱边列齐（target/relation/strength/[provenance]/evidence）
     """
     defects: list[Defect] = []
     section_text = _get_section_text(text, "图谱关系")
@@ -410,11 +479,12 @@ def check_a4_graph_edges(text: str) -> list[Defect]:
         # 图谱关系节不存在由 A1 报告，这里不重复
         return defects
 
-    # 检测表格行: | target | relation | strength | evidence |
+    # 检测表格行: | target | relation | strength | provenance | evidence |
     # 在 图谱关系 节中查找表格
     lines = section_text.split("\n")
     in_table = False
     header_seen = False
+    header_map: dict[str, int] = {}
     row_index = 0
 
     for _i, line in enumerate(lines):
@@ -422,7 +492,8 @@ def check_a4_graph_edges(text: str) -> list[Defect]:
 
         # 表格行以 | 开头
         if stripped.startswith("|") and "|" in stripped[1:]:
-            cells = [c.strip() for c in stripped.split("|")[1:-1]]
+            # 按非转义的 | 切分(共享 md_table 契约:distill 侧 _md_table_cell 转义,此处反转义)
+            cells = split_md_table_row(stripped)
 
             if not header_seen:
                 # 检查是否是表头（graph-related 列）
@@ -435,20 +506,21 @@ def check_a4_graph_edges(text: str) -> list[Defect]:
                     # 不是图谱关系表，跳过
                     continue
 
-                # 检查是否四列齐全
+                # 检查是否包含必需列；provenance 列新格式推荐但旧 4 列可兼容。
                 if all(
                     col in header_lower
-                    for col in ["target", "relation", "strength", "evidence"]
+                    for col in GRAPH_EDGE_REQUIRED_COLUMNS
                 ):
                     header_seen = True
                     in_table = True
+                    header_map = {name: header_lower.index(name) for name in header_lower}
                     continue
                 else:
                     # 表头存在但不全（如缺 evidence 列）→ 报告缺陷
                     header_seen = True
-                    in_table = True
+                    in_table = False
                     missing_cols = [
-                        col for col in GRAPH_EDGE_COLUMNS
+                        col for col in GRAPH_EDGE_REQUIRED_COLUMNS
                         if col not in header_lower
                     ]
                     defects.append(
@@ -456,29 +528,44 @@ def check_a4_graph_edges(text: str) -> list[Defect]:
                             dimension="A4-图谱边",
                             location="图谱关系表 表头",
                             defect=f"图谱关系表缺少列: {', '.join(missing_cols)}",
-                            suggestion="补齐四列: target | relation | strength | evidence",
+                            suggestion=(
+                                "补齐列: target | relation | "
+                                "strength | provenance | evidence"
+                            ),
                         )
                     )
                     continue
 
             if in_table and len(cells) >= 1 and cells[0]:
+                if all(MD_TABLE_SEPARATOR_RE.fullmatch(c) for c in cells):
+                    continue
                 row_index += 1
-                if len(cells) < 4:
+                expected_cols = len(header_map) if header_map else 0
+                if expected_cols and len(cells) != expected_cols:
                     defects.append(
                         Defect(
                             dimension="A4-图谱边",
                             location=f"图谱关系表第 {row_index} 行",
                             defect=(
-                                f"图谱边缺少列: 需要 4 列"
-                                f"(target/relation/strength/evidence)，"
+                                f"图谱边列数不符: 需要 {expected_cols} 列"
+                                f"(target/relation/strength/provenance/evidence)，"
                                 f"实际 {len(cells)} 列"
+                                f"（evidence 含未转义的 | 会拆列）"
                             ),
-                            suggestion="补齐四列: target | relation | strength | evidence",
+                            suggestion=(
+                                "补齐/收齐列: target | relation | "
+                                "strength | provenance | evidence；"
+                                "evidence 含 | 时转义为 \\|"
+                            ),
                         )
                     )
                 else:
                     # 检查每列非空
-                    for j, col_name in enumerate(GRAPH_EDGE_COLUMNS):
+                    required_for_row = list(GRAPH_EDGE_REQUIRED_COLUMNS)
+                    if "provenance" in header_map:
+                        required_for_row.append("provenance")
+                    for col_name in required_for_row:
+                        j = header_map[col_name]
                         if not cells[j]:
                             defects.append(
                                 Defect(
@@ -488,9 +575,185 @@ def check_a4_graph_edges(text: str) -> list[Defect]:
                                     suggestion=f"填写 {col_name} 列",
                                 )
                             )
+                    if expected_cols and len(cells) == expected_cols:
+                        target = cells[header_map["target"]]
+                        strength = cells[header_map["strength"]]
+                        evidence = cells[header_map["evidence"]]
+                        provenance = (
+                            cells[header_map["provenance"]]
+                            if "provenance" in header_map
+                            else ""
+                        )
+                        if strength not in GRAPH_EDGE_STRENGTHS:
+                            defects.append(
+                                Defect(
+                                    dimension="A4-图谱边",
+                                    location=f"图谱关系/{target}/strength",
+                                    defect=(
+                                        "图谱边 strength 必须是 strong/medium/weak，"
+                                        f"当前: {strength}"
+                                    ),
+                                    suggestion="按 evidence 强度改为 strong、medium 或 weak",
+                                )
+                            )
+                        has_anchor = bool(RAW_ANCHOR_RE.search(evidence))
+                        has_provenance = any(marker in evidence for marker in PROVENANCE_MARKERS)
+                        if provenance:
+                            if provenance not in GRAPH_EDGE_PROVENANCES:
+                                defects.append(
+                                    Defect(
+                                        dimension="A7-图谱证据",
+                                        location=f"图谱关系/provenance/{target}",
+                                        defect=(
+                                            "图谱 provenance 必须是 "
+                                            "source_grounded 或 akb_interpretation，"
+                                            f"当前: {provenance}"
+                                        ),
+                                        suggestion=(
+                                            "把 provenance 列改为 source_grounded "
+                                            "或 akb_interpretation"
+                                        ),
+                                    )
+                                )
+                            marker = f"({provenance})"
+                            if marker not in evidence:
+                                defects.append(
+                                    Defect(
+                                        dimension="A7-图谱证据",
+                                        location=f"图谱关系/evidence/{target}",
+                                        defect=(
+                                            "图谱 evidence 未同步标注 "
+                                            "provenance 列对应的 marker"
+                                        ),
+                                        suggestion=f"在 evidence 中加入 {marker}",
+                                    )
+                                )
+                            has_provenance = True
+                        if not has_anchor and "(akb_interpretation)" not in evidence:
+                            defects.append(
+                                Defect(
+                                    dimension="A7-图谱证据",
+                                    location=f"图谱关系/evidence/{target}",
+                                    defect=(
+                                        "图谱 evidence 缺少 [raw §X] 锚点，"
+                                        "也未明确标注 akb_interpretation"
+                                    ),
+                                    suggestion=(
+                                        "补充 [raw §X] 来源锚点；若只是库内推断，"
+                                        "必须标注 (akb_interpretation)"
+                                    ),
+                                )
+                            )
+                        if not has_provenance:
+                            defects.append(
+                                Defect(
+                                    dimension="A7-图谱证据",
+                                    location=f"图谱关系/evidence/{target}",
+                                    defect=(
+                                        "图谱 evidence 未标注 provenance，无法区分 "
+                                        "source_grounded 与 akb_interpretation"
+                                    ),
+                                    suggestion=(
+                                        "在 evidence 中加入 (source_grounded) 或 "
+                                        "(akb_interpretation)"
+                                    ),
+                                )
+                            )
+                        if strength in {"strong", "medium"} and not has_anchor:
+                            defects.append(
+                                Defect(
+                                    dimension="A7-边强度匹配",
+                                    location=f"图谱关系/{target}",
+                                    defect=(
+                                        f"{strength} 边缺少 [raw §X] 锚点，"
+                                        "证据强度不足以支撑 strong/medium"
+                                    ),
+                                    suggestion=(
+                                        "补充可追溯 raw 锚点；否则把 strength 降为 weak "
+                                        "并标注 (akb_interpretation)"
+                                    ),
+                                )
+                            )
         elif in_table and not stripped.startswith("|"):
             # 表格结束
             in_table = False
+
+    return defects
+
+
+# ---------------------------------------------------------------------------
+# A8: 适用边界 provenance 分层
+# ---------------------------------------------------------------------------
+
+
+def check_a8_applicability_boundary(text: str) -> list[Defect]:
+    """检查适用边界每条 bullet 都有 raw anchor 与 provenance，且不混写多类判断。"""
+    defects: list[Defect] = []
+    section_text = _get_section_text(text, "适用边界")
+    if not section_text:
+        return defects
+
+    bullets = [
+        line.strip()
+        for line in section_text.split("\n")
+        if line.strip().startswith(("-", "*"))
+    ]
+    if not bullets:
+        defects.append(
+            Defect(
+                dimension="A8-适用边界",
+                location="适用边界",
+                defect="适用边界缺少逐条 bullet，无法检查 provenance 分层",
+                suggestion="改为每条一行的 bullet，并为每条补 [raw §X] 与 provenance",
+            )
+        )
+        return defects
+
+    category_patterns = {
+        "来源事实": re.compile(r"来源事实"),
+        "不适用场景": re.compile(r"不适用场景|不适用\s*[:：]"),
+        "适用场景": re.compile(r"(?<!不)适用场景|(?<!不)适用\s*[:：]"),
+        "约束条件": re.compile(r"约束条件|约束\s*[:：]"),
+    }
+    for idx, bullet in enumerate(bullets, 1):
+        location = f"适用边界/第 {idx} 条"
+        if not RAW_ANCHOR_RE.search(bullet):
+            defects.append(
+                Defect(
+                    dimension="A8-适用边界",
+                    location=location,
+                    defect="适用边界条目缺少 [raw §X] 锚点",
+                    suggestion="为该条补充对应 [raw §X] 锚点",
+                )
+            )
+        markers = [marker for marker in PROVENANCE_MARKERS if marker in bullet]
+        if len(markers) != 1:
+            defects.append(
+                Defect(
+                    dimension="A8-适用边界",
+                    location=location,
+                    defect="适用边界条目必须且只能标注一个 provenance",
+                    suggestion="为该条明确标注 (source_grounded) 或 (akb_interpretation)",
+                )
+            )
+        content_after_label = re.sub(
+            rf"^[-*]\s*\[raw\s+{RAW_ANCHOR_DECL_RE}\]\s+\((?:source_grounded|akb_interpretation)\)\s+"
+            r"(?:来源事实|适用场景|不适用场景|约束条件)[:：]\s*",
+            "",
+            bullet,
+        )
+        term_count = sum(
+            1 for pattern in category_patterns.values() if pattern.search(content_after_label)
+        )
+        if term_count > 1:
+            defects.append(
+                Defect(
+                    dimension="A8-适用边界",
+                    location=location,
+                    defect="同一条适用边界混写了多种判断类型",
+                    suggestion="拆成独立条目：来源事实、适用场景、不适用场景、约束条件分开写",
+                )
+            )
 
     return defects
 
@@ -614,5 +877,331 @@ def run_structural_checks(
     defects.extend(check_a4_graph_edges(text))
     defects.extend(check_a5_wikilinks(text, pending_queue, known_concepts))
     defects.extend(check_a6_maintenance_records(text))
+    defects.extend(check_a8_applicability_boundary(text))
+
+    return defects
+
+
+def _body_without_frontmatter(text: str) -> str:
+    return _extract_body_text(text)
+
+
+def _provenance_counts(body: str) -> tuple[int, int]:
+    return body.count("(source_grounded)"), body.count("(akb_interpretation)")
+
+
+_PROVENANCE_SPLIT_SUMMARY_RE = re.compile(
+    r"<!--\s*provenance_split:\s*"
+    r"source_operation=(?P<op>\d+)\s+"
+    r"source_fact=(?P<fact>\d+)\s+"
+    r"akb_interpretation=(?P<akb>\d+)\s*-->"
+)
+
+
+def _provenance_split_summary(text: str) -> dict[str, int] | None:
+    """Read the three-way provenance split summary comment (Finding 6).
+
+    compose_candidate emits ``<!-- provenance_split: source_operation=N
+    source_fact=M akb_interpretation=K -->`` at the end of the How section,
+    derived from how_steps' ``provenance_split`` annotation + code-direct
+    must_cover operations. This is the SG consumer of the three-state split.
+
+    Returns ``{source_operation, source_fact, akb_interpretation}`` or ``None``
+    when the comment is absent (e.g. hand-written fixtures, or how_steps lacked
+    the ``provenance_split`` annotation layer).
+    """
+    m = _PROVENANCE_SPLIT_SUMMARY_RE.search(text)
+    if m is None:
+        return None
+    return {
+        "source_operation": int(m.group("op")),
+        "source_fact": int(m.group("fact")),
+        "akb_interpretation": int(m.group("akb")),
+    }
+
+
+def _core_provenance_body(text: str) -> str:
+    """Return only source-claim sections for the AKB interpretation ratio.
+
+    Boundary, graph and future-question sections are intentionally allowed to
+    carry AKB interpretation markers; counting them globally turns the ratio
+    gate into a penalty for honest provenance labelling.
+    """
+    body = _body_without_frontmatter(text)
+    lines = body.split("\n")
+    chunks: list[str] = []
+    for title, start, end in _find_section_boundaries(body):
+        if title in PROVENANCE_RATIO_CORE_SECTIONS:
+            section = "\n".join(lines[start:end])
+            if title == "论证与解释":
+                section = section.split("### 操作步骤", 1)[0]
+            chunks.append(section)
+    return "\n\n".join(chunks)
+
+
+def _how_section_text(text: str) -> str:
+    section = _get_section_text(_body_without_frontmatter(text), "论证与解释")
+    if "### 操作步骤" not in section:
+        return ""
+    return section.split("### 操作步骤", 1)[1]
+
+
+def _how_executable_commands(text: str) -> list[tuple[str, str]]:
+    return [
+        (match.group(1), match.group(2).strip())
+        for match in HOW_STEP_COMMAND_RE.finditer(_how_section_text(text))
+        if match.group(2).strip()
+    ]
+
+
+def _has_forbidden_hardcoded_novelty(body: str, rel_path: str) -> bool:
+    """Detect fixed novelty baselines without rejecting dynamic comparison rows."""
+    idx = body.find(rel_path)
+    if idx == -1:
+        return False
+    line_start = body.rfind("\n", 0, idx) + 1
+    line_end = body.find("\n", idx)
+    if line_end == -1:
+        line_end = len(body)
+    line = body[line_start:line_end].strip()
+    if line.startswith("|") and " | " in line:
+        return False
+    forbidden_markers = (
+        "固定基线",
+        "默认基线",
+        "写死",
+        "hardcoded",
+        "hard-coded",
+    )
+    return any(marker in line.lower() for marker in forbidden_markers) or line == rel_path
+
+
+def run_candidate_self_gate(
+    text: str,
+    raw_content: str | None = None,
+    pending_queue: list[str] | None = None,
+    known_concepts: list[str] | None = None,
+) -> list[Defect]:
+    """Run maker-side candidate gate before grader/promote.
+
+    This gate intentionally composes the existing A-layer checks with stricter
+    content-contract checks. It is deterministic and must fail closed for fake
+    anchors, excessive AKB interpretation, generic AKB commands, hardcoded
+    novelty baselines, and template residue.
+    """
+    defects = run_structural_checks(text, raw_content, pending_queue, known_concepts)
+    body = _body_without_frontmatter(text)
+
+    if "[raw §" not in body:
+        defects.append(
+            Defect(
+                dimension="SG-raw-anchor",
+                location="正文",
+                defect="候选页正文没有任何 [raw §X] 锚点",
+                suggestion="所有关键论点、边界、图谱 evidence 必须补充真实 raw anchor",
+            )
+        )
+
+    provenance_body = _core_provenance_body(text)
+    source_count, akb_count = _provenance_counts(provenance_body)
+    total_provenance = source_count + akb_count
+    # Finding 6: 消费三态 provenance_split 摘要（compose_candidate 持久化到 How 节末尾）。
+    # 核心比例阈值仍按二态 marker（操作步骤故意排除，见不变量
+    # test_how_interpretation_steps_do_not_count_against_core_ratio）；三态在此只读报告，
+    # 让 SG 能区分 source_operation / source_fact / akb_interpretation。
+    split_summary = _provenance_split_summary(text)
+    if total_provenance > 0 and akb_count / total_provenance > MAX_AKB_INTERPRETATION_RATIO:
+        split_note = ""
+        if split_summary is not None:
+            split_note = (
+                f"（三态细分：source_operation={split_summary['source_operation']} "
+                f"source_fact={split_summary['source_fact']} "
+                f"akb_interpretation={split_summary['akb_interpretation']}）"
+            )
+        defects.append(
+            Defect(
+                dimension="SG-provenance-ratio",
+                location="核心知识区 provenance",
+                defect=(
+                    f"akb_interpretation 占比 {akb_count}/{total_provenance} "
+                    f"> {MAX_AKB_INTERPRETATION_RATIO:.0%}{split_note}"
+                ),
+                suggestion=(
+                    "减少编辑解释，优先改写为 source_grounded 来源事实"
+                    "或删除无原文支撑的判断"
+                ),
+            )
+        )
+
+    lowered = body.lower()
+    for marker in FORBIDDEN_GENERIC_COMMANDS:
+        if marker.lower() in lowered:
+            defects.append(
+                Defect(
+                    dimension="SG-generic-command",
+                    location="操作步骤",
+                    defect=f"候选页包含通用 AKB 内部命令: {marker}",
+                    suggestion=(
+                        "How 步骤只能使用来源明确给出的操作、协议、API 或配置，"
+                        "不能用 AKB 内部检查命令补齐"
+                    ),
+                )
+            )
+
+    how_section = _how_section_text(text)
+    commands = _how_executable_commands(text)
+    if not how_section:
+        defects.append(
+            Defect(
+                dimension="SG-how-density",
+                location="### 操作步骤",
+                defect="候选页缺少操作步骤小节",
+                suggestion=(
+                    "compose 阶段必须生成至少 3 条带 raw anchor/provenance/"
+                    "code command 的可执行 How 步骤"
+                ),
+            )
+        )
+    elif len(commands) < MIN_HOW_EXECUTABLE_STEPS:
+        defects.append(
+            Defect(
+                dimension="SG-how-density",
+                location="### 操作步骤",
+                defect=(
+                    f"可执行 How 步骤 {len(commands)} < {MIN_HOW_EXECUTABLE_STEPS}"
+                ),
+                suggestion=(
+                    "补足至少 3 条带反引号命令、"
+                    "raw anchor 和 provenance 的可复制步骤"
+                ),
+            )
+        )
+    for marker in FORBIDDEN_HOW_FALLBACK_MARKERS:
+        if marker in how_section:
+            defects.append(
+                Defect(
+                    dimension="SG-how-executability",
+                    location="### 操作步骤",
+                    defect=f"操作步骤含放弃式占位: {marker}",
+                    suggestion=(
+                        "来源有协议/流程/配置操作时必须锚定并渲染；"
+                        "无足够 How 时 compose 应 fail-closed"
+                    ),
+                )
+            )
+
+    for rel_path in FORBIDDEN_HARDCODED_COMPARISONS:
+        if _has_forbidden_hardcoded_novelty(body, rel_path):
+            defects.append(
+                Defect(
+                    dimension="SG-novelty-hardcoded",
+                    location="新颖增量",
+                    defect=f"新颖性对照包含硬编码基线: {rel_path}",
+                    suggestion=(
+                        "改为按当前 vault 的 slug/source_url/concepts "
+                        "动态选择相邻条目；无邻居时明确暂无本地基线"
+                    ),
+                )
+            )
+
+    lowered_full = text.lower()
+    for marker in TEMPLATE_RESIDUE_MARKERS:
+        if marker.lower() in lowered_full:
+            defects.append(
+                Defect(
+                    dimension="SG-template-residue",
+                    location="全文",
+                    defect=f"候选页包含模板残留: {marker}",
+                    suggestion="删除占位文本；无法生成真实内容时 fail-closed，不产出候选",
+                )
+            )
+
+    # SG-must-cover: 确定性证据覆盖（fail-closed）
+    # scan_all(raw_content) 产出 must_cover 证据清单（CLI/编号步骤/边界句/结论句）；
+    # 任一字面量未在对应节逐字渲染即 Defect。raw_content=None 本身即 Defect——
+    # 绝不静默跳过覆盖校验（宪法 P3 fail-closed + P6 来源锚定）。
+    if raw_content is None:
+        defects.append(
+            Defect(
+                dimension="SG-must-cover",
+                location="raw_content",
+                defect="raw_content 缺失，无法验证 must_cover 覆盖",
+                suggestion=(
+                    "run_candidate_self_gate 必须传入与候选页同源的真实 raw 文本；"
+                    "缺失即 fail-closed，不静默跳过覆盖校验"
+                ),
+            )
+        )
+    else:
+        must_cover_items = _scan_source_evidence(raw_content)
+        body_text = _body_without_frontmatter(text)
+        how_text = _how_section_text(text)
+        boundary_text = _get_section_text(body_text, "适用边界")
+        conclusion_text = (
+            _get_section_text(body_text, "TLDR")
+            + "\n"
+            + _get_section_text(body_text, "关键发现")
+            + "\n"
+            + _get_section_text(body_text, "核心论点")
+        )
+        must_cover_section_text = {
+            "source_operation": how_text,
+            "source_boundary": boundary_text,
+            "source_conclusion": conclusion_text,
+        }
+        must_cover_section_name = {
+            "source_operation": "### 操作步骤",
+            "source_boundary": "## 适用边界",
+            "source_conclusion": "TLDR/关键发现/核心论点",
+        }
+        for item in must_cover_items:
+            section_text = must_cover_section_text.get(item.must_cover_class, "")
+            if item.literal not in section_text:
+                section_name = must_cover_section_name.get(
+                    item.must_cover_class, "正文"
+                )
+                defects.append(
+                    Defect(
+                        dimension="SG-must-cover",
+                        location=section_name,
+                        defect=f"must_cover 字面量未在对应节渲染: {item.literal}",
+                        suggestion=(
+                            f"在 {section_name} 中补上来源字面量并锚定 raw，"
+                            "不得意译或省略；无对应操作时 compose 应 fail-closed"
+                        ),
+                    )
+                )
+
+    # SG-command-recheck: 全文回查 + 危险黑名单附加（SC-4 原意恢复）
+    # 全文字面量回查: 正文每个反引号命令（非 reserved token）必须字面出现在 raw。
+    #   不出现 = 编造 = Defect。不区分 source_grounded/akb_interpretation——
+    #   之前的"代码直出 only"收窄让安全但 raw 不存在的编造命令漏过（审查 Finding 1）。
+    # 危险黑名单附加: 命中危险命令即使 raw 有也算 Defect（双重拦截）。
+    # raw_content=None 已被 SG-must-cover 块 fail-closed（保持现状）；空字符串 raw
+    # 仍必须执行 recheck，让 raw_verify 把每条非 reserved 命令判为 violation。
+    if raw_content is not None:
+        command_violations = _verify_commands_in_raw(body, raw_content or "")
+        for v in command_violations:
+            if "危险" in v.reason:
+                defect_text = f"派生命令含危险操作: `{v.command}`"
+                suggestion = (
+                    "删除该危险命令或替换为安全的等价操作示例；"
+                    "How 步骤中的派生命令不得含 rm -rf / fork bomb / 管道执行远程脚本 / "
+                    "凭据外泄等破坏性操作"
+                )
+            else:
+                defect_text = f"命令原文不存在（疑似编造）: `{v.command}`"
+                suggestion = (
+                    "删除该命令或改为 raw 中真实存在的字面量；"
+                    "若 raw 确无对应操作，compose 必须 fail-closed，不得编造命令补齐 How"
+                )
+            defects.append(
+                Defect(
+                    dimension="SG-command-recheck",
+                    location="### 操作步骤",
+                    defect=defect_text,
+                    suggestion=suggestion,
+                )
+            )
 
     return defects

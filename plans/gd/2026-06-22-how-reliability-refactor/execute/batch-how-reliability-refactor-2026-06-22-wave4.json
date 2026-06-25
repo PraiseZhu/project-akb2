@@ -1,0 +1,27 @@
+{
+  "batch_id": "batch-how-reliability-refactor-2026-06-22-wave4",
+  "dispatch_id": "how-reliability-refactor-2026-06-22",
+  "wave_ref": "w4",
+  "batch_created_at": "2026-06-23T12:51:36Z",
+  "execution_mode": "agent_exec",
+  "task_results": [
+    {
+      "task_id": "step-6",
+      "track_ref": "step-6",
+      "exec_status": "completed",
+      "not_run_reason": null,
+      "deliverables_produced": [
+        {"path": "src/akb2/quality/grader.py", "kind": "file", "verified": true},
+        {"path": "tests/quality/test_grader.py", "kind": "file", "verified": true}
+      ],
+      "verify_results": [
+        {"sc_ref": "SC-5", "method": "test", "cmd": "PYTHONPATH=src python -m pytest tests/quality/ -k 'retry or repair and degraded or degraded' -q", "result": "PASS", "exit_code": 0}
+      ],
+      "gd_execution_status_json": {
+        "task_id": "step-6",
+        "exec_status": "completed",
+        "sc_results": {"SC-5": "pass"}
+      }
+    }
+  ]
+}

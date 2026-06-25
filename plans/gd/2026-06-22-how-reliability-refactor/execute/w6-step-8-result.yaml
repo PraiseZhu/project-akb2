@@ -1,0 +1,37 @@
+template_kind: gd-execution-result
+result_id: w6-step-8-regression-corpus
+task_id: step-8
+parent_step: step-8
+parent_plan: plans/gd/2026-06-22-how-reliability-refactor/master-plan.md
+executor_role: claude_subagent
+executed_at: 2026-06-23T13:20:51Z
+exec_status: completed
+sc_acceptance:
+  - sc_ref: SC-6
+    status: pass
+    evidence: >
+      主 agent 独立复核全 quality 套件 630 passed / 0 failed exit=0。
+      SC-8.1 三语料就位（test-fresh--raw.md/pure-opinion--raw.md/trap-sample--raw.md）。
+      SC-8.2 三类行为断言通过：①test-fresh 有操作→捞全（核心 MCP 命令 initialize/
+      tools/list/tools/call 全在 inventory）②纯观点博客无 How→fail-closed
+      （scan_all 空 source_operation + 硬造命令被 SG-command-recheck Layer 1 挡下）③
+      陷阱样本枚举带偏→抽核心不被带偏（15 次要+3 核心=18 ops 全捞，核心藏末尾仍捞）。
+      step-8 测试 21 passed。未碰任何 src 实现。
+    not_run_reason: ""
+files_added:
+  - tests/quality/test_how_regression.py
+  - tests/quality/fixtures/regression/test-fresh--raw.md
+  - tests/quality/fixtures/regression/pure-opinion--raw.md
+  - tests/quality/fixtures/regression/trap-sample--raw.md
+files_modified: []
+files_unchanged_in_scope: []
+owned_paths_writes_only: true
+forbidden_paths_touched: []
+out_of_scope_writes: []
+handoff:
+  result_path: plans/gd/2026-06-22-how-reliability-refactor/execute/w6-step-8-result.yaml
+  status_field: completed
+  summary: "step-8 回归测试三类语料就位 + 21 passed 0 failed：捞全/fail-closed/抽核心，未碰 src。"
+  blockers: "none"
+known_limitations:
+  - "纯观点博客 fail-closed 验证依赖 step-4 双层门 Layer 1 信号（'原文操作（must_cover 代码直出）'字符串），非裸 (source_grounded) marker——与 w3 step-4 dual-layer 实现一致。"

@@ -50,34 +50,44 @@ related_concepts:
 ---
 
 ## TLDR
-test
+test [raw §A]
 
 ## 关键发现
-test
+- [raw §A] (source_grounded) test
 
 ## 入选理由
-test
+- [raw §A] (source_grounded) test
 
 ## 证据地图
-test
+| 锚点 | 论点 | 来源 | 未覆盖 |
+|------|------|------|--------|
+| §A | test | source_grounded | 未量化：fixture 未提供量化数据 |
 
 ## 核心论点
-test
+1. [raw §A] (source_grounded) test
 
 ## 论证与解释
-test
+**[raw §A]** (source_grounded) 来源事实：test
 
 ## 适用边界
-test
+- [raw §A] (source_grounded) 来源事实：test。
+- [raw §A] (akb_interpretation) 适用场景：测试管线。
+- [raw §A] (akb_interpretation) 不适用场景：无质量门的一次性任务。
+- [raw §A] (akb_interpretation) 约束条件：需要账本和人工复核入口。
 
 ## 图谱关系
-test
+| target | relation | strength | evidence |
+|--------|----------|----------|----------|
+| c1 | related | weak | (akb_interpretation) fixture 概念关联，缺少原文硬证据，保守标 weak。 |
 
 ## Future Questions
-test
+- 如何验证？
+- 如何回退？
 
 ## 维护记录
-test
+| 日期 | 操作 | 说明 |
+|------|------|------|
+| 2026-06-20 | 初始创建 | raw: test |
 """
 
 

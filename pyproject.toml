@@ -1,6 +1,6 @@
 [project]
 name = "akb2"
-version = "0.1.0"
+version = "0.2.0"
 description = "AKB2.0 工程根：lint/gate/intake CLI + MCP wrapper + tests + eval harness + engineering docs（不含知识库本体）"
 requires-python = ">=3.11"
 dependencies = [

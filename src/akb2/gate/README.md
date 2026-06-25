@@ -30,7 +30,7 @@ python3 -m pip install -r requirements.txt
 
 ```bash
 python3 akb2_gate_check.py check \
-  --akb-root "/Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0" \
+  --akb-root "/Volumes/AKB2/Obsidian/Praise Space/AKB2.0" \
   --input "staging/candidate/phase-b-validation" \
   --date 2026-05-04 \
   --dry-run
@@ -40,7 +40,7 @@ python3 akb2_gate_check.py check \
 
 ```bash
 python3 akb2_gate_check.py check \
-  --akb-root "/Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0" \
+  --akb-root "/Volumes/AKB2/Obsidian/Praise Space/AKB2.0" \
   --input "staging/candidate/phase-b-validation" \
   --date 2026-05-04 \
   --write-manifest \

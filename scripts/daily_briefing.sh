@@ -52,7 +52,22 @@ if [[ -z "$VAULT_ROOT" ]]; then
   exit 1
 fi
 
-exec "$PYTHON_BIN" -m akb2.briefing.pipeline \
+PIPELINE_CMD=(
+  "$PYTHON_BIN" -m akb2.briefing.pipeline
+  --date "$DATE_ARG"
+  --vault-root "$VAULT_ROOT"
+)
+if [[ -n "$DRY_RUN_INTAKE" ]]; then
+  PIPELINE_CMD+=("$DRY_RUN_INTAKE")
+fi
+
+if [[ "${AKB2_DISABLE_DEADLINE:-0}" == "1" ]]; then
+  exec "${PIPELINE_CMD[@]}"
+fi
+
+exec "$PYTHON_BIN" "$SCRIPT_DIR/run_with_deadline.py" \
+  --name social-briefing \
   --date "$DATE_ARG" \
-  --vault-root "$VAULT_ROOT" \
-  $DRY_RUN_INTAKE
+  --deadline-hour "${AKB2_BRIEFING_DEADLINE_HOUR:-12}" \
+  --deadline-minute "${AKB2_BRIEFING_DEADLINE_MINUTE:-0}" \
+  -- "${PIPELINE_CMD[@]}"

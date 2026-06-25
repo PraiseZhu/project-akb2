@@ -37,7 +37,7 @@ RUNTIME_MUTATION=false
 AUTO_TRUE=false
 
 # Guard: verify automation_allowed=false globally before starting
-AKB_ROOT="/Users/praise/Library/Mobile Documents/iCloud~md~obsidian/Documents/Praise Space/AKB2.0"
+AKB_ROOT="/Volumes/AKB2/Obsidian/Praise Space/AKB2.0"
 AUTO_TRUE_COUNT=$( (grep -rn "^automation_allowed: true" "$AKB_ROOT/toolbox/tools" "$AKB_ROOT/wiki/tools" 2>/dev/null || true) | wc -l | tr -d ' ')
 if [[ "$AUTO_TRUE_COUNT" != "0" ]]; then
   echo "HARD FAIL: automation_allowed=true found ($AUTO_TRUE_COUNT hits) — aborting" >&2
