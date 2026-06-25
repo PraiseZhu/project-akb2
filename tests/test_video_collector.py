@@ -541,3 +541,38 @@ def test_corrupt_pending_is_backed_up_not_silently_dropped(temp_config, tmp_path
     backup_text = backups[0].read_text(encoding="utf-8")
     assert "HIST1" in backup_text, "备份必须保留原始历史内容"
     assert "<<<<<<< HEAD" in backup_text, "备份必须是原始损坏原文"
+
+
+def test_non_array_pending_is_backed_up_not_silently_dropped(temp_config, tmp_path):
+    """合法 JSON 但被写成非数组（dict/null）也必须备份历史，不静默清空。
+
+    覆盖 _save_pending 的「非数组」损坏分支（json.loads 成功但不是 list），与
+    JSONDecodeError 分支共用 corrupt_reason→备份→truncate 路径，但单独直测让该
+    分支有独立护栏（reviewer finding：原仅靠共用分支间接覆盖）。
+    """
+    collector = VideoCollector(temp_config)
+    pending_path = tmp_path / "pending_research.json"
+    # 合法 JSON object（非数组）——历史被误写成 dict。
+    pending_path.write_text(
+        '{"url": "https://youtube.com/watch?v=HISTDICT", "title": "误写成dict的历史"}',
+        encoding="utf-8",
+    )
+
+    new_result = {
+        "video": {
+            "url": "https://youtube.com/watch?v=NEW2",
+            "title": "新失败视频",
+            "platform": "youtube",
+            "creator": "C",
+        }
+    }
+    with mock.patch.object(collector, "_pending_path", return_value=pending_path):
+        collector._save_pending([new_result])
+
+    saved = json.loads(pending_path.read_text(encoding="utf-8"))
+    assert isinstance(saved, list)
+    assert "https://youtube.com/watch?v=NEW2" in {item.get("url") for item in saved}
+
+    backups = list(pending_path.parent.glob("pending_research.corrupt-*.json"))
+    assert backups, "非数组损坏也必须备份历史"
+    assert "HISTDICT" in backups[0].read_text(encoding="utf-8"), "备份必须保留原始内容"
