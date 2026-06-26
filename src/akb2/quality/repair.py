@@ -1332,7 +1332,11 @@ def _filter_repair_command_violations(
 
 
 def _grader_meta_from_result(result: Any) -> dict[str, Any]:
-    """从 GraderResult 提取 runner 可落盘的最终评分 meta。"""
+    """从 GraderResult 提取 runner 可落盘的最终评分 meta。
+
+    step-3 SC-3c/SC-3d（codex P1 修复）：携 interpretation_entailment + dimension_scores，
+    供 runner 在 repair 收敛后复查 concept 硬门（poisoned-trace/加权分不能靠 repair 绕过）。
+    """
     return {
         "grader_model_used": getattr(result, "model_used", ""),
         "grader_primary_model": getattr(result, "primary_model", ""),
@@ -1343,6 +1347,9 @@ def _grader_meta_from_result(result: Any) -> dict[str, Any]:
         "grader_primary_failure_reason": getattr(result, "primary_failure_reason", ""),
         "grader_fallback_failed": getattr(result, "fallback_failed", False),
         "grader_fallback_failure_reason": getattr(result, "fallback_failure_reason", ""),
+        # concept 硬门字段（repair 收敛后 runner 复查用）
+        "interpretation_entailment": getattr(result, "interpretation_entailment", None),
+        "dimension_scores": dict(getattr(result, "dimension_scores", {}) or {}),
     }
 
 

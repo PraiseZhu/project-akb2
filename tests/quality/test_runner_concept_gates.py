@@ -12,7 +12,7 @@ codex cross-review P1 修复验证：_run_quality_segments 在 concept 车道 gr
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -153,3 +153,107 @@ class TestProceduralNoConceptGates:
 # 注：grader 有 defects → 进 repair（既有行为，非 P1 修复内容），不进 concept 门。
 # 该路径需完整 RunnerConfig（failures_path 等），不在本单测范围；P1 修复（无 defects 时的
 # entailment/加权分硬门）由上面 TestRunnerEntailmentGate/TestRunnerWeightedScoreGate 覆盖。
+
+
+# ----------------------------- repair 收敛后 concept 门（codex P1 修复核心） ----------------------------- #
+
+
+def _repair_result(entailment, dim_scores):
+    """构造 repair 收敛的 repair_result（final_grader_meta 携 entailment/scores）。"""
+    return {
+        "converged": True,
+        "rounds": 1,
+        "final_defects": [],
+        "final_text": None,  # 不写文件（避免测试副作用）
+        "final_grader_meta": {
+            "grader_model_used": "gpt-5.4",
+            "grader_suspended": False,
+            "interpretation_entailment": entailment,
+            "dimension_scores": dict(dim_scores),
+        },
+        "trace_paths": [],
+    }
+
+
+class TestRepairConvergedConceptGates:
+    """codex P1：repair 收敛后必须复查 concept 硬门（之前直接写 PASS 绕过）。"""
+
+    def test_repair_converged_poisoned_trace_rejected(self):
+        """initial defect → repair 收敛 → final entailment=false → reject（不写 PASS）。"""
+        from src.akb2.quality.runner import _run_quality_segments
+        from src.akb2.quality.checks_structural import Defect
+
+        defect = Defect(dimension="x", location="L", defect="d", suggestion="s")
+        initial_grader = _grader(defects=[defect], entailment=False, dim_scores={})
+        repair = _repair_result(entailment=False, dim_scores={})
+        with patch("src.akb2.quality.checks_structural.run_candidate_self_gate", return_value=[]), \
+             patch("src.akb2.quality.grader.run_grader_detailed", return_value=initial_grader), \
+             patch("src.akb2.quality.runner._load_golden_sample", return_value="golden"), \
+             patch("src.akb2.quality.repair.run_repair_loop", return_value=repair):
+            converged, error_class, _, meta = _run_quality_segments(
+                "candidate", "/tmp/x.md", "raw", config=MagicMock(),
+                content_lane="concept", floor_result=_pass_floor(),
+            )
+        assert not converged
+        assert error_class == "poisoned_trace_entailment"
+        assert meta["interpretation_entailment"] is False
+
+    def test_repair_converged_low_score_rejected(self):
+        """initial defect → repair 收敛 → final 低分 → reject（加权分不能靠 repair 绕过）。"""
+        from src.akb2.quality.runner import _run_quality_segments
+        from src.akb2.quality.checks_structural import Defect
+
+        defect = Defect(dimension="x", location="L", defect="d", suggestion="s")
+        initial_grader = _grader(defects=[defect], entailment=True, dim_scores={})
+        # final 只 H3=1.0 → 3.5 <6.5
+        low = {d: (1.0 if "H3" in d else 0.0) for d in _CONCEPT_DIMS}
+        repair = _repair_result(entailment=True, dim_scores=low)
+        with patch("src.akb2.quality.checks_structural.run_candidate_self_gate", return_value=[]), \
+             patch("src.akb2.quality.grader.run_grader_detailed", return_value=initial_grader), \
+             patch("src.akb2.quality.runner._load_golden_sample", return_value="golden"), \
+             patch("src.akb2.quality.repair.run_repair_loop", return_value=repair):
+            converged, error_class, _, meta = _run_quality_segments(
+                "candidate", "/tmp/x.md", "raw", config=MagicMock(),
+                content_lane="concept", floor_result=_pass_floor(),
+            )
+        assert not converged
+        assert error_class == "weighted_score_below_threshold"
+        assert meta["weighted_score"] == 3.5
+
+    def test_repair_converged_entailment_none_fail_closed(self):
+        """repair 收敛但 final entailment=None（grader 未评）→ concept fail-closed reject。"""
+        from src.akb2.quality.runner import _run_quality_segments
+        from src.akb2.quality.checks_structural import Defect
+
+        defect = Defect(dimension="x", location="L", defect="d", suggestion="s")
+        initial_grader = _grader(defects=[defect], entailment=None, dim_scores={})
+        repair = _repair_result(entailment=None, dim_scores={})
+        with patch("src.akb2.quality.checks_structural.run_candidate_self_gate", return_value=[]), \
+             patch("src.akb2.quality.grader.run_grader_detailed", return_value=initial_grader), \
+             patch("src.akb2.quality.runner._load_golden_sample", return_value="golden"), \
+             patch("src.akb2.quality.repair.run_repair_loop", return_value=repair):
+            converged, error_class, _, _ = _run_quality_segments(
+                "candidate", "/tmp/x.md", "raw", config=MagicMock(),
+                content_lane="concept", floor_result=_pass_floor(),
+            )
+        assert not converged
+        assert error_class == "entailment_not_evaluated"
+
+    def test_repair_converged_high_score_entailment_true_passes(self):
+        """repair 收敛 + final entailment=true + 高分 → PASS（concept 门通过）。"""
+        from src.akb2.quality.runner import _run_quality_segments
+        from src.akb2.quality.checks_structural import Defect
+
+        defect = Defect(dimension="x", location="L", defect="d", suggestion="s")
+        initial_grader = _grader(defects=[defect], entailment=True, dim_scores={})
+        high = {d: 1.0 for d in _CONCEPT_DIMS}  # 全 1.0 → 10.0
+        repair = _repair_result(entailment=True, dim_scores=high)
+        with patch("src.akb2.quality.checks_structural.run_candidate_self_gate", return_value=[]), \
+             patch("src.akb2.quality.grader.run_grader_detailed", return_value=initial_grader), \
+             patch("src.akb2.quality.runner._load_golden_sample", return_value="golden"), \
+             patch("src.akb2.quality.repair.run_repair_loop", return_value=repair):
+            converged, _, _, _ = _run_quality_segments(
+                "candidate", "/tmp/x.md", "raw", config=MagicMock(),
+                content_lane="concept", floor_result=_pass_floor(),
+            )
+        assert converged
