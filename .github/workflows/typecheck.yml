@@ -1,0 +1,21 @@
+name: Typecheck (mypy · 非阻断)
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  mypy:
+    runs-on: ubuntu-latest
+    # 当前代码基本无类型标注,mypy 仅报 ~7 个问题。先做信息性检查,不挡合并。
+    # 若以后认真上类型,删掉 continue-on-error 即变硬闸。
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install mypy
+      - run: mypy src --ignore-missing-imports

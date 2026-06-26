@@ -1,0 +1,21 @@
+name: Secret Scan
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # 扫描全部提交历史,而不仅是最新一次 diff
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 注:gitleaks-action v2 对个人/公开仓库免费;若仓库 transfer 进组织,
+          # 组织私有仓库需额外配置 GITLEAKS_LICENSE。本仓库为个人仓库,无需。
