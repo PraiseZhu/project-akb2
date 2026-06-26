@@ -1,0 +1,22 @@
+name: Secret Scan
+
+on:
+  push:
+    branches: [main]        # 只在 push 到 main 时扫(省资源);PR 仍全量扫
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read       # gitleaks-action PR 模式要读 PR commit 列表,缺这条会 403
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # 扫描全部提交历史
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 个人/公开仓库免费;transfer 进组织后私有仓库需 GITLEAKS_LICENSE。

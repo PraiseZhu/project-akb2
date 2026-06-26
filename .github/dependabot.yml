@@ -1,0 +1,21 @@
+# Dependabot 配置(不是 workflow,GitHub 原生读取此文件)
+# 每周自动检查依赖更新与已知漏洞,并提交更新 PR。
+version: 2
+updates:
+  # Python 依赖(读取 pyproject.toml)
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+
+  # GitHub Actions 自身的版本(actions/checkout@v4 等)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "ci"
