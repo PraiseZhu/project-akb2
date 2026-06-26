@@ -55,6 +55,22 @@ def _lane_weight_map(spec: dict, content_lane: str) -> dict[str, float]:
     return weights
 
 
+def _lane_threshold(spec: dict, content_lane: str) -> float:
+    """按 lane 读阈值（codex worker）：lanes.<lane>.threshold → 顶层 threshold → DEFAULT_THRESHOLD。
+
+    改 rubric.yaml lanes.concept.threshold 即改 concept 判定，不被顶层 threshold 覆盖。
+    """
+    lane = str(content_lane or "").strip().lower()
+    lane_spec = (spec.get("lanes", {}) or {}).get(lane) or {}
+    t = lane_spec.get("threshold")
+    if isinstance(t, (int, float)):
+        return float(t)
+    top = spec.get("threshold")
+    if isinstance(top, (int, float)):
+        return float(top)
+    return DEFAULT_THRESHOLD
+
+
 def compute_weighted_score(
     dimension_scores: dict[str, float],
     content_lane: str = "",
@@ -72,12 +88,7 @@ def compute_weighted_score(
         KeyError: dimension_scores 含维名不在 lane 权重表（不静默零权重，防漏维）。
     """
     spec = _load_rubric_spec()
-    threshold_raw = spec.get("threshold", DEFAULT_THRESHOLD)
-    threshold = (
-        float(threshold_raw)
-        if isinstance(threshold_raw, (int, float))
-        else DEFAULT_THRESHOLD
-    )
+    threshold = _lane_threshold(spec, content_lane)
     weights = _lane_weight_map(spec, content_lane)
 
     # dim→weight 按全名 join；维名不在权重表 → KeyError（不静默零权重）

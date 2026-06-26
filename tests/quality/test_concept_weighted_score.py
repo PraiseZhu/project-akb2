@@ -105,3 +105,19 @@ class TestConceptWeightedScore:
         r = compute_weighted_score(partial, "concept")
         assert r.passed is False
         assert r.score == 0.0  # 缺维 → fail-closed，不靠 present 高分放行
+
+    def test_lane_threshold_takes_effect(self, monkeypatch):
+        """codex worker：改 lanes.concept.threshold 即改 concept 判定（不被顶层 threshold 覆盖）。"""
+        import copy
+        from src.akb2.quality import weighted_score as ws
+
+        spec = ws._load_rubric_spec()
+        tmp = copy.deepcopy(spec)
+        tmp["lanes"]["concept"]["threshold"] = 9.0  # concept 提阈
+        monkeypatch.setattr(ws, "_load_rubric_spec", lambda: tmp)
+        w = ws._lane_weight_map(tmp, "concept")
+        scores = {name: 0.8 for name in w}  # 总分 8.0
+        r = ws.compute_weighted_score(scores, "concept")
+        assert r.threshold == 9.0  # 用 lane threshold，非顶层 6.5
+        assert abs(r.score - 8.0) < 1e-6
+        assert not r.passed  # 8.0 < 9.0 → fail（若用顶层 6.5 会误 pass）

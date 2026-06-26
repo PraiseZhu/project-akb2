@@ -175,11 +175,13 @@ def _core_value_f4_failed(extract_data: dict, content_lane: str) -> tuple[bool, 
             for c in components
             if isinstance(c, dict) and str(c.get("name", "")).strip()
         ]
-        if len(named) < CONCEPT_MIN_MECHANISM_COMPONENTS:
-            return True, (
-                f"concept F4：命名机制组件 {len(named)} < {CONCEPT_MIN_MECHANISM_COMPONENTS}"
-            )
+        # codex worker：先去重再计数，防 [A,A,B] 用重复名伪装 3 组件过 F4
         named_set = set(named)
+        if len(named_set) < CONCEPT_MIN_MECHANISM_COMPONENTS:
+            return True, (
+                f"concept F4：唯一命名机制组件 {len(named_set)} < {CONCEPT_MIN_MECHANISM_COMPONENTS}"
+                f"（输入 {len(named)} 条，去重后 {len(named_set)}）"
+            )
         edges = extract_data.get("causal_edges", []) or []
         # 统计每个命名组件是否有出/入边指向另一个命名组件
         connected: set[str] = set()

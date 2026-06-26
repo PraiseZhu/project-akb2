@@ -183,6 +183,19 @@ class TestCoreValueF4:
         r = evaluate_integrity_floor(d, "concept")
         assert FLOOR_CORE_VALUE_F4 in r.failed_floors
 
+    def test_concept_fail_duplicate_component_names(self):
+        """codex worker：重复名 [A,A,B] 不能伪装 3 组件过 F4（去重后只 2 唯一）。"""
+        d = _concept_pass_extract()
+        d["mechanism_components"] = [
+            {"name": "组件A", "role": "x"},
+            {"name": "组件A", "role": "y"},  # 重复名
+            {"name": "组件B", "role": "z"},
+        ]
+        d["causal_edges"] = [{"from": "组件A", "to": "组件B", "relation": "r"}]
+        r = evaluate_integrity_floor(d, "concept")
+        assert FLOOR_CORE_VALUE_F4 in r.failed_floors
+        assert not r.passed
+
     def test_procedural_pass_h1_ge_1(self):
         d = {
             "claims": [_grounded_claim("cmd")],

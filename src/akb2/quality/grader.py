@@ -522,7 +522,13 @@ def _parse_grader_extensions(
     零回归）；模型仍可在响应里给 weighted_total，但以 spec 计算值为准（确定性、可对账）。
     """
     spec = _load_rubric_spec()
-    threshold_spec = spec.get("threshold")
+    # codex worker：按 lane 读阈值（lanes.<lane>.threshold → 顶层 threshold）
+    lane_spec = (spec.get("lanes", {}) or {}).get(
+        str(content_lane or "").strip().lower()
+    ) or {}
+    threshold_spec = lane_spec.get("threshold")
+    if not isinstance(threshold_spec, (int, float)):
+        threshold_spec = spec.get("threshold")
     threshold = (
         float(threshold_spec) if isinstance(threshold_spec, (int, float)) else None
     )
