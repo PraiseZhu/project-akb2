@@ -212,8 +212,8 @@ def test_dry_run_skips_gate_rejected(tmp_path, promote_module, capsys):
 
     assert exit_code == 0  # no conflict
     # Must NOT be in a "would promote" line
-    would_promote = [l for l in captured.out.splitlines() if "would promote" in l]
-    assert not any("rejected-page" in l for l in would_promote)
+    would_promote = [line for line in captured.out.splitlines() if "would promote" in line]
+    assert not any("rejected-page" in line for line in would_promote)
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +242,7 @@ def test_promote_ignores_candidate_gate_status(tmp_path, promote_module, capsys)
     )
 
     # Verify log records: gate_decision=fail despite self-claimed pass
-    log_lines = [l for l in captured.out.splitlines() if l.startswith("{")]
+    log_lines = [line for line in captured.out.splitlines() if line.startswith("{")]
     assert log_lines, f"Expected JSON log; got:\n{captured.out}"
     record = json.loads(log_lines[0])
     assert record["gate_decision"] == "fail"
@@ -309,7 +309,7 @@ def test_promote_blocks_slug_conflict_across_filenames(tmp_path, promote_module,
     )
 
     captured = capsys.readouterr()
-    log_lines = [l for l in captured.out.splitlines() if l.startswith("{")]
+    log_lines = [line for line in captured.out.splitlines() if line.startswith("{")]
     record = json.loads(log_lines[0])
     assert record["action"] == "conflict"
     assert record["slug"] == "test-page"

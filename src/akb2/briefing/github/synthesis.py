@@ -62,7 +62,10 @@ def _build_prompt(repos: list[dict[str, Any]]) -> str:
     return (
         f"{system}\n\n"
         f"<input>\n{repos_xml}\n</input>\n\n"
-        '<output_format>\n[{"repo_url": "...", "summary": "...", "use_case": "..."}, ...]\n</output_format>'
+        (
+            '<output_format>\n[{"repo_url": "...", "summary": "...", '
+            '"use_case": "..."}, ...]\n</output_format>'
+        )
     )
 
 
@@ -90,7 +93,8 @@ def _estimate_tokens(text: str) -> int:
 
 
 def _call_deepseek(prompt: str, api_key: str | None = None) -> dict | None:
-    # AI Gateway key：部署侧约定 AI_GATEWAY_API_KEY，本机运行时设 DEEPSEEK_API_KEY（同一 Gateway key）。
+    # AI Gateway key：部署侧约定 AI_GATEWAY_API_KEY，
+    # 本机运行时设 DEEPSEEK_API_KEY（同一 Gateway key）。
     key = api_key or os.environ.get("AI_GATEWAY_API_KEY") or os.environ.get("DEEPSEEK_API_KEY", "")
     if not key:
         # Mock mode: 无 key 时产出 mock 数据。fail-visibly：打 stderr 警告，
@@ -108,7 +112,10 @@ def _call_deepseek(prompt: str, api_key: str | None = None) -> dict | None:
         urls = re.findall(r'url="([^"]+)"', search_text)
         mock_data = [
             {"repo_url": url, "summary": "mock summary text " * 5,
-             "use_case": "正向场景：当你需要在项目中集成此工具时适用。反向场景：生产环境未经充分测试不建议直接使用。"}
+             "use_case": (
+                 "正向场景：当你需要在项目中集成此工具时适用。"
+                 "反向场景：生产环境未经充分测试不建议直接使用。"
+             )}
             for url in urls
         ]
         return {"choices": [{"message": {"content": json.dumps(mock_data)}}]}
@@ -135,7 +142,7 @@ def _call_deepseek(prompt: str, api_key: str | None = None) -> dict | None:
             if attempt < MAX_RETRIES - 1:
                 time.sleep(RETRY_BACKOFF[attempt])
             else:
-                raise RuntimeError(f"DeepSeek API failed after {MAX_RETRIES} retries: {e}")
+                raise RuntimeError(f"DeepSeek API failed after {MAX_RETRIES} retries: {e}") from e
 
     return None
 
@@ -155,12 +162,12 @@ def synthesize(repos: list[dict[str, Any]], api_key: str | None = None) -> dict[
     content = response["choices"][0]["message"]["content"]
     try:
         summaries = json.loads(_extract_json(content))
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
         # Retry once with error hint
         retry_prompt = prompt + "\n\n前次输出不是合法 JSON，重新输出严格 JSON 数组。"
         response = _call_deepseek(retry_prompt, api_key)
         if response is None:
-            raise RuntimeError("DeepSeek retry also failed")
+            raise RuntimeError("DeepSeek retry also failed") from e
         content = response["choices"][0]["message"]["content"]
         summaries = json.loads(_extract_json(content))
 
@@ -169,7 +176,7 @@ def synthesize(repos: list[dict[str, Any]], api_key: str | None = None) -> dict[
 
     # Merge summaries back into repos
     result = []
-    for repo, summary in zip(repos, summaries):
+    for repo, summary in zip(repos, summaries, strict=False):
         merged = {**repo}
         merged["summary"] = summary.get("summary", "")
         merged["use_case"] = summary.get("use_case", "")

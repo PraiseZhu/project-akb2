@@ -35,7 +35,11 @@ def main(argv: list[str] | None = None) -> int:
         help="dm=私信(测试) / group=XD WEB 群(上线)。默认 dm 防误发群。",
     )
     parser.add_argument("--state-path", default=None, help="幂等状态文件绝对路径（默认 repo/logs）")
-    parser.add_argument("--dry-run", action="store_true", help="只发现/渲染，不触发飞书发送，不写幂等状态")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只发现/渲染，不触发飞书发送，不写幂等状态",
+    )
     args = parser.parse_args(argv)
 
     vault_root = Path(args.vault_root).expanduser().resolve()

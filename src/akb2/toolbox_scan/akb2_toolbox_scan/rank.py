@@ -418,7 +418,10 @@ def assign_tiers(scored: list[ScoredRecord], *, pilot_limit: int) -> None:
             s.next_action = "manual review (unknown asset kind)"
             hard_no_pilot.append(s)
             continue
-        if rec.get("risk_hint") == "high" or rec.get("side_effects_hint") in ("write_remote", "irreversible"):
+        if rec.get("risk_hint") == "high" or rec.get("side_effects_hint") in (
+            "write_remote",
+            "irreversible",
+        ):
             s.tier = "manual_review"
             s.next_action = "manual review (high risk or remote/irreversible side effects)"
             hard_no_pilot.append(s)
@@ -695,7 +698,10 @@ def _render_report(
         lines.append(f"- groups: {len(duplicate_groups)} (sample below: 10)")
         lines.append("")
         for g in duplicate_groups[:10]:
-            lines.append(f"- `{g.group_id}` keyed on `{g.key}`; preferred = `{g.preferred_workspace_path}`")
+            lines.append(
+                f"- `{g.group_id}` keyed on `{g.key}`; "
+                f"preferred = `{g.preferred_workspace_path}`"
+            )
             for wp in g.workspace_paths[:6]:
                 marker = "★" if wp == g.preferred_workspace_path else " "
                 lines.append(f"   {marker} `{wp}`")
@@ -715,7 +721,10 @@ def _render_report(
             "no record is allowed to skip Tool Intake Gate by virtue of a high C-2 score."
         )
     else:
-        lines.append("- Pilot batch is empty; do not start C-3 until the safety filter has at least one survivor.")
+        lines.append(
+            "- Pilot batch is empty; do not start C-3 until the safety filter "
+            "has at least one survivor."
+        )
     lines.append(
         "- `manual_review` queue (§6) needs human triage before any of those records can move "
         "into a future pilot batch."
@@ -732,7 +741,10 @@ def _render_report(
     lines.append("- [x] every record carries `automation_allowed: false`")
     lines.append("- [x] every record carries `gate_decision: null`")
     lines.append("- [x] no candidate file was executed or imported")
-    lines.append("- [x] outputs land only in `manifests/toolbox-ranking/` and `docs/phase-c-reports/`")
+    lines.append(
+        "- [x] outputs land only in `manifests/toolbox-ranking/` "
+        "and `docs/phase-c-reports/`"
+    )
     lines.append("- [x] `exclude_this_round` is a per-round skip, not a deletion")
     lines.append("")
 
@@ -835,7 +847,13 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _empty_report(*, akb_root: Path, out_path: Path, input_manifests: list[Path], pilot_limit: int) -> str:
+def _empty_report(
+    *,
+    akb_root: Path,
+    out_path: Path,
+    input_manifests: list[Path],
+    pilot_limit: int,
+) -> str:
     today = date.today().isoformat()
     lines = [
         "---",
@@ -851,7 +869,10 @@ def _empty_report(*, akb_root: Path, out_path: Path, input_manifests: list[Path]
         "",
         f"# Phase C-2 Toolbox Candidate Ranking — {today}",
         "",
-        "> No candidates were found in the supplied manifests; ranking aborted with `no_candidates`.",
+        (
+            "> No candidates were found in the supplied manifests; "
+            "ranking aborted with `no_candidates`."
+        ),
         "",
         "## Inputs",
         f"- AKB root: `{akb_root}`",

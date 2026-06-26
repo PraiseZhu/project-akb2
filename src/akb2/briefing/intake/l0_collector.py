@@ -116,7 +116,8 @@ class L0Collector(BaseCollector):
         if result.returncode != 0:
             stderr_excerpt = (result.stderr or "")[:300].replace("\n", " | ")
             sys.stderr.write(
-                f"WARNING: twitter-cli exit {result.returncode}: {stderr_excerpt} — fallback to fixture\n"
+                f"WARNING: twitter-cli exit {result.returncode}: {stderr_excerpt} "
+                "— fallback to fixture\n"
             )
             self.used_fallback = True
             return self._read_fixture()
@@ -152,7 +153,10 @@ def main():
     parser = argparse.ArgumentParser(description="L0 public timeline collector")
     parser.add_argument("--output", default="/tmp/l0-out.json", help="Output JSON path")
     parser.add_argument(
-        "--dry-run", action="store_true", default=False, help="Use fixture data instead of twitter-cli"
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Use fixture data instead of twitter-cli",
     )
     parser.add_argument("--since", default=None, help="Collect tweets since YYYY-MM-DD")
     parser.add_argument("--until", default=None, help="Collect tweets until YYYY-MM-DD")

@@ -44,8 +44,12 @@ from akb2.briefing.translate import translate_briefing  # noqa: E402
 # Paths
 # ---------------------------------------------------------------------------
 
-REPO_ROOT = Path(__file__).parent.parent.parent.parent  # worktree root (src/akb2/briefing/ -> src/akb2/ -> src/ -> worktree/)
-GATE_CLI = Path(os.environ.get("AKB2_GATE_CLI") or str(REPO_ROOT / "src" / "akb2" / "gate" / "akb2_gate_check.py"))
+REPO_ROOT = Path(__file__).parent.parent.parent.parent
+# worktree root (src/akb2/briefing/ -> src/akb2/ -> src/ -> worktree/)
+GATE_CLI = Path(
+    os.environ.get("AKB2_GATE_CLI")
+    or str(REPO_ROOT / "src" / "akb2" / "gate" / "akb2_gate_check.py")
+)
 
 GATE_DECISION_ENUM = {
     "active", "needs_repair", "needs_human_review",
@@ -106,13 +110,15 @@ def _filter_recent(tweets: list, date: str, days: int = _INTAKE_WINDOW_DAYS_DEFA
                 kept.append(t)
         except (ValueError, TypeError):
             sys.stderr.write(
-                f"WARNING [filter_recent]: tweet {t.get('id','?')} bad created_at '{raw_ts}', keeping\n"
+                f"WARNING [filter_recent]: tweet {t.get('id','?')} "
+                f"bad created_at '{raw_ts}', keeping\n"
             )
             kept.append(t)
 
     if len(kept) < len(tweets):
         sys.stderr.write(
-            f"INFO [filter_recent]: dropped {len(tweets)-len(kept)} out-of-window tweets, kept {len(kept)}\n"
+            f"INFO [filter_recent]: dropped {len(tweets)-len(kept)} "
+            f"out-of-window tweets, kept {len(kept)}\n"
         )
 
     return kept
@@ -247,8 +253,10 @@ def run_gate(akb_root: Path, input_file: Path, date: str) -> str:
 
 _ORPHAN_TOP_K = int(os.environ.get("AKB2_ORPHAN_TOP_K", "5"))
 # 展示层质量过滤（2026-06-02 试跑发现的 3 个缺陷修复）
-_MIN_DISPLAY_SCORE = float(os.environ.get("AKB2_MIN_DISPLAY_SCORE", "0.35"))  # 低于此分不入正文（去低分噪音）
-_PER_AUTHOR_CAP = int(os.environ.get("AKB2_PER_AUTHOR_CAP", "2"))             # 单作者每主题/孤儿区上限（防霸屏）
+_MIN_DISPLAY_SCORE = float(os.environ.get("AKB2_MIN_DISPLAY_SCORE", "0.35"))
+# 低于此分不入正文（去低分噪音）
+_PER_AUTHOR_CAP = int(os.environ.get("AKB2_PER_AUTHOR_CAP", "2"))
+# 单作者每主题/孤儿区上限（防霸屏）
 
 
 def _apply_display_filters(
@@ -290,7 +298,8 @@ def _collect_display_tweets(
 ) -> tuple[list[list[dict]], list[dict]]:
     """将推文按主题分组，返回 (per_topic_tweets, orphan_tweets)。
 
-    per_topic_tweets[i] = focus_discussions[i] 对应的支撑推文列表（应用展示过滤：剔重/最低分/per-author）
+    per_topic_tweets[i] = focus_discussions[i] 对应的支撑推文列表
+    （应用展示过滤：剔重/最低分/per-author）
     orphan_tweets = 未被任何主题引用的高分推文，按 score 倒序取 top-k（同样过滤）
     """
     tweets = synth.get("tweets", [])
@@ -408,7 +417,8 @@ def build_briefing_markdown(
     body_parts = [
         f"# {date} AI 社交趋势日报",
         "",
-        "## 总览",  # P0-2 SC-14 修复：用 gate HC-08 白名单内的标题（导读→总览），消除恒 needs_repair
+        "## 总览",
+        # P0-2 SC-14 修复：用 gate HC-08 白名单内的标题（导读→总览），消除恒 needs_repair
         "",
         f"基于 {date} 公开时间线抓取，对 AI/ML 领域社交信号的综合分析。",
         f"质量门控：**{gate_decision}**",
@@ -491,7 +501,8 @@ def build_temp_briefing_markdown(
     body_parts = [
         f"# {date} AI 社交趋势日报",
         "",
-        "## 总览",  # P0-2 SC-14 修复：用 gate HC-08 白名单内的标题（导读→总览），消除恒 needs_repair
+        "## 总览",
+        # P0-2 SC-14 修复：用 gate HC-08 白名单内的标题（导读→总览），消除恒 needs_repair
         "",
         f"基于 {date} 公开时间线抓取，对 AI/ML 领域社交信号的综合分析。",
         "",

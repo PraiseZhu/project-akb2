@@ -107,7 +107,6 @@ def _render_report(
     records = result.records
     is_project = scan_scope == "project_scripts_bin"
 
-    by_root = Counter(r.source_root for r in records)
     by_kind = Counter(r.detected_kind for r in records)
     by_risk = Counter(r.risk_hint for r in records)
     by_side = Counter(r.side_effects_hint for r in records)
@@ -149,7 +148,10 @@ def _render_report(
     lines.append("")
     lines.append(
         "> Read-only scanner output. Never executes a candidate, never writes outside "
-        "`manifests/workspace-scan/` and `docs/phase-c-reports/`, never promotes anything to active."
+        (
+            "`manifests/workspace-scan/` and `docs/phase-c-reports/`, "
+            "never promotes anything to active."
+        )
     )
     lines.append("")
 
@@ -241,14 +243,19 @@ def _render_report(
         for r in next_batch:
             shadow = "✅" if r.phase_b_shadow_match else "—"
             size = f"{r.size_bytes}B" if r.size_bytes is not None else "n/a"
-            lines.append(f"| `{r.slug_candidate}` | {r.detected_kind} | {size} | {shadow} | `{r.relative_path}` |")
+            lines.append(
+                f"| `{r.slug_candidate}` | {r.detected_kind} | {size} | "
+                f"{shadow} | `{r.relative_path}` |"
+            )
     lines.append("")
 
     if is_project:
         excluded_dirs = sum(s.excluded_dir_count for s in result.root_summaries)
         truncated_roots = [s for s in result.root_summaries if s.truncated]
         duplicates = [r for r in records if r.duplicate_of_prior_scan]
-        by_kind_project = Counter(r.detected_kind for r in records if r.scan_scope == "project_scripts_bin")
+        by_kind_project = Counter(
+            r.detected_kind for r in records if r.scan_scope == "project_scripts_bin"
+        )
         by_project = Counter(r.project_name for r in records if r.project_name)
 
         lines.append("## §10 Project scope: exclusion summary")
@@ -308,10 +315,17 @@ def _render_report(
     lines.append("- [x] every record carries `gate_decision: null`")
     lines.append("- [x] no candidate file was executed or imported")
     lines.append("- [x] no symlink was followed (recorded only)")
-    lines.append("- [x] outputs land only in `manifests/workspace-scan/` and `docs/phase-c-reports/`")
+    lines.append(
+        "- [x] outputs land only in `manifests/workspace-scan/` "
+        "and `docs/phase-c-reports/`"
+    )
     if is_project:
-        lines.append("- [x] project scope obeys allowed subtrees (`scripts/` `bin/` `tools/` `cli/`)")
-        lines.append("- [x] walk-time prune list applied (no `.git`, `node_modules`, `.venv`, etc.)")
+        lines.append(
+            "- [x] project scope obeys allowed subtrees (`scripts/` `bin/` `tools/` `cli/`)"
+        )
+        lines.append(
+            "- [x] walk-time prune list applied (no `.git`, `node_modules`, `.venv`, etc.)"
+        )
     lines.append("")
 
     return "\n".join(lines) + "\n"

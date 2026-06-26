@@ -6,31 +6,46 @@ Implements 18 rules grounded in standards (each maps to a § citation).
 v0.1 rules (kept):
   R1 METADATA-LONG-FIELD                       P1  fm string field > 150 chars (INTAKE-GATE §5.1)
   R2 BODY-MAINTENANCE-LOG-OVERFLOW             P2  ## 维护记录 entries > 5 (INTAKE-GATE §5.2.1)
-  R3 BODY-MAINTENANCE-LOG-VERBOSE              P2  single 维护记录 entry > 200 chars (INTAKE-GATE §5.2.2)
+  R3 BODY-MAINTENANCE-LOG-VERBOSE              P2
+     single 维护记录 entry > 200 chars (INTAKE-GATE §5.2.2)
   R4 TOOL-UNDERSTANDING-MISSING-STRUCTURE      P1  tool-understanding active missing §4.7 5 sections
-  R5 WIKI-TOOLS-CALL-CONTRACT-LEAK             P2  wiki/tools active body contains complete call contract
-  R6 BODY-QUALITY-MISSING-STRUCTURE            P1  active missing 9 canonical sections (alias-aware §3.7.3)
+  R5 WIKI-TOOLS-CALL-CONTRACT-LEAK             P2
+     wiki/tools active body contains complete call contract
+  R6 BODY-QUALITY-MISSING-STRUCTURE            P1
+     active missing 9 canonical sections (alias-aware §3.7.3)
 
 v0.2 new rules (all standards-backed):
-  R7  SOURCE-GROUNDED-MISSING-FIELD            P1  active missing evidence_provenance (LINT-RULES §11.2)
-  R8  SOURCE-GROUNDED-INFERENCE-ONLY           P0  active marked evidence_provenance: inference_only (INTAKE-GATE §4 第 8 条)
-  R9  SOURCE-KEY-FINDINGS-MISSING-FRONTMATTER  P1  source template missing frontmatter key_findings ≥3 (PAGE-TEMPLATES §4.2 H7)
-  R10 SOURCE-KEY-FINDINGS-MISSING-PROSE        P2  source w/ key_findings but no ## 关键发现 section (§4.2 H7)
+  R7  SOURCE-GROUNDED-MISSING-FIELD            P1
+      active missing evidence_provenance (LINT-RULES §11.2)
+  R8  SOURCE-GROUNDED-INFERENCE-ONLY           P0
+      active marked evidence_provenance: inference_only (INTAKE-GATE §4 第 8 条)
+  R9  SOURCE-KEY-FINDINGS-MISSING-FRONTMATTER  P1
+      source template missing frontmatter key_findings ≥3 (PAGE-TEMPLATES §4.2 H7)
+  R10 SOURCE-KEY-FINDINGS-MISSING-PROSE        P2
+      source w/ key_findings but no ## 关键发现 section (§4.2 H7)
   R11 GRAPH-ROLE-MISSING                       P1  active missing graph_role (GRAPH-LINKING §6.1)
   R12 GRAPH-ROLE-INVALID                       P1  graph_role not in 7 enum (GRAPH-LINKING §6.1)
   R13 GRAPH-STATUS-INVALID                     P2  graph_status not in 3 enum (GRAPH-LINKING §6.2)
-  R14 ACTIVE-MISSING-RELATED                   P1  active has 0 non-empty related_* (PAGE-TEMPLATES §3 active 必填)
-  R15 NAMING-FILENAME-SLUG-MISMATCH            P1  file basename slug ≠ frontmatter slug (NAMING-CONVENTION §17 #5)
-  R16 TEMPLATE-DIRECTORY-MISMATCH              P1  template_type ↔ directory mismatch (PAGE-TEMPLATES §4.x)
-  R17 RELATED-FIELD-INVALID                    P2  related_X field name not in 12 whitelist (GRAPH-LINKING §9.3)
-  R18 WIKI-TOOLS-TOOLBOX-PAIRING               P1  wiki/tools active w/o paired toolbox/tools/<slug>.md (PAGE-TEMPLATES §4.7 必须链接)
+  R14 ACTIVE-MISSING-RELATED                   P1
+      active has 0 non-empty related_* (PAGE-TEMPLATES §3 active 必填)
+  R15 NAMING-FILENAME-SLUG-MISMATCH            P1
+      file basename slug ≠ frontmatter slug (NAMING-CONVENTION §17 #5)
+  R16 TEMPLATE-DIRECTORY-MISMATCH              P1
+      template_type ↔ directory mismatch (PAGE-TEMPLATES §4.x)
+  R17 RELATED-FIELD-INVALID                    P2
+      related_X field name not in 12 whitelist (GRAPH-LINKING §9.3)
+  R18 WIKI-TOOLS-TOOLBOX-PAIRING               P1
+      wiki/tools active w/o paired toolbox/tools/<slug>.md (PAGE-TEMPLATES §4.7 必须链接)
        [v0.3 enhanced: also checks body contains toolbox wikilink]
 
 v0.3 new rules (only active with --version v0.3):
   R19 RAW-NO-WIKILINK                          P2  raw/ 文件含 [[wikilink（禁止）(GRAPH-LINKING §37)
-  R20 ACTIVE-SLUG-NO-DATE                      P2  wiki/ active 文件名含日期 \\d{4}-\\d{2}-\\d{2}（NAMING-CONVENTION §39）
-  R21 DEPRECATED-SUPERSEDED-BY                 P1  status:deprecated 页缺 superseded_by（CONTENT-LIFECYCLE §134）
-  R22 WIKILINK-NO-RAW-PATH                     P2  wiki/ active 正文含指向 raw/ 的 wikilink（GRAPH-LINKING §367）
+  R20 ACTIVE-SLUG-NO-DATE                      P2
+      wiki/ active 文件名含日期 \\d{4}-\\d{2}-\\d{2}（NAMING-CONVENTION §39）
+  R21 DEPRECATED-SUPERSEDED-BY                 P1
+      status:deprecated 页缺 superseded_by（CONTENT-LIFECYCLE §134）
+  R22 WIKILINK-NO-RAW-PATH                     P2
+      wiki/ active 正文含指向 raw/ 的 wikilink（GRAPH-LINKING §367）
 
 Per LINT-RULES §1.5 (规范层声明 + Phase D v0.2 default timestamp output).
 
@@ -231,7 +246,10 @@ def parse_fm_field_raw(fm: str, name: str) -> str | None:
 
 
 def parse_fm_inline_array(fm: str, name: str) -> list[str] | None:
-    """Parse `key: [a, b, "c d"]` style inline array. Returns None if field missing or not inline list."""
+    """Parse `key: [a, b, "c d"]` style inline array.
+
+    Returns None if field missing or not inline list.
+    """
     raw = parse_fm_field_raw(fm, name)
     if raw is None:
         return None
@@ -406,7 +424,7 @@ def rule_r1_metadata_long_field(path, fm, body, ctx):
 
 def rule_r2_maintenance_log_overflow(path, fm, body, ctx):
     sec_lines = section_lines(body, ALIASES["维护记录"])
-    rows = [l for l in sec_lines if re.match(r"^\| 20\d{2}-", l)]
+    rows = [line for line in sec_lines if re.match(r"^\| 20\d{2}-", line)]
     if len(rows) > 5:
         return [make_finding(
             "BODY-MAINTENANCE-LOG-OVERFLOW", "P2", path,
@@ -491,7 +509,10 @@ def rule_r7_source_grounded_missing_field(path, fm, body, ctx):
         return [make_finding(
             "SOURCE-GROUNDED-MISSING-FIELD", "P1", path,
             evidence="active 缺 frontmatter `evidence_provenance` 字段",
-            proposed_action="补 4 enum 之一: source_grounded / bridging_source_grounded / partial_source_grounded / inference_only",
+            proposed_action=(
+                "补 4 enum 之一: source_grounded / bridging_source_grounded / "
+                "partial_source_grounded / inference_only"
+            ),
             upstream_standard="INTAKE-GATE §4 第 8 条 + PAGE-TEMPLATES §3.7.2 + LINT-RULES §11.2",
         )]
     return []
@@ -684,7 +705,10 @@ def rule_r17_related_field_invalid(path, fm, body, ctx):
                 "RELATED-FIELD-INVALID", "P2", path,
                 actual=name,
                 evidence=f"related_* 字段 `{name}` 不在 12 whitelist",
-                proposed_action=f"改为 12 whitelist 之一: {', '.join(sorted(RELATED_FIELDS_WHITELIST))}",
+                proposed_action=(
+                    f"改为 12 whitelist 之一: "
+                    f"{', '.join(sorted(RELATED_FIELDS_WHITELIST))}"
+                ),
                 upstream_standard="GRAPH-LINKING §9.3",
             ))
     return out
@@ -726,7 +750,8 @@ def rule_r18_wiki_tools_toolbox_pairing(path, fm, body, ctx):
                     f" 但正文缺 [[toolbox/tools/{slug}]] wikilink（R18 v0.3 body check）"
                 ),
                 proposed_action=(
-                    f"在正文 ## 图谱关系 中添加 [[../../toolbox/tools/{slug}|{slug} tool-card]] wikilink"
+                    "在正文 ## 图谱关系 中添加 "
+                    f"[[../../toolbox/tools/{slug}|{slug} tool-card]] wikilink"
                 ),
                 upstream_standard="PAGE-TEMPLATES §4.7 必须链接 + INTAKE-GATE §4.3.3",
             ))
@@ -783,7 +808,10 @@ def rule_v03_wikilink_no_raw_path(path, fm, body, ctx):
             "WIKILINK-NO-RAW-PATH", "P2", path,
             actual=f"{len(hits)} wikilink(s) to raw/",
             evidence=f"wiki/ 正文含 {len(hits)} 个指向 raw/ 的 wikilink: {hits[:3]}",
-            proposed_action="删除或替换为指向 wiki/sources/ 的正规 wikilink（raw/ 是证据层，不应被 wiki 直链）",
+            proposed_action=(
+                "删除或替换为指向 wiki/sources/ 的正规 wikilink"
+                "（raw/ 是证据层，不应被 wiki 直链）"
+            ),
             upstream_standard="AKB-2.0-GRAPH-LINKING.md:L367（禁止：绝对路径、纯 slug 跨目录）",
         )]
     return []
@@ -809,7 +837,7 @@ def rule_r23_query_result_derived_from_exists(path, fm, body, ctx):
             slug_file = Path(wiki_root) / f"{slug}.md"
             if not slug_file.exists():
                 found = False
-                for subdir in Path(wiki_root).rglob(f"{slug}.md"):
+                for _subdir in Path(wiki_root).rglob(f"{slug}.md"):
                     found = True
                     break
                 if not found:
@@ -1000,8 +1028,14 @@ def lint_raw_no_wikilink(raw_files: list[Path]) -> list[dict]:
             findings.append(make_finding(
                 "RAW-NO-WIKILINK", "P2", p,
                 actual=f"{len(hits)} wikilink(s) found",
-                evidence=f"raw/ 文件含 {len(hits)} 个 [[wikilink（禁止：raw/ 是证据层，禁止加 wikilink）",
-                proposed_action="删除 raw/ 文件中的 [[wikilink；wikilink 只能在 staging/wiki/toolbox 中使用",
+                evidence=(
+                    f"raw/ 文件含 {len(hits)} 个 [[wikilink"
+                    "（禁止：raw/ 是证据层，禁止加 wikilink）"
+                ),
+                proposed_action=(
+                    "删除 raw/ 文件中的 [[wikilink；wikilink 只能在 "
+                    "staging/wiki/toolbox 中使用"
+                ),
                 upstream_standard="AKB-2.0-GRAPH-LINKING.md:L37（raw/ 内文件禁止加 wikilink）",
             ))
     return findings
@@ -1022,7 +1056,10 @@ def lint_deprecated_superseded_by(deprecated_pages: list[Path]) -> list[dict]:
                 "DEPRECATED-SUPERSEDED-BY", "P1", p,
                 evidence="status:deprecated 页缺 frontmatter `superseded_by` 字段",
                 proposed_action="补 `superseded_by: <slug>` 指向替代页",
-                upstream_standard="AKB-2.0-CONTENT-LIFECYCLE.md:L134（active→deprecated 必须写 superseded_by）",
+                upstream_standard=(
+                    "AKB-2.0-CONTENT-LIFECYCLE.md:L134"
+                    "（active→deprecated 必须写 superseded_by）"
+                ),
             ))
     return findings
 
@@ -1169,7 +1206,10 @@ def write_report(findings, path, scanned, op_id, version, baseline,
         "| WIKI-TOOLS-CALL-CONTRACT-LEAK | P2 | INTAKE-GATE §4.3.3 + FOLDER-STRUCTURE §3.4 |",
         "| BODY-QUALITY-MISSING-STRUCTURE | P1 | PAGE-TEMPLATES §3.7.3 + LINT-RULES §11.2 |",
         "| SOURCE-GROUNDED-MISSING-FIELD | P1 | INTAKE-GATE §4 第 8 条 + LINT-RULES §11.2 |",
-        "| SOURCE-GROUNDED-INFERENCE-ONLY | P0 | INTAKE-GATE §4 第 8 条 不允许 inference_only active |",
+        (
+            "| SOURCE-GROUNDED-INFERENCE-ONLY | P0 | "
+            "INTAKE-GATE §4 第 8 条 不允许 inference_only active |"
+        ),
         "| SOURCE-KEY-FINDINGS-MISSING-FRONTMATTER | P1 | PAGE-TEMPLATES §4.2 H7 |",
         "| SOURCE-KEY-FINDINGS-MISSING-PROSE | P2 | PAGE-TEMPLATES §4.2 H7 |",
         "| GRAPH-ROLE-MISSING | P1 | GRAPH-LINKING §6.1 + PAGE-TEMPLATES §4.0 |",
@@ -1308,7 +1348,9 @@ def run_v03(args) -> int:
     if args.report:
         report_path = Path(args.report)
     elif args.stable_output:
-        report_path = VAULT_ROOT / "docs" / "phase-d-reports" / f"lint-cli-v0.3-bootstrap-{today}.md"
+        report_path = (
+            VAULT_ROOT / "docs" / "phase-d-reports" / f"lint-cli-v0.3-bootstrap-{today}.md"
+        )
     else:
         report_path = VAULT_ROOT / "docs" / "phase-d-reports" / f"lint-cli-v0.3-{today}T{ts}.md"
 
@@ -1342,7 +1384,10 @@ def main() -> int:
     ap.add_argument("--manifest", default=None)
     ap.add_argument("--report", default=None)
     ap.add_argument("--stable-output", action="store_true",
-                    help="use stable date-only filenames (overwrites prior runs); default uses timestamp filename")
+                    help=(
+                        "use stable date-only filenames (overwrites prior runs); "
+                        "default uses timestamp filename"
+                    ))
     ap.add_argument("--baseline", default="v0.2 (15 active P0=0/P1=0/P2=0 2026-05-08)")
     ap.add_argument("--version", default="v0.2", choices=["v0.2", "v0.3"],
                     help="v0.2 = 18 rules (default, backward-compat); v0.3 = 22 rules + 3 scopes")
@@ -1426,14 +1471,24 @@ def main() -> int:
     elif args.stable_output:
         manifest_path = VAULT_ROOT / "manifests" / "lint" / f"{today}.jsonl"
     else:
-        manifest_path = VAULT_ROOT / "manifests" / "lint" / f"{today}T{ts}-{args.version.replace('.', '-')}.jsonl"
+        manifest_path = (
+            VAULT_ROOT
+            / "manifests"
+            / "lint"
+            / f"{today}T{ts}-{args.version.replace('.', '-')}.jsonl"
+        )
 
     if args.report:
         report_path = Path(args.report)
     elif args.stable_output:
         report_path = VAULT_ROOT / "docs" / "phase-c-reports" / f"lint-cli-bootstrap-{today}.md"
     else:
-        report_path = VAULT_ROOT / "docs" / "phase-c-reports" / f"lint-cli-{args.version}-{today}T{ts}.md"
+        report_path = (
+            VAULT_ROOT
+            / "docs"
+            / "phase-c-reports"
+            / f"lint-cli-{args.version}-{today}T{ts}.md"
+        )
 
     p0 = sum(1 for x in findings if x["severity"] == "P0")
     p1 = sum(1 for x in findings if x["severity"] == "P1")

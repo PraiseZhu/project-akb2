@@ -76,7 +76,7 @@ def _embed_api(
 
 def cosine(a: list[float], b: list[float]) -> float:
     """余弦相似度；任一为零向量返回 0.0。"""
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
     na = math.sqrt(sum(x * x for x in a))
     nb = math.sqrt(sum(y * y for y in b))
     if na == 0.0 or nb == 0.0:
@@ -139,7 +139,7 @@ class EmbeddingClient:
         result: dict[str, list[float]] = {}
 
         # 1) 缓存命中
-        for t, k in zip(texts, keys):
+        for _text, k in zip(texts, keys, strict=False):
             cached = self._load_cached(k)
             if cached is not None:
                 result[k] = cached
@@ -148,7 +148,7 @@ class EmbeddingClient:
         miss_texts: list[str] = []
         miss_keys: list[str] = []
         seen: set[str] = set()
-        for t, k in zip(texts, keys):
+        for t, k in zip(texts, keys, strict=False):
             if k not in result and k not in seen:
                 seen.add(k)
                 miss_texts.append(t)
@@ -163,7 +163,7 @@ class EmbeddingClient:
                 model=self.model,
                 timeout=self.timeout,
             )
-            for k, vec in zip(batch_keys, vecs):
+            for k, vec in zip(batch_keys, vecs, strict=False):
                 self._store_cached(k, vec)
                 result[k] = vec
 

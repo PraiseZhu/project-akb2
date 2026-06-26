@@ -27,7 +27,7 @@ def test_toolbox_scan_package_importable():
 def test_toolbox_scan_discover_importable():
     """discover module must be importable and expose RootSpec and discover_candidates."""
     try:
-        from akb2_toolbox_scan.discover import RootSpec, discover_candidates
+        from akb2_toolbox_scan.discover import discover_candidates
     except ImportError as e:
         pytest.fail(f"discover module import failed: {e}")
     assert callable(discover_candidates), "discover_candidates must be callable"

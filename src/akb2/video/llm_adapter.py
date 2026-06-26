@@ -51,10 +51,10 @@ class DeepSeekAdapter:
         """调 DeepSeek API 做 chat completion。"""
         try:
             import openai  # type: ignore[import-untyped]
-        except ImportError:
+        except ImportError as err:
             raise RuntimeError(
                 "openai 包未安装。安装: pip install openai"
-            )
+            ) from err
 
         client = openai.OpenAI(
             api_key=self._api_key or "sk-placeholder",

@@ -52,7 +52,8 @@ from akb2.briefing.embeddings import cosine
 # ---------------------------------------------------------------------------
 
 NOVELTY_BAND = 6  # SHA1 前缀长度（十六进制字符数）
-NOVELTY_COS_THRESHOLD = float(os.environ.get("AKB2_NOVELTY_COS_THRESHOLD", "0.85"))  # P2-2 语义判重阈值
+NOVELTY_COS_THRESHOLD = float(os.environ.get("AKB2_NOVELTY_COS_THRESHOLD", "0.85"))
+# P2-2 语义判重阈值
 SAFETY_FLOOR = 0.0  # safety 命中违禁词时的返回值
 
 AUTHORITY_WHITELIST = {
@@ -241,7 +242,12 @@ class ScoreEngine:
             "author_authority": author_authority(tweet),
             "topic_relevance": topic_relevance(tweet, embedding=embedding, anchor_vecs=anchor_vecs),
             "signal_density": signal_density(tweet),
-            "novelty": novelty(tweet, self._seen_hashes, embedding=embedding, seen_embeddings=self._seen_embeddings),
+            "novelty": novelty(
+                tweet,
+                self._seen_hashes,
+                embedding=embedding,
+                seen_embeddings=self._seen_embeddings,
+            ),
             "safety": safety(tweet),
         }
         score = sum(self.weights[k] * v for k, v in dims.items())

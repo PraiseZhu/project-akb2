@@ -121,7 +121,8 @@ def _build_translate_prompt(synth: dict) -> str:
         '  "focus_discussions": [{"idx": 0, "topic": "<译文>", "summary": "<译文>"}],\n'
         '  "tweets": [{"idx": <原输入 idx 值，不可改变>, "text_zh": "<译文>", '
         '"zh_point": "<一句中文点题（≤30字）：点出这条推文的核心看点或为什么值得关注>", '
-        '"core_excerpt_en": "<仅对 is_long=true 且无 core_excerpt_en 输入：从英文原文中逐字摘出最核心1段，≤400字，必须是原文子串>", '
+        '"core_excerpt_en": "<仅对 is_long=true 且无 core_excerpt_en 输入：'
+        '从英文原文中逐字摘出最核心1段，≤400字，必须是原文子串>", '
         '"core_excerpt_zh": "<仅当输入中有 core_excerpt_en：将该英文核心段译为中文>"}]\n'
         "}\n"
         "```\n\n"
@@ -171,7 +172,8 @@ def _first_segment(text: str, max_chars: int = 400) -> str:
     return text[:max_chars].strip()
 
 
-_DEFAULT_TRANSLATE_TIMEOUT = int(os.environ.get("AKB2_TRANSLATE_TIMEOUT", "300"))   # 秒；plist/env 可覆盖（默认 300，给瞬时变慢留余量）
+_DEFAULT_TRANSLATE_TIMEOUT = int(os.environ.get("AKB2_TRANSLATE_TIMEOUT", "300"))
+# 秒；plist/env 可覆盖（默认 300，给瞬时变慢留余量）
 
 
 def translate_briefing(
@@ -277,7 +279,8 @@ def _apply_translation_inner(result: dict, trans: dict) -> dict:
             if not _is_translated_topic(topic_zh):
                 # SC-P2b-2: topic 几乎无中文（纯英文未翻译）→ 补译
                 sys.stderr.write(
-                    f"WARNING [translate]: focus_discussions[{i}].topic 未翻译（纯英文）{topic_zh!r}，尝试补译\n"
+                    f"WARNING [translate]: focus_discussions[{i}].topic "
+                    f"未翻译（纯英文）{topic_zh!r}，尝试补译\n"
                 )
                 retranslated = _translate_snippet(topic_zh)
                 fd["topic"] = retranslated if retranslated else topic_zh
@@ -345,7 +348,13 @@ def _translate_snippet(text_en: str, timeout: int = 60) -> str:
         return ""
     try:
         messages = [
-            {"role": "system", "content": "将以下英文 AI 趋势内容翻译为简体中文，保留专业名词/@id/数字，只返回译文，不加解释。"},
+            {
+                "role": "system",
+                "content": (
+                    "将以下英文 AI 趋势内容翻译为简体中文，保留专业名词/"
+                    "@id/数字，只返回译文，不加解释。"
+                ),
+            },
             {"role": "user", "content": text_en.strip()},
         ]
         return _call_llm(
@@ -356,5 +365,3 @@ def _translate_snippet(text_en: str, timeout: int = 60) -> str:
         ).strip()
     except Exception:
         return ""
-
-

@@ -43,11 +43,30 @@ def _label_for_root(path: Path, kind: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="akb2-toolbox-scan", description=__doc__)
     p.add_argument("--akb-root", required=True)
-    p.add_argument("--root", action="append", default=[], help="user-controlled root to scan (repeatable)")
-    p.add_argument("--vendor-root", action="append", default=[], help="vendor/plugin-cache root (repeatable, opt-in)")
-    p.add_argument("--project-root", action="append", default=[], help="project root for scripts/bin/tools/cli scan (repeatable)")
+    p.add_argument(
+        "--root",
+        action="append",
+        default=[],
+        help="user-controlled root to scan (repeatable)",
+    )
+    p.add_argument(
+        "--vendor-root",
+        action="append",
+        default=[],
+        help="vendor/plugin-cache root (repeatable, opt-in)",
+    )
+    p.add_argument(
+        "--project-root",
+        action="append",
+        default=[],
+        help="project root for scripts/bin/tools/cli scan (repeatable)",
+    )
     p.add_argument("--scan-scope", choices=SCAN_SCOPES, default="global")
-    p.add_argument("--previous-manifest", default=None, help="prior C-1 JSONL for duplicate detection")
+    p.add_argument(
+        "--previous-manifest",
+        default=None,
+        help="prior C-1 JSONL for duplicate detection",
+    )
     p.add_argument("--max-files-per-root", type=int, default=20000)
     p.add_argument("--out", required=True, help="manifest output path relative to akb-root")
     p.add_argument("--report", required=True, help="report output path relative to akb-root")

@@ -349,6 +349,7 @@ def test_cli_dry_run_fixture():
         ["python3", "-m", "akb2.video", "--dry-run", "--fixture"],
         capture_output=True, text=True, timeout=10,
         env=env,
+        check=False,
     )
     assert result.returncode == 0
     output = result.stdout + result.stderr
@@ -371,10 +372,11 @@ def test_cli_dry_run_no_durable_side_effects(temp_config):
     import subprocess
     env = os.environ.copy()
     env["PYTHONPATH"] = "src"
-    result = subprocess.run(
+    subprocess.run(
         ["python3", "-m", "akb2.video", "--dry-run", "--fixture"],
         capture_output=True, text=True, timeout=10,
         env=env,
+        check=False,
     )
 
     after = set(staging.glob("*")) if staging.exists() else set()

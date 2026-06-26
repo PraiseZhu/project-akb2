@@ -426,8 +426,6 @@ def test_synthesize_prompt_contains_indexed_listing(tmp_path):
 
     def fake_call(prompt: str) -> str:
         captured_prompts.append(prompt)
-        top = sorted(scored["tweets"], key=lambda t: t.get("score", 0), reverse=True)
-        ids = [str(t["id"]) for t in top[:2]]
         return _json.dumps({
             "focus_discussions": [
                 {"topic": "智能体长记忆基础设施", "summary": "第一句。第二句。第三句。", "supporting_tweet_ids": ["1", "2"]},

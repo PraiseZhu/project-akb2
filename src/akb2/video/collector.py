@@ -147,10 +147,17 @@ class VideoCollector:
         # 4. NLM 配额回填（日常模式下）
         nlm_quota = self._settings.get("nlm_daily_quota", 20)
         if not is_coldstart and len(all_candidates) < nlm_quota:
-            backfill = self._backfill_quota(all_candidates, creators, nlm_quota - len(all_candidates))
+            backfill = self._backfill_quota(
+                all_candidates,
+                creators,
+                nlm_quota - len(all_candidates),
+            )
             if backfill:
                 all_candidates.extend(backfill)
-                logger.info(f"配额回填: +{len(backfill)} 个视频 (总计 {len(all_candidates)}/{nlm_quota})")
+                logger.info(
+                    f"配额回填: +{len(backfill)} 个视频 "
+                    f"(总计 {len(all_candidates)}/{nlm_quota})"
+                )
 
         # 5. 逐个处理
         for candidate in all_candidates:
@@ -330,7 +337,11 @@ class VideoCollector:
                 "id": info.get("id", ""),
                 "bv": info.get("id", ""),
                 "title": info.get("title", ""),
-                "url": info.get("url") or info.get("webpage_url") or f"https://www.bilibili.com/video/{info.get('id', '')}",
+                "url": (
+                    info.get("url")
+                    or info.get("webpage_url")
+                    or f"https://www.bilibili.com/video/{info.get('id', '')}"
+                ),
                 "duration_minutes": duration_s / 60,
                 "upload_date": upload_date,
                 "creator": creator["name"],
@@ -418,7 +429,11 @@ class VideoCollector:
                 "platform": "youtube",
                 "id": info.get("id", ""),
                 "title": info.get("title", ""),
-                "url": info.get("url") or info.get("webpage_url") or f"https://www.youtube.com/watch?v={info.get('id', '')}",
+                "url": (
+                    info.get("url")
+                    or info.get("webpage_url")
+                    or f"https://www.youtube.com/watch?v={info.get('id', '')}"
+                ),
                 "duration_minutes": duration_s / 60,
                 "upload_date": upload_date,
                 "creator": creator["name"],

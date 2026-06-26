@@ -224,7 +224,8 @@ class Reasoner:
         prompt = (
             f"概念: {concept_name}\n\n"
             f"报告上下文: {report_context[:2000]}\n\n"
-            f"判断报告与这个概念的关系类型。合法类型: {', '.join(sorted(ALLOWED_RELATIONSHIP_TYPES))}\n"
+            "判断报告与这个概念的关系类型。合法类型: "
+            f"{', '.join(sorted(ALLOWED_RELATIONSHIP_TYPES))}\n"
             '输出 JSON: {{"relationship_type": "xxx", "reason": "..."}}'
         )
         resp = self._llm.chat(
