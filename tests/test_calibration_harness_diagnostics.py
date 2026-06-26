@@ -1009,6 +1009,112 @@ def test_stratified_factory_fails_below_live_quota():
     assert report["factory_acceptance"] is False  # live 不够配额
 
 
+# ---------------------------------------------------------------------------
+# SC-1: live floor 子契约（effective_live_positive_pass_floor）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "n,expected_floor,reason_fragment",
+    [
+        (0, 0.9, "n=0<5"),     # 无 live：不下调，0.9
+        (3, 0.9, "n=3<5"),     # n<5：不下调，0.9
+        (4, 0.9, "n=4<5"),     # n<5 边界：0.9
+        (5, 0.8, "5<=n=5<10"),  # 5<=n<10：下调到 0.8
+        (9, 0.8, "5<=n=9<10"),  # 5<=n<10 边界：0.8
+        (10, 0.9, "n=10>=10"),  # n>=10：回到 0.9
+        (15, 0.9, "n=15>=10"),  # n>=10（满仓场景）：0.9
+        (50, 0.9, "n=50>=10"),  # 大样本：0.9
+    ],
+)
+def test_effective_live_floor_calculation(n, expected_floor, reason_fragment):
+    """SC-1 live floor 子契约：按 n 计算 effective floor + reason（master-plan.md:41）。
+
+    规则：
+    - n<5 → 0.9（样本不足，不下调）
+    - 5<=n<10 → 0.8（容忍 1 条漂移）
+    - n>=10 → 0.9（回到默认）
+    - 任何情况下 floor 永不低于 0.8
+    """
+    from src.akb2.quality.calibration import _compute_effective_live_floor
+
+    floor, reason = _compute_effective_live_floor(n)
+    assert floor == expected_floor, (
+        f"n={n}: expected floor={expected_floor}, got {floor}"
+    )
+    assert 0.8 <= floor <= 0.9, f"floor {floor} 越界 [0.8, 0.9]"
+    assert reason, "reason 不能为空"
+    assert reason_fragment in reason, (
+        f"n={n}: expected reason 含 '{reason_fragment}', got '{reason}'"
+    )
+
+
+def test_effective_live_floor_in_statistics_report():
+    """SC-1: _compute_statistics 产出 effective_live_positive_pass_floor + reason 字段。"""
+    from src.akb2.quality.calibration import _compute_statistics
+
+    # n>=10 场景（满仓 15 条 live 正样本，全通过）
+    entries = [
+        {
+            "expected": "ingest", "source": "live", "passed": True,
+            "failure_segment": None, "repair_rounds": 0,
+        }
+        for _ in range(15)
+    ] + [
+        # 1 负样本
+        {
+            "expected": "reject", "source": "fixture", "passed": True,
+            "failure_segment": None, "repair_rounds": 0,
+        }
+    ]
+    report: dict[str, Any] = {"entries": entries}
+
+    _compute_statistics(report)
+
+    # 字段在场
+    assert "effective_live_positive_pass_floor" in report, "missing effective_live_positive_pass_floor"
+    assert "live_positive_pass_floor_reason" in report, "missing live_positive_pass_floor_reason"
+    # 值域 [0.8, 0.9]
+    assert 0.8 <= report["effective_live_positive_pass_floor"] <= 0.9
+    # n>=10 时为 0.9
+    assert report["effective_live_positive_pass_floor"] == 0.9, (
+        f"n=15 应 0.9，got {report['effective_live_positive_pass_floor']}"
+    )
+    # reason 非空
+    assert report["live_positive_pass_floor_reason"], "reason 为空"
+    assert "n=15>=10" in report["live_positive_pass_floor_reason"]
+
+
+def test_effective_live_floor_midrange_downgrade():
+    """SC-1: 5<=n<10 时 floor 下调到 0.8（容忍 1 条漂移）。"""
+    from src.akb2.quality.calibration import _compute_statistics
+
+    # n=7 场景：7 条 live，6 通过 1 失败（公网漂移）
+    entries = [
+        {
+            "expected": "ingest", "source": "live", "passed": True,
+            "failure_segment": None, "repair_rounds": 0,
+        }
+        for _ in range(6)
+    ] + [
+        {
+            "expected": "ingest", "source": "live", "passed": False,
+            "failure_segment": "intake_raw", "repair_rounds": 0,
+        }
+    ]
+    report: dict[str, Any] = {"entries": entries}
+
+    _compute_statistics(report)
+
+    assert report["positive_live_total"] == 7
+    assert report["effective_live_positive_pass_floor"] == 0.8, (
+        f"n=7 应 0.8，got {report['effective_live_positive_pass_floor']}"
+    )
+    assert "5<=n=7<10" in report["live_positive_pass_floor_reason"]
+    # 6/7 ≈ 0.857 >= 0.8 → live pass rate 越过 effective floor
+    assert report["positive_live_pass_rate"] >= report["effective_live_positive_pass_floor"]
+
+
 def test_stratified_diagnostic_keys_all_paths(monkeypatch):
     """SC-1: 全返回路径的 entry 都携带 7 诊断键 + source（防 all() KeyError）。"""
     from src.akb2.quality.calibration import _process_corpus_entry

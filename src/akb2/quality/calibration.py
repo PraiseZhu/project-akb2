@@ -107,6 +107,9 @@ def _init_report(total_samples: int, negative_count: int) -> dict[str, Any]:
         "positive_fixture_passed": 0,
         "positive_fixture_pass_rate": 0.0,
         "live_positive_intake_raw_failures": 0,
+        # SC-1 live floor 子契约：按 reachable live 正样本数 n 动态调整
+        "effective_live_positive_pass_floor": LIVE_POSITIVE_PASS_FLOOR,  # 默认 0.9
+        "live_positive_pass_floor_reason": "",  # 下调原因（如 "5<=n<10, 下调到 0.8"）
         "promotion_mode": promotion,
         "amendment_status": amendment,
         "per_segment_failures": {},
@@ -641,6 +644,35 @@ def _load_corpus(corpus_path: str) -> list[dict[str, Any]]:
     return data.get("entries", [])
 
 
+def _compute_effective_live_floor(n: int) -> tuple[float, str]:
+    """SC-1 live floor 子契约：按 reachable live 正样本数 n 计算 effective floor。
+
+    master-plan.md:41 规则：
+    - n<5：不下调（0.9，样本太小则补 live 或重探）
+    - 5<=n<10：下调到 0.8（最多容忍 1 条公网漂移）
+    - n>=10：回到 0.9
+    - 任何情况下 floor 永不低于 0.8
+
+    Args:
+        n: reachable live 正样本数（= positive_live_total）。
+
+    Returns:
+        (effective_floor, reason)：effective_floor ∈ [0.8, 0.9]；
+        reason 为非空字符串，说明 floor 取值依据。
+    """
+    if n < 5:
+        floor, reason = 0.9, f"n={n}<5, floor=0.9 样本不足需补 live 或重探"
+    elif n < 10:
+        floor, reason = 0.8, f"5<=n={n}<10, 下调到 0.8 容忍 1 条公网漂移"
+    else:
+        floor, reason = 0.9, f"n={n}>=10, floor=0.9 未下调"
+    # 任何情况下 floor 永不低于 0.8（防御性 clamp）
+    if floor < 0.8:
+        floor = 0.8
+        reason = f"{reason} (clamp to 0.8)"
+    return floor, reason
+
+
 def _compute_statistics(report: dict[str, Any]) -> dict[str, Any]:
     """从逐条结果计算汇总统计（含 B3-1 live/fixture 分层）。"""
     entries: list[dict] = report["entries"]
@@ -680,6 +712,13 @@ def _compute_statistics(report: dict[str, Any]) -> dict[str, Any]:
         for e in live_pos
         if e.get("failure_segment") == "intake_raw"
     )
+
+    # SC-1 live floor 子契约：按 reachable live 正样本数 n 动态计算 effective floor
+    # n<5 → 0.9；5<=n<10 → 0.8；n>=10 → 0.9；永不低于 0.8（master-plan.md:41）
+    live_n = len(live_pos)
+    effective_floor, floor_reason = _compute_effective_live_floor(live_n)
+    report["effective_live_positive_pass_floor"] = effective_floor
+    report["live_positive_pass_floor_reason"] = floor_reason
 
     # 各段失败分布
     per_segment: dict[str, int] = {}
@@ -759,12 +798,14 @@ def run_calibration(
     report = _compute_statistics(report)
 
     # 出厂判定（B3-1: 混池 AND live 层下限，fixture 不补偿 live）
+    # SC-1 live floor 子契约：用 effective_live_positive_pass_floor 替代常量
+    # （n=15 时 effective=0.9，不改变当前 factory_acceptance 行为；根因在 admission 包A）
     report["factory_acceptance"] = (
         report["positive_pass_rate"] >= 0.9
         and report["negative_reject_rate"] == 1.0
         and report["positive_live_total"] >= LIVE_POSITIVE_QUOTA
         and report["live_positive_intake_raw_failures"] == 0
-        and report["positive_live_pass_rate"] >= LIVE_POSITIVE_PASS_FLOOR
+        and report["positive_live_pass_rate"] >= report["effective_live_positive_pass_floor"]
     )
 
     # 写报告
@@ -786,10 +827,15 @@ def run_calibration(
         file=sys.stderr,
     )
     lp_rate = report['positive_live_pass_rate']
+    eff_floor = report['effective_live_positive_pass_floor']
     print(
         f"  live 正样本通过率: {lp_rate:.2%} "
         f"({report['positive_live_passed']}/{report['positive_live_total']}, "
-        f"floor={LIVE_POSITIVE_PASS_FLOOR})",
+        f"floor={eff_floor})",
+        file=sys.stderr,
+    )
+    print(
+        f"  live floor reason: {report['live_positive_pass_floor_reason']}",
         file=sys.stderr,
     )
     print(
