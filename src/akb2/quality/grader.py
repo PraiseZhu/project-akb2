@@ -479,9 +479,30 @@ def _coerce_grader_data(raw_content: str | dict) -> dict[str, Any] | None:
 
 
 def _dimension_weight_map(spec: dict[str, Any]) -> dict[str, float]:
-    """从 spec 全局 dimensions 构建 {维名: weight} 映射。"""
+    """从 spec 全局 dimensions 构建 {维名: weight} 映射（procedural 旧行为）。"""
     weights: dict[str, float] = {}
     for dim in spec.get("dimensions", []) or []:
+        if isinstance(dim, dict) and "name" in dim:
+            w = dim.get("weight", 0)
+            weights[str(dim["name"])] = float(w) if isinstance(w, (int, float)) else 0.0
+    return weights
+
+
+def _lane_weight_map(
+    spec: dict[str, Any], content_lane: str
+) -> dict[str, float]:
+    """从 spec.lanes.<lane>.dimensions 构建 {维名: weight}（step-3 SC-3d lane-aware）。
+
+    concept → lanes.concept 7 维权重；procedural/未知 → lanes.procedural 或全局（零回归）。
+    weighted_score.py 的 _lane_weight_map 同语义；此处 grader 内副本避免循环 import。
+    """
+    lane = str(content_lane or "").strip().lower()
+    lanes = spec.get("lanes", {}) or {}
+    lane_spec = lanes.get(lane)
+    if lane_spec is None:
+        lane_spec = lanes.get("procedural") or {}
+    weights: dict[str, float] = {}
+    for dim in lane_spec.get("dimensions", []) or []:
         if isinstance(dim, dict) and "name" in dim:
             w = dim.get("weight", 0)
             weights[str(dim["name"])] = float(w) if isinstance(w, (int, float)) else 0.0
@@ -532,7 +553,7 @@ def _parse_grader_extensions(
     # weighted_total = Σ(score_i × weight_i)，权重取自 rubric.yaml（改 weight 即改此值）
     weighted_total: float | None = None
     if dim_scores:
-        weights = _dimension_weight_map(spec)
+        weights = _lane_weight_map(spec, content_lane)
         weighted_total = sum(
             score * weights.get(name, 0.0) for name, score in dim_scores.items()
         )

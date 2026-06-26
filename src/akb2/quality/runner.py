@@ -994,9 +994,73 @@ def _run_quality_segments(
                 meta,
             )
 
+        # step-3 SC-3c/SC-3d concept 门不在此（移到 `if not all_defects:` 内）：
+        # 有 defects 进 repair（defects actionable），无 defects 才查 entailment/加权分。
+
     # 无缺陷 → 通过
     all_defects = a_defects + b_defects
     if not all_defects:
+        # step-3 SC-3c/SC-3d：concept 车道无 defects 后，判 F3 层② entailment + 加权分过阈
+        # （生产路径接入，防 poisoned-trace/低分被放行——codex P1 修复）。
+        # 只在无 defects 时触发：有 defects 进 repair，entailment/score 是无缺陷后的硬门。
+        # entailment 是异族 grader 地板（fail 不被加权分补偿），故先判 entailment 再判加权分。
+        if str(content_lane or "").strip().lower() == "concept":
+            entailment = grader_result.interpretation_entailment
+            if entailment is False:
+                meta = {
+                    "a_defect_count": 0, "a_defect_summary": [],
+                    "b_defect_count": 0, "b_defect_summary": [],
+                    **grader_meta,
+                    "repair_rounds": 0, "final_defects_summary": [],
+                    "interpretation_entailment": False,
+                    "rejection": "poisoned_trace",
+                    "weighted_score_not_computed": True,
+                }
+                return (
+                    False,
+                    "poisoned_trace_entailment",
+                    "F3 层② 异族 grader 判解读未从 cited anchor 推出（poisoned-trace）",
+                    meta,
+                )
+            if entailment is None:
+                # concept 必填 entailment；None=grader 未评（旧响应/fallback 残留）→ fail-closed
+                meta = {
+                    "a_defect_count": 0, "a_defect_summary": [],
+                    "b_defect_count": 0, "b_defect_summary": [],
+                    **grader_meta,
+                    "repair_rounds": 0, "final_defects_summary": [],
+                    "interpretation_entailment": None,
+                    "rejection": "entailment_not_evaluated",
+                    "weighted_score_not_computed": True,
+                }
+                return (
+                    False,
+                    "entailment_not_evaluated",
+                    "concept 车道 require interpretation_entailment，grader 未评（fail-closed）",
+                    meta,
+                )
+            # SC-3d：concept 加权质量分过阈（过阈不排序，宪法原则 8）
+            from src.akb2.quality.weighted_score import compute_weighted_score
+            score_result = compute_weighted_score(
+                grader_result.dimension_scores, content_lane
+            )
+            if not score_result.passed:
+                meta = {
+                    "a_defect_count": 0, "a_defect_summary": [],
+                    "b_defect_count": 0, "b_defect_summary": [],
+                    **grader_meta,
+                    "repair_rounds": 0, "final_defects_summary": [],
+                    "interpretation_entailment": True,
+                    "weighted_score": score_result.score,
+                    "weighted_threshold": score_result.threshold,
+                    "rejection": "weighted_score_below_threshold",
+                }
+                return (
+                    False,
+                    "weighted_score_below_threshold",
+                    f"concept 加权分 {score_result.score} < {score_result.threshold}（过阈不排序）",
+                    meta,
+                )
         _persist_grader_pass(grader_meta)
         meta = {
             "a_defect_count": 0, "a_defect_summary": [],
