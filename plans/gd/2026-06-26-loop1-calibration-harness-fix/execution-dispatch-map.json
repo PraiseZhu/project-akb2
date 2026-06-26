@@ -1,0 +1,266 @@
+{
+  "dispatch_id": "akb2-loop1-calibration-harness-fix-exec",
+  "source_master_plan": "plans/gd/2026-06-26-loop1-calibration-harness-fix/master-plan.md",
+  "goal_chain": {
+    "PROJECT_GOAL": "让 AKB2 循环1（知识库主质量管线）能跑一次可信的满仓校准，作为收口测试的前提；质量基线锚定 docs/constitution.md v1.2.0 原则 3/4/6。",
+    "CHAIN_GOAL": "把满仓校准从测试 rig 失真导致 0% 误判修成可信的正式验收测试——只修测试侧 harness，不动生产 admission/distill/checks_structural/grader/repair。",
+    "PHASE_GOAL": "包 B 执行：calibration.py 镜像 ExtractionContext + 诊断三分类 + 9 字段 frontmatter + live/fixture 分层评分；extract.py Scrapling fallback API 修复；preflight 模块 + corpus 双层 + per-entry feed 元数据扩展。"
+  },
+  "max_parallel_planning": 2,
+  "max_parallel_execution": 2,
+  "max_parallel_review": 2,
+  "max_parallel_validation": 2,
+  "tracks": [
+    {
+      "track_id": "t2a-scrapling-fix",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "src/akb2/quality/intake/extract.py",
+        "tests/test_extract_scrapling_fallback.py"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "src/akb2/quality/calibration.py",
+        "src/akb2/quality/intake/preflight.py",
+        "evals/main-pipeline-quality/",
+        "config/main_sources.yaml",
+        "src/akb2/quality/admission.py",
+        "src/akb2/quality/distill.py",
+        "src/akb2/quality/checks_structural.py",
+        "src/akb2/quality/grader.py",
+        "src/akb2/quality/repair.py"
+      ],
+      "required_context": [
+        "src/akb2/quality/intake/models.py"
+      ],
+      "deliverables": [
+        {
+          "path": "src/akb2/quality/intake/extract.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/test_extract_scrapling_fallback.py",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [],
+      "can_parallel_with": [
+        "t2b-preflight-corpus"
+      ],
+      "sc_refs": [
+        "SC-5"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-5",
+          "method": "test",
+          "cmd": "pytest tests/test_extract_scrapling_fallback.py -q",
+          "expect": "passed（无 'Fetcher' object has no attribute 'fetch'，三路径不回归）"
+        },
+        {
+          "sc_ref": "SC-5",
+          "method": "assertion",
+          "cmd": "test $(grep -c 'Fetcher.get' src/akb2/quality/intake/extract.py) -ge 1",
+          "expect": "exit 0：extract.py 含 Fetcher.get classmethod 调用"
+        }
+      ]
+    },
+    {
+      "track_id": "t2b-preflight-corpus",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "src/akb2/quality/intake/preflight.py",
+        "evals/main-pipeline-quality/",
+        "tests/test_corpus_preflight.py"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "src/akb2/quality/calibration.py",
+        "src/akb2/quality/intake/extract.py",
+        "src/akb2/quality/admission.py",
+        "src/akb2/quality/distill.py",
+        "src/akb2/quality/checks_structural.py",
+        "src/akb2/quality/grader.py",
+        "src/akb2/quality/repair.py"
+      ],
+      "required_context": [
+        "config/main_sources.yaml",
+        "src/akb2/quality/intake/models.py"
+      ],
+      "deliverables": [
+        {
+          "path": "src/akb2/quality/intake/preflight.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "evals/main-pipeline-quality/corpus.yaml",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "evals/main-pipeline-quality/fixtures",
+          "kind": "directory",
+          "must_exist": true
+        },
+        {
+          "path": "tests/test_corpus_preflight.py",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [],
+      "can_parallel_with": [
+        "t2a-scrapling-fix"
+      ],
+      "sc_refs": [
+        "SC-3",
+        "SC-7"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-3",
+          "method": "assertion",
+          "cmd": "PYTHONPATH=src python3 -m akb2.quality.intake.preflight --corpus evals/main-pipeline-quality/corpus.yaml --out reports/calibration/preflight.json && python3 -c \"import json;r=json.load(open('reports/calibration/preflight.json'));E=r['entries'];assert all({'http_status','final_url','content_type','redirect','canonical_drift','soft_404','short_body','missing_metadata'}<=set(e) for e in E),'missing fields';bad=[e for e in E if e.get('expected')=='ingest' and e.get('source')!='fixture' and ((e.get('http_status') or 0)>=400 or e.get('short_body') or e.get('soft_404'))];assert not bad, bad\"",
+          "expect": "exit 0：8 分类字段齐全 + ingest live 死链/soft-404/short_body 清零"
+        },
+        {
+          "sc_ref": "SC-7",
+          "method": "test",
+          "cmd": "pytest tests/test_corpus_preflight.py -k alignment -q",
+          "expect": "passed（双层 + corpus↔main_sources 对齐 + 9 领域配比 + live 层代表性）"
+        }
+      ]
+    },
+    {
+      "track_id": "akb2-calibration-harness-diagnostics-t1",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "src/akb2/quality/calibration.py",
+        "tests/test_calibration_harness_diagnostics.py"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "src/akb2/quality/intake/extract.py",
+        "src/akb2/quality/intake/preflight.py",
+        "evals/main-pipeline-quality/",
+        "config/main_sources.yaml",
+        "src/akb2/quality/admission.py",
+        "src/akb2/quality/distill.py",
+        "src/akb2/quality/checks_structural.py",
+        "src/akb2/quality/grader.py",
+        "src/akb2/quality/repair.py"
+      ],
+      "required_context": [
+        "src/akb2/quality/intake/extract.py",
+        "src/akb2/quality/intake/orchestrator.py",
+        "src/akb2/quality/intake/raw_archiver.py",
+        "src/akb2/quality/intake/models.py",
+        "evals/main-pipeline-quality/corpus.yaml",
+        "docs/constitution.md"
+      ],
+      "deliverables": [
+        {
+          "path": "src/akb2/quality/calibration.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/test_calibration_harness_diagnostics.py",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [
+        "t2a-scrapling-fix",
+        "t2b-preflight-corpus"
+      ],
+      "can_parallel_with": [],
+      "sc_refs": [
+        "SC-1",
+        "SC-2",
+        "SC-4",
+        "SC-6"
+      ],
+      "verify": [
+        {
+          "sc_ref": "SC-1",
+          "method": "assertion",
+          "cmd": "PYTHONPATH=src python3 -m akb2.quality.calibration --corpus evals/main-pipeline-quality/corpus.yaml --report-out reports/calibration/factory.json && python3 -c \"import json;d=json.load(open('reports/calibration/factory.json'));E=d['entries'];KEYS={'failure_class','extract_method','word_count','metadata_complete','missing_metadata','extract_error','source'};assert all(KEYS<=set(e) for e in E),'missing diag keys';assert all(e['source'] in ('fixture','live') for e in E),'bad source';assert sum(1 for e in E if e.get('expected')=='ingest' and e.get('source')=='live' and e.get('failure_segment')!='intake_raw')>=3,'live floor';assert {'positive_live_total','positive_live_pass_rate','positive_fixture_pass_rate','live_positive_intake_raw_failures'}<=set(d),'missing stratified fields';assert d['live_positive_intake_raw_failures']==0,'live stuck at intake_raw\"",
+          "expect": "exit 0：全 7 诊断键 + source∈{fixture,live} + ≥3 live 越过 intake_raw + 分层字段 + live 无 intake_raw 卡死"
+        },
+        {
+          "sc_ref": "SC-1",
+          "method": "test",
+          "cmd": "pytest tests/test_calibration_harness_diagnostics.py -k fixture_load -q",
+          "expect": "passed（SC-1a fixture loader 按名读取 fixtures/<name>.md）"
+        },
+        {
+          "sc_ref": "SC-2",
+          "method": "test",
+          "cmd": "pytest tests/test_calibration_harness_diagnostics.py -k extraction_context -q",
+          "expect": "passed（SC-2a ±ctx False→True 对照）"
+        },
+        {
+          "sc_ref": "SC-2",
+          "method": "test",
+          "cmd": "pytest tests/test_calibration_harness_diagnostics.py -k extraction_context_named_urls -q",
+          "expect": "passed（SC-2b crewai/aider/mcp 注入保存 HTML 走真实路径 False→True）"
+        },
+        {
+          "sc_ref": "SC-4",
+          "method": "test",
+          "cmd": "pytest tests/test_calibration_harness_diagnostics.py -k e2e_thin_slice -q",
+          "expect": "passed（活语料端到端薄切片越过 intake_raw）"
+        },
+        {
+          "sc_ref": "SC-6",
+          "method": "test",
+          "cmd": "pytest tests/test_calibration_harness_diagnostics.py -k raw_frontmatter -q",
+          "expect": "passed（import raw_archiver.FRONTMATTER_FIELDS 断言 9 字段 superset）"
+        }
+      ]
+    }
+  ],
+  "waves": [
+    {
+      "wave_id": "w1",
+      "track_ids": [
+        "t2a-scrapling-fix",
+        "t2b-preflight-corpus"
+      ],
+      "description": "并行执行两条 task-packet：t2a Scrapling fallback API 修复（extract.py），t2b preflight 模块 + corpus 双层 + per-entry feed 元数据扩展。owned_paths 不重叠，互不 blocked_by。"
+    },
+    {
+      "wave_id": "w2",
+      "track_ids": [
+        "akb2-calibration-harness-diagnostics-t1"
+      ],
+      "description": "串行执行 t1：calibration.py 镜像 ExtractionContext + 诊断三分类 + 9 字段 frontmatter + live/fixture 分层评分。blocked_by t2a（extract.py deliverable）+ t2b（corpus.yaml deliverable）。"
+    }
+  ],
+  "merge_gates": [
+    {
+      "gate_id": "G1",
+      "description": "child executor 只写 task_packet.owned_paths 内文件，不越界到对方 lane 或包 A"
+    },
+    {
+      "gate_id": "G2",
+      "description": "每条 SC verify 实跑（test/assertion/command），result=PASS 有 evidence，不伪报"
+    },
+    {
+      "gate_id": "G3",
+      "description": "wave 1 两个 child 都返回后主 agent 才合并并进 wave 2"
+    },
+    {
+      "gate_id": "G4",
+      "description": "t1 在 wave 2 启动前 t2a+t2b 的 deliverables 物理存在且 verified=true"
+    }
+  ],
+  "overrides_rationale": "constitution.md v1.2.0 是 master-plan GOAL_SOURCE 治理前提（计划包b依赖），CLAUDE.md 是工程文档同步（主质量管线命令+quality/loops 模块说明）。二者是计划阶段产物，虽不在 track.owned_paths（owned 是源码/测试 deliverable），但是计划包b执行的必要治理前提，非源码 deliverable 越界。建议后续单独 commit 到 main 作为计划阶段基线。"
+}

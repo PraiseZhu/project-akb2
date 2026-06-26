@@ -430,7 +430,7 @@ class TestExtractViaScrapling:
         mock_page.title = "Article From Scrapling Fetcher"
 
         with patch("scrapling.Fetcher") as MockFetcher:
-            MockFetcher.return_value.fetch.return_value = mock_page
+            MockFetcher.get.return_value = mock_page
             result = _extract_via_scrapling("https://example.com/article", browser_mode=False)
 
         assert result, "scrapling 自适应模式应返回非空 dict"
@@ -453,7 +453,7 @@ class TestExtractViaScrapling:
         mock_page.title = "Article From Scrapling StealthyFetcher"
 
         with patch("scrapling.StealthyFetcher") as MockStealthy:
-            MockStealthy.return_value.fetch.return_value = mock_page
+            MockStealthy.fetch.return_value = mock_page
             result = _extract_via_scrapling("https://example.com/article", browser_mode=True)
 
         assert result, "scrapling 浏览器模式应返回非空 dict"

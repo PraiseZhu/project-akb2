@@ -1,0 +1,172 @@
+{
+  "dispatch_id": "akb2-loop1-calibration-harness-fix",
+  "source_master_plan": "plans/gd/2026-06-26-loop1-calibration-harness-fix/master-plan.md",
+  "goal_chain": {
+    "PROJECT_GOAL": "让 AKB2 循环1（知识库主质量管线）能跑一次可信的满仓校准，作为收口测试的前提；质量基线锚定 docs/constitution.md v1.2.0 原则 3（fail-closed 门控）/4（失败可见）/6（黄金样张）。",
+    "CHAIN_GOAL": "把满仓校准从『测试 rig 失真导致 0% 误判』修成可信的正式验收测试——只修测试侧 harness（ExtractionContext 缺失、raw frontmatter 截断、报告诊断字段、corpus 死链），不动生产 admission/distill/checks_structural/grader/repair。",
+    "PHASE_GOAL": "包 B 交付：校准报告能区分死链/元数据失败/抽取失败三类；3 篇元数据失败 URL 补 ExtractionContext 后 extraction_success 由 False→True；corpus 全 URL 经 preflight 标出死链/重定向；活语料端到端薄切片能流过 intake_raw 进入判定。"
+  },
+  "max_parallel_planning": 2,
+  "max_parallel_execution": 2,
+  "max_parallel_review": 2,
+  "max_parallel_validation": 2,
+  "tracks": [
+    {
+      "track_id": "t1-calibration-core",
+      "mode": "plan",
+      "agent_role": "child_planner",
+      "owned_paths": [
+        "src/akb2/quality/calibration.py",
+        "tests/test_calibration_harness_diagnostics.py"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "src/akb2/quality/intake/extract.py",
+        "src/akb2/quality/intake/preflight.py",
+        "evals/main-pipeline-quality/",
+        "config/main_sources.yaml",
+        "src/akb2/quality/admission.py",
+        "src/akb2/quality/distill.py",
+        "src/akb2/quality/checks_structural.py",
+        "src/akb2/quality/grader.py",
+        "src/akb2/quality/repair.py"
+      ],
+      "required_context": [
+        "/Users/praise/AI-Agent/Claude/projects/Project AKB2/src/akb2/quality/calibration.py",
+        "/Users/praise/AI-Agent/Claude/projects/Project AKB2/src/akb2/quality/intake/extract.py",
+        "/Users/praise/AI-Agent/Claude/projects/Project AKB2/src/akb2/quality/intake/orchestrator.py",
+        "/Users/praise/AI-Agent/Claude/projects/Project AKB2/src/akb2/quality/intake/raw_archiver.py",
+        "/Users/praise/AI-Agent/Claude/projects/Project AKB2/src/akb2/quality/intake/models.py",
+        "/Users/praise/AI-Agent/Claude/projects/Project AKB2/docs/constitution.md",
+        "/Users/praise/AI-Agent/Claude/projects/Project GD/templates/gd-step-plan-template.md",
+        "/Users/praise/AI-Agent/Claude/projects/Project GD/templates/gd-task-packet-template.md",
+        "/Users/praise/AI-Agent/Claude/projects/Project GD/prompts/gd-review-standard.md"
+      ],
+      "deliverables": [
+        {
+          "path": "plans/gd/2026-06-26-loop1-calibration-harness-fix/child-proposals/t1-calibration-core-proposal.md",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [],
+      "can_parallel_with": ["t2-intake-corpus"],
+      "sc_refs": ["SC-1", "SC-2", "SC-4", "SC-6"],
+      "verify": [
+        {
+          "sc_ref": "SC-1",
+          "method": "assertion",
+          "cmd": "PYTHONPATH=src python3 -m akb2.quality.calibration --corpus evals/main-pipeline-quality/corpus.yaml --report-out reports/calibration/factory.json && python3 -c \"import json;d=json.load(open('reports/calibration/factory.json'));E=d['entries'];KEYS={'failure_class','extract_method','word_count','metadata_complete','missing_metadata','extract_error','source'};assert all(KEYS<=set(e) for e in E);assert all(e['source'] in ('fixture','live') for e in E);assert sum(1 for e in E if e.get('expected')=='ingest' and e.get('source')=='live' and e.get('failure_segment')!='intake_raw')>=3;assert {'positive_live_total','positive_live_pass_rate','positive_fixture_pass_rate','live_positive_intake_raw_failures'}<=set(d);assert d['live_positive_intake_raw_failures']==0\"",
+          "expect": "退出码 0：先重生成报告，再断言全 7 诊断键 + source in {fixture,live} + >=3 source=='live' ingest 越过 intake_raw + 分层字段在场 + live_positive_intake_raw_failures==0（B3-1/B3-2，防 fixture 灌绿/陈旧文件/混池掩盖）"
+        },
+        {
+          "sc_ref": "SC-1",
+          "method": "test",
+          "cmd": "pytest tests/test_calibration_harness_diagnostics.py -k fixture_load -q",
+          "expect": "passed（SC-1a fixture loader 按名读取 evals/main-pipeline-quality/fixtures/<name>.md，非 google-io fixture 不再卡 intake_raw；schema sc_ref 仅允许 SC-[0-9]+ 故归并 SC-1）"
+        },
+        {
+          "sc_ref": "SC-2",
+          "method": "test",
+          "cmd": "pytest tests/test_calibration_harness_diagnostics.py -k extraction_context -q",
+          "expect": "passed（SC-2a 无条件 mock ExtractResult ± ctx False->True 对照）"
+        },
+        {
+          "sc_ref": "SC-2",
+          "method": "test",
+          "cmd": "pytest tests/test_calibration_harness_diagnostics.py -k extraction_context_named_urls -q",
+          "expect": "passed（SC-2b crewai/aider/mcp 各注入保存 HTML 走真实 extract_content 路径 False->True，恢复 3 具名 URL，B3-6；schema sc_ref 仅允许 SC-[0-9]+ 故归并 SC-2）"
+        },
+        {
+          "sc_ref": "SC-4",
+          "method": "test",
+          "cmd": "pytest tests/test_calibration_harness_diagnostics.py -k e2e_thin_slice -q",
+          "expect": "passed"
+        },
+        {
+          "sc_ref": "SC-6",
+          "method": "test",
+          "cmd": "pytest tests/test_calibration_harness_diagnostics.py -k raw_frontmatter -q",
+          "expect": "passed（SC-6 测试 import raw_archiver.FRONTMATTER_FIELDS 断言 set(keys)>=set(FRONTMATTER_FIELDS) 全 9 字段，B3-7）"
+        }
+      ]
+    },
+    {
+      "track_id": "t2-intake-corpus",
+      "mode": "plan",
+      "agent_role": "child_planner",
+      "owned_paths": [
+        "src/akb2/quality/intake/extract.py",
+        "src/akb2/quality/intake/preflight.py",
+        "evals/main-pipeline-quality/",
+        "tests/test_extract_scrapling_fallback.py",
+        "tests/test_corpus_preflight.py"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "src/akb2/quality/calibration.py",
+        "src/akb2/quality/admission.py",
+        "src/akb2/quality/distill.py",
+        "src/akb2/quality/checks_structural.py",
+        "src/akb2/quality/grader.py",
+        "src/akb2/quality/repair.py"
+      ],
+      "required_context": [
+        "/Users/praise/AI-Agent/Claude/projects/Project AKB2/src/akb2/quality/intake/extract.py",
+        "/Users/praise/AI-Agent/Claude/projects/Project AKB2/src/akb2/quality/calibration.py",
+        "/Users/praise/AI-Agent/Claude/projects/Project AKB2/src/akb2/quality/intake/models.py",
+        "/Users/praise/AI-Agent/Claude/projects/Project AKB2/evals/main-pipeline-quality/corpus.yaml",
+        "/Users/praise/AI-Agent/Claude/projects/Project AKB2/config/main_sources.yaml",
+        "/Users/praise/AI-Agent/Claude/projects/Project AKB2/docs/constitution.md",
+        "/Users/praise/AI-Agent/Claude/projects/Project GD/templates/gd-step-plan-template.md",
+        "/Users/praise/AI-Agent/Claude/projects/Project GD/templates/gd-task-packet-template.md",
+        "/Users/praise/AI-Agent/Claude/projects/Project GD/prompts/gd-review-standard.md"
+      ],
+      "deliverables": [
+        {
+          "path": "plans/gd/2026-06-26-loop1-calibration-harness-fix/child-proposals/t2-intake-corpus-proposal.md",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [],
+      "can_parallel_with": ["t1-calibration-core"],
+      "sc_refs": ["SC-3", "SC-5", "SC-7"],
+      "verify": [
+        {
+          "sc_ref": "SC-3",
+          "method": "assertion",
+          "cmd": "PYTHONPATH=src python3 -m akb2.quality.intake.preflight --corpus evals/main-pipeline-quality/corpus.yaml --out reports/calibration/preflight.json && python3 -c \"import json;r=json.load(open('reports/calibration/preflight.json'));E=r['entries'];assert all({'http_status','final_url','content_type','redirect','canonical_drift','soft_404','short_body','missing_metadata'}<=set(e) for e in E);bad=[e for e in E if e.get('expected')=='ingest' and e.get('source')!='fixture' and ((e.get('http_status') or 0)>=400 or e.get('short_body') or e.get('soft_404'))];assert not bad, bad\"",
+          "expect": "exit 0：entries[] 含 8 分类字段（含 soft_404）+ 回显 expected/source；ingest live 集 http_status>=400/short_body/soft_404 清零（bad-list 闭合断言非仅字段查，B3-3）"
+        },
+        {
+          "sc_ref": "SC-5",
+          "method": "test",
+          "cmd": "pytest tests/test_extract_scrapling_fallback.py -q",
+          "expect": "passed（无 'Fetcher' object has no attribute 'fetch'）"
+        },
+        {
+          "sc_ref": "SC-7",
+          "method": "test",
+          "cmd": "pytest tests/test_corpus_preflight.py -k alignment -q",
+          "expect": "passed（双层存在 + corpus↔main_sources 对齐 + 9 领域配比守恒 + live 层代表性每非豁免领域>=1 live、fixture_only_domains 具名豁免，B3-5）"
+        }
+      ]
+    }
+  ],
+  "waves": [
+    {
+      "wave_id": "w1",
+      "track_ids": ["t1-calibration-core", "t2-intake-corpus"],
+      "description": "并行规划两条 lane：t1 校准核心（calibration.py + 诊断/ExtractionContext/raw frontmatter），t2 抽取与语料（extract.py Scrapling 修复 + corpus 双层 + preflight）。owned_paths 无重叠，互不依赖。"
+    }
+  ],
+  "merge_gates": [
+    {"gate_id": "G1", "description": "child planner 输出格式合规（按 gd-child-plan-prompt-template 的 proposal block + step/task-packet 草稿）"},
+    {"gate_id": "G2", "description": "child 提议的 task packet owned_paths 全在本 lane 边界内，不越界到对方 lane 或包 A 文件"},
+    {"gate_id": "G3", "description": "提议中无裸 VERDICT/GD_REVIEW_DECISION 字段（计划工件应用 SC + verify）"},
+    {"gate_id": "G4", "description": "每条 SC 绑定可执行 verify（命令/路径/断言/测试之一）"},
+    {"gate_id": "G5", "description": "并行 wave w1 两个 child 都返回后主 agent 才合并"},
+    {"gate_id": "G6", "description": "两 lane 提议冲突（如 extract.py 归属、corpus 元数据契约）时主 agent 在 merge report 写仲裁理由"}
+  ]
+}

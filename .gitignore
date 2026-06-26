@@ -80,3 +80,4 @@ data/star_history.sqlite
 # 输出路径含 "Praise Space" 前缀(与主简报约定一致, 见 pipeline.py OUTPUT_DIR_TEMPLATE)
 tests/fixtures/vault-stub/Praise Space/AKB2.0/AI TRENDS/GitHub/*.md
 tests/fixtures/vault-stub/Praise Space/AKB2.0/AI TRENDS/GitHub/*.json
+evals/main-pipeline-quality/fixtures/raw-html/

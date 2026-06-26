@@ -93,6 +93,6 @@ briefing pipeline 的三重断言保证：stdout 的 `proposed_gate_decision` ==
 
 ## 其他
 
-- 工作流：`创建 MR` → 开发 → `提交代码` → `提交 MR`（10 维度审查）→ GitLab 手动 merge；版本规范见 `VERSIONING.md`
+- 工作流：`创建 PR` → 开发 → `提交代码` → `提交 PR`（10 维度审查）→ GitHub 手动 merge；版本规范见 `VERSIONING.md`
 - `docs/runbooks/`、`docs/mac-mini-deployment-notes.md` 为部署运维参考
 - 敏感文件（`.env`、`*.key`、token）绝不入 git；`config/*.env.example` 为模板；`data/` 大文件加 `.nosync` 后缀；`history/` 不入 git
