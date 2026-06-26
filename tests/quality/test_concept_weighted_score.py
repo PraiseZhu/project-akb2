@@ -94,3 +94,14 @@ class TestConceptWeightedScore:
         """DEFAULT_THRESHOLD 兜底常量与 spec threshold 一致。"""
         spec = _load_rubric_spec()
         assert DEFAULT_THRESHOLD == float(spec["threshold"])
+
+    def test_missing_dims_fail_closed(self):
+        """codex worker #2：缺维（只给部分 concept 维 score）→ fail-closed reject，不静默放行。
+
+        之前只累加 present 维，5 维高分可过阈；修复后 concept 要求全 7 维到齐，缺维 → score=0 拒。
+        """
+        w = _concept_weights()
+        partial = {name: 1.0 for name in list(w)[:5]}  # 只给 5 维（缺 2 维）
+        r = compute_weighted_score(partial, "concept")
+        assert r.passed is False
+        assert r.score == 0.0  # 缺维 → fail-closed，不靠 present 高分放行

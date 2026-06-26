@@ -91,6 +91,21 @@ def compute_weighted_score(
         s = sc if isinstance(sc, (int, float)) else 0.0
         score += s * weights[name]
 
+    # concept: 要求所有 lane 维度都有 score（缺维 = 评估不完整 → fail-closed，不静默放行）。
+    # codex worker #2：之前只累加 present 维，缺维被静默忽略，高 present 分可过阈。
+    missing_dims: list[str] = []
+    if str(content_lane or "").strip().lower() == "concept":
+        missing_dims = sorted(set(weights.keys()) - set(dimension_scores.keys()))
+        if missing_dims:
+            # 缺维 → 评估不完整，fail-closed（score=0 拒，不靠 present 维高分放行）
+            return ScoreResult(
+                score=0.0,
+                threshold=threshold,
+                passed=False,
+                lane=content_lane,
+                dimension_weights=weights,
+            )
+
     return ScoreResult(
         score=score,
         threshold=threshold,
