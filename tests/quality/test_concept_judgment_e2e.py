@@ -179,6 +179,30 @@ class TestNegatives:
         assert not passed
         assert "poisoned-trace" in reason
 
+    def test_negatives_rewrite_rejected_by_novelty(self):
+        """洗稿（rewrite）被 admission novelty 拦（master SC-3 三类之一：洗稿）。
+
+        有 wiki_references 时 _check_novelty 调 LLM 判增量；mock 返回零增量 → fail。
+        洗稿在生产 runner 路径的完整接线由 SC-6（test_admission_novelty_wiring）覆盖，
+        本测试在 SC-3 negatives 集合内交叉确认洗稿判定存在。
+        """
+        from src.akb2.quality.admission import _check_novelty
+        from src.akb2.quality.llm_router import LLMResponse
+
+        def _mock_route(model_family, messages, response_schema=None, **kw):
+            return LLMResponse(
+                content={"pass": False, "reason": "与既有 wiki 高度重叠，零增量"},
+                model_used="gemini-2.5-flash",
+            )
+
+        check = _check_novelty(
+            raw_content="某概念内容，与既有 wiki 高度重叠的洗稿",
+            wiki_references=["既有 wiki: 某概念机制说明"],
+            route_llm_fn=_mock_route,
+        )
+        assert check.passed is False
+        assert "增量" in check.reason or "重叠" in check.reason
+
 
 # ----------------------------- adversarial ----------------------------- #
 

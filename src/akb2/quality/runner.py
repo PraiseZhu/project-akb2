@@ -902,7 +902,12 @@ def _run_quality_segments(
         }
     """
     from src.akb2.quality.checks_structural import run_candidate_self_gate
-    from src.akb2.quality.grader import RUBRIC_DIMENSIONS, run_grader_detailed
+    from src.akb2.quality.grader import (
+        REQUIRED_RUBRIC_VERSION,
+        RUBRIC_DIMENSIONS,
+        _dimensions_for_lane,
+        run_grader_detailed,
+    )
     from src.akb2.quality.repair import run_repair_loop
 
     def _defect_summary(defects: list[Any]) -> list[dict[str, str]]:
@@ -936,7 +941,13 @@ def _run_quality_segments(
             json.dumps(
                 {
                     "status": status,
-                    "dimensions_checked": len(RUBRIC_DIMENSIONS),
+                    # codex worker #3：lane-aware dimensions_checked（concept=7, procedural=10）
+                    "dimensions_checked": len(_dimensions_for_lane(content_lane)),
+                    "content_lane": content_lane,
+                    "rubric_version": REQUIRED_RUBRIC_VERSION,
+                    "interpretation_entailment": grader_meta.get("interpretation_entailment"),
+                    "weighted_score": grader_meta.get("weighted_score"),
+                    "weighted_threshold": grader_meta.get("weighted_threshold"),
                     "findings": [],
                     "model_used": grader_meta.get("grader_model_used", ""),
                     "primary_model": grader_meta.get("grader_primary_model", ""),
