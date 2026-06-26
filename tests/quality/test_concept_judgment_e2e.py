@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from src.akb2.quality.grader import (
     RUBRIC_DIMENSIONS_BY_LANE,
@@ -117,11 +117,31 @@ def _run_judgment(extract: dict, grader_content: dict) -> tuple[bool, str]:
 
 class TestConceptPositive:
     def test_concept_positive_passes(self):
-        """concept 正样本：floor 过 + grader 全 pass + entailment=true + 高分 → pass。"""
-        extract = _concept_positive_extract()
-        grader = _concept_grader_response(all_pass=True, entailment=True, score=1.0)
-        passed, reason = _run_judgment(extract, grader)
-        assert passed, f"正样本应 pass，实际拒于 {reason}"
+        """concept 正样本走 **runner quality segment** → converged=True（proposal_passed）。
+
+        codex worker #1：之前用 _run_judgment thin slice（floor+grader+score helper），
+        没覆盖 runner 真链路。改成跑 _run_quality_segments（self-gate + grader + concept 硬门），
+        mock self-gate 通过 + grader 全维满分+entailment=true + floor 过 → converged=True。
+        """
+        from src.akb2.quality.grader import GraderResult, PRIMARY_GRADER_MODEL
+        from src.akb2.quality.integrity_floor import FloorResult
+        from src.akb2.quality.runner import _run_quality_segments
+
+        high = {d: 1.0 for d in RUBRIC_DIMENSIONS_BY_LANE["concept"]}  # 全维满分 → 10.0
+        grader = GraderResult(
+            defects=[], model_used="gpt-5.4", suspended=False,
+            primary_model=PRIMARY_GRADER_MODEL, content_lane="concept",
+            interpretation_entailment=True, dimension_scores=high,
+        )
+        with patch("src.akb2.quality.checks_structural.run_candidate_self_gate", return_value=[]), \
+             patch("src.akb2.quality.grader.run_grader_detailed", return_value=grader):
+            converged, error_class, _, _ = _run_quality_segments(
+                "concept candidate", "/tmp/x.md", "raw", config=None,
+                content_lane="concept",
+                floor_result=FloorResult(passed=True, failed_floors=[], reason="", content_lane="concept"),
+            )
+        assert converged, f"concept 正样本应 proposal_passed，实际 error={error_class}"
+        assert error_class == ""
 
 
 # ----------------------------- negatives ----------------------------- #
