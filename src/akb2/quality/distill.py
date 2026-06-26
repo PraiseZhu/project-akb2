@@ -49,6 +49,11 @@ MAX_EXTRACT_RETRIES: int = 3
 MAX_EXTRACT_CHARS: int = 50_000
 # how_steps 可执行下限：prompt 要求 ≥3 条 executable=true 且 command 非空（How 可执行性）
 HOW_STEPS_MIN_EXECUTABLE: int = 3
+# step-3 SC-3a/A3-5：concept 车道命名机制组件下限（F4 结构真相源）。
+# concept extract 改判 len(mechanism_components)≥3（替代 procedural 的 executable≥3 门）。
+CONCEPT_MIN_MECHANISM_COMPONENTS: int = 3
+# step-1 content_lane 枚举：concept（概念型）/ procedural（操作型，默认兼容）。
+CONTENT_LANE_CONCEPT: str = "concept"
 HOW_STEPS_MAX_RENDERED: int = 3
 CLAIMS_MAX_ITEMS: int = 5
 GATE_REASON_MAX_CHARS: int = 150
@@ -173,8 +178,43 @@ _EXTRACT_SCHEMA: dict[str, Any] = {
                         "type": "string",
                         "enum": ["source_operation", "source_fact", "akb_interpretation"],
                     },
+                    # step-3 SC-3a：三级 how 标注（H1/H2/H3），非 required（旧响应兼容）。
+                    "how_level": {
+                        "type": "string",
+                        "enum": ["H1", "H2", "H3"],
+                    },
                 },
                 "required": ["instruction", "command", "executable"],
+                "additionalProperties": False,
+            },
+            "minItems": 0,
+        },
+        # step-3 SC-3a/A3-5：命名机制组件 + 因果边（concept F4 结构真相源）。
+        # 顶层 minItems=0 非 required——procedural 零回归（不产），concept 由
+        # _validate_extract_output 按 lane 硬卡 ≥3；F4 只读这两字段不反解 H3 标签。
+        "mechanism_components": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "minLength": 1},
+                    "role": {"type": "string"},
+                },
+                "required": ["name"],
+                "additionalProperties": False,
+            },
+            "minItems": 0,
+        },
+        "causal_edges": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "from": {"type": "string", "minLength": 1},
+                    "to": {"type": "string", "minLength": 1},
+                    "relation": {"type": "string"},
+                },
+                "required": ["from", "to"],
                 "additionalProperties": False,
             },
             "minItems": 0,
@@ -297,8 +337,48 @@ _HOW_PARAMS_SCHEMA: dict[str, Any] = {
                     "instruction": {"type": "string", "minLength": 2},
                     "command": {"type": "string"},
                     "executable": {"type": "boolean"},
+                    # step-3 SC-3a：三级 how 标注（H1 命令级 / H2 数据流-状态-接口 /
+                    # H3 命名机制组件+因果边）。normalize 阶段（_normalize_how_step）
+                    # 必为每条注入 how_level（默认 H1），故此字段 required——出站 strict
+                    # schema 不留缺字段口子；concept 车道允许 H1==0（地板改判 F4 结构字段）。
+                    "how_level": {
+                        "type": "string",
+                        "enum": ["H1", "H2", "H3"],
+                    },
                 },
-                "required": ["instruction", "command", "executable"],
+                "required": ["instruction", "command", "executable", "how_level"],
+                "additionalProperties": False,
+            },
+            "minItems": 0,
+        },
+        # step-3 SC-3a/A3-5：命名机制组件数组（concept F4 的结构真相源）。
+        # 顶层 required + minItems=0——procedural 不产组件时为空数组（零回归），concept
+        # 由 _validate_extract_output 按 lane 硬卡 ≥3。组件 role normalize 必填（默认 ""）。
+        "mechanism_components": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "minLength": 1},
+                    "role": {"type": "string"},
+                },
+                "required": ["name", "role"],
+                "additionalProperties": False,
+            },
+            "minItems": 0,
+        },
+        # step-3 SC-3a/A3-5：因果边数组，from/to 必须指向 mechanism_components 的 name。
+        # F4 只读此结构字段判机制完整性，不从自然语言反解 H3 标签。relation normalize 必填。
+        "causal_edges": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "from": {"type": "string", "minLength": 1},
+                    "to": {"type": "string", "minLength": 1},
+                    "relation": {"type": "string"},
+                },
+                "required": ["from", "to", "relation"],
                 "additionalProperties": False,
             },
             "minItems": 0,
@@ -317,7 +397,7 @@ _HOW_PARAMS_SCHEMA: dict[str, Any] = {
             "minItems": 0,
         },
     },
-    "required": ["how_steps", "param_entries"],
+    "required": ["how_steps", "mechanism_components", "causal_edges", "param_entries"],
     "additionalProperties": False,
 }
 
@@ -578,9 +658,16 @@ def _build_extract_segment_messages(
             "- tldr 是综合全文主旨，不是复制单条 claim。"
         ),
         "how_params": (
-            "只抽取 how_steps 与 param_entries。\n"
-            "- how_steps: 对象数组 {instruction, command, executable}，"
-            "至少 3 条 executable=true 且 command 非空。\n"
+            "抽取 how_steps、mechanism_components、causal_edges 与 param_entries。\n"
+            "- how_steps: 对象数组 {instruction, command, executable, how_level}；"
+            "操作型原文至少 3 条 executable=true 且 command 非空。\n"
+            "- how_level: 标注每步的机制层级——H1=命令级（可直接执行的命令/调用）；"
+            "H2=数据流/状态/接口说明级（讲清数据怎么流、状态怎么变、接口怎么对接）；"
+            "H3=命名机制组件+因果边级（讲清是哪几个命名组件、组件间因果如何驱动）。\n"
+            "- mechanism_components: 命名机制组件数组，每项 {name, role}——概念型原文须 ≥3 个"
+            "命名组件（如 'work_selector'/'quality_gate'），role 写该组件在机制里的职责。\n"
+            "- causal_edges: 因果边数组，每项 {from, to, relation}，from/to 必须是"
+            "mechanism_components 里的 name，relation 写因果关系（如 activates/feeds/writes_to）。\n"
             "- 只抽取原文明确给出的步骤、组件、流程或配置，不要补 AKB 自己的命令。\n"
             "- param_entries: 参数/配置/选项数组，每项 {key, value}；value 统一写成字符串。"
         ),
@@ -665,6 +752,12 @@ def _normalize_extract_segment(
                 _normalize_how_step(item, idx)
                 for idx, item in enumerate(parsed.get("how_steps", []), 1)
             ],
+            # step-3 SC-3a/A3-5：concept F4 结构真相源——命名机制组件 + 因果边。
+            # 从 how_params segment 原始响应携出（procedural 不产 → 归一为空数组，零回归）。
+            "mechanism_components": _normalize_mechanism_components(
+                parsed.get("mechanism_components")
+            ),
+            "causal_edges": _normalize_causal_edges(parsed.get("causal_edges")),
             "param_entries": [
                 _normalize_param_entry(item)
                 for item in (param_entries or [])
@@ -853,31 +946,97 @@ def _normalize_how_step(item: Any, idx: int) -> dict[str, Any]:
             default="",
         )
         provenance = str(item.get("provenance") or "").strip()
+        raw_how_level = str(item.get("how_level") or "").strip().upper()
     else:
         instruction = str(item).strip()
         command = ""
         executable = None
         anchor = ""
         provenance = ""
+        raw_how_level = ""
     if not command and instruction:
         command = _infer_source_command_from_instruction(instruction)
     command = _expand_placeholder_command(command, instruction, idx)
     if provenance not in {"source_grounded", "akb_interpretation"}:
         provenance = "source_grounded" if anchor else "akb_interpretation"
+    final_command = command
+    final_executable = bool(command) if executable is None else bool(executable)
     normalized = {
         "instruction": instruction,
-        "command": command,
-        "executable": bool(command) if executable is None else bool(executable),
+        "command": final_command,
+        "executable": final_executable,
         "anchor": anchor,
         "provenance": provenance,
         # step-5: 三态细分标注层（source_operation / source_fact / akb_interpretation）。
         # 与 provenance 二态并存：source_grounded → source_operation|source_fact；
         # akb_interpretation → akb_interpretation。消费者仍读 marker，本字段仅标注。
         "provenance_split": how_step_provenance_split(
-            {"provenance": provenance}, command, anchor
+            {"provenance": provenance}, final_command, anchor
         ),
+        # step-3 SC-3a：三级 how 标注。LLM 给的 H1/H2/H3 直采；否则按结构兜底——
+        # 有可执行命令 → H1（命令级）；无命令的 how 不能标 H1（concept 机制说明不是命令），
+        # 兜底 H2（数据流/状态/接口说明级）。H3 由 LLM 显式标，不从命令反推。
+        "how_level": _normalize_how_level(raw_how_level, final_command, final_executable),
     }
     return normalized
+
+
+def _normalize_how_level(raw_how_level: str, command: str, executable: bool) -> str:
+    """归一 how_level（H1/H2/H3），按结构兜底缺失值。
+
+    SC-3a/风险表：concept 无 command 的 how 不标 H1（否则地板误判 concept H1≥1）。
+    - LLM 显式给 H1/H2/H3 → 直采。
+    - 缺失且有可执行命令 → H1（命令级）。
+    - 缺失且无命令 → H2（说明级，非命令）；H3 须 LLM 显式标，不从命令反推。
+    """
+    if raw_how_level in {"H1", "H2", "H3"}:
+        return raw_how_level
+    if executable and command.strip():
+        return "H1"
+    return "H2"
+
+
+def _normalize_mechanism_components(raw: Any) -> list[dict[str, str]]:
+    """归一命名机制组件数组（concept F4 结构真相源）。
+
+    每项 → {name, role}（role 默认 ""，满足 strict schema required）。无名字的项丢弃。
+    procedural 不产此字段 → 返回空数组（零回归）。
+    """
+    if not isinstance(raw, list):
+        return []
+    components: list[dict[str, str]] = []
+    for item in raw:
+        if isinstance(item, dict):
+            name = str(item.get("name") or item.get("component") or "").strip()
+            role = str(item.get("role") or "").strip()
+        elif isinstance(item, str):
+            name = item.strip()
+            role = ""
+        else:
+            continue
+        if name:
+            components.append({"name": name, "role": role})
+    return components
+
+
+def _normalize_causal_edges(raw: Any) -> list[dict[str, str]]:
+    """归一因果边数组（from→to 指向命名组件）。
+
+    每项 → {from, to, relation}（relation 默认 ""，满足 strict schema required）。
+    缺 from/to 的项丢弃。procedural 不产 → 返回空数组（零回归）。
+    """
+    if not isinstance(raw, list):
+        return []
+    edges: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        src = str(item.get("from") or item.get("source") or "").strip()
+        dst = str(item.get("to") or item.get("target") or "").strip()
+        relation = str(item.get("relation") or item.get("relation_type") or "").strip()
+        if src and dst:
+            edges.append({"from": src, "to": dst, "relation": relation})
+    return edges
 
 
 def _infer_source_command_from_instruction(instruction: str) -> str:
@@ -1078,18 +1237,23 @@ def _validate_extract_segment(segment_name: str, data: dict[str, Any]) -> None:
     schema = _DISTILL_SEGMENT_SCHEMAS[segment_name]
     data_for_schema = data
     if segment_name == "how_params":
-        # how_params 出站 strict schema 只暴露 3 个模型字段；anchor/provenance
-        # 是本地 normalizer 为正文锚定补的内部字段，不能反过来污染 strict schema。
+        # how_params 出站 strict schema 暴露 3 个模型字段 + how_level（normalize 必填）；
+        # anchor/provenance/provenance_split 是本地 normalizer 为正文锚定补的内部字段，
+        # 不进 strict schema。step-3：how_level + mechanism_components/causal_edges 是
+        # concept F4 结构真相源，必须随 segment 校验（strict required 已覆盖）。
         data_for_schema = {
             "how_steps": [
                 {
                     "instruction": step.get("instruction", ""),
                     "command": step.get("command", ""),
                     "executable": bool(step.get("executable")),
+                    "how_level": step.get("how_level", "H1"),
                 }
                 for step in data.get("how_steps", [])
                 if isinstance(step, dict)
             ],
+            "mechanism_components": data.get("mechanism_components", []),
+            "causal_edges": data.get("causal_edges", []),
             "param_entries": data.get("param_entries", []),
         }
     try:
@@ -1298,6 +1462,9 @@ def _merge_extract_segments(
     merged = {
         "claims": claims,
         "how_steps": how_steps,
+        # step-3 SC-3a/A3-5：concept F4 结构真相源随 merged 输出携出（procedural 空数组）。
+        "mechanism_components": how_params.get("mechanism_components", []),
+        "causal_edges": how_params.get("causal_edges", []),
         "params": params,
         "referenced_concepts": enrichment["referenced_concepts"],
         "tldr": segments["claims"].get("tldr", ""),
@@ -1380,14 +1547,19 @@ def _build_local_enrichment(
     }
 
 
+def _is_concept_lane(content_lane: str) -> bool:
+    """判断 content_lane 是否为概念型车道（concept）。其余（含空串）按 procedural 兼容。"""
+    return str(content_lane or "").strip().lower() == CONTENT_LANE_CONCEPT
+
+
 def _validate_extract_output(data: dict[str, Any], content_lane: str = "") -> None:
-    """校验抽取输出的结构完整性。
+    """校验抽取输出的结构完整性（lane-aware，SC-3a/A3-1）。
 
     Args:
         data: 抽取输出 dict。
-        content_lane: 内容车道（step-1 透传字段）。**本 step 行为不变**——H1≥3 门对
-            所有 lane 维持旧判定；concept 改判（允许 H1=0、改判 H3≥3）属 step-3 Step.1。
-            形参就位是为 step-3 lane-aware 校验预留，本 step 不消费它改判定。
+        content_lane: 内容车道（concept/procedural）。procedural（默认）保留
+            executable≥3 extract 门（零回归）；concept 改判 mechanism_components≥3
+            （允许 H1==0、不卡 executable），核心价值是命名机制组件+因果边。
 
     Raises:
         ValueError: 校验未通过。
@@ -1449,24 +1621,42 @@ def _validate_extract_output(data: dict[str, Any], content_lane: str = "") -> No
             f"（可直接引用原文的 claim 必须用 source_grounded）"
         )
 
-    # 3.6 how_steps 可执行数量校验：prompt 已要求 ≥3 条 executable=true 且 command 非空，
-    # 此处兜底——否则真实 extract 可合法通过但成稿缺 How 可执行性（rubric How 密度/可执行性）。
+    # 3.6 how_steps 可执行数量校验（lane-aware，SC-3a/A3-1）：
+    # - procedural（默认/兼容）：保留 ≥3 条 executable=true 且 command 非空的 extract 门
+    #   （零回归）——否则真实 extract 可合法通过但成稿缺 How 可执行性（rubric How 密度）。
+    # - concept：改判 len(mechanism_components)≥3（允许 H1==0、不卡 executable）——概念型
+    #   知识的核心价值是命名机制组件+因果边（F4 结构真相源），不是命令密度。
     # 注：本校验作用于 extract 输出（maker 提案层），命令是否最终渲染进候选页由
     # _build_body 的 emission-前回查 raw 护栏裁决（治本2）；此处只保证 maker 提出了
-    # 足量可执行候选步骤。
+    # 足量可执行候选步骤 / 足量命名机制组件。
     how_steps = data.get("how_steps", []) or []
-    executable_steps = sum(
-        1
-        for s in how_steps
-        if isinstance(s, dict)
-        and s.get("executable") is True
-        and str(s.get("command", "")).strip()
-    )
-    if executable_steps < HOW_STEPS_MIN_EXECUTABLE:
-        raise ValueError(
-            f"how_steps 可执行步骤 {executable_steps} < {HOW_STEPS_MIN_EXECUTABLE}"
-            f"（需 executable=true 且 command 非空的可复制步骤）"
+    if _is_concept_lane(content_lane):
+        mechanism_components = data.get("mechanism_components", []) or []
+        named_components = [
+            c
+            for c in mechanism_components
+            if isinstance(c, dict) and str(c.get("name", "")).strip()
+        ]
+        if len(named_components) < CONCEPT_MIN_MECHANISM_COMPONENTS:
+            raise ValueError(
+                f"concept 车道 mechanism_components 命名组件 {len(named_components)} "
+                f"< {CONCEPT_MIN_MECHANISM_COMPONENTS}"
+                f"（概念型知识须 ≥{CONCEPT_MIN_MECHANISM_COMPONENTS} 个命名机制组件，"
+                "F4 结构真相源）"
+            )
+    else:
+        executable_steps = sum(
+            1
+            for s in how_steps
+            if isinstance(s, dict)
+            and s.get("executable") is True
+            and str(s.get("command", "")).strip()
         )
+        if executable_steps < HOW_STEPS_MIN_EXECUTABLE:
+            raise ValueError(
+                f"how_steps 可执行步骤 {executable_steps} < {HOW_STEPS_MIN_EXECUTABLE}"
+                f"（需 executable=true 且 command 非空的可复制步骤）"
+            )
 
     # 4. 新增字段非空校验
     tldr = data.get("tldr", "")
@@ -1526,10 +1716,14 @@ def build_deterministic_extract_result(
     goes through local structural checks, GPT-5.4 grading, repair, and five-gate
     proposal handling.
 
-    content_lane（step-1 透传字段）传给 _validate_extract_output；本 step 行为不变。
+    content_lane（SC-3a）：传给 _build_deterministic_extract_data + _validate_extract_output。
+    concept 车道额外注入 mechanism_components/causal_edges（满足 F4 结构真相源 ≥3 组件门），
+    procedural 行为不变（零回归）。
     """
     try:
-        data = _build_deterministic_extract_data(raw_content, raw_path)
+        data = _build_deterministic_extract_data(
+            raw_content, raw_path, content_lane=content_lane
+        )
         _validate_extract_output(data, content_lane=content_lane)
     except Exception as exc:
         return ExtractResult(
@@ -1544,6 +1738,7 @@ def build_deterministic_extract_result(
 def _build_deterministic_extract_data(
     raw_content: str,
     raw_path: str = "",
+    content_lane: str = "",
 ) -> dict[str, Any]:
     """Turn anchored raw text into the same shape as LLM extraction output."""
     anchor_blocks = _extract_anchor_blocks(raw_content)
@@ -1725,9 +1920,29 @@ def _build_deterministic_extract_data(
             "evidence_kind": "interpretation",
         },
     ]
+    # step-3 SC-3a/A3-5：concept 车道注入命名机制组件 + 因果边（F4 结构真相源 ≥3 组件门）。
+    # 这些是 deterministic fallback 对来源 loop 结构的保守命名映射（与 how_steps 同源、
+    # 锚定 raw），不向 raw 注入编造；procedural 不注入（空数组，零回归）。
+    mechanism_components: list[dict[str, str]] = []
+    causal_edges: list[dict[str, str]] = []
+    if _is_concept_lane(content_lane):
+        mechanism_components = [
+            {"name": "trigger", "role": "启动 loop 的调度/事件/手动入口"},
+            {"name": "work_selector", "role": "读账本选下一个待处理工作单元"},
+            {"name": "quality_gate", "role": "校验输出达标、不达标进修复闭环"},
+            {"name": "ledger", "role": "记录每段生命周期事件、支撑崩溃恢复"},
+        ]
+        causal_edges = [
+            {"from": "trigger", "to": "work_selector", "relation": "activates"},
+            {"from": "work_selector", "to": "quality_gate", "relation": "feeds"},
+            {"from": "quality_gate", "to": "ledger", "relation": "writes_result_to"},
+            {"from": "ledger", "to": "work_selector", "relation": "informs_recovery_of"},
+        ]
     return {
         "claims": claims,
         "how_steps": how_steps,
+        "mechanism_components": mechanism_components,
+        "causal_edges": causal_edges,
         "params": params,
         "referenced_concepts": concepts,
         "tldr": (
@@ -1918,11 +2133,17 @@ def compose_candidate(
     try:
         from src.akb2.quality.checks_structural import run_candidate_self_gate
 
-        # step-1：known_concepts/pending_queue 形参已就位（compose_candidate 接收并为
-        # step-3 预留）；但把它们喂给本 self-gate 的图谱 resolve 判定消费属 step-3
-        # SC-3e（A3-8：check_a4 增 known/pending + 两道 self-gate 接线）。本 step 保持
-        # 调用首行字面不变，零回归现有源码审计测试（test_checks_structural SC-3.3）。
-        compose_defects = run_candidate_self_gate(full_page, raw_content=raw_content)
+        # step-3 SC-3e/A3-8：compose 内第一道 self-gate 真传 known_concepts/pending_queue
+        # 实参（step-1 vault loader 装载，经 compose_candidate 形参透传）+ content_lane，
+        # 使概念边在生产路径真做确定性 resolve、SG-how-density 按车道选 gate_min，
+        # 不再因传 None/缺 lane 被 fixture 恒空掩盖。
+        compose_defects = run_candidate_self_gate(
+            full_page,
+            raw_content=raw_content,
+            known_concepts=known_concepts,
+            pending_queue=pending_queue,
+            content_lane=content_lane,
+        )
     except Exception as exc:
         return ComposeResult(
             success=False,

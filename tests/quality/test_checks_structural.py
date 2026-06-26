@@ -1274,9 +1274,20 @@ class TestSGMustCoverCallSiteProvenance:
         return Path(rel_path).read_text(encoding="utf-8")
 
     def test_distill_callsite_reads_real_raw_from_disk(self):
-        """distill.py: raw_content = Path(raw_path).read_text()，同源于原始 raw 文件。"""
+        """distill.py: raw_content = Path(raw_path).read_text()，同源于原始 raw 文件。
+
+        step-3 SC-3e/A3-8：compose 第一道 self-gate 改为多参调用（真传 known_concepts/
+        pending_queue/content_lane 做图谱 resolve），故断言由「整行字面」放宽为「call +
+        raw_content=raw_content 实参同行存在」——审计意图（raw_content 是权威源、fail-closed）
+        不变，仍验 raw_content 来自磁盘读 + OSError 时置 None。
+        """
         src = self._read(_CALLSITE_SOURCE_PATHS["distill"])
-        assert "run_candidate_self_gate(full_page, raw_content=raw_content)" in src
+        assert "run_candidate_self_gate(" in src
+        assert "raw_content=raw_content," in src
+        # step-3：第一闸真传 known/pending/lane（SC-3e），不再传 None 被 fixture 掩盖。
+        assert "known_concepts=known_concepts," in src
+        assert "pending_queue=pending_queue," in src
+        assert "content_lane=content_lane," in src
         assert "Path(raw_path).read_text(encoding=\"utf-8\")" in src
         # OSError 时 raw_content=None → fail-closed（不静默跳过）。
         assert "raw_content = None" in src
@@ -1290,10 +1301,20 @@ class TestSGMustCoverCallSiteProvenance:
         assert "raw_text: str | None = None," in src
 
     def test_runner_callsite_uses_non_none_raw_content(self):
-        """runner.py: raw_content 是 _run_quality_segments 的非可选 str 参数，源于磁盘读。"""
+        """runner.py: raw_content 是 _run_quality_segments 的非可选 str 参数，源于磁盘读。
+
+        step-3 SC-3e/A3-8：runner 第二道 self-gate 改为多参调用（真传 known_concepts/
+        pending_queue/content_lane），断言由「整行字面」放宽为「call + candidate_text +
+        raw_content 同段存在」——审计意图（raw_content 非可选、源于磁盘读）不变。
+        """
         src = self._read(_CALLSITE_SOURCE_PATHS["runner"])
-        # 调用点用 raw_content（非 None）。
-        assert "run_candidate_self_gate(candidate_text, raw_content)" in src
+        # 第二道 self-gate 调用点用 candidate_text + raw_content（非 None）。
+        assert "run_candidate_self_gate(" in src
+        assert "candidate_text,\n        raw_content," in src
+        # step-3：第二闸真传 known/pending/lane（SC-3e），与 compose 第一闸同语义复核。
+        assert "known_concepts=known_concepts," in src
+        assert "pending_queue=pending_queue," in src
+        assert "content_lane=content_lane," in src
         # _run_quality_segments 接收非可选 raw_content: str（非 str | None）。
         assert "raw_content: str," in src
         # raw_content 源头是磁盘读真实 raw 文件。

@@ -103,6 +103,18 @@ MD_TABLE_SEPARATOR_RE = re.compile(r":?-{3,}:?")
 # 必须满足的内容质量契约，防止坏候选流入 grader/promote。
 MAX_AKB_INTERPRETATION_RATIO: float = 0.40
 MIN_HOW_EXECUTABLE_STEPS: int = 3
+# step-3 content_lane 枚举（concept/procedural，默认 procedural 兼容）
+CONTENT_LANE_CONCEPT: str = "concept"
+# step-3 SC-3e：concept 图谱可调用性满分（边 resolve 到真实节点/pending 共指）/ 假边封顶。
+GRAPH_RESOLVE_FULL_SCORE: float = 2.0
+GRAPH_RESOLVE_UNRESOLVED_CAP: float = 0.5
+# pending 队列共指阈值：边 target 未命中已有节点但 pending 中 ≥此数共指也算可 resolve。
+GRAPH_PENDING_COREF_MIN: int = 3
+
+
+def _is_concept_lane(content_lane: str) -> bool:
+    """判断 content_lane 是否为概念型车道。其余（含空串）按 procedural 兼容。"""
+    return str(content_lane or "").strip().lower() == CONTENT_LANE_CONCEPT
 PROVENANCE_RATIO_CORE_SECTIONS: tuple[str, ...] = (
     "关键发现",
     "入选理由",
@@ -467,10 +479,44 @@ def check_a3_raw_anchors(text: str, raw_content: str | None = None) -> list[Defe
 # ---------------------------------------------------------------------------
 
 
-def check_a4_graph_edges(text: str) -> list[Defect]:
+def _resolve_graph_node(
+    target: str,
+    known_concepts: list[str] | None,
+    pending_queue: list[str] | None,
+) -> bool:
+    """A3-8 纯代码确定性图谱节点 resolve（绝不调 LLM）。
+
+    边 target 能 resolve 当且仅当：命中 known_concepts（已有概念页/源），
+    或 pending_queue 中 ≥GRAPH_PENDING_COREF_MIN 个共指（同名候选累积到阈值）。
+
+    本函数刻意只做集合/计数（确定性），不 import llm_router、不做语义猜测——
+    SC-3e 用 monkeypatch 一切 router 入口 raise 后本函数仍正确来硬证（import allowlist 断言）。
+    """
+    norm = target.strip().lower()
+    if not norm:
+        return False
+    known = {str(c).strip().lower() for c in (known_concepts or [])}
+    if norm in known:
+        return True
+    pending = [str(c).strip().lower() for c in (pending_queue or [])]
+    coref = sum(1 for c in pending if c == norm)
+    return coref >= GRAPH_PENDING_COREF_MIN
+
+
+def check_a4_graph_edges(
+    text: str,
+    known_concepts: list[str] | None = None,
+    pending_queue: list[str] | None = None,
+    content_lane: str = "",
+) -> list[Defect]:
     """检查图谱关系表中每条边是否列齐且 provenance 清晰。
 
     A4: 图谱边列齐（target/relation/strength/[provenance]/evidence）
+
+    step-3 SC-3e/A3-8：concept 车道额外做确定性 resolve——每条边 target 必须 resolve 到
+    真实节点（known_concepts）或 pending ≥3 共指（_resolve_graph_node，纯代码不调 LLM）；
+    未 resolve 的假边报 A4-图谱resolve 缺陷（图谱可调用性得分由 weighted_score 据此封顶）。
+    procedural 不启用 resolve（零回归）。
     """
     defects: list[Defect] = []
     section_text = _get_section_text(text, "图谱关系")
@@ -478,6 +524,8 @@ def check_a4_graph_edges(text: str) -> list[Defect]:
     if not section_text:
         # 图谱关系节不存在由 A1 报告，这里不重复
         return defects
+
+    resolve_enabled = _is_concept_lane(content_lane)
 
     # 检测表格行: | target | relation | strength | provenance | evidence |
     # 在 图谱关系 节中查找表格
@@ -584,6 +632,25 @@ def check_a4_graph_edges(text: str) -> list[Defect]:
                             if "provenance" in header_map
                             else ""
                         )
+                        # step-3 SC-3e/A3-8：concept 边 target 必须确定性 resolve（纯代码）。
+                        # 未 resolve = 假边/悬空引用，报缺陷（weighted_score 据此把图谱分封顶）。
+                        if resolve_enabled and target and not _resolve_graph_node(
+                            target, known_concepts, pending_queue
+                        ):
+                            defects.append(
+                                Defect(
+                                    dimension="A4-图谱resolve",
+                                    location=f"图谱关系/{target}",
+                                    defect=(
+                                        f"图谱边 target '{target}' 未 resolve 到已知概念，"
+                                        f"pending 共指也 <{GRAPH_PENDING_COREF_MIN}（假边/悬空）"
+                                    ),
+                                    suggestion=(
+                                        "把 target 指向已存在的概念页/源，"
+                                        "或在 pending 队列累积足量共指后再建边"
+                                    ),
+                                )
+                            )
                         if strength not in GRAPH_EDGE_STRENGTHS:
                             defects.append(
                                 Defect(
@@ -857,14 +924,16 @@ def run_structural_checks(
     raw_content: str | None = None,
     pending_queue: list[str] | None = None,
     known_concepts: list[str] | None = None,
+    content_lane: str = "",
 ) -> list[Defect]:
     """运行全部 A 层 6 项检查，返回缺陷清单。
 
     Args:
         text: 候选页全文（含 frontmatter）
         raw_content: raw 文件内容（A3 检查需要，可选）
-        pending_queue: pending 队列概念列表（A5 检查需要，可选）
-        known_concepts: 已知概念列表（A5 检查需要，可选）
+        pending_queue: pending 队列概念列表（A5 + A4 图谱 resolve 需要，可选）
+        known_concepts: 已知概念列表（A5 + A4 图谱 resolve 需要，可选）
+        content_lane: 内容车道（step-3：A4 图谱 resolve 仅 concept 启用确定性 resolve）
 
     Returns:
         list[Defect]: 缺陷清单，空列表表示全部通过。
@@ -874,7 +943,16 @@ def run_structural_checks(
     defects.extend(check_a1_sections(text))
     defects.extend(check_a2_frontmatter(text))
     defects.extend(check_a3_raw_anchors(text, raw_content))
-    defects.extend(check_a4_graph_edges(text))
+    # step-3 SC-3e/A3-8：check_a4 增 known_concepts/pending_queue 形参——concept 图谱边
+    # 必须 resolve 到真实节点或 pending ≥3 共指（纯代码确定性查，不调 LLM）。
+    defects.extend(
+        check_a4_graph_edges(
+            text,
+            known_concepts=known_concepts,
+            pending_queue=pending_queue,
+            content_lane=content_lane,
+        )
+    )
     defects.extend(check_a5_wikilinks(text, pending_queue, known_concepts))
     defects.extend(check_a6_maintenance_records(text))
     defects.extend(check_a8_applicability_boundary(text))
@@ -981,6 +1059,7 @@ def run_candidate_self_gate(
     raw_content: str | None = None,
     pending_queue: list[str] | None = None,
     known_concepts: list[str] | None = None,
+    content_lane: str = "",
 ) -> list[Defect]:
     """Run maker-side candidate gate before grader/promote.
 
@@ -988,8 +1067,15 @@ def run_candidate_self_gate(
     content-contract checks. It is deterministic and must fail closed for fake
     anchors, excessive AKB interpretation, generic AKB commands, hardcoded
     novelty baselines, and template residue.
+
+    step-3 SC-3a：content_lane（concept/procedural）让 SG-how-density 按车道选 gate_min——
+    concept 车道核心价值是命名机制组件+因果边（F4 由 integrity_floor 二值硬卡），不是命令
+    密度，故 concept gate_min=0（不卡可执行 How 步数）；procedural 保留 ≥3（零回归）。
+    SG-provenance-ratio 在 concept 改为逐条 traces_to 溯源（见 Step.3 verify_interpretation_*）。
     """
-    defects = run_structural_checks(text, raw_content, pending_queue, known_concepts)
+    defects = run_structural_checks(
+        text, raw_content, pending_queue, known_concepts, content_lane
+    )
     body = _body_without_frontmatter(text)
 
     if "[raw §" not in body:
@@ -1050,6 +1136,10 @@ def run_candidate_self_gate(
 
     how_section = _how_section_text(text)
     commands = _how_executable_commands(text)
+    # step-3 SC-3a：SG-how-density 按车道选 gate_min。concept 核心价值是命名机制组件+
+    # 因果边（F4 由 integrity_floor 二值硬卡），不卡可执行命令密度 → gate_min=0；
+    # procedural 保留 ≥3（零回归）。concept 仍要求有「操作步骤」小节（A1 结构完整性）。
+    how_density_min = 0 if _is_concept_lane(content_lane) else MIN_HOW_EXECUTABLE_STEPS
     if not how_section:
         defects.append(
             Defect(
@@ -1062,13 +1152,13 @@ def run_candidate_self_gate(
                 ),
             )
         )
-    elif len(commands) < MIN_HOW_EXECUTABLE_STEPS:
+    elif how_density_min and len(commands) < how_density_min:
         defects.append(
             Defect(
                 dimension="SG-how-density",
                 location="### 操作步骤",
                 defect=(
-                    f"可执行 How 步骤 {len(commands)} < {MIN_HOW_EXECUTABLE_STEPS}"
+                    f"可执行 How 步骤 {len(commands)} < {how_density_min}"
                 ),
                 suggestion=(
                     "补足至少 3 条带反引号命令、"

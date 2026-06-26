@@ -639,6 +639,13 @@ def _run_distill_segment(
             },
         )
 
+    # step-3 SC-3b/SC-3h：完整性地板在 distill 段评估（持有结构化 extract，A-R4 保留）。
+    # FloorResult 是小对象，随 distill_meta 携出（保持 5 元组契约，不扩 tuple arity 避免
+    # 破坏既有 5 元组解包的存量调用方/测试）；评分段先看本结果 early-return（加权分不算）。
+    from src.akb2.quality.integrity_floor import evaluate_integrity_floor
+
+    floor_result = evaluate_integrity_floor(extract_result.data, content_lane)
+
     # 段 2: 成稿
     ts = _now().strftime("%Y-%m-%d-%H%M%S")
     batch_id = f"{ts}"
@@ -692,6 +699,8 @@ def _run_distill_segment(
             "retries_used": extract_result.retries_used,
             "maker_fallback_used": maker_fallback_used,
             "maker_primary_error": maker_primary_error,
+            # step-3 SC-3b/SC-3h：完整性地板结果随 distill_meta 携出，供评分段 early-return。
+            "floor_result": floor_result,
         },
     )
 
@@ -816,11 +825,19 @@ def _run_quality_segments(
     config: RunnerConfig,
     grader_result_path: Path | None = None,
     content_lane: str = "",
+    floor_result: Any = None,
+    known_concepts: list[str] | None = None,
+    pending_queue: list[str] | None = None,
 ) -> tuple[bool, str, str, dict[str, Any]]:
     """段 5-6: 结构校验 + 评分 + 修复。
 
     content_lane（step-1 透传字段）：传给 run_grader_detailed / run_repair_loop，
     仅随评分/修复记录，不参与判定（lane-aware 判定属 step-3）。
+
+    floor_result（step-3 SC-3b/SC-3h）：distill 段评估的完整性地板结果（FloorResult）。
+    评分段 MUST 先看本结果——任一地板成员 fail → 直接 reject、加权分函数 NOT 调用、
+    grader NOT called（显式 early-return + 日志 floor_failed + weighted_score_not_computed +
+    grader_not_called，宪法原则 8(a) 不可补偿）。None 时（旧测试调用方/无地板）按旧行为跑。
 
     converged=True 表示最终稿结构层(A)+评分层(B)零缺陷。此时把 grader PASS
     结果落盘到 grader_result_path，供段 7 的 Gate-5 独立复核读取——消除
@@ -883,10 +900,6 @@ def _run_quality_segments(
             encoding="utf-8",
         )
 
-    # A 层: 结构校验。结构缺陷不直接截断 repair；可机器修复的问题
-    # 进入同一个有界 repair/fail-closed 闭环，修不掉再停链。
-    a_defects = run_candidate_self_gate(candidate_text, raw_content)
-
     grader_meta: dict[str, Any] = {
         "grader_model_used": "",
         "grader_primary_model": "",
@@ -899,6 +912,46 @@ def _run_quality_segments(
         "grader_fallback_failure_reason": "",
     }
     b_defects: list[Any] = []
+
+    # step-3 SC-3b/SC-3h：完整性地板 early-return（宪法原则 8(a) 不可补偿）。
+    # 任一地板成员 fail → 直接 reject，加权分函数 NOT 调用、grader NOT called。
+    # 这一步 MUST 在 A 层 self-gate 与 grader 之前——floor fail 时这两者都不跑，
+    # 避免「辅助维满分顶过地板 fail」的补偿。floor_result=None 时按旧行为（无地板跑全链）。
+    if floor_result is not None and not getattr(floor_result, "passed", True):
+        failed_floors = list(getattr(floor_result, "failed_floors", []))
+        floor_reason = getattr(floor_result, "reason", "")
+        meta = {
+            "a_defect_count": 0,
+            "a_defect_summary": [],
+            "b_defect_count": 0,
+            "b_defect_summary": [],
+            **grader_meta,
+            "repair_rounds": 0,
+            "final_defects_summary": [],
+            # 日志硬证：地板 fail / 加权分未算 / grader 未调（SC-3b/SC-3h 断言这三个 key）
+            "floor_failed": failed_floors,
+            "weighted_score_not_computed": True,
+            "grader_not_called": True,
+            "content_lane": content_lane,
+        }
+        return (
+            False,
+            "integrity_floor_failed",
+            f"完整性地板未过（不可补偿）: {floor_reason}",
+            meta,
+        )
+
+    # A 层: 结构校验。结构缺陷不直接截断 repair；可机器修复的问题
+    # 进入同一个有界 repair/fail-closed 闭环，修不掉再停链。
+    # step-3 SC-3e/A3-8：runner 第二道 self-gate 真传 known_concepts/pending_queue +
+    # content_lane（与 compose 第一闸同一 known/pending 输入复核同语义）。
+    a_defects = run_candidate_self_gate(
+        candidate_text,
+        raw_content,
+        pending_queue=pending_queue,
+        known_concepts=known_concepts,
+        content_lane=content_lane,
+    )
 
     if not a_defects:
         # B 层: LLM 评分。只有 A 层通过时才调用，避免对结构不合格稿件花费裁判预算。
@@ -1180,6 +1233,11 @@ def _run_pipeline_segments(
     converged, error_class, error_detail, quality_meta = _run_quality_segments(
         candidate_text, candidate_path, raw_content, config, grader_result_path,
         content_lane=content_lane,
+        # step-3 SC-3b/SC-3h：把 distill 段评估的完整性地板结果喂评分段（early-return）。
+        floor_result=distill_meta.get("floor_result"),
+        # step-3 SC-3e/A3-8：runner 第二道 self-gate 真传 vault loader 的 known/pending。
+        known_concepts=vault_index.get("known_concepts"),
+        pending_queue=vault_index.get("pending_queue"),
     )
     # P2: rounds 回填真实 repair 轮数（修复原恒为 0 的报告 bug）
     rounds = quality_meta.get("repair_rounds", 0) if quality_meta else 0
@@ -1212,6 +1270,26 @@ def _run_pipeline_segments(
                 )} if quality_meta else {})
 
     if not converged:
+        # step-3 SC-3b/SC-3h：完整性地板 fail 的 reject 走专用 abort 节点，
+        # 日志显式带 floor_failed + weighted_score_not_computed + grader_not_called
+        # （不可补偿硬证落账），final_status=rejected（区别于 repair 修不掉的 failed）。
+        if error_class == "integrity_floor_failed" and quality_meta:
+            _log_event(config, "abort", "integrity_floor", content_hash,
+                       {"error_class": error_class, "error": error_detail,
+                        "content_lane": quality_meta.get("content_lane", content_lane),
+                        "floor_failed": quality_meta.get("floor_failed", []),
+                        "weighted_score_not_computed": quality_meta.get(
+                            "weighted_score_not_computed", True
+                        ),
+                        "grader_not_called": quality_meta.get("grader_not_called", True)})
+            return {
+                "converged": False,
+                "rounds": rounds,
+                "promoted": False,
+                "promotion_mode": "none",
+                "final_status": "rejected",
+                "error": f"完整性地板未过（不可补偿）: {error_detail}",
+            }
         _log_event(config, "abort", "repair_loop", content_hash,
                    {"error_class": error_class, "error": error_detail,
                     "repair_rounds": rounds,
