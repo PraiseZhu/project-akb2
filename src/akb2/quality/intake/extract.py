@@ -229,8 +229,8 @@ def _extract_via_scrapling(
     """通过 Scrapling 抽取正文。
 
     import gate：scrapling 不可用时 log warning 并返回空 dict。
-    自适应模式（browser_mode=False）：Fetcher().fetch(url)
-    浏览器模式（browser_mode=True）：StealthyFetcher().fetch(url)
+    自适应模式（browser_mode=False）：Fetcher.get(url)（scrapling 0.4.8 classmethod）
+    浏览器模式（browser_mode=True）：StealthyFetcher.fetch(url)（classmethod）
 
     返回空 dict 表示抽取失败。
     """
@@ -242,11 +242,11 @@ def _extract_via_scrapling(
         if browser_mode:
             from scrapling import StealthyFetcher
 
-            page = StealthyFetcher().fetch(url)
+            page = StealthyFetcher.fetch(url)
         else:
             from scrapling import Fetcher
 
-            page = Fetcher().fetch(url)
+            page = Fetcher.get(url)
 
         # Scrapling 只负责"绕反爬拿渲染后的 HTML"；抽取交给 defuddle。
         rendered_html: str = getattr(page, "html_content", None) or str(page.body or "")

@@ -1,0 +1,49 @@
+{
+  "batch_id": "batch-akb2-loop1-calibration-harness-fix-exec-wave1",
+  "dispatch_id": "akb2-loop1-calibration-harness-fix-exec",
+  "wave_ref": "w1",
+  "batch_created_at": "2026-06-26T14:10:00Z",
+  "execution_mode": "agent_exec",
+  "task_results": [
+    {
+      "task_id": "t2a-scrapling-fix",
+      "track_ref": "t2a-scrapling-fix",
+      "exec_status": "completed",
+      "not_run_reason": null,
+      "deliverables_produced": [
+        {"path": "src/akb2/quality/intake/extract.py", "kind": "file", "verified": true},
+        {"path": "tests/test_extract_scrapling_fallback.py", "kind": "file", "verified": true}
+      ],
+      "verify_results": [
+        {"sc_ref": "SC-5", "method": "test", "cmd": "pytest tests/test_extract_scrapling_fallback.py -q", "result": "PASS", "exit_code": 0},
+        {"sc_ref": "SC-5", "method": "assertion", "cmd": "test $(grep -c 'Fetcher.get' src/akb2/quality/intake/extract.py) -ge 1", "result": "PASS", "exit_code": 0}
+      ],
+      "gd_execution_status_json": {
+        "task_id": "t2a-scrapling-fix",
+        "exec_status": "completed",
+        "sc_results": {"SC-5": "pass"}
+      }
+    },
+    {
+      "task_id": "t2b-preflight-corpus",
+      "track_ref": "t2b-preflight-corpus",
+      "exec_status": "completed",
+      "not_run_reason": null,
+      "deliverables_produced": [
+        {"path": "src/akb2/quality/intake/preflight.py", "kind": "file", "verified": true},
+        {"path": "evals/main-pipeline-quality/corpus.yaml", "kind": "file", "verified": true},
+        {"path": "evals/main-pipeline-quality/fixtures", "kind": "directory", "verified": true},
+        {"path": "tests/test_corpus_preflight.py", "kind": "file", "verified": true}
+      ],
+      "verify_results": [
+        {"sc_ref": "SC-3", "method": "assertion", "cmd": "PYTHONPATH=src python3 -m akb2.quality.intake.preflight --corpus evals/main-pipeline-quality/corpus.yaml --out reports/calibration/preflight.json && python3 -c \"import json;r=json.load(open('reports/calibration/preflight.json'));E=r['entries'];assert all({'http_status','final_url','content_type','redirect','canonical_drift','soft_404','short_body','missing_metadata'}<=set(e) for e in E);bad=[e for e in E if e.get('expected')=='ingest' and e.get('source')!='fixture' and ((e.get('http_status') or 0)>=400 or e.get('short_body') or e.get('soft_404'))];assert not bad, bad\"", "result": "PASS", "exit_code": 0},
+        {"sc_ref": "SC-7", "method": "test", "cmd": "pytest tests/test_corpus_preflight.py -k alignment -q", "result": "PASS", "exit_code": 0}
+      ],
+      "gd_execution_status_json": {
+        "task_id": "t2b-preflight-corpus",
+        "exec_status": "completed",
+        "sc_results": {"SC-3": "pass", "SC-7": "pass"}
+      }
+    }
+  ]
+}

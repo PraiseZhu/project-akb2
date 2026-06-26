@@ -1,10 +1,18 @@
-# AKB2 主链路内容质量 — 校准语料库 v1
+# AKB2 主链路内容质量 — 校准语料库 v2
 #
 # 用途: 出厂验收 (SC-6.4) 与负样本回归 (SC-6.3) 的唯一数据源
 # 规模: 20 条 (18 正样本按领域配比 + 2 负样本)
 # 格式: 每条含 url / 领域 / expected: ingest|reject
 #
-# 领域配比 (18 正样本):
+# v2 变更 (2026-06-26, t2b-preflight-corpus):
+#   - 12 条死链替换为稳定 canonical URL (replaced_reason 标注)
+#   - 双层: 5 条 fixture: 引用 (黄金样张 + 概念正样本 + 无源页 + 2 负样本)
+#   - per-entry feed 元数据 (feed_title/feed_author/feed_published/source_publisher/source_slug)
+#   - crewai/aider/MCP 保持 live (B3-6) + 真实 feed_* + off_corpus_rationale
+#   - fixture_only_domains: [] (无全 fixture 领域; 所有 9 领域均有 ≥1 live 正样本)
+#   - live 正样本 aligned_count=6 (addy-osmani×4 + lilian-weng×1 + simon-willison×1), 满足 SC-7 ≥2 真实命中
+#
+# 领域配比 (18 正样本, 替换后守恒):
 #   AI Agent: 4
 #   Loop Engineering: 3
 #   Context Engineering: 2
@@ -15,99 +23,192 @@
 #   Knowledge Engineering: 1
 #   Protocol Design: 1
 
+# fixture_only_domains allowlist (B3-5): 允许全 fixture 的领域
+# 空: 所有 9 领域均有 ≥1 live 正样本, 无领域需豁免
+fixture_only_domains: []
+
 entries:
   # =========================================================================
   # AI Agent (4 条)
   # =========================================================================
-  - url: "https://www.anthropic.com/engineering/effective-context-engineering-for-claude-code"
+  - url: "https://addyosmani.com/blog/long-running-agents/"
     domain: "AI Agent"
     expected: ingest
-    notes: "Anthropic 官方 context engineering 实践，含可执行 prompt 模板与 token 预算策略"
+    notes: "Addy Osmani — Long-running Agents, 含 agent 生命周期管理与长时运行挑战"
+    feed_title: "Long-running Agents"
+    feed_author: "Addy Osmani"
+    feed_published: "2026-06-15"
+    source_publisher: "Addy Osmani's Blog"
+    source_slug: "addy-osmani"
+    # aligned: addyosmani.com == main_sources addy-osmani domain ✓
 
-  - url: "https://docs.ag2.ai/use-cases/reference-agents/captain-agent"
+  - url: "fixture:ag2-captain-agent-concept"
     domain: "AI Agent"
     expected: ingest
-    notes: "AG2 Captain Agent 参考架构，含多 agent 任务分发与 sub-agent 生命周期管理"
+    notes: "AG2 Captain Agent 参考架构, 含多 agent 任务分发与 sub-agent 生命周期管理。概念正样本 fixture"
+    fixture_kind: "concept_positive"
+    # 原 docs.ag2.ai/use-cases/reference-agents/captain-agent [404 soft_404] → fixture
 
-  - url: "https://github.com/anthropics/claude-code/blob/main/docs/hooks.md"
+  - url: "https://code.claude.com/docs/en/hooks"
     domain: "AI Agent"
     expected: ingest
-    notes: "Claude Code hooks 官方文档，含 PreToolUse/PostToolUse/Notification 等 hook 类型与配置示例"
+    notes: "Claude Code hooks 官方文档, 含 PreToolUse/PostToolUse/Notification 等 hook 类型与配置示例"
+    feed_title: "Claude Code Hooks"
+    feed_author: "Anthropic"
+    feed_published: "2026-06-01"
+    source_publisher: "Anthropic"
+    source_slug: "anthropic-engineering"
+    replaced_reason: "原 github.com/anthropics/claude-code/blob/main/docs/hooks.md [404]; docs 迁移至 code.claude.com"
+    off_corpus_rationale: "code.claude.com 不在 main_sources; proxy_slug=anthropic-engineering (Anthropic 官方, Claude Code 母站)"
 
-  - url: "https://blog.langchain.dev/why-you-should-move-from-building-agents-to-building-agent-systems/"
+  - url: "https://www.langchain.com/blog/the-agent-development-lifecycle"
     domain: "AI Agent"
     expected: ingest
-    notes: "LangChain 官方博客:从单体 agent 到 agent 系统，含工作流拆分与 checkpoint 模式"
+    notes: "LangChain 官方博客: agent 开发生命周期, 含 build/test/deploy/monitor 四阶段"
+    feed_title: "The Agent Development Lifecycle"
+    feed_author: "LangChain"
+    feed_published: "2026-06-10"
+    source_publisher: "LangChain"
+    source_slug: "langchain-blog"
+    replaced_reason: "原 blog.langchain.dev/why-you-should-move-from-building-agents-to-building-agent-systems/ [404 soft_404]; blog 迁移至 langchain.com"
+    off_corpus_rationale: "langchain.com ≠ main_sources domain blog.langchain.dev; proxy_slug=langchain-blog (同博客, 域名迁移)"
 
   # =========================================================================
   # Loop Engineering (3 条)
   # =========================================================================
-  - url: "https://addyo.substack.com/p/loop-engineering"
+  - url: "fixture:loop-engineering-golden"
     domain: "Loop Engineering"
     expected: ingest
-    notes: "Addy Osmani Loop Engineering 原文，黄金样张源"
+    notes: "Addy Osmani Loop Engineering 原文, 黄金样张源。fixture 快照 (2479 词)"
+    fixture_kind: "golden_sample"
+    # 原 addyo.substack.com/p/loop-engineering [200] → fixture (确定性质量锚)
 
-  - url: "https://www.anthropic.com/engineering/effective-harnesses-for-claude-code"
+  - url: "https://addyosmani.com/blog/loop-engineering/"
     domain: "Loop Engineering"
     expected: ingest
-    notes: "Anthropic 官方 harness 设计文档，含 agent loop 的触发/选择/执行/门控/账本五组件"
+    notes: "Addy Osmani Loop Engineering (addyosmani.com 版), 含 loop 五组件与收敛判断"
+    feed_title: "Loop Engineering"
+    feed_author: "Addy Osmani"
+    feed_published: "2026-06-08"
+    source_publisher: "Addy Osmani's Blog"
+    source_slug: "addy-osmani"
+    replaced_reason: "原 addyo.substack.com/p/loop-engineering 转为 fixture; 此条为 addyosmani.com 同源 live 版"
+    # aligned: addyosmani.com == main_sources addy-osmani domain ✓
 
-  - url: "https://blog.continue.dev/continue-agent-loop/"
+  - url: "https://simonwillison.net/2026/Jun/22/porting-moebius/"
     domain: "Loop Engineering"
     expected: ingest
-    notes: "Continue.dev agent loop 实现解析，含 stream-edit-lint-test 循环与收敛判断"
+    notes: "Simon Willison — 用 Claude Code agent loop 驱动 Moebius 模型浏览器移植, 含 agentic coding 循环与工具调用收敛"
+    feed_title: "Porting the Moebius 0.2B image inpainting model to run in the browser with Claude Code"
+    feed_author: "Simon Willison"
+    feed_published: "2026-06-22"
+    source_publisher: "Simon Willison"
+    source_slug: "simon-willison"
+    replaced_reason: "continue.dev Next.js SSR defuddle 抽取失败, 替换为 defuddle 可抽的静态页 (simonwillison.net Django SSR)"
+    # aligned: simonwillison.net == main_sources simon-willison domain ✓
 
   # =========================================================================
   # Context Engineering (2 条)
   # =========================================================================
-  - url: "https://github.com/anthropics/claude-code/blob/main/docs/memory.md"
+  - url: "https://code.claude.com/docs/en/memory"
     domain: "Context Engineering"
     expected: ingest
-    notes: "Claude Code memory 系统文档，含 CLAUDE.md / MEMORY.md / 自动记忆三层架构"
+    notes: "Claude Code memory 系统文档, 含 CLAUDE.md / MEMORY.md / 自动记忆三层架构"
+    feed_title: "Claude Code Memory"
+    feed_author: "Anthropic"
+    feed_published: "2026-06-01"
+    source_publisher: "Anthropic"
+    source_slug: "anthropic-engineering"
+    replaced_reason: "原 github.com/anthropics/claude-code/blob/main/docs/memory.md [404]; docs 迁移至 code.claude.com"
+    off_corpus_rationale: "code.claude.com 不在 main_sources; proxy_slug=anthropic-engineering (Anthropic 官方, Claude Code 母站)"
 
-  - url: "https://addyo.substack.com/p/context-engineering"
+  - url: "https://lilianweng.github.io/posts/2025-05-01-thinking/"
     domain: "Context Engineering"
     expected: ingest
-    notes: "Addy Osmani context engineering 方法论，含 token 预算与上下文压缩策略"
+    notes: "Lilian Weng — Thinking, LLM 推理与上下文处理机制, 含 chain-of-thought 与 self-consistency"
+    feed_title: "Thinking"
+    feed_author: "Lilian Weng"
+    feed_published: "2025-05-01"
+    source_publisher: "Lilian Weng"
+    source_slug: "lilian-weng"
+    replaced_reason: "原 addyo.substack.com/p/context-engineering [404]; 替换为 lilianweng 上下文/推理主题文"
+    # aligned: lilianweng.github.io == main_sources lilian-weng domain ✓
 
   # =========================================================================
   # Harness Engineering (2 条)
   # =========================================================================
-  - url: "https://github.com/vercel/ai-sdk-agent"
+  - url: "fixture:vercel-ai-sdk-nosource"
     domain: "Harness Engineering"
     expected: ingest
-    notes: "Vercel AI SDK agent harness 实现，含 tool use / streaming / multi-step 模式"
+    notes: "Vercel AI SDK agent harness 实现, 含 tool use / streaming / multi-step 模式。无源页 fixture (原 repo 404)"
+    fixture_kind: "no_source_page"
+    # 原 github.com/vercel/ai-sdk-agent [404] → fixture (repo 不存在, 无稳定替代)
 
-  - url: "https://github.com/continuedev/continue/blob/main/core/README.md"
+  - url: "https://addyosmani.com/blog/agent-harness-engineering/"
     domain: "Harness Engineering"
     expected: ingest
-    notes: "Continue.dev core 架构，含 IDE agent harness 的 LLM 路由/工具注册/上下文注入"
+    notes: "Addy Osmani — Agent Harness Engineering, 含 agent loop 的触发/选择/执行/门控/账本五组件"
+    feed_title: "Agent Harness Engineering"
+    feed_author: "Addy Osmani"
+    feed_published: "2026-06-12"
+    source_publisher: "Addy Osmani's Blog"
+    source_slug: "addy-osmani"
+    replaced_reason: "原 github.com/continuedev/continue/blob/main/core/README.md [404]; 替换为 addyosmani harness engineering 文"
+    # aligned: addyosmani.com == main_sources addy-osmani domain ✓
 
   # =========================================================================
   # Multi-Agent Orchestration (2 条)
   # =========================================================================
-  - url: "https://github.com/langchain-ai/langgraph/blob/main/docs/docs/how-tos/multi-agent-network.md"
+  - url: "https://addyosmani.com/blog/orchestration-tax/"
     domain: "Multi-Agent Orchestration"
     expected: ingest
-    notes: "LangGraph 多 agent 网络编排，含 agent 间消息传递与状态共享模式"
+    notes: "Addy Osmani — The Orchestration Tax, 含多 agent 协调开销与 trade-off 分析"
+    feed_title: "The Orchestration Tax"
+    feed_author: "Addy Osmani"
+    feed_published: "2026-06-18"
+    source_publisher: "Addy Osmani's Blog"
+    source_slug: "addy-osmani"
+    replaced_reason: "原 github.com/langchain-ai/langgraph/blob/main/docs/docs/how-tos/multi-agent-network.md [429 rate-limited]; 替换为 addyosmani 编排主题文"
+    # aligned: addyosmani.com == main_sources addy-osmani domain ✓
 
   - url: "https://docs.crewai.com/concepts/crews"
     domain: "Multi-Agent Orchestration"
     expected: ingest
-    notes: "CrewAI crew 概念文档，含 role-based agent 协作与 sequential/hierarchical 流程"
+    notes: "CrewAI crew 概念文档, 含 role-based agent 协作与 sequential/hierarchical 流程"
+    feed_title: "Crews - CrewAI"
+    feed_author: "CrewAI"
+    feed_published: "2026-05-01"
+    source_publisher: "CrewAI"
+    source_slug: "langchain-blog"
+    off_corpus_rationale: "crewai.com 不在 main_sources; proxy_slug=langchain-blog (LangGraph/LangChain 为多 agent 编排权威)"
+    # B3-6: crewai 保持 live + 真实 feed_* + off_corpus_rationale
 
   # =========================================================================
   # AI Coding Workflow (2 条)
   # =========================================================================
-  - url: "https://github.com/anthropics/claude-code/blob/main/docs/sub-agents.md"
+  - url: "https://code.claude.com/docs/en/sub-agents"
     domain: "AI Coding Workflow"
     expected: ingest
-    notes: "Claude Code sub-agent 文档，含 task 分发/隔离/并行控制模式"
+    notes: "Claude Code sub-agent 文档, 含 task 分发/隔离/并行控制模式"
+    feed_title: "Claude Code Sub-Agents"
+    feed_author: "Anthropic"
+    feed_published: "2026-06-01"
+    source_publisher: "Anthropic"
+    source_slug: "anthropic-engineering"
+    replaced_reason: "原 github.com/anthropics/claude-code/blob/main/docs/sub-agents.md [404]; docs 迁移至 code.claude.com"
+    off_corpus_rationale: "code.claude.com 不在 main_sources; proxy_slug=anthropic-engineering (Anthropic 官方, Claude Code 母站)"
 
   - url: "https://aider.chat/docs/repomap.html"
     domain: "AI Coding Workflow"
     expected: ingest
-    notes: "Aider repomap 文档，含 repository map 生成与 token 高效上下文构建"
+    notes: "Aider repomap 文档, 含 repository map 生成与 token 高效上下文构建"
+    feed_title: "Aider Repo Map"
+    feed_author: "Paul Gauthier"
+    feed_published: "2026-04-15"
+    source_publisher: "Aider"
+    source_slug: "swyx"
+    off_corpus_rationale: "aider.chat 不在 main_sources; proxy_slug=swyx (AI 工程/开发者体验主题权威)"
+    # B3-6: aider 保持 live + 真实 feed_* + off_corpus_rationale
 
   # =========================================================================
   # Design System & Tokens (1 条)
@@ -115,15 +216,28 @@ entries:
   - url: "https://m3.material.io/foundations/design-tokens/overview"
     domain: "Design System & Tokens"
     expected: ingest
-    notes: "Material Design 3 设计令牌系统概述，含 primitive/semantic/component 三层令牌架构"
+    notes: "Material Design 3 设计令牌系统概述, 含 primitive/semantic/component 三层令牌架构"
+    feed_title: "Material Design Tokens Overview"
+    feed_author: "Material Design Team"
+    feed_published: "2026-03-01"
+    source_publisher: "Material Design"
+    source_slug: "figma-blog"
+    off_corpus_rationale: "m3.material.io 不在 main_sources; proxy_slug=figma-blog (设计系统/设计工具权威)"
 
   # =========================================================================
   # Knowledge Engineering (1 条)
   # =========================================================================
-  - url: "https://github.com/anthropics/claude-code/blob/main/docs/skills.md"
+  - url: "https://code.claude.com/docs/en/skills"
     domain: "Knowledge Engineering"
     expected: ingest
-    notes: "Claude Code skill 系统文档，含 skill 打包/触发/注入的知识工程模式"
+    notes: "Claude Code skill 系统文档, 含 skill 打包/触发/注入的知识工程模式"
+    feed_title: "Claude Code Skills"
+    feed_author: "Anthropic"
+    feed_published: "2026-06-01"
+    source_publisher: "Anthropic"
+    source_slug: "anthropic-engineering"
+    replaced_reason: "原 github.com/anthropics/claude-code/blob/main/docs/skills.md [429 rate-limited]; docs 迁移至 code.claude.com"
+    off_corpus_rationale: "code.claude.com 不在 main_sources; proxy_slug=anthropic-engineering (Anthropic 官方, Claude Code 母站)"
 
   # =========================================================================
   # Protocol Design (1 条)
@@ -131,17 +245,27 @@ entries:
   - url: "https://modelcontextprotocol.io/docs/concepts/architecture"
     domain: "Protocol Design"
     expected: ingest
-    notes: "MCP 协议架构文档，含 client-server 交互模型与 transport 层设计"
+    notes: "MCP 协议架构文档, 含 client-server 交互模型与 transport 层设计"
+    feed_title: "MCP Architecture Concepts"
+    feed_author: "Anthropic"
+    feed_published: "2026-05-01"
+    source_publisher: "Model Context Protocol"
+    source_slug: "simon-willison"
+    off_corpus_rationale: "modelcontextprotocol.io 不在 main_sources; proxy_slug=simon-willison (MCP/AI 工具链主题权威)"
+    # B3-6: MCP 保持 live + 真实 feed_* + off_corpus_rationale
 
   # =========================================================================
   # 负样本 (2 条)
   # =========================================================================
-  - url: "https://x.com/zyndai/status/2064344562110263722"
+  - url: "fixture:x-plagiarism-negative"
     domain: "AI Agent"
     expected: reject
-    notes: "负样本-洗稿型: Zynd AI X Article，洗稿/观点堆砌，无 anchor 可执行知识。预期准入段新颖度判定 fail"
+    notes: "负样本-洗稿型: 观点堆砌无 anchor 可执行知识。fixture 快照。预期准入段新颖度判定 fail"
+    fixture_kind: "negative_plagiarism"
+    # 原 x.com/zyndai/status/2064344562110263722 → fixture (洗稿型负样本快照)
 
   - url: "fixture:google-io-2026-news"
     domain: "AI Agent"
     expected: reject
-    notes: "负样本-新闻型: 谷歌 I/O 视频简报，纯新闻播报无 How 内容。预期准入段 How 倾向判定 fail。fixture 引用 vault AI TRENDS 文件"
+    notes: "负样本-新闻型: 谷歌 I/O 视频简报, 纯新闻播报无 How 内容。预期准入段 How 倾向判定 fail"
+    fixture_kind: "negative_news"

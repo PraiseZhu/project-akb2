@@ -1,0 +1,32 @@
+{
+  "batch_id": "batch-akb2-loop1-calibration-harness-fix-exec-wave2",
+  "dispatch_id": "akb2-loop1-calibration-harness-fix-exec",
+  "wave_ref": "w2",
+  "batch_created_at": "2026-06-26T15:20:00Z",
+  "execution_mode": "agent_exec",
+  "task_results": [
+    {
+      "task_id": "akb2-calibration-harness-diagnostics-t1",
+      "track_ref": "akb2-calibration-harness-diagnostics-t1",
+      "exec_status": "completed",
+      "not_run_reason": null,
+      "deliverables_produced": [
+        {"path": "src/akb2/quality/calibration.py", "kind": "file", "verified": true},
+        {"path": "tests/test_calibration_harness_diagnostics.py", "kind": "file", "verified": true}
+      ],
+      "verify_results": [
+        {"sc_ref": "SC-1", "method": "assertion", "cmd": "PYTHONPATH=src python3 -m akb2.quality.calibration --corpus evals/main-pipeline-quality/corpus.yaml --report-out reports/calibration/factory.json && python3 -c \"import json;d=json.load(open('reports/calibration/factory.json'));E=d['entries'];KEYS={'failure_class','extract_method','word_count','metadata_complete','missing_metadata','extract_error','source'};assert all(KEYS<=set(e) for e in E);assert all(e['source'] in ('fixture','live') for e in E);assert sum(1 for e in E if e.get('expected')=='ingest' and e.get('source')=='live' and e.get('failure_segment')!='intake_raw')>=3;assert {'positive_live_total','positive_live_pass_rate','positive_fixture_pass_rate','live_positive_intake_raw_failures'}<=set(d);assert d['live_positive_intake_raw_failures']==0\"", "result": "PASS", "exit_code": 0},
+        {"sc_ref": "SC-1", "method": "test", "cmd": "pytest tests/test_calibration_harness_diagnostics.py -k fixture_load -q", "result": "PASS", "exit_code": 0},
+        {"sc_ref": "SC-2", "method": "test", "cmd": "pytest tests/test_calibration_harness_diagnostics.py -k \"extraction_context and not named_urls\" -q", "result": "PASS", "exit_code": 0},
+        {"sc_ref": "SC-2", "method": "test", "cmd": "pytest tests/test_calibration_harness_diagnostics.py -k extraction_context_named_urls -q", "result": "PASS", "exit_code": 0},
+        {"sc_ref": "SC-4", "method": "test", "cmd": "pytest tests/test_calibration_harness_diagnostics.py -k e2e_thin_slice -q", "result": "PASS", "exit_code": 0},
+        {"sc_ref": "SC-6", "method": "test", "cmd": "pytest tests/test_calibration_harness_diagnostics.py -k raw_frontmatter -q", "result": "PASS", "exit_code": 0}
+      ],
+      "gd_execution_status_json": {
+        "task_id": "akb2-calibration-harness-diagnostics-t1",
+        "exec_status": "completed",
+        "sc_results": {"SC-1": "pass", "SC-2": "pass", "SC-4": "pass", "SC-6": "pass"}
+      }
+    }
+  ]
+}

@@ -23,6 +23,14 @@ ruff check src tests            # line-length=100, py311, select E/F/W/I/B/UP
 # 管线入口
 python3 -m akb2.briefing.pipeline --date YYYY-MM-DD --vault-root <path> [--dry-run-intake]
 python3 -m akb2.video --dry-run --fixture       # video 链路（manual 触发）
+
+# 主质量管线（循环1）：24h 常驻 runner daemon（launchd KeepAlive 托管）
+bash scripts/akb2-main-pipeline.sh [--once] [--spot-check]
+
+# 满仓端到端校准（产出 reports/calibration/*.json + 出厂判定 factory_acceptance）
+python3 -m akb2.quality.calibration \
+    --corpus evals/main-pipeline-quality/corpus.yaml \
+    --report-out reports/calibration/factory.json
 ```
 
 - Python ≥ 3.11（`scripts/find-python311.sh` 可定位解释器）
@@ -35,6 +43,8 @@ python3 -m akb2.video --dry-run --fixture       # video 链路（manual 触发�
 | 模块 | 职责 |
 |------|------|
 | `briefing/` | 社媒日报主链路：intake → scoring → synthesis → gate → 写 vault。含 `github/` 子链路、audit_fix 收敛循环、translate、embeddings |
+| `quality/` | **循环1 主质量管线（唯一入库出口）**：`admission`（准入三硬判定，二值无连续分）→ `distill`（DeepSeek 两段式提炼）→ `checks_structural`（A 层 6 项纯代码结构校验）→ `grader`（B 层 10 维 LLM 评分，GPT-5.4）→ `repair`（定点修复循环，收敛优先）→ `promote`（五闸升格）。`runner` 是 24h 常驻串行单工 daemon（七段生命线），`calibration` 满仓端到端校准 + 出厂判定，`llm_router` 三族模型统一路由，`smoke_validator` 只读冒烟校验。含 `intake/`、`source_ops_scanners/` 子模块 |
+| `loops/` | 循环骨架：`ledger`（幂等账本追加）/ `signatures`（故障签名记录与升级）/ `paths`（隔离区与 staging 路径常量） |
 | `video/` | 视频报告链路：collector → extractor → reasoner → assembler，LLM 经 `llm_adapter`。CLI 手动触发 |
 | `gate/` | `akb2_gate_check.py` — fail-closed 质量门控 CLI |
 | `lint/` | `akb2_lint.py` + `rules/` — vault 笔记 lint |
@@ -78,10 +88,11 @@ briefing pipeline 的三重断言保证：stdout 的 `proposed_gate_decision` ==
 
 - `tests/conftest.py` 提供 `repo_root` / `run_script`（HOME 覆盖跑 bash 脚本）/ `sha256_file` / `tree_sha256` fixtures
 - bash 脚本测试用 `AKB2_TEST_HOME` 模式隔离
-- `evals/` 存放各阶段评测产物（l2-regression、briefing-scoring 等），`lint_evals/` 为 lint 评测
+- pytest marker（见 pyproject）：`integration`（真机，默认 deselect）/ `proposal_mode`（黄金样张回放，`AKB2_AUTO_PROMOTE=0`）/ `post_amendment`（出厂正式门回放，`AKB2_AUTO_PROMOTE=1`）
+- `evals/` 存放各阶段评测产物（l2-regression、briefing-scoring、main-pipeline-quality 等），`lint_evals/` 为 lint 评测
 
 ## 其他
 
-- 工作流：`创建 MR` → 开发 → `提交代码` → `提交 MR`（10 维度审查）→ GitLab 手动 merge；版本规范见 `VERSIONING.md`
+- 工作流：`创建 PR` → 开发 → `提交代码` → `提交 PR`（10 维度审查）→ GitHub 手动 merge；版本规范见 `VERSIONING.md`
 - `docs/runbooks/`、`docs/mac-mini-deployment-notes.md` 为部署运维参考
 - 敏感文件（`.env`、`*.key`、token）绝不入 git；`config/*.env.example` 为模板；`data/` 大文件加 `.nosync` 后缀；`history/` 不入 git

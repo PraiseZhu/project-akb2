@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.0",
+  "stage": "execute",
+  "parent_run_id": "akb2-loop1-calibration-harness-fix-exec-2026-06-26",
+  "batch_id": "batch-akb2-loop1-calibration-harness-fix-exec-wave1",
+  "recorded_at": "2026-06-26T15:30:00Z",
+  "child_agent_count": 2,
+  "max_parallel": 2,
+  "child_jobs": [
+    {
+      "job_id": "t2a-scrapling-fix",
+      "result_path": "plans/gd/2026-06-26-loop1-calibration-harness-fix/results/t2a-scrapling-fix-result.md",
+      "result_hash": "053027143fe8ce7e84ea07a714582803b60605847b89e02342366d43f0428423",
+      "status": "completed"
+    },
+    {
+      "job_id": "t2b-preflight-corpus",
+      "result_path": "plans/gd/2026-06-26-loop1-calibration-harness-fix/results/t2b-preflight-corpus-result.md",
+      "result_hash": "59eecae6a21fa4df0782edaaf1b7522a70952c5d6edb1022cc69fd7546643ac6",
+      "status": "completed"
+    }
+  ],
+  "main_agent_merge": {
+    "merge_report_path": "plans/gd/2026-06-26-loop1-calibration-harness-fix/merge-report-execute.md",
+    "merge_report_hash": "66d0e87fda3645947a8945e5b1b2186f10583a4828ba4d932200700b7b547bcf",
+    "final_decision": "APPROVED",
+    "blocking_buckets": []
+  }
+}
