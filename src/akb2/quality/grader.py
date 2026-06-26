@@ -488,7 +488,10 @@ def _dimension_weight_map(spec: dict[str, Any]) -> dict[str, float]:
     return weights
 
 
-def _parse_grader_extensions(raw_content: str | dict) -> dict[str, Any]:
+def _parse_grader_extensions(
+    raw_content: str | dict,
+    content_lane: str = "",
+) -> dict[str, Any]:
     """提取 Step.4 扩展字段（weighted_total/threshold/integrity_floor/逐维 score）。
 
     spec FR-010 标准外置：weighted_total 由 **rubric.yaml 的 weight × 模型逐维 score** 计算、
@@ -522,7 +525,7 @@ def _parse_grader_extensions(raw_content: str | dict) -> dict[str, Any]:
     dim_scores: dict[str, float] = {}
     for dim in data.get("dimensions", []) or []:
         if isinstance(dim, dict) and "score" in dim:
-            name = _canonical_dimension_name(dim.get("dimension"))
+            name = _canonical_dimension_name(dim.get("dimension"), content_lane)
             if name is not None and isinstance(dim["score"], (int, float)):
                 dim_scores[name] = float(dim["score"])
 
@@ -603,7 +606,7 @@ def run_grader_detailed(candidate_text: str, content_lane: str = "") -> GraderRe
             )
             defects, parse_ok = _parse_grader_output(response.content, content_lane)
             if parse_ok:
-                ext = _parse_grader_extensions(response.content)
+                ext = _parse_grader_extensions(response.content, content_lane)
                 return GraderResult(
                     defects=defects,
                     model_used=response.model_used,
@@ -635,7 +638,7 @@ def run_grader_detailed(candidate_text: str, content_lane: str = "") -> GraderRe
             )
             defects, parse_ok = _parse_grader_output(response.content, content_lane)
             if parse_ok:
-                ext = _parse_grader_extensions(response.content)
+                ext = _parse_grader_extensions(response.content, content_lane)
                 result.defects = defects
                 result.model_used = response.model_used
                 result.suspended = False
@@ -694,7 +697,7 @@ def run_grader_with_fixture_detailed(
         if response is not None:
             defects, parse_ok = _parse_grader_output(response.content, content_lane)
             if parse_ok:
-                ext = _parse_grader_extensions(response.content)
+                ext = _parse_grader_extensions(response.content, content_lane)
                 return GraderResult(
                     defects=defects,
                     model_used=response.model_used,
@@ -726,7 +729,7 @@ def run_grader_with_fixture_detailed(
             if response is not None:
                 defects, parse_ok = _parse_grader_output(response.content, content_lane)
                 if parse_ok:
-                    ext = _parse_grader_extensions(response.content)
+                    ext = _parse_grader_extensions(response.content, content_lane)
                     result.defects = defects
                     result.model_used = response.model_used
                     result.suspended = False
