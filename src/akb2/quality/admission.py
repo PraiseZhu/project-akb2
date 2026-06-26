@@ -10,7 +10,13 @@
 
 公开接口:
     run_admission(raw_path, raw_content, ledger_path, wiki_references=...) -> AdmissionResult
-    AdmissionResult = dataclass(passed, checks, reason)
+    AdmissionResult = dataclass(passed, checks, reason, content_lane)
+
+内容车道（content_lane，spec FR-001/FR-002）:
+    每篇内容在准入阶段判为 concept（概念型）或 procedural（操作型）二选一。
+    含可执行操作（命令/代码块/编号步骤）即 procedural；混合归 procedural（FR-002 从严）。
+    本字段只被「记录与传递」，不在准入段被消费用于改判定（lane-aware 判定属 step-3）。
+    分类器不可用且无确定性证据时 fail-closed（拒收+落账），不静默归车道（SC-4）。
 """
 
 from __future__ import annotations
@@ -20,6 +26,13 @@ import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+
+# ---------------------------------------------------------------------------
+# 内容车道常量（spec FR-001：concept/procedural 二值）
+# ---------------------------------------------------------------------------
+
+LANE_CONCEPT: str = "concept"
+LANE_PROCEDURAL: str = "procedural"
 
 # ---------------------------------------------------------------------------
 # 具名常量（宪法 P4）
@@ -35,6 +48,22 @@ _ADMISSION_CHECK_SCHEMA: dict[str, Any] = {
     "required": ["pass", "reason"],
     "additionalProperties": False,
 }
+
+# 车道分类器输出 schema（content_lane 二值枚举 + reason）
+_LANE_CLASSIFY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "content_lane": {"type": "string", "enum": [LANE_CONCEPT, LANE_PROCEDURAL]},
+        "reason": {"type": "string", "maxLength": 300},
+    },
+    "required": ["content_lane"],
+    "additionalProperties": False,
+}
+
+# procedural 确定性证据阈值：raw 含 ≥ 该数量可执行操作（命令/代码块/编号步骤）
+# 即判 procedural（含可执行操作即 procedural，混合归 procedural，spec FR-002）。
+# 此为确定性硬证据，不依赖 LLM——有命令的内容客观是操作型，分类无歧义。
+LANE_PROCEDURAL_MIN_EVIDENCE: int = 1
 
 # 内容截断长度：送入 LLM 判定的最大字符数
 # 主题相关性取 4000 字足以覆盖导语+前几段核心内容。
@@ -89,13 +118,17 @@ class AdmissionResult:
     """准入整体结果。
 
     passed: 三判定全通过。
-    checks: 逐项判定详情。
+    checks: 逐项判定详情（恒为 3 条：topic_relevance / how_tendency / novelty）。
     reason: 整体拒收原因（passed=True 时为空字符串）。
+    content_lane: 内容车道（concept / procedural）。当 passed=True 时为合法终值
+        之一；passed=False 时可能为空字符串（分类器不可用而拒收的场景）。
+        lane 不进 checks 列表——它是路由信号而非准入判定门。
     """
 
     passed: bool
     checks: list[AdmissionCheck] = field(default_factory=list)
     reason: str = ""
+    content_lane: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -149,17 +182,47 @@ def run_admission(
     novelty_check = _check_novelty(body, wiki_references, route_llm_fn)
     checks.append(novelty_check)
 
-    all_passed = all(c.passed for c in checks)
+    # 4. 车道分类（concept / procedural）。lane 不进 checks 列表——它是路由信号，
+    #    不是准入判定门。分类器不可用且无确定性证据 → fail-closed（lane_failed=True）。
+    content_lane, lane_failed, lane_reason = _classify_content_lane(body, route_llm_fn)
+
+    # how_tendency 路由化（spec FR-003）：concept 车道下其 fail 不使 passed=False。
+    # 纯概念内容（无命令）天然 how_tendency=fail，旧逻辑会误拒——本改动让 how_tendency
+    # 在 concept 车道仅作路由信号、不计入 all_passed。procedural 车道 how fail 仍拒收。
+    # lane 分类失败时不豁免（lane 未知，按最严判，how fail 仍计入）。
+    def _check_counts_for_admission(c: AdmissionCheck) -> bool:
+        if c.name == "how_tendency" and content_lane == LANE_CONCEPT and not lane_failed:
+            return True  # concept 车道：how_tendency 不作拒收门
+        return c.passed
+
+    all_checks_pass = all(_check_counts_for_admission(c) for c in checks)
+    # 车道分类失败（LLM 不可用 + 无确定性证据）→ fail-closed 拒收（SC-4）
+    all_passed = all_checks_pass and not lane_failed
+
     reason = ""
     if not all_passed:
-        failed_checks = [c.name for c in checks if not c.passed]
-        reason = f"准入未通过: {', '.join(failed_checks)}"
+        failed = [
+            c.name for c in checks if not _check_counts_for_admission(c)
+        ]
+        if lane_failed:
+            failed.append("content_lane")
+        reason = f"准入未通过: {', '.join(failed)}"
 
     # 落账（任一 fail 都落账）
     if not all_passed:
-        _log_rejection(raw_path, checks, ledger_path)
+        _log_rejection(
+            raw_path, checks, ledger_path,
+            content_lane=content_lane,
+            lane_failed=lane_failed,
+            lane_reason=lane_reason,
+        )
 
-    return AdmissionResult(passed=all_passed, checks=checks, reason=reason)
+    return AdmissionResult(
+        passed=all_passed,
+        checks=checks,
+        reason=reason,
+        content_lane="" if lane_failed else content_lane,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -466,6 +529,109 @@ def _check_novelty(
     )
 
 
+def _scan_procedural_evidence_count(body: str) -> int:
+    """确定性扫描 raw 正文中的**可执行操作**证据数（命令/代码块/编号步骤/API 签名）。
+
+    只用 source_ops_scanners.operations 扫描器（kind=source_operation，纯代码无 LLM）。
+    **不数** source_boundary / source_conclusion——那两类语义边界纯概念内容也有
+    （如"适用于…""关键洞察是…"），不构成可执行操作；若计入会把纯概念内容误判
+    procedural。含可执行操作（命令/代码/步骤）即客观无歧义 procedural（spec FR-002 混合
+    从严归 procedural）；无则交 LLM 轻判 concept/procedural。
+    扫描器不可用（导入失败）时返回 0，把车道判定交给 LLM。
+    """
+    try:
+        from src.akb2.quality.source_ops_scanners import operations
+    except ImportError:
+        return 0
+    try:
+        return len(operations.scan(body))
+    except Exception:
+        return 0
+
+
+def _classify_content_lane(
+    body: str,
+    route_llm_fn: Any,
+) -> tuple[str, bool, str]:
+    """车道分类：concept / procedural 二值（spec FR-001/FR-002）。
+
+    判定顺序（混合归 procedural，含可执行操作即 procedural）:
+        1. 确定性证据优先：raw 含 ≥ LANE_PROCEDURAL_MIN_EVIDENCE 个可执行操作
+           （命令/代码块/编号步骤）→ procedural（无歧义，不调 LLM）。
+        2. 无确定性证据 → 轻量 LLM（gemini-flash）判 concept / procedural。
+           schema 校验：仅接受 content_lane ∈ {concept, procedural}。
+
+    fail-closed（SC-4，不静默归车道）:
+        - LLM 路由不可用（RouterConfigError/RuntimeError）→ (("", True, reason))
+        - LLM 输出非法（无合法 content_lane）→ (("", True, reason))
+
+    Returns:
+        (content_lane, lane_failed, reason)
+        lane_failed=True 表示分类失败需 fail-closed 拒收；此时 content_lane 为空。
+    """
+    from src.akb2.quality.llm_router import RouterConfigError
+
+    # 1. 确定性 procedural 证据（含可执行操作即 procedural，混合从严归 procedural）
+    if _scan_procedural_evidence_count(body) >= LANE_PROCEDURAL_MIN_EVIDENCE:
+        return LANE_PROCEDURAL, False, "含可执行操作（命令/代码/步骤），判操作型车道"
+
+    # 2. 无确定性证据 → LLM 轻判 concept / procedural
+    content_snippet = body[:MAX_ADMISSION_CONTENT_CHARS]
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你判断内容属于「概念型」还是「操作型」。"
+                "概念型(concept): 阐述机制/架构/设计原则/模型，讲清「为什么/是什么」，"
+                "不含可直接执行的命令或步骤。"
+                "操作型(procedural): 含可执行步骤、命令、代码、配置、工作流，"
+                "讲清「怎么做」。若同时含两者（混合），一律归操作型(procedural)。"
+                "输出 JSON: {\"content_lane\": \"concept\"|\"procedural\", \"reason\": \"...\"}。"
+                "reason 最多 150 字符。"
+            ),
+        },
+        {"role": "user", "content": f"内容:\n{content_snippet}"},
+    ]
+
+    try:
+        response = route_llm_fn(
+            "gemini-flash",
+            messages,
+            response_schema=_LANE_CLASSIFY_SCHEMA,
+        )
+    except (RouterConfigError, RuntimeError) as exc:
+        # LLM 不可用 → fail-closed（不静默归车道）
+        return "", True, f"车道分类调用失败: {exc}"
+
+    lane = _validate_and_normalize_lane(response.content)
+    if lane is None:
+        # 输出非法（无合法 content_lane）→ fail-closed（不静默归车道）
+        return "", True, "车道分类输出非法（缺合法 content_lane 枚举值）"
+    return lane, False, "LLM 轻判车道"
+
+
+def _validate_and_normalize_lane(content: str | dict) -> str | None:
+    """校验车道分类输出，返回合法 content_lane 或 None（非法）。
+
+    仅接受 content_lane ∈ {concept, procedural}。非法/缺字段返回 None（调用方 fail-closed）。
+    无 jsonschema 时退化为枚举值直接校验，仍不放宽（不接受未知值）。
+    """
+    if isinstance(content, str):
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError:
+            return None
+    elif isinstance(content, dict):
+        parsed = content
+    else:
+        return None
+
+    lane = parsed.get("content_lane") if isinstance(parsed, dict) else None
+    if lane in (LANE_CONCEPT, LANE_PROCEDURAL):
+        return lane
+    return None
+
+
 def _validate_and_normalize(
     content: str | dict,
     check_name: str,
@@ -512,10 +678,15 @@ def _log_rejection(
     raw_path: str,
     checks: list[AdmissionCheck],
     ledger_path: str,
+    content_lane: str = "",
+    lane_failed: bool = False,
+    lane_reason: str = "",
 ) -> None:
     """落账拒收事件。
 
     调用 step-1 ledger.append_event 写入 jsonl 账本。
+    details 携 content_lane 键（Step.9：lane 贯穿到 ledger）。lane 分类失败时
+    failed_checks 含 content_lane 条目，使「车道不可用而拒收」在账本可见（SC-4）。
     """
     import hashlib
 
@@ -530,6 +701,8 @@ def _log_rejection(
         c.name: {"passed": c.passed, "reason": c.reason}
         for c in checks
     }
+    if lane_failed:
+        failure_details["content_lane"] = {"passed": False, "reason": lane_reason}
 
     event: dict[str, Any] = {
         "loop_id": "loop1",
@@ -545,6 +718,7 @@ def _log_rejection(
         "details": {
             "raw_path": raw_path,
             "admission_result": "rejected",
+            "content_lane": content_lane,
             "failed_checks": {
                 k: v for k, v in failure_details.items() if not v["passed"]
             },

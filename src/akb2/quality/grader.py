@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 # A 层 Defect 类型引用（同构）
 from src.akb2.quality.checks_structural import Defect
 
@@ -36,7 +38,8 @@ from src.akb2.quality.llm_router import (
 # 量规文件路径（相对本文件）
 RUBRIC_DIR = Path(__file__).resolve().parents[3] / "skillpack" / "quality" / "rubric"
 RUBRIC_FILE = "10-dimensions.md"
-REQUIRED_RUBRIC_VERSION = "1.0.0"
+# 机器可读量规真相源（spec FR-010：标准与代码分离，grader 从此读维度/权重/阈值/版本）
+RUBRIC_SPEC_FILE = "rubric.yaml"
 
 # 评分模型阵容
 PRIMARY_GRADER_MODEL = "gpt-5.4"
@@ -46,19 +49,48 @@ FALLBACK_GRADER_MODEL = "gemini-flash"
 MAX_GRADER_RETRIES = 2  # 评分重试次数（解析失败时）
 GRADER_TIMEOUT_S = 120
 
-# 10 维量规名称（用于解析输出）
-RUBRIC_DIMENSIONS: list[str] = [
-    "论断锚定率",
-    "How 密度",
-    "How 可执行性",
-    "证据诚实",
-    "解读分离",
-    "TLDR 密度",
-    "新颖增量",
-    "边强度匹配",
-    "Future Questions 质量",
-    "适用边界",
-]
+
+def _load_rubric_spec() -> dict[str, Any]:
+    """加载机器可读量规 spec（rubric.yaml）→ dict（dimensions+weights+threshold+floor+version）。
+
+    spec FR-010：维度集/权重/阈值/完整性地板/版本从此文件读，不在 .py 写死。
+    文件缺失或必需字段缺失 → RuntimeError（fail-closed，不给空标准跑空判定）。
+    """
+    spec_path = RUBRIC_DIR / RUBRIC_SPEC_FILE
+    if not spec_path.exists():
+        raise RuntimeError(
+            f"量规 spec 文件不存在: {spec_path}。"
+            " 请确认 skillpack/quality/rubric/rubric.yaml 已部署。"
+        )
+    try:
+        spec = yaml.safe_load(spec_path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise RuntimeError(f"量规 spec 解析失败: {spec_path}: {exc}") from exc
+    if not isinstance(spec, dict):
+        raise RuntimeError(f"量规 spec 顶层非 mapping: {spec_path}")
+    for required_key in ("rubric_version", "dimensions", "threshold", "integrity_floor", "lanes"):
+        if required_key not in spec:
+            raise RuntimeError(f"量规 spec 缺必需字段 {required_key!r}: {spec_path}")
+    if not isinstance(spec["dimensions"], list) or not spec["dimensions"]:
+        raise RuntimeError(f"量规 spec dimensions 为空或非列表: {spec_path}")
+    return spec
+
+
+def _rubric_dimension_names(spec: dict[str, Any] | None = None) -> list[str]:
+    """从 spec 全局 dimensions 派生维度名列表（grader 输出 enum 与解析对账的真相源）。"""
+    spec = spec or _load_rubric_spec()
+    names: list[str] = []
+    for dim in spec["dimensions"]:
+        name = dim.get("name") if isinstance(dim, dict) else None
+        if not name:
+            raise RuntimeError(f"量规 spec dimension 缺 name 字段: {dim!r}")
+        names.append(str(name))
+    return names
+
+
+# 版本与维度集从 spec 动态派生（不在 .py 硬编码——spec FR-010 / A3-6）
+REQUIRED_RUBRIC_VERSION: str = _load_rubric_spec()["rubric_version"]
+RUBRIC_DIMENSIONS: list[str] = _rubric_dimension_names()
 
 
 @dataclass
@@ -76,6 +108,13 @@ class GraderResult:
     fallback_failure_reason: str = ""
     fallback_used: bool = False
     parse_warnings: list[str] = field(default_factory=list)
+    # 内容车道（step-1 透传字段，仅记录不参与判定；lane-aware 选量规属 step-3）
+    content_lane: str = ""
+    # Step.4 扩展字段（spec FR-008：随稿记录，weighted_total 不参与本 step 判定）
+    weighted_total: float | None = None
+    threshold: float | None = None
+    integrity_floor_results: list[dict[str, Any]] = field(default_factory=list)
+    dimension_scores: dict[str, float] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -116,12 +155,38 @@ def _load_rubric_text() -> str:
     return text
 
 
+def _build_grader_weight_floor_note() -> str:
+    """从 spec 构建 weight / threshold / integrity_floor 说明（Step.3 注入 prompt）。"""
+    spec = _load_rubric_spec()
+    weight_lines = [
+        f"  - {d.get('name')}: weight={d.get('weight')}"
+        for d in spec.get("dimensions", [])
+        if isinstance(d, dict)
+    ]
+    floor_lines = [
+        f"  - {f.get('name')}（hard，不可被加权分补偿）"
+        for f in spec.get("integrity_floor", [])
+        if isinstance(f, dict)
+    ]
+    return (
+        "维度权重（rubric_version "
+        f"{spec.get('rubric_version')}，通过阈值 threshold={spec.get('threshold')}）:\n"
+        + "\n".join(weight_lines)
+        + "\n完整性地板（任一不达即拒，不可被高分补偿）:\n"
+        + "\n".join(floor_lines)
+        + "\n可选：每个维度可附 score 数值；可附 integrity_floor 逐项 pass/fail。"
+    )
+
+
 def _build_grader_prompt(candidate_text: str, rubric_text: str) -> list[dict[str, str]]:
     """构建评分 prompt（system + user）。"""
+    weight_floor_note = _build_grader_weight_floor_note()
     system_prompt = f"""你是一个知识库内容质量评审专家。请根据以下 10 维量规对候选页进行评分。
 
 量规:
 {rubric_text}
+
+{weight_floor_note}
 
 评审规则:
 1. 每个维度给出 pass 或 fail 判定
@@ -140,7 +205,14 @@ def _build_grader_prompt(candidate_text: str, rubric_text: str) -> list[dict[str
 
 
 def _build_grader_schema() -> dict[str, Any]:
-    """构建评分输出的 JSON Schema。"""
+    """构建评分输出的 JSON Schema。
+
+    Step.3 扩展（spec FR-008）：维度 enum 从 spec 派生（RUBRIC_DIMENSIONS）；
+    输出对象扩展可选字段——逐维 score、顶层 weighted_total/threshold/integrity_floor
+    逐项。新字段均**可选**（非 required），旧响应（无这些字段）仍合法解析（零回归）；
+    weighted_total 仅产出记录、不参与本 step 判定（判据切换属 step-3）。
+    """
+    floor_names = [f.get("name") for f in _load_rubric_spec().get("integrity_floor", [])]
     return {
         "type": "object",
         "properties": {
@@ -155,6 +227,11 @@ def _build_grader_schema() -> dict[str, Any]:
                             "enum": RUBRIC_DIMENSIONS,
                         },
                         "pass": {"type": "boolean"},
+                        # Step.3 扩展：逐维 score（可选，仅记录，不参与本 step 判定）
+                        "score": {
+                            "type": "number",
+                            "description": "该维度评分（可选，仅记录）",
+                        },
                         "defects": {
                             "type": "array",
                             "items": {
@@ -181,7 +258,30 @@ def _build_grader_schema() -> dict[str, Any]:
                     "required": ["dimension", "pass", "defects"],
                     "additionalProperties": False,
                 },
-            }
+            },
+            # Step.3 扩展：加权总分（可选，仅记录）
+            "weighted_total": {
+                "type": "number",
+                "description": "地板之上维度的加权质量分（可选，仅记录，不参与本 step 判定）",
+            },
+            # Step.3 扩展：通过阈值（可选，随稿记录）
+            "threshold": {
+                "type": "number",
+                "description": "加权质量分通过阈值（可选，随稿记录）",
+            },
+            # Step.3 扩展：逐完整性地板 pass/fail（可选）
+            "integrity_floor": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "enum": floor_names},
+                        "pass": {"type": "boolean"},
+                    },
+                    "required": ["name", "pass"],
+                    "additionalProperties": False,
+                },
+            },
         },
         "required": ["dimensions"],
         "additionalProperties": False,
@@ -239,10 +339,14 @@ def _parse_grader_output(
 
     defects: list[Defect] = []
     seen_dimensions: set[str] = set()
+    # Step.4：必须含 {dimension,pass,defects}，可选含 score（扩展字段）；其他未知键拒。
+    _dim_required = {"dimension", "pass", "defects"}
+    _dim_allowed = _dim_required | {"score"}
     for dim in dimensions:
         if not isinstance(dim, dict):
             return [], False
-        if set(dim.keys()) != {"dimension", "pass", "defects"}:
+        dim_keys = set(dim.keys())
+        if not _dim_required <= dim_keys or (dim_keys - _dim_allowed):
             return [], False
         dim_name = _canonical_dimension_name(dim.get("dimension"))
         if dim_name is None:
@@ -297,6 +401,82 @@ def _parse_grader_output(
     return defects, True
 
 
+def _coerce_grader_data(raw_content: str | dict) -> dict[str, Any] | None:
+    """把 grader 响应（str/dict）归一为 dict，失败返回 None。"""
+    if isinstance(raw_content, dict):
+        return raw_content
+    if isinstance(raw_content, str):
+        try:
+            m = re.search(r"\{[\s\S]*\}", raw_content)
+            return json.loads(m.group(0)) if m else None
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+def _dimension_weight_map(spec: dict[str, Any]) -> dict[str, float]:
+    """从 spec 全局 dimensions 构建 {维名: weight} 映射。"""
+    weights: dict[str, float] = {}
+    for dim in spec.get("dimensions", []) or []:
+        if isinstance(dim, dict) and "name" in dim:
+            w = dim.get("weight", 0)
+            weights[str(dim["name"])] = float(w) if isinstance(w, (int, float)) else 0.0
+    return weights
+
+
+def _parse_grader_extensions(raw_content: str | dict) -> dict[str, Any]:
+    """提取 Step.4 扩展字段（weighted_total/threshold/integrity_floor/逐维 score）。
+
+    spec FR-010 标准外置：weighted_total 由 **rubric.yaml 的 weight × 模型逐维 score** 计算、
+    threshold 从 **rubric.yaml** 读——改 YAML weight/threshold 即改这两个输出（不改 .py，
+    SC-3）。weighted_total 仅随稿记录、不参与本 step 判定（判据切换属 step-3）。
+    扩展字段全可选——模型未给逐维 score 时 weighted_total=None（不影响 pass/fail 与缺陷集，
+    零回归）；模型仍可在响应里给 weighted_total，但以 spec 计算值为准（确定性、可对账）。
+    """
+    spec = _load_rubric_spec()
+    threshold_spec = spec.get("threshold")
+    threshold = (
+        float(threshold_spec) if isinstance(threshold_spec, (int, float)) else None
+    )
+
+    data = _coerce_grader_data(raw_content)
+    if data is None:
+        return {
+            "weighted_total": None,
+            "threshold": threshold,
+            "integrity_floor_results": [],
+            "dimension_scores": {},
+        }
+
+    floor_raw = data.get("integrity_floor") or []
+    floor_results = [
+        {"name": str(f.get("name", "")), "pass": bool(f.get("pass"))}
+        for f in floor_raw
+        if isinstance(f, dict) and "name" in f and "pass" in f
+    ]
+    dim_scores: dict[str, float] = {}
+    for dim in data.get("dimensions", []) or []:
+        if isinstance(dim, dict) and "score" in dim:
+            name = _canonical_dimension_name(dim.get("dimension"))
+            if name is not None and isinstance(dim["score"], (int, float)):
+                dim_scores[name] = float(dim["score"])
+
+    # weighted_total = Σ(score_i × weight_i)，权重取自 rubric.yaml（改 weight 即改此值）
+    weighted_total: float | None = None
+    if dim_scores:
+        weights = _dimension_weight_map(spec)
+        weighted_total = sum(
+            score * weights.get(name, 0.0) for name, score in dim_scores.items()
+        )
+
+    return {
+        "weighted_total": weighted_total,
+        "threshold": threshold,
+        "integrity_floor_results": floor_results,
+        "dimension_scores": dim_scores,
+    }
+
+
 def _parse_failure_reason(model_family: str, content: Any) -> str:
     """生成短失败原因，避免静默 fallback。"""
     if isinstance(content, dict):
@@ -312,7 +492,7 @@ def _parse_failure_reason(model_family: str, content: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
-def run_grader_detailed(candidate_text: str) -> GraderResult:
+def run_grader_detailed(candidate_text: str, content_lane: str = "") -> GraderResult:
     """运行 B 层 10 维量规评分。
 
     调用 GPT-5.4 评分；GPT-5.4 不可用时切 gemini-flash 兜底（FR-008）。
@@ -320,12 +500,14 @@ def run_grader_detailed(candidate_text: str) -> GraderResult:
 
     Args:
         candidate_text: 候选页全文（含 frontmatter + 正文）
+        content_lane: 内容车道（step-1 透传字段，仅记入 GraderResult.content_lane，
+            不参与判定分支；lane-aware 选量规/维度属 step-3）。
 
     Returns:
-        tuple[list[Defect], str, bool]:
-            - GraderResult.defects: 缺陷清单（空列表 = 全 pass）
-            - GraderResult.model_used: 实际使用的模型 ID
-            - GraderResult.suspended: True 表示评分器双不可用，稿件挂起
+        GraderResult:
+            - defects: 缺陷清单（空列表 = 全 pass）
+            - model_used: 实际使用的模型 ID
+            - suspended: True 表示评分器双不可用，稿件挂起
 
     Raises:
         RuntimeError: 量规文件加载失败。
@@ -334,7 +516,9 @@ def run_grader_detailed(candidate_text: str) -> GraderResult:
     messages = _build_grader_prompt(candidate_text, rubric_text)
     response_schema = _build_grader_schema()
 
-    result = GraderResult(defects=[], model_used="none", suspended=True)
+    result = GraderResult(
+        defects=[], model_used="none", suspended=True, content_lane=content_lane
+    )
 
     # 尝试 GPT-5.4（解析失败时按 MAX_GRADER_RETRIES 重试，耗尽再切兜底）
     for _ in range(MAX_GRADER_RETRIES):
@@ -346,10 +530,16 @@ def run_grader_detailed(candidate_text: str) -> GraderResult:
             )
             defects, parse_ok = _parse_grader_output(response.content)
             if parse_ok:
+                ext = _parse_grader_extensions(response.content)
                 return GraderResult(
                     defects=defects,
                     model_used=response.model_used,
                     suspended=False,
+                    content_lane=content_lane,
+                    weighted_total=ext["weighted_total"],
+                    threshold=ext["threshold"],
+                    integrity_floor_results=ext["integrity_floor_results"],
+                    dimension_scores=ext["dimension_scores"],
                 )
             # 解析失败：记录原因，继续重试（循环耗尽后退出走兜底）
             result.primary_failed = True
@@ -371,10 +561,15 @@ def run_grader_detailed(candidate_text: str) -> GraderResult:
             )
             defects, parse_ok = _parse_grader_output(response.content)
             if parse_ok:
+                ext = _parse_grader_extensions(response.content)
                 result.defects = defects
                 result.model_used = response.model_used
                 result.suspended = False
                 result.fallback_used = True
+                result.weighted_total = ext["weighted_total"]
+                result.threshold = ext["threshold"]
+                result.integrity_floor_results = ext["integrity_floor_results"]
+                result.dimension_scores = ext["dimension_scores"]
                 return result
             result.fallback_failed = True
             result.fallback_failure_reason = _parse_failure_reason(
@@ -388,9 +583,9 @@ def run_grader_detailed(candidate_text: str) -> GraderResult:
     return result
 
 
-def run_grader(candidate_text: str) -> tuple[list[Defect], str, bool]:
+def run_grader(candidate_text: str, content_lane: str = "") -> tuple[list[Defect], str, bool]:
     """运行 B 层评分器，保留旧三元组 API。"""
-    result = run_grader_detailed(candidate_text)
+    result = run_grader_detailed(candidate_text, content_lane=content_lane)
     return result.defects, result.model_used, result.suspended
 
 
@@ -423,10 +618,15 @@ def run_grader_with_fixture_detailed(
         if response is not None:
             defects, parse_ok = _parse_grader_output(response.content)
             if parse_ok:
+                ext = _parse_grader_extensions(response.content)
                 return GraderResult(
                     defects=defects,
                     model_used=response.model_used,
                     suspended=False,
+                    weighted_total=ext["weighted_total"],
+                    threshold=ext["threshold"],
+                    integrity_floor_results=ext["integrity_floor_results"],
+                    dimension_scores=ext["dimension_scores"],
                 )
             result.primary_failure_reason = _parse_failure_reason(
                 PRIMARY_GRADER_MODEL, response.content
@@ -449,10 +649,15 @@ def run_grader_with_fixture_detailed(
             if response is not None:
                 defects, parse_ok = _parse_grader_output(response.content)
                 if parse_ok:
+                    ext = _parse_grader_extensions(response.content)
                     result.defects = defects
                     result.model_used = response.model_used
                     result.suspended = False
                     result.fallback_used = True
+                    result.weighted_total = ext["weighted_total"]
+                    result.threshold = ext["threshold"]
+                    result.integrity_floor_results = ext["integrity_floor_results"]
+                    result.dimension_scores = ext["dimension_scores"]
                     return result
                 result.fallback_failure_reason = _parse_failure_reason(
                     FALLBACK_GRADER_MODEL, response.content

@@ -1,0 +1,122 @@
+{
+  "dispatch_id": "content-lane-quality-exec-a",
+  "source_master_plan": "plans/gd/2026-06-26-content-lane-quality/master-plan.md",
+  "goal_chain": {
+    "PROJECT_GOAL": "让循环1 从事实上的命令清单库变成能同时收录概念型与操作型知识的概念图谱知识库（spec: specs/content-lane-quality/spec.md）",
+    "CHAIN_GOAL": "把宪法 v1.2.0 认可的『完整性地板（硬 pass/fail）+ 车道感知加权质量分（过阈不排序）』实现为循环1 判定代码（原则 6/8）",
+    "PHASE_GOAL": "执行包 A『改标准』——车道地基 / 量规外置 / concept 判定三步串行落地为循环1 判定代码，concept 正样本能走完判定段达标且操作内容零回归"
+  },
+  "max_parallel_planning": 1,
+  "max_parallel_execution": 1,
+  "max_parallel_review": 2,
+  "max_parallel_validation": 2,
+  "overrides_rationale": "execution max=1：master §5a 锁定单一 execution packet 内部 step-1→2→3 全串行（跨 step 共享 grader/distill/runner owned_paths，不可并行切分）；planning max=1：planning 阶段已完结，本 dispatch 仅执行",
+  "tracks": [
+    {
+      "track_id": "content-lane-quality-execution",
+      "mode": "execute",
+      "agent_role": "child_executor",
+      "owned_paths": [
+        "src/akb2/quality/admission.py",
+        "src/akb2/quality/distill.py",
+        "src/akb2/quality/distill_worker.py",
+        "src/akb2/quality/checks_structural.py",
+        "src/akb2/quality/grader.py",
+        "src/akb2/quality/repair.py",
+        "src/akb2/quality/runner.py",
+        "src/akb2/quality/integrity_floor.py",
+        "src/akb2/quality/weighted_score.py",
+        "src/akb2/quality/__init__.py",
+        "skillpack/quality/rubric/rubric.yaml",
+        "skillpack/quality/rubric/10-dimensions.md",
+        "tests/test_admission_lane.py",
+        "tests/test_distill_lane_threading.py",
+        "tests/test_runner_lane_threading.py",
+        "tests/test_admission_novelty_wiring.py",
+        "tests/test_grader_rubric_external.py",
+        "tests/quality/test_three_level_how.py",
+        "tests/quality/test_integrity_floor.py",
+        "tests/quality/test_interpretation_traceability.py",
+        "tests/quality/test_concept_weighted_score.py",
+        "tests/quality/test_graph_resolvability.py",
+        "tests/quality/test_grader_lane_dimensions.py",
+        "tests/quality/test_concept_judgment_e2e.py",
+        "tests/quality/fixtures/concept/",
+        "docs/allowed-residuals.md"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "src/akb2/briefing/**",
+        "docs/constitution.md",
+        "plans/gd/2026-06-26-loop1-calibration-harness-fix/**",
+        "plans/gd/2026-06-26-content-lane-quality/dispatch/**",
+        "plans/gd/2026-06-25-loop1-content-lane-refactor/**",
+        "plans/gd/2026-06-22-how-reliability-refactor/**"
+      ],
+      "required_context": [
+        "specs/content-lane-quality/spec.md",
+        "plans/gd/2026-06-26-content-lane-quality/master-plan.md",
+        "plans/gd/2026-06-26-content-lane-quality/step-1-lane-foundation.md",
+        "plans/gd/2026-06-26-content-lane-quality/step-2-rubric-externalize.md",
+        "plans/gd/2026-06-26-content-lane-quality/step-3-concept-judgment.md",
+        "src/akb2/loops/ledger.py",
+        "src/akb2/loops/paths.py",
+        "src/akb2/quality/promote.py",
+        "src/akb2/quality/source_ops_scanners/operations.py"
+      ],
+      "deliverables": [
+        { "path": "src/akb2/quality/admission.py", "kind": "file", "must_exist": true },
+        { "path": "src/akb2/quality/distill.py", "kind": "file", "must_exist": true },
+        { "path": "src/akb2/quality/distill_worker.py", "kind": "file", "must_exist": true },
+        { "path": "src/akb2/quality/checks_structural.py", "kind": "file", "must_exist": true },
+        { "path": "src/akb2/quality/grader.py", "kind": "file", "must_exist": true },
+        { "path": "src/akb2/quality/repair.py", "kind": "file", "must_exist": true },
+        { "path": "src/akb2/quality/runner.py", "kind": "file", "must_exist": true },
+        { "path": "src/akb2/quality/integrity_floor.py", "kind": "file", "must_exist": true },
+        { "path": "src/akb2/quality/weighted_score.py", "kind": "file", "must_exist": true },
+        { "path": "skillpack/quality/rubric/rubric.yaml", "kind": "file", "must_exist": true },
+        { "path": "skillpack/quality/rubric/10-dimensions.md", "kind": "file", "must_exist": true },
+        { "path": "tests/test_admission_lane.py", "kind": "file", "must_exist": true },
+        { "path": "tests/test_distill_lane_threading.py", "kind": "file", "must_exist": true },
+        { "path": "tests/test_runner_lane_threading.py", "kind": "file", "must_exist": true },
+        { "path": "tests/test_admission_novelty_wiring.py", "kind": "file", "must_exist": true },
+        { "path": "tests/test_grader_rubric_external.py", "kind": "file", "must_exist": true },
+        { "path": "tests/quality/test_three_level_how.py", "kind": "file", "must_exist": true },
+        { "path": "tests/quality/test_integrity_floor.py", "kind": "file", "must_exist": true },
+        { "path": "tests/quality/test_interpretation_traceability.py", "kind": "file", "must_exist": true },
+        { "path": "tests/quality/test_concept_weighted_score.py", "kind": "file", "must_exist": true },
+        { "path": "tests/quality/test_graph_resolvability.py", "kind": "file", "must_exist": true },
+        { "path": "tests/quality/test_grader_lane_dimensions.py", "kind": "file", "must_exist": true },
+        { "path": "tests/quality/test_concept_judgment_e2e.py", "kind": "file", "must_exist": true },
+        { "path": "tests/quality/fixtures/concept/", "kind": "directory", "must_exist": true }
+      ],
+      "blocked_by": [],
+      "can_parallel_with": [],
+      "sc_refs": ["SC-1", "SC-2", "SC-3", "SC-4", "SC-5", "SC-6", "SC-7"],
+      "verify": [
+        { "sc_ref": "SC-1", "method": "test", "cmd": "pytest tests/quality/test_concept_judgment_e2e.py -k concept_positive -q", "expect": "passed" },
+        { "sc_ref": "SC-2", "method": "test", "cmd": "pytest -m proposal_mode -q && pytest -m 'not integration' -q", "expect": "passed" },
+        { "sc_ref": "SC-3", "method": "test", "cmd": "pytest tests/quality/test_concept_judgment_e2e.py -k negatives -q", "expect": "passed" },
+        { "sc_ref": "SC-4", "method": "test", "cmd": "pytest tests/quality/test_integrity_floor.py -k adversarial -q", "expect": "passed" },
+        { "sc_ref": "SC-5", "method": "test", "cmd": "pytest tests/test_grader_rubric_external.py -k rubric_change_changes_scoring -q", "expect": "passed" },
+        { "sc_ref": "SC-6", "method": "test", "cmd": "pytest tests/test_admission_novelty_wiring.py -k 'rewrite_rejected_in_runner_path or production_empty_index_holds_or_rejects or empty_index_preserves_golden_with_explicit_allow_empty' -q", "expect": "passed" },
+        { "sc_ref": "SC-7", "method": "test", "cmd": "pytest tests/quality/test_interpretation_traceability.py -k 'poisoned_trace or entailment or poisoned_trace_real_canary or entailment_model_is_gpt54' -q", "expect": "passed" }
+      ]
+    }
+  ],
+  "waves": [
+    {
+      "wave_id": "w1",
+      "track_ids": ["content-lane-quality-execution"],
+      "description": "单一 execution packet 内部 step-1→step-2→step-3 串行 checkpoint 执行（车道地基→量规外置→concept 判定核心）"
+    }
+  ],
+  "merge_gates": [
+    { "gate_id": "G1", "description": "child execution result 格式合规（gd-execution-result template，无 REV_VERDICT/GD_REVIEW_DECISION 字段）" },
+    { "gate_id": "G2", "description": "files_added/modified 全在 owned_paths 内、forbidden_paths 未触碰" },
+    { "gate_id": "G3", "description": "每条 SC 有 evidence 或 not_run_reason（pass/fail 必填 evidence，not_run/n_a 必填 not_run_reason）" },
+    { "gate_id": "G4", "description": "sc_refs 与 verify_results 集合精确相等（anti-fill 规则 C）" },
+    { "gate_id": "G5", "description": "deliverables must_exist=true 全部 produced 且 verified=true 且物理存在" },
+    { "gate_id": "G6", "description": "三 step checkpoint 串行：step-2 依赖 step-1 形参就位、step-3 依赖 step-1/2 产出" }
+  ]
+}

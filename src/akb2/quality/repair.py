@@ -1443,8 +1443,12 @@ def run_repair_loop(
     mock_route_llm: Any = None,
     golden_sample_text: str | None = None,
     raw_text: str | None = None,
+    content_lane: str = "",
 ) -> dict[str, Any]:
     """执行定点修复循环。
+
+    content_lane（step-1 透传字段）：透传给修复轮内的 run_grader_detailed regrade，
+    仅随评分记录、不参与修复触发/收敛判定（lane-aware repair 属条件包 C）。
 
     流程:
         1. 合并 A+B 缺陷清单
@@ -1544,7 +1548,7 @@ def run_repair_loop(
                 else:
                     from src.akb2.quality.grader import run_grader_detailed
 
-                    grader_result = run_grader_detailed(current_text)
+                    grader_result = run_grader_detailed(current_text, content_lane=content_lane)
                 final_grader_meta = _grader_meta_from_result(grader_result)
                 if grader_result.suspended:
                     trace_payload["status"] = "grader_suspended"
@@ -1695,7 +1699,7 @@ def run_repair_loop(
         else:
             from src.akb2.quality.grader import run_grader_detailed
 
-            grader_result = run_grader_detailed(current_text)
+            grader_result = run_grader_detailed(current_text, content_lane=content_lane)
 
         final_grader_meta = _grader_meta_from_result(grader_result)
         if grader_result.suspended:

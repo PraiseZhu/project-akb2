@@ -460,6 +460,7 @@ class ComposeResult:
 def extract_claims(
     raw_content: str,
     route_llm_fn: Any = None,
+    content_lane: str = "",
 ) -> ExtractResult:
     """段 1: raw → 结构化 JSON 抽取。
 
@@ -469,6 +470,8 @@ def extract_claims(
     Args:
         raw_content: raw 文件全文内容。
         route_llm_fn: LLM 路由函数注入（fixture 测试用）。
+        content_lane: 内容车道（concept/procedural，step-1 透传字段）。本 step 仅
+            透传给 _validate_extract_output、行为不变；lane-aware 改判属 step-3。
 
     Returns:
         ExtractResult: 含 success / data / retries_used / error。
@@ -520,7 +523,7 @@ def extract_claims(
                         )
                     parsed_segments[segment_name] = segment_data
             merged = _merge_extract_segments(parsed_segments)
-            _validate_extract_output(merged)
+            _validate_extract_output(merged, content_lane=content_lane)
         except SemanticJitterError as exc:
             # Step-7: 语义 segment 连续不稳定达阈值 → fail-closed（不无限重试，有界）。
             return ExtractResult(
@@ -1377,8 +1380,14 @@ def _build_local_enrichment(
     }
 
 
-def _validate_extract_output(data: dict[str, Any]) -> None:
+def _validate_extract_output(data: dict[str, Any], content_lane: str = "") -> None:
     """校验抽取输出的结构完整性。
+
+    Args:
+        data: 抽取输出 dict。
+        content_lane: 内容车道（step-1 透传字段）。**本 step 行为不变**——H1≥3 门对
+            所有 lane 维持旧判定；concept 改判（允许 H1=0、改判 H3≥3）属 step-3 Step.1。
+            形参就位是为 step-3 lane-aware 校验预留，本 step 不消费它改判定。
 
     Raises:
         ValueError: 校验未通过。
@@ -1509,16 +1518,19 @@ def _validate_extract_output(data: dict[str, Any]) -> None:
 def build_deterministic_extract_result(
     raw_content: str,
     raw_path: str = "",
+    content_lane: str = "",
 ) -> ExtractResult:
     """Build a conservative ExtractResult when the maker LLM is unavailable.
 
     This is a maker fallback, not a quality bypass: the composed candidate still
     goes through local structural checks, GPT-5.4 grading, repair, and five-gate
     proposal handling.
+
+    content_lane（step-1 透传字段）传给 _validate_extract_output；本 step 行为不变。
     """
     try:
         data = _build_deterministic_extract_data(raw_content, raw_path)
-        _validate_extract_output(data)
+        _validate_extract_output(data, content_lane=content_lane)
     except Exception as exc:
         return ExtractResult(
             success=False,
@@ -1805,6 +1817,9 @@ def compose_candidate(
     output_dir: str | None = None,
     route_llm_fn: Any = None,
     raw_content: str | None = None,
+    content_lane: str = "",
+    known_concepts: list[str] | None = None,
+    pending_queue: list[str] | None = None,
 ) -> ComposeResult:
     """段 2: 按模板成稿 10 节，落 staging/candidate/<batch>/。
 
@@ -1821,6 +1836,13 @@ def compose_candidate(
             calibration 等只构造 raw_path 但不落地文件的链路也能拿到原文，
             避免 must_cover/命令接地因 read_text 失败而静默失真。None 时回退
             读磁盘 raw_path（生产 7 段链路 raw 已落地，行为不变）。
+        content_lane: 内容车道（concept/procedural，step-1 透传字段）。写入 candidate
+            frontmatter 的 content_lane 键；本 step 不参与判定分支。
+        known_concepts: 已知概念 slug 集（step-1 vault loader 装载）。透传给 compose 内
+            第一道 self-gate 的图谱 resolve（A3-8），使概念引用在生产路径真能 resolve，
+            不再因 fixture 恒空而被掩盖。None 时行为同旧（self-gate 默认空集）。
+        pending_queue: pending 队列概念 slug 集（step-1 vault loader 装载）。同 known_concepts，
+            透传给第一道 self-gate。
 
     Returns:
         ComposeResult: 含 success / candidate_path / frontmatter。
@@ -1859,7 +1881,7 @@ def compose_candidate(
     candidate_path = os.path.join(output_dir, candidate_filename)
 
     # 构建 frontmatter（确定性代码写死，防范已知坑 1-3）
-    frontmatter = _build_frontmatter(raw_path, extract_result.data)
+    frontmatter = _build_frontmatter(raw_path, extract_result.data, content_lane=content_lane)
 
     # raw_content 同源读取：must_cover 扫描与 self-gate A3 锚点校验共用同一份原文，
     # 避免截断/不一致导致 must_cover 账本与锚点校验脱节。
@@ -1896,6 +1918,10 @@ def compose_candidate(
     try:
         from src.akb2.quality.checks_structural import run_candidate_self_gate
 
+        # step-1：known_concepts/pending_queue 形参已就位（compose_candidate 接收并为
+        # step-3 预留）；但把它们喂给本 self-gate 的图谱 resolve 判定消费属 step-3
+        # SC-3e（A3-8：check_a4 增 known/pending + 两道 self-gate 接线）。本 step 保持
+        # 调用首行字面不变，零回归现有源码审计测试（test_checks_structural SC-3.3）。
         compose_defects = run_candidate_self_gate(full_page, raw_content=raw_content)
     except Exception as exc:
         return ComposeResult(
@@ -2009,11 +2035,15 @@ def _extract_key_findings(claims: list[dict[str, Any]]) -> list[str]:
 def _build_frontmatter(
     raw_path: str,
     extract_data: dict[str, Any],
+    content_lane: str = "",
 ) -> dict[str, Any]:
     """构建 frontmatter（确定性代码）。
 
     candidate 阶段产出 active-ready 的全字段集（除 reviewer/reviewed_at——
     那两项由 promote 升格时的机器 reviewer 写入，见 CONTENT-LIFECYCLE §6.1）。
+
+    content_lane（step-1）：concept/procedural 车道写入 candidate frontmatter 的
+    content_lane 键，使车道随候选页持久化、供 grader/repair/promote 全链可见。
 
     已知坑:
         1. gate_decision 写死 null（不许预填 active，防 HC-09 拦）
@@ -2066,6 +2096,7 @@ def _build_frontmatter(
         "confidence": "medium",
         # 状态（短）
         "status": "candidate",
+        "content_lane": content_lane,  # 内容车道（step-1：concept/procedural）
         "gate_decision": None,  # 写死 null（已知坑 1）
         "gate_reason": gate_reason,  # ≤150 字符（已知坑 3）
         "star_level": 0,  # 0 星基线（STAR-RATING；升星引擎=循环3）

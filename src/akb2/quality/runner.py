@@ -381,32 +381,231 @@ def _distill_abort_details(
 # ---------------------------------------------------------------------------
 
 
+# vault 概念索引 loader 的 typed status
+LANE_INDEX_STATUS_OK = "ok"
+LANE_INDEX_STATUS_FIRST_RUN = "first_run_no_index"
+LANE_INDEX_STATUS_EMPTY = "configured_but_empty"
+LANE_INDEX_STATUS_LOAD_ERROR = "load_error"
+
+# _check_novelty 只用前 5 条 wiki_references
+VAULT_WIKI_REFERENCES_MAX = 5
+
+
+def _load_vault_concept_index(
+    config: RunnerConfig,
+    exclude_slug: str = "",
+) -> dict[str, Any]:
+    """确定性装载 vault 概念/wiki 索引（纯文件扫描，无 LLM，符合宪法 P5 单向 vault→工程）。
+
+    Decision-2（洗稿生产接线）+ A3-8（图谱 resolve 生产真传 known/pending）：
+        - known_concepts = glob `<akb2_root>/wiki/concepts/*.md` 的 slug 集
+        - pending_queue  = 读 `<staging>/pending/concept-backlinks.jsonl` 的 concept slug
+        - wiki_references = `<akb2_root>/wiki/**/*.md` 各页 TLDR 摘要（≤5），**排除当前源
+          slug**（防自比对误判洗稿）
+    vault 路径经 loops/paths.get_akb2_root/get_staging_root 解析（不硬编码）。
+
+    Returns:
+        {status, counts, wiki_references, known_concepts, pending_queue, source_paths}
+        status ∈ {ok, first_run_no_index, configured_but_empty, load_error}：
+          - ok：wiki 索引存在且非空，正常喂 novelty。
+          - first_run_no_index：wiki 目录不存在（首跑无索引），允许空索引默认 pass。
+          - configured_but_empty：wiki 目录存在但无任何概念/源页（异常空），生产应 hold/reject。
+          - load_error：扫描抛错（路径解析失败等），生产应 hold/reject。
+    """
+    try:
+        from src.akb2.loops.paths import get_akb2_root, get_staging_root
+
+        akb2_root = get_akb2_root()
+        staging_root = get_staging_root()
+    except Exception as exc:
+        return {
+            "status": LANE_INDEX_STATUS_LOAD_ERROR,
+            "counts": {"known_concepts": 0, "pending_queue": 0, "wiki_references": 0},
+            "wiki_references": [],
+            "known_concepts": [],
+            "pending_queue": [],
+            "source_paths": [],
+            "error": f"vault 路径解析失败: {exc}",
+        }
+
+    wiki_dir = akb2_root / "wiki"
+    if not wiki_dir.exists():
+        return {
+            "status": LANE_INDEX_STATUS_FIRST_RUN,
+            "counts": {"known_concepts": 0, "pending_queue": 0, "wiki_references": 0},
+            "wiki_references": [],
+            "known_concepts": [],
+            "pending_queue": [],
+            "source_paths": [],
+        }
+
+    try:
+        known_concepts = sorted(
+            p.stem for p in (wiki_dir / "concepts").glob("*.md")
+        )
+        wiki_pages = sorted(wiki_dir.rglob("*.md"))
+        wiki_references: list[str] = []
+        source_paths: list[str] = []
+        for page in wiki_pages:
+            if exclude_slug and page.stem == exclude_slug:
+                continue  # 排除当前处理源自身，防自比对误判
+            tldr = _read_page_tldr(page)
+            if tldr:
+                wiki_references.append(tldr)
+                source_paths.append(str(page))
+            if len(wiki_references) >= VAULT_WIKI_REFERENCES_MAX:
+                break
+
+        pending_queue = _read_pending_concepts(
+            staging_root / "pending" / "concept-backlinks.jsonl"
+        )
+    except OSError as exc:
+        return {
+            "status": LANE_INDEX_STATUS_LOAD_ERROR,
+            "counts": {"known_concepts": 0, "pending_queue": 0, "wiki_references": 0},
+            "wiki_references": [],
+            "known_concepts": [],
+            "pending_queue": [],
+            "source_paths": [],
+            "error": f"vault 索引扫描失败: {exc}",
+        }
+
+    # wiki 目录存在但完全无概念页与可比对源摘要 → configured_but_empty（生产 hold/reject）
+    if not known_concepts and not wiki_references:
+        status = LANE_INDEX_STATUS_EMPTY
+    else:
+        status = LANE_INDEX_STATUS_OK
+
+    return {
+        "status": status,
+        "counts": {
+            "known_concepts": len(known_concepts),
+            "pending_queue": len(pending_queue),
+            "wiki_references": len(wiki_references),
+        },
+        "wiki_references": wiki_references,
+        "known_concepts": known_concepts,
+        "pending_queue": pending_queue,
+        "source_paths": source_paths,
+    }
+
+
+def _read_page_tldr(page: Path) -> str:
+    """读取 wiki 页的 TLDR 摘要（frontmatter gate_reason 或 ## TLDR 节首段）。
+
+    确定性纯文本提取，无 LLM。取不到返回空字符串。
+    """
+    try:
+        text = page.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    # 优先 ## TLDR 节首段
+    m = re.search(r"(?ms)^##\s*TLDR\s*\n+(.+?)(?=\n#|\Z)", text)
+    if m:
+        snippet = m.group(1).strip()
+        if snippet:
+            return snippet[:800]
+    # 退化：取正文首个非空段（跳过 frontmatter）
+    body = text
+    if body.lstrip().startswith("---"):
+        end = body.find("\n---", 3)
+        if end != -1:
+            body = body[end + 4:]
+    for para in body.split("\n\n"):
+        para = para.strip()
+        if para and not para.startswith("#"):
+            return para[:800]
+    return ""
+
+
+def _read_pending_concepts(pending_path: Path) -> list[str]:
+    """读 pending 队列 jsonl 的 concept_slug 集（promote.py 写入处的对账）。"""
+    if not pending_path.exists():
+        return []
+    slugs: list[str] = []
+    try:
+        with pending_path.open(encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                slug = entry.get("concept_slug")
+                if slug:
+                    slugs.append(str(slug))
+    except OSError:
+        return slugs
+    return sorted(set(slugs))
+
+
 def _run_admission_segment(
     raw_path: str,
     raw_content: str,
     config: RunnerConfig,
-) -> tuple[bool, str, list]:
-    """段 2: 准入判定。
+    wiki_references: list[str] | None = None,
+    index_status: str = LANE_INDEX_STATUS_OK,
+    content_hash: str = "",
+) -> tuple[bool, str, list, str]:
+    """段 2: 准入判定（Decision-2：装载 vault wiki_references 喂 novelty）。
+
+    wiki_references 由 pipeline 经 _load_vault_concept_index 装载传入；novelty 在生产
+    路径据此真判洗稿（不再恒空默认 pass）。index_status 为生产 configured_but_empty/
+    load_error 时写 ledger `novelty_index_unavailable` 并返回 hold/reject（不静默 pass）。
 
     Returns:
-        (passed, reason, checks)
+        (passed, reason, checks, content_lane)
     """
     from src.akb2.quality.admission import run_admission
+
+    # 生产索引异常（空/错）→ fail-closed hold/reject，ledger 可见（不静默放行洗稿）
+    production_bad_index = index_status in (
+        LANE_INDEX_STATUS_EMPTY,
+        LANE_INDEX_STATUS_LOAD_ERROR,
+    )
+    if production_bad_index:
+        _log_event(
+            config,
+            "abort",
+            "admission",
+            content_hash,
+            {
+                "reason": "novelty_index_unavailable",
+                "index_status": index_status,
+                "raw_path": raw_path,
+            },
+        )
+        return (
+            False,
+            f"准入未通过: novelty_index_unavailable ({index_status})",
+            [],
+            "",
+        )
 
     result = run_admission(
         raw_path=raw_path,
         raw_content=raw_content,
         ledger_path=config.ledger_path,
+        wiki_references=wiki_references,
     )
-    return result.passed, result.reason, result.checks
+    return result.passed, result.reason, result.checks, result.content_lane
 
 
 def _run_distill_segment(
     raw_path: str,
     raw_content: str,
     config: RunnerConfig,
+    content_lane: str = "",
+    known_concepts: list[str] | None = None,
+    pending_queue: list[str] | None = None,
 ) -> tuple[bool, str, str, str | None, dict[str, Any]]:
     """段 3-4: 提炼。
+
+    content_lane / known_concepts / pending_queue 由 pipeline 从准入段 + vault loader
+    传入，透传给抽取子进程（A3-1）+ build_deterministic + compose_candidate（含
+    compose 内第一道 self-gate 的图谱 resolve）。本 step 仅穿线、不改判定。
 
     Returns:
         (success, candidate_path_or_error, error_detail, candidate_text, distill_meta)
@@ -416,13 +615,15 @@ def _run_distill_segment(
         compose_candidate,
     )
 
-    # 段 1: 结构化抽取
-    extract_result = _run_extract_claims_worker(raw_content)
+    # 段 1: 结构化抽取（携 content_lane 穿过子进程边界 — A3-1）
+    extract_result = _run_extract_claims_worker(raw_content, content_lane)
     maker_fallback_used = False
     maker_primary_error = ""
     if not extract_result.success and os.environ.get("AKB2_MAKER_FALLBACK", "1") != "0":
         maker_primary_error = extract_result.error
-        extract_result = build_deterministic_extract_result(raw_content, raw_path)
+        extract_result = build_deterministic_extract_result(
+            raw_content, raw_path, content_lane=content_lane
+        )
         maker_fallback_used = extract_result.success
     if not extract_result.success:
         return (
@@ -447,6 +648,9 @@ def _run_distill_segment(
         batch_id=batch_id,
         output_dir=config.staging_dir,
         raw_content=raw_content,
+        content_lane=content_lane,
+        known_concepts=known_concepts,
+        pending_queue=pending_queue,
     )
     if not compose_result.success:
         return (
@@ -492,16 +696,24 @@ def _run_distill_segment(
     )
 
 
-def _run_extract_claims_worker(raw_content: str) -> Any:
+def _run_extract_claims_worker(raw_content: str, content_lane: str = "") -> Any:
     """Run DeepSeek extract in a killable child process.
 
     SDK/http stacks can occasionally ignore in-process timers while waiting on
     the gateway. Keeping extract in a subprocess gives the runner a hard outer
     deadline and lets it write the fail-closed abort ledger itself.
+
+    A3-1（抽取子进程过界）：向子进程传携 content_lane 的 JSON payload（非裸
+    raw_content），使 lane 穿过子进程边界到达 extract_claims——否则概念正样本在
+    extract 阶段被 H1 门拒、走不到 compose（lane-aware extract 改判属 step-3）。
     """
     from src.akb2.quality.distill import ExtractResult
 
     cmd = [sys.executable, "-m", DISTILL_EXTRACT_WORKER_MODULE]
+    worker_input = json.dumps(
+        {"raw_content": raw_content, "content_lane": content_lane},
+        ensure_ascii=False,
+    )
     proc: subprocess.Popen[str] | None = None
     try:
         proc = subprocess.Popen(
@@ -513,7 +725,7 @@ def _run_extract_claims_worker(raw_content: str) -> Any:
             start_new_session=True,
         )
         stdout, stderr = proc.communicate(
-            input=raw_content,
+            input=worker_input,
             timeout=DISTILL_EXTRACT_WORKER_TIMEOUT_S,
         )
     except subprocess.TimeoutExpired:
@@ -603,8 +815,12 @@ def _run_quality_segments(
     raw_content: str,
     config: RunnerConfig,
     grader_result_path: Path | None = None,
+    content_lane: str = "",
 ) -> tuple[bool, str, str, dict[str, Any]]:
     """段 5-6: 结构校验 + 评分 + 修复。
+
+    content_lane（step-1 透传字段）：传给 run_grader_detailed / run_repair_loop，
+    仅随评分/修复记录，不参与判定（lane-aware 判定属 step-3）。
 
     converged=True 表示最终稿结构层(A)+评分层(B)零缺陷。此时把 grader PASS
     结果落盘到 grader_result_path，供段 7 的 Gate-5 独立复核读取——消除
@@ -686,7 +902,7 @@ def _run_quality_segments(
 
     if not a_defects:
         # B 层: LLM 评分。只有 A 层通过时才调用，避免对结构不合格稿件花费裁判预算。
-        grader_result = run_grader_detailed(candidate_text)
+        grader_result = run_grader_detailed(candidate_text, content_lane=content_lane)
         b_defects = grader_result.defects
         grader_meta = {
             "grader_model_used": grader_result.model_used,
@@ -754,6 +970,7 @@ def _run_quality_segments(
         failures_path=config.failures_path,
         golden_sample_text=golden_text,
         raw_text=raw_content,
+        content_lane=content_lane,
     )
 
     repair_rounds = repair_result.get("rounds", 0)
@@ -868,11 +1085,27 @@ def _run_pipeline_segments(
             "error": f"准入未通过: duplicate_source: {existing_source}",
         }
 
-    # Segment 2: 准入
-    passed, reason, checks = _run_admission_segment(raw_path, raw_content, config)
+    # Decision-2 / A3-8：装载 vault 概念索引（wiki_references → novelty；
+    # known_concepts/pending_queue → 图谱 resolve）。loader 可 monkeypatch 注入（测试用）。
+    vault_index = _load_vault_concept_index(
+        config, exclude_slug=_derive_raw_slug(raw_path)
+    )
+
+    # Segment 2: 准入（喂 wiki_references；生产空/错索引 hold/reject）
+    # 容错解包：mock 旧 3 元组 (passed, reason, checks) 仍兼容；真实返回 4 元组携 lane。
+    admission_ret = _run_admission_segment(
+        raw_path,
+        raw_content,
+        config,
+        wiki_references=vault_index.get("wiki_references"),
+        index_status=vault_index.get("status", LANE_INDEX_STATUS_OK),
+        content_hash=content_hash,
+    )
+    passed, reason = admission_ret[0], admission_ret[1]
+    content_lane = admission_ret[3] if len(admission_ret) > 3 else ""
     if not passed:
         _log_event(config, "abort", "admission", content_hash,
-                   {"reason": reason})
+                   {"reason": reason, "content_lane": content_lane})
         return {
             "converged": False,
             "rounds": rounds,
@@ -883,7 +1116,7 @@ def _run_pipeline_segments(
         }
 
     _log_event(config, "admission", "admission", content_hash,
-               {"passed": True})
+               {"passed": True, "content_lane": content_lane})
 
     # Segment 3-4: 提炼
     _log_event(
@@ -896,10 +1129,16 @@ def _run_pipeline_segments(
             "model_family": "deepseek-v4-pro",
             "timeout_s": DISTILL_TIMEOUT_S,
             "max_retries": DISTILL_MAX_RETRIES,
+            "content_lane": content_lane,
         },
     )
     success, candidate_path, error_detail, candidate_text, distill_meta = _run_distill_segment(
-        raw_path, raw_content, config
+        raw_path,
+        raw_content,
+        config,
+        content_lane=content_lane,
+        known_concepts=vault_index.get("known_concepts"),
+        pending_queue=vault_index.get("pending_queue"),
     )
     if not success:
         failed_node = distill_meta.get("failed_node", "distill_extract")
@@ -939,7 +1178,8 @@ def _run_pipeline_segments(
         Path(config.grader_result_dir) / f"{Path(candidate_path).stem}.grader.json"
     )
     converged, error_class, error_detail, quality_meta = _run_quality_segments(
-        candidate_text, candidate_path, raw_content, config, grader_result_path
+        candidate_text, candidate_path, raw_content, config, grader_result_path,
+        content_lane=content_lane,
     )
     # P2: rounds 回填真实 repair 轮数（修复原恒为 0 的报告 bug）
     rounds = quality_meta.get("repair_rounds", 0) if quality_meta else 0

@@ -30,10 +30,12 @@ from src.akb2.quality.distill import (
     must_cover_operation_provenance_split,
 )
 
-# 10-dimensions.md 已知 hash（SC-5.2 守护对象——本 step 禁改）。
+# 10-dimensions.md 已知 hash（守护对象：挡非预期 rubric 改动）。
+# 包 A step-2 合法升 rubric v1.0.0→v1.1.0（加注释+版本号），hash 同步到 v1.1.0 锚定值。
+# 后续任何再改 10-dimensions.md 的 step 必须同步更新此常量，否则本守护 fail-closed。
 _RUBRIC_PATH = "skillpack/quality/rubric/10-dimensions.md"
 _KNOWN_RUBRIC_HASH = (
-    "8dcef76fe18432360498b77b9ac63b02117957a4524b2140f907023606370cd2"
+    "5f2791b9e4f3256e3c43355d9216998a53c335e9bce6fe4d03eee2891f9544c8"
 )
 
 
