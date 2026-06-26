@@ -152,6 +152,12 @@ _EXTRACT_SCHEMA: dict[str, Any] = {
                         "type": "string",
                         "minLength": 4,
                     },
+                    # step-3 SC-3c：akb_interpretation claim 带 traces_to（指向 source_grounded anchor）。
+                    # source_grounded claim 可省；layer① 地板由 integrity_floor 校验。
+                    "traces_to": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
                 },
                 "required": ["text", "anchor", "provenance", "evidence_gap"],
                 "additionalProperties": False,
@@ -247,6 +253,11 @@ _EXTRACT_SCHEMA: dict[str, Any] = {
                         "type": "string",
                         "enum": ["source_grounded", "akb_interpretation"],
                     },
+                    # step-3 SC-3c：akb_interpretation argumentation 带 traces_to
+                    "traces_to": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
                 },
                 "required": ["claim_anchor", "explanation", "provenance"],
                 "additionalProperties": False,
@@ -313,6 +324,7 @@ _CLAIMS_SCHEMA: dict[str, Any] = {
                         "enum": ["source_grounded", "akb_interpretation"],
                     },
                     "evidence_gap": {"type": "string", "minLength": 4},
+                    "traces_to": {"type": "array", "items": {"type": "string"}},
                 },
                 "required": ["text", "anchor", "provenance", "evidence_gap"],
                 "additionalProperties": False,
@@ -433,6 +445,11 @@ _ARGUMENTATION_SCHEMA: dict[str, Any] = {
                     "provenance": {
                         "type": "string",
                         "enum": ["source_grounded", "akb_interpretation"],
+                    },
+                    # step-3 SC-3c：akb_interpretation argumentation 带 traces_to
+                    "traces_to": {
+                        "type": "array",
+                        "items": {"type": "string"},
                     },
                 },
                 "required": ["claim_anchor", "explanation", "provenance"],
@@ -655,6 +672,8 @@ def _build_extract_segment_messages(
             "akb_interpretation 占比必须 ≤40%。\n"
             "- evidence_gap 写原文未覆盖/未证明/未量化/未比较的具体盲区，"
             "须含盲区词(未提供/未量化/未覆盖/缺少/没有/未验证/未比较)。\n"
+            "- akb_interpretation claim 必带 traces_to：指向它所解读的 source_grounded claim 的 anchor"
+            "（如 [\"§A\"]），source_grounded claim 可省 traces_to。\n"
             "- tldr 是综合全文主旨，不是复制单条 claim。"
         ),
         "how_params": (
@@ -680,7 +699,8 @@ def _build_extract_segment_messages(
             "只抽取 argumentation。\n"
             "- 为 claims 中每个重要 anchor 写一条论证说明。\n"
             "- 每项含 claim_anchor(如 §A)、explanation、provenance。\n"
-            "- 若 explanation 是归纳或操作化判断，provenance 用 akb_interpretation。"
+            "- 若 explanation 是归纳或操作化判断，provenance 用 akb_interpretation，"
+            "且必带 traces_to 指向所引的 source_grounded anchor（如 [\"§A\"]）。\n"
             "- 输出顶层必须是 {\"argumentation\":[...]}，不能用 claims/arguments/items 等同义 key。"
         ),
         "graph": (
@@ -832,11 +852,20 @@ def _normalize_claim(item: dict[str, Any]) -> dict[str, Any]:
     gap = str(item.get("evidence_gap") or item.get("gap") or "").strip()
     if not gap:
         gap = "未提供：原文未提供该论点的量化验证、反例或对比数据。"
+    # step-3 SC-3c：保留 traces_to（akb_interpretation 溯源到 source_grounded anchor）
+    traces_to_raw = item.get("traces_to") or []
+    if isinstance(traces_to_raw, str):
+        traces_to = [str(t).strip() for t in [traces_to_raw] if str(t).strip()]
+    elif isinstance(traces_to_raw, list):
+        traces_to = [str(t).strip() for t in traces_to_raw if str(t).strip()]
+    else:
+        traces_to = []
     return {
         "text": text,
         "anchor": anchor,
         "provenance": provenance,
         "evidence_gap": gap,
+        "traces_to": traces_to,
     }
 
 
@@ -1229,7 +1258,16 @@ def _normalize_argumentation(
     provenance = str(item.get("provenance") or "").strip()
     if provenance not in {"source_grounded", "akb_interpretation"}:
         provenance = "source_grounded" if anchor else "akb_interpretation"
-    return {"claim_anchor": anchor, "explanation": text, "provenance": provenance}
+    # step-3 SC-3c：保留 traces_to（akb_interpretation 溯源）
+    traces_to_raw = item.get("traces_to") or []
+    if isinstance(traces_to_raw, str):
+        traces_to = [str(t).strip() for t in [traces_to_raw] if str(t).strip()]
+    elif isinstance(traces_to_raw, list):
+        traces_to = [str(t).strip() for t in traces_to_raw if str(t).strip()]
+    else:
+        traces_to = []
+    return {"claim_anchor": anchor, "explanation": text, "provenance": provenance,
+            "traces_to": traces_to}
 
 
 def _validate_extract_segment(segment_name: str, data: dict[str, Any]) -> None:

@@ -225,6 +225,34 @@ class TestProceduralCapRetained:
         _validate_extract_output(d, content_lane="concept")  # 不 raise
 
 
+# ----------------------------- 生产路径：traces_to 真接通 schema + floor ----------------------------- #
+
+
+class TestProductionTracesTo:
+    """codex P1：traces_to 进 _EXTRACT_SCHEMA + normalizer，生产层① 现在可达 + 真判。"""
+
+    def test_extract_with_traces_to_passes_schema_and_floor(self):
+        """concept extract 带 traces_to → 过 _validate_extract_output schema + layer① floor。"""
+        from src.akb2.quality.distill import _validate_extract_output
+
+        d = _valid_extract(n_akb=1, with_mechanism=True)
+        # akb_interpretation claim 带 traces_to 指向 grounded §A
+        d["claims"][1]["traces_to"] = ["§A"]
+        d["argumentation"][0]["traces_to"] = ["§A"]
+        _validate_extract_output(d, content_lane="concept")  # schema 过（traces_to 现允许）
+        r = evaluate_integrity_floor(d, "concept")
+        assert r.passed, f"层① 应过（traces_to→§A）: {r.failed_floors}"
+        assert FLOOR_INTERPRETATION_TRACEABILITY not in r.failed_floors
+
+    def test_extract_without_traces_to_fails_layer1(self):
+        """concept extract 的 akb claim 不带 traces_to → layer① fail（生产层① 真判，非 fixture-only）。"""
+        d = _valid_extract(n_akb=1, with_mechanism=True)
+        # _valid_extract 的 akb claim 无 traces_to（默认）
+        r = evaluate_integrity_floor(d, "concept")
+        assert FLOOR_INTERPRETATION_TRACEABILITY in r.failed_floors
+        assert not r.passed
+
+
 # ----------------------------- 真机 canary skip ----------------------------- #
 
 
