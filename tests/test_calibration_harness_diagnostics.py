@@ -514,6 +514,203 @@ def test_raw_frontmatter_direct():
 
 
 # ---------------------------------------------------------------------------
+# P1: 锚点注入契约 — 镜像 raw_archiver.archive_raw
+# ---------------------------------------------------------------------------
+
+
+def test_compose_raw_injects_required_anchors():
+    """P1: _compose_raw_content 注入全 5 必需锚点（A/E/H/M/Z）+ 锚点目录。
+
+    镜像 raw_archiver.archive_raw :360-384：fm_block + 锚点目录 + anchored_content。
+    多段正文（≥5 段）应注入全部 REQUIRED_ANCHORS，使下游 distill self-gate
+    （checks_structural.A3）校验 "引用的锚点 §X 在 raw 文件中不存在" 不再触发。
+    """
+    from src.akb2.quality.calibration import _compose_raw_content
+    from src.akb2.quality.intake.extract import ExtractMethod, ExtractResult
+    from src.akb2.quality.intake.models import ExtractionContext
+    from src.akb2.quality.intake.raw_archiver import REQUIRED_ANCHORS
+
+    # 6 段正文 → 全 5 必需锚点注入
+    content = "\n\n".join(f"paragraph {i} " + "word " * 50 for i in range(6))
+    result = ExtractResult(
+        url="https://example.com/article",
+        method=ExtractMethod.DEFUDDLE,
+        title="Test",
+        author="Author",
+        published="2026-06-01",
+        content=content,
+        word_count=300,
+        metadata_complete=True,
+        extraction_success=True,
+    )
+    ctx = ExtractionContext(
+        source_slug="test-slug",
+        source_publisher="Test Publisher",
+        feed_title="Test",
+        feed_author="Author",
+        feed_published="2026-06-01",
+        url="https://example.com/article",
+    )
+    raw = _compose_raw_content(result, ctx)
+
+    # 锚点目录存在
+    assert "## 锚点目录" in raw, "raw 缺锚点目录"
+    # 全 5 必需锚点标记存在于 raw（§X_CONTENT_START 形态）
+    for key in REQUIRED_ANCHORS:
+        assert f"§{key}" in raw, f"raw 缺必需锚点 §{key}"
+
+
+def test_compose_raw_anchor_marker_extractable():
+    """P1: 锚点标记以 §X_CONTENT_START 行首形态注入，可被 _extract_raw_anchors 识别。
+
+    checks_structural._extract_raw_anchors 的第三类 pattern：
+    `(?m)^(§[A-Z])_[A-Z_]+\\b` 匹配行首 §A_CONTENT_START。
+    断言注入后 raw 经 _extract_raw_anchors 能取出 §A（不再触发 A3 缺陷）。
+    """
+    from src.akb2.quality.calibration import _compose_raw_content
+    from src.akb2.quality.intake.extract import ExtractMethod, ExtractResult
+    from src.akb2.quality.intake.models import ExtractionContext
+
+    content = "\n\n".join(f"paragraph {i} " + "word " * 50 for i in range(6))
+    result = ExtractResult(
+        url="https://example.com/article",
+        method=ExtractMethod.DEFUDDLE,
+        title="Test",
+        author="Author",
+        published="2026-06-01",
+        content=content,
+        word_count=300,
+        metadata_complete=True,
+        extraction_success=True,
+    )
+    ctx = ExtractionContext(
+        source_slug="test-slug",
+        source_publisher="Pub",
+        feed_title="Test",
+        feed_author="Author",
+        feed_published="2026-06-01",
+        url="https://example.com/article",
+    )
+    raw = _compose_raw_content(result, ctx)
+
+    from src.akb2.quality.checks_structural import _extract_raw_anchors
+
+    raw_anchors = _extract_raw_anchors(raw)
+    assert "§A" in raw_anchors, (
+        f"§A 未被 _extract_raw_anchors 识别（注入形态错误）；got={raw_anchors}"
+    )
+
+
+def test_inject_anchors_into_raw_fixture_path():
+    """P1: fixture 路径 _inject_anchors_into_raw 对含 frontmatter 的 raw 注入锚点。
+
+    fixture 文件有 frontmatter（含 fixture_kind 等额外字段）但无锚点；
+    运行时注入后与生产 raw 同形，frontmatter 额外字段保留。
+    """
+    from src.akb2.quality.calibration import _inject_anchors_into_raw
+    from src.akb2.quality.intake.raw_archiver import REQUIRED_ANCHORS
+
+    fixture_raw = (
+        "---\n"
+        "artifact_type: raw\n"
+        "source_slug: test\n"
+        "fixture_kind: no_source_page\n"
+        "fixture_domain: Harness Engineering\n"
+        "---\n\n"
+        + "\n\n".join(f"paragraph {i} " + "word " * 50 for i in range(6))
+    )
+    injected = _inject_anchors_into_raw(fixture_raw)
+
+    # frontmatter 保留（含额外字段）
+    assert injected.startswith("---")
+    assert "artifact_type: raw" in injected
+    assert "fixture_kind: no_source_page" in injected
+    # 锚点目录注入
+    assert "## 锚点目录" in injected
+    # 全 5 必需锚点
+    for key in REQUIRED_ANCHORS:
+        assert f"§{key}" in injected, f"fixture raw 缺必需锚点 §{key}"
+
+
+def test_fixture_path_injects_anchors_via_process_entry(monkeypatch):
+    """P1: fixture entry 经 _process_corpus_entry → 传给 pipeline 的 raw 含锚点目录 + §A。"""
+    import src.akb2.quality.runner as runner_mod
+    from src.akb2.quality.calibration import _process_corpus_entry
+
+    captured: dict[str, str] = {}
+
+    def capture_pipeline(raw_path, raw_content, config):
+        captured["raw_content"] = raw_content
+        return _mock_pipeline_success(raw_path, raw_content, config)
+
+    monkeypatch.setattr(runner_mod, "_run_pipeline_segments", capture_pipeline)
+
+    entry = {
+        "url": "fixture:vercel-ai-sdk-nosource",
+        "domain": "Harness Engineering",
+        "expected": "ingest",
+        "notes": "test fixture anchor injection",
+    }
+    _process_corpus_entry(entry, 0, _test_config())
+
+    raw = captured.get("raw_content", "")
+    assert raw, "fixture path raw_content 未被截获"
+    assert "## 锚点目录" in raw, "fixture path raw 缺锚点目录"
+    assert "§A" in raw, "fixture path raw 缺 §A 锚点"
+
+
+def test_live_path_injects_anchors_via_process_entry(monkeypatch):
+    """P1: live entry 经 _process_corpus_entry → 传给 pipeline 的 raw 含锚点目录 + §A。"""
+    import src.akb2.quality.intake.extract as extract_mod
+    import src.akb2.quality.runner as runner_mod
+    from src.akb2.quality.calibration import _process_corpus_entry
+
+    captured: dict[str, str] = {}
+
+    def capture_pipeline(raw_path, raw_content, config):
+        captured["raw_content"] = raw_content
+        return _mock_pipeline_success(raw_path, raw_content, config)
+
+    monkeypatch.setattr(runner_mod, "_run_pipeline_segments", capture_pipeline)
+
+    # mock 抽取器返回完整元数据 + 多段正文
+    mock_return = {
+        "title": "Test Live Article",
+        "author": "Live Author",
+        "published": "2026-06-01",
+        "content": "\n\n".join(f"paragraph {i} " + "word " * 50 for i in range(6)),
+        "word_count": 300,
+    }
+    monkeypatch.setattr(
+        extract_mod,
+        "_extract_via_defuddle",
+        lambda url, html=None: mock_return,
+    )
+    monkeypatch.setattr(
+        extract_mod,
+        "_extract_via_scrapling",
+        lambda url, html=None, browser_mode=False: mock_return,
+    )
+
+    entry = {
+        "url": "https://example.com/live-article",
+        "domain": "AI Agent",
+        "expected": "ingest",
+        "feed_title": "Test Live Article",
+        "feed_author": "Live Author",
+        "feed_published": "2026-06-01",
+        "source_publisher": "Live Publisher",
+        "source_slug": "live-slug",
+    }
+    _process_corpus_entry(entry, 0, _test_config())
+
+    raw = captured.get("raw_content", "")
+    assert raw, "live path raw_content 未被截获"
+    assert "## 锚点目录" in raw, "live path raw 缺锚点目录"
+    assert "§A" in raw, "live path raw 缺 §A 锚点"
+
+
+# ---------------------------------------------------------------------------
 # SC-1: failure_class 三分类
 # ---------------------------------------------------------------------------
 
@@ -533,8 +730,12 @@ def test_failure_class_dead_link_http_status():
     assert _classify_failure_class(r, http_status="unreachable") == "dead_link"
 
 
-def test_failure_class_dead_link_degraded():
-    """SC-1: 无 preflight 时退化按 error + 无正文判 dead_link。"""
+def test_failure_class_no_preflight_extraction_all_failed():
+    """SC-1/P2: 无 preflight 时 extraction 全失败（error="All extraction methods failed"）→ extraction_failure（非 dead_link）。
+
+    dead_link 只在有 HTTP 死链证据（preflight http_status>=400 或 unreachable）时才标；
+    无 preflight 时保守归 extraction_failure，避免把抓取器全部失败误判为死链。
+    """
     from src.akb2.quality.calibration import _classify_failure_class
     from src.akb2.quality.intake.extract import ExtractMethod, ExtractResult
 
@@ -545,7 +746,33 @@ def test_failure_class_dead_link_degraded():
         word_count=0,
         error="All extraction methods failed",
     )
-    assert _classify_failure_class(r, http_status=None) == "dead_link"
+    assert _classify_failure_class(r, http_status=None) == "extraction_failure"
+
+
+def test_failure_class_no_preflight_network_error_is_extraction_failure():
+    """SC-1/P2: 无 preflight 时即便 error 含网络特征词（connection/timeout）也归 extraction_failure。
+
+    无 preflight HTTP 证据时不猜死链——保守归 extraction_failure（P2 核心）。
+    """
+    from src.akb2.quality.calibration import _classify_failure_class
+    from src.akb2.quality.intake.extract import ExtractMethod, ExtractResult
+
+    for err in (
+        "All extraction methods failed",
+        "connection refused",
+        "timeout while fetching",
+        "host unreachable",
+    ):
+        r = ExtractResult(
+            url="https://example.com/net-err",
+            method=ExtractMethod.FAILED,
+            content="",
+            word_count=0,
+            error=err,
+        )
+        assert _classify_failure_class(r, http_status=None) == "extraction_failure", (
+            f"无 preflight 时 error='{err}' 应归 extraction_failure 非 dead_link"
+        )
 
 
 def test_failure_class_metadata_failure():

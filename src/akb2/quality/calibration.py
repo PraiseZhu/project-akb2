@@ -44,7 +44,14 @@ from src.akb2.quality.intake.extract import (
     extract_content,
 )
 from src.akb2.quality.intake.models import ExtractionContext
-from src.akb2.quality.intake.raw_archiver import ARTIFACT_TYPE, FRONTMATTER_FIELDS
+from src.akb2.quality.intake.raw_archiver import (
+    ANCHOR_DEFINITIONS,
+    ARTIFACT_TYPE,
+    FRONTMATTER_FIELDS,
+    REQUIRED_ANCHORS,
+    _assert_anchors,
+    _inject_anchors,
+)
 
 # ---------------------------------------------------------------------------
 # 具名常量
@@ -225,7 +232,8 @@ def _process_corpus_entry(
             return result
         # fixture 正文加载成功
         result["extraction_success"] = True
-        raw_content = fixture_content
+        # P1: 注入锚点 + 锚点目录（镜像 archive_raw，使 fixture raw 与生产同形）
+        raw_content = _inject_anchors_into_raw(fixture_content)
     else:
         # live 路径（Step.2: 镜像 orchestrator 构造 ExtractionContext）
         result["source"] = "live"
@@ -368,10 +376,21 @@ def _load_fixture_content(
 def _compose_raw_content(
     extract_result: ExtractResult, ctx: ExtractionContext | None
 ) -> str:
-    """拼装 9 字段 frontmatter + result.content 成完整 raw markdown（SC-6）。
+    """拼装 9 字段 frontmatter + 锚点目录 + 锚点化正文（镜像 raw_archiver.archive_raw）。
+
+    P1 修复：复用 raw_archiver._inject_anchors / _assert_anchors /
+    ANCHOR_DEFINITIONS，保证 calibration raw 与生产 raw 同形
+    （fm_block + 锚点目录 + anchored_content），供下游 distill self-gate
+    （checks_structural.A3）校验引用锚点存在性——不再因缺 §A 触发
+    "引用的锚点 §A 在 raw 文件中不存在"。
 
     字段名集合从 raw_archiver.FRONTMATTER_FIELDS 取（不硬编码，B3-7）。
     source_* 优先取 extract_result、缺失从 ctx 补。
+
+    fail-closed: 必需锚点缺失时仍返回带锚点目录的 raw（含已注入锚点），
+    由下游 distill self-gate 裁决 anchor_mismatch——镜像 archive_raw
+    :367-384 的 fail-closed 流（archive_raw 不写文件 + 落签名；此处无
+    落盘环节，走 self-gate 等价路径，不自创逻辑）。
     """
     method_str = (
         extract_result.method.value
@@ -409,7 +428,54 @@ def _compose_raw_content(
     lines.append("---")
 
     fm_block = "\n".join(lines)
-    return f"{fm_block}\n\n{extract_result.content}\n"
+
+    # 注入锚点 + 锚点目录（镜像 raw_archiver.archive_raw :360-384）
+    anchored_content, toc_entries, hit_counts = _inject_anchors(
+        extract_result.content, ANCHOR_DEFINITIONS
+    )
+    # 断言必需锚点（fail-closed 契约；实际裁决由下游 distill self-gate 执行）
+    _assert_anchors(hit_counts, REQUIRED_ANCHORS)
+
+    toc_block = "## 锚点目录\n\n" + "\n".join(toc_entries) + "\n"
+    return f"{fm_block}\n\n{toc_block}\n\n{anchored_content}\n"
+
+
+def _inject_anchors_into_raw(raw_md: str) -> str:
+    """对已含 frontmatter 的 raw markdown 注入锚点 + 锚点目录（fixture 路径）。
+
+    P1 修复：fixture 文件有 frontmatter 但无锚点，运行时注入使其与生产
+    archive_raw 产出的 raw 同形（fm_block + 锚点目录 + anchored_content），
+    供下游 distill self-gate（checks_structural.A3）校验引用锚点存在性。
+
+    分离 frontmatter 与正文后，对正文调用 _inject_anchors，frontmatter
+    原样保留（含 fixture_kind/fixture_domain 等额外字段）。
+
+    fail-closed: 必需锚点缺失时仍返回带锚点目录的 raw，由下游 distill
+    self-gate 裁决（镜像 _compose_raw_content / archive_raw 语义）。
+    """
+    if not raw_md.startswith("---"):
+        # 无 frontmatter — 直接注入
+        anchored, toc, hit_counts = _inject_anchors(raw_md, ANCHOR_DEFINITIONS)
+        _assert_anchors(hit_counts, REQUIRED_ANCHORS)
+        toc_block = "## 锚点目录\n\n" + "\n".join(toc) + "\n"
+        return f"{toc_block}\n\n{anchored}\n"
+
+    # 定位 frontmatter 闭合（第二个 --- 行）
+    second_delim = raw_md.find("\n---", 3)
+    if second_delim < 0:
+        # 无闭合 — 当作无 frontmatter
+        anchored, toc, hit_counts = _inject_anchors(raw_md, ANCHOR_DEFINITIONS)
+        _assert_anchors(hit_counts, REQUIRED_ANCHORS)
+        toc_block = "## 锚点目录\n\n" + "\n".join(toc) + "\n"
+        return f"{toc_block}\n\n{anchored}\n"
+
+    fm_block = raw_md[: second_delim + 4]  # 含闭合 ---（无 trailing newline）
+    body = raw_md[second_delim + 4 :].lstrip("\n")
+
+    anchored, toc, hit_counts = _inject_anchors(body, ANCHOR_DEFINITIONS)
+    _assert_anchors(hit_counts, REQUIRED_ANCHORS)
+    toc_block = "## 锚点目录\n\n" + "\n".join(toc) + "\n"
+    return f"{fm_block}\n\n{toc_block}\n\n{anchored}\n"
 
 
 def _classify_failure_class(
@@ -420,40 +486,25 @@ def _classify_failure_class(
 
     优先级:
         1. extraction_success=True → None（成功）
-        2. HTTP 死链（preflight http_status>=400/unreachable，或退化按 error 网络特征）→ dead_link
+        2. HTTP 死链（preflight http_status>=400 或 unreachable/error/0）→ dead_link
         3. word_count>=MIN 且 metadata_complete=False → metadata_failure
         4. 其余 → extraction_failure
 
-    preflight 缺失时 http_status=None，dead_link 退化按 ExtractResult.error（B3-3）。
+    P2 修复：dead_link 只在有 HTTP 死链证据（preflight http_status>=400 或
+    unreachable/error/0）时才标；无 preflight（http_status=None）时 extraction
+    全失败（如 "All extraction methods failed"）保守归 extraction_failure，
+    不再退化按 error 网络特征误判 dead_link——避免把抓取器全部失败错分为死链。
     """
     # 1. 成功
     if extract_result is not None and extract_result.extraction_success:
         return None
 
-    # 2. dead_link
-    # 2a. preflight http_status 明确指示
+    # 2. dead_link — 仅认 preflight HTTP 证据（P2: 不再退化按 error 判 dead_link）
     if http_status is not None:
         if isinstance(http_status, int) and http_status >= 400:
             return "dead_link"
         if http_status in ("unreachable", "error", 0):
             return "dead_link"
-    # 2b. 退化: 无 preflight，无正文 + error 含网络特征 → dead_link
-    if http_status is None and extract_result is not None:
-        if (
-            not extract_result.content
-            and not extract_result.word_count
-            and extract_result.error
-        ):
-            err_lower = str(extract_result.error).lower()
-            network_indicators = (
-                "all extraction methods failed",
-                "connection",
-                "timeout",
-                "refused",
-                "unreachable",
-            )
-            if any(ind in err_lower for ind in network_indicators):
-                return "dead_link"
 
     # 3. metadata_failure: 有正文但元数据不全
     if extract_result is not None:
@@ -463,7 +514,7 @@ def _classify_failure_class(
         ):
             return "metadata_failure"
 
-    # 4. extraction_failure
+    # 4. extraction_failure（无 preflight 时全失败保守归此类，P2）
     return "extraction_failure"
 
 

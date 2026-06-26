@@ -430,39 +430,45 @@ def extract_content(
                 else:
                     result.error = "defuddle content too short"
 
-        # 分支 3: defuddle 失败/反爬 → Scrapling
-        use_browser = is_anti_bot
-        extracted = _extract_via_scrapling(url, html, browser_mode=use_browser)
-        if extracted:
+        # 分支 3: defuddle 失败/反爬 → Scrapling adaptive → browser fallback
+        # 普通页 adaptive 失败（空 dict 或 content 过短）也应 fallback browser，
+        # 不只在 is_anti_bot=True 时才用 browser。adaptive → browser → 全失败才签名。
+        for use_browser in (False, True):
+            extracted = _extract_via_scrapling(url, html, browser_mode=use_browser)
+            if not extracted:
+                result.error = (
+                    f"Scrapling {'browser' if use_browser else 'adaptive'} returned empty"
+                )
+                continue
             wc = extracted.get("word_count", 0)
-            if wc >= MIN_CONTENT_LENGTH:
-                result.method = (
-                    ExtractMethod.SCRAPLING_BROWSER if use_browser else ExtractMethod.SCRAPLING
-                )
-                result.title = extracted.get("title", "")
-                result.author = extracted.get("author", "")
-                result.published = extracted.get("published", "")
-                result.content = extracted.get("content", "")
-                result.word_count = wc
-                # feed 元数据 fallback
-                _apply_feed_fallback(result, extraction_config)
-                result.metadata_complete = _validate_metadata(result)
-                result.extraction_success = result.metadata_complete
-                if result.extraction_success:
-                    return result
-                # fallback 后仍缺元数据 → fail-closed（不产 raw，不落签名）
+            if wc < MIN_CONTENT_LENGTH:
                 result.error = (
-                    f"Scrapling {'browser' if use_browser else 'adaptive'}"
-                    " succeeded but metadata incomplete after feed fallback"
+                    f"Scrapling {'browser' if use_browser else 'adaptive'} content too short"
                 )
-                result.method = ExtractMethod.FAILED
-                result.extraction_success = False
+                continue
+            # content 足够长 → 填充 result
+            result.method = (
+                ExtractMethod.SCRAPLING_BROWSER if use_browser else ExtractMethod.SCRAPLING
+            )
+            result.title = extracted.get("title", "")
+            result.author = extracted.get("author", "")
+            result.published = extracted.get("published", "")
+            result.content = extracted.get("content", "")
+            result.word_count = wc
+            # feed 元数据 fallback
+            _apply_feed_fallback(result, extraction_config)
+            result.metadata_complete = _validate_metadata(result)
+            result.extraction_success = result.metadata_complete
+            if result.extraction_success:
                 return result
-            else:
-                result.error = (
-                    f"Scrapling {'browser' if use_browser else 'adaptive'}"
-                    " content too short"
-                )
+            # fallback 后仍缺元数据 → fail-closed（不产 raw，不落签名）
+            result.error = (
+                f"Scrapling {'browser' if use_browser else 'adaptive'}"
+                " succeeded but metadata incomplete after feed fallback"
+            )
+            result.method = ExtractMethod.FAILED
+            result.extraction_success = False
+            return result
 
     # 分支 4: 全失败 → 落签名
     result.method = ExtractMethod.FAILED

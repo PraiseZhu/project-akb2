@@ -6,12 +6,18 @@
   "aggregate_path": "plans/gd/2026-06-26-loop1-calibration-harness-fix/merge-report-execute.md",
   "manifest_path": "plans/gd/2026-06-26-loop1-calibration-harness-fix/execution-dispatch-map.json",
   "primary_gate": {
-    "verdict": "APPROVED",
-    "blocking": []
+    "verdict": "REQUIRES_CHANGES",
+    "blocking": [
+      "SC-1_end_to_end_FAIL",
+      "P1_3_constitution",
+      "P2_3_hotfix_ledger"
+    ]
   },
   "secondary_gate": {
-    "verdict": "APPROVED",
-    "blocking": []
+    "verdict": "REQUIRES_CHANGES",
+    "blocking": [
+      "SC-1_end_to_end_FAIL"
+    ]
   },
   "gate_consistent": true,
   "dirty_detected": false,
@@ -59,16 +65,38 @@
       "raw_verdict": "completed",
       "mapped_status": "approved",
       "aggregate_bucket": "execute-t1"
+    },
+    {
+      "queue_job_id": "t1-fix-anchor",
+      "target_role": "execute",
+      "primary_target": "src/akb2/quality/calibration.py",
+      "bridge_exit": 0,
+      "bridge_stderr_path": null,
+      "bridge_stderr_summary": "none",
+      "raw_verdict": "completed",
+      "mapped_status": "approved",
+      "aggregate_bucket": "execute-t1-fix"
+    },
+    {
+      "queue_job_id": "t2a-fix-fallback",
+      "target_role": "execute",
+      "primary_target": "src/akb2/quality/intake/extract.py",
+      "bridge_exit": 0,
+      "bridge_stderr_path": null,
+      "bridge_stderr_summary": "none",
+      "raw_verdict": "completed",
+      "mapped_status": "approved",
+      "aggregate_bucket": "execute-t2a-fix"
     }
   ],
   "batch_ledgers": [
     {
       "path": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-26-loop1-calibration-harness-fix/stage-dispatch-ledger-execute-w1.json",
-      "hash": "00384928048e70f38f1cf5fe5eed82fd0ad24d59aae0e7951921c7d8c339dffb"
+      "hash": "f8a89d95ce83a3b78195fb15fd5c18d12c84fab8487a81a3a225f58f543314eb"
     },
     {
       "path": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-26-loop1-calibration-harness-fix/stage-dispatch-ledger-execute-w2.json",
-      "hash": "e6e9d520bd9024143a18e69e61191500af55a26362f150fa1dd4acd9fdd8e35e"
+      "hash": "7b003af4a12ddd0367709ab024029494dfeab977c0b1e160e9d3a2ddbdffd2bc"
     }
   ],
   "suite_target_closure": [
@@ -89,6 +117,16 @@
     },
     {
       "target_id": "akb2-calibration-harness-diagnostics-t1",
+      "mapped_status": "approved",
+      "evidence_kind": "controller_approved"
+    },
+    {
+      "target_id": "t1-fix-anchor",
+      "mapped_status": "approved",
+      "evidence_kind": "controller_approved"
+    },
+    {
+      "target_id": "t2a-fix-fallback",
       "mapped_status": "approved",
       "evidence_kind": "controller_approved"
     }

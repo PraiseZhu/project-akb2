@@ -16,8 +16,12 @@
   ],
   "main_agent_merge": {
     "merge_report_path": "plans/gd/2026-06-26-loop1-calibration-harness-fix/merge-report-execute.md",
-    "merge_report_hash": "66d0e87fda3645947a8945e5b1b2186f10583a4828ba4d932200700b7b547bcf",
-    "final_decision": "APPROVED",
-    "blocking_buckets": []
+    "merge_report_hash": "b5d32f8c6e81478510568a6afae6bda1835144ebf605d2ab5e0f14bc68fb88e4",
+    "final_decision": "REQUIRES_CHANGES",
+    "blocking_buckets": [
+      "SC-1_end_to_end_factory_acceptance_false_admission_pkg_a",
+      "P1_3_constitution_out_of_owned",
+      "P2_3_hotfix_ledger"
+    ]
   }
 }

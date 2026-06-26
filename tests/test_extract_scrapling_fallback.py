@@ -1,12 +1,15 @@
 """Scrapling fallback 不回归测试 — SC-5。
 
-三类直测（全程 mock 无网络）:
+四类直测（全程 mock 无网络）:
   (a) adaptive 成功 → 走 Fetcher.get（非已废弃的实例 .fetch）
   (b) browser 路径 → 走 StealthyFetcher.fetch（classmethod）
   (c) 抛错 → _extract_via_scrapling 返回 {} → extract_content 不崩 → fail-closed
       （method==FAILED，给 failures_path 时落签名）
+  (d) adaptive 失败 → fallback browser 串联（SC-5 核心）:
+      - adaptive 返回 {} → 再试 browser_mode=True → browser 成功 → SCRAPLING_BROWSER
+      - adaptive + browser 都失败 → fail-closed → method==FAILED + 落签名
 
-断言绑可观测行为（方法名 / 返回值），不焊死调用次数。
+断言绑可观测行为（方法名 / 返回值 / browser_mode 调用序列），不焊死调用次数。
 """
 
 from __future__ import annotations
@@ -181,3 +184,102 @@ def test_extract_content_fail_closed_on_scrapling_error(
     assert len(sig_written) == 1
     assert sig_written[0][0] == failures_path
     assert sig_written[0][1] == url
+
+
+# ---------------------------------------------------------------------------
+# (d) adaptive 失败 → fallback browser 串联（SC-5 核心）
+# ---------------------------------------------------------------------------
+
+
+def _install_scrapling_spy(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
+    """注入 spy 记录 _extract_via_scrapling 的 browser_mode 调用序列。
+
+    spy 调用原函数（保留真实行为），同时把每次调用的 browser_mode 追加到列表。
+    """
+    original = _extract_via_scrapling
+    calls: list[bool] = []
+
+    def spy(url: str, html: str | None = None, browser_mode: bool = False) -> dict:
+        calls.append(browser_mode)
+        return original(url, html, browser_mode=browser_mode)
+
+    monkeypatch.setattr("akb2.quality.intake.extract._extract_via_scrapling", spy)
+    return calls
+
+
+def test_adaptive_fail_falls_back_to_browser_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """adaptive 返回空 → 再试 browser_mode=True → browser 成功 → SCRAPLING_BROWSER。
+
+    复现 reviewer P2：monkeypatch adaptive 返回 {}、browser 返回长内容，
+    断言 scrapling 调用序列含 [False, True] 两次 + 最终 method=SCRAPLING_BROWSER。
+    """
+    # adaptive 抛错 → _extract_via_scrapling 返回 {}
+    _FakeFetcher.raise_exc = RuntimeError("adaptive boom")
+    # browser 成功：内部 defuddle 返回长内容（覆盖 autouse 的 {} mock）
+    long_content = " ".join(["word"] * 250)
+    monkeypatch.setattr(
+        "akb2.quality.intake.extract._extract_via_defuddle",
+        lambda url, html=None: {
+            "title": "Stub Title",
+            "author": "Stub Author",
+            "published": "2026-06-01",
+            "content": long_content,
+            "word_count": 250,
+        },
+    )
+
+    scrapling_calls = _install_scrapling_spy(monkeypatch)
+
+    # anti-bot html → 跳过 defuddle 分支，直入 scrapling 串联
+    html = "<html><body>please enable javascript captcha</body></html>"
+    result = extract_content(url="https://example.com/anti", html=html)
+
+    # 断言 [False, True] 两次尝试（adaptive 先 → browser fallback）
+    assert scrapling_calls == [False, True]
+    # 两个 fetcher 都被调（adaptive=Fetcher.get, browser=StealthyFetcher.fetch）
+    assert any(c[0] == "Fetcher.get" for c in _FakeFetcher.calls)
+    assert any(c[0] == "StealthyFetcher.fetch" for c in _FakeStealthyFetcher.calls)
+    # browser 成功 → method=SCRAPLING_BROWSER
+    assert result.method == ExtractMethod.SCRAPLING_BROWSER
+    assert result.extraction_success
+    assert result.word_count == 250
+
+
+def test_adaptive_and_browser_both_fail_fail_closed(
+    tmp_path: pytest.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """adaptive + browser 都返回空 → fail-closed → method=FAILED + 落签名。
+
+    断言 scrapling 调用序列含 [False, True] 两次 + 最终 method=FAILED + 签名落账。
+    """
+    _FakeFetcher.raise_exc = RuntimeError("adaptive boom")
+    _FakeStealthyFetcher.raise_exc = RuntimeError("browser boom")
+
+    sig_written: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        "akb2.quality.intake.extract._record_fetch_fail",
+        lambda failures_path, url, error: sig_written.append(
+            (failures_path, url, error)
+        ),
+    )
+
+    scrapling_calls = _install_scrapling_spy(monkeypatch)
+
+    # 非 anti-bot html → 先走 defuddle（autouse mock 返回 {}）→ 再走 scrapling 串联
+    result = extract_content(
+        url="https://example.com/both-fail",
+        html="<html><body>short</body></html>",
+        failures_path=str(tmp_path / "signatures.jsonl"),
+    )
+
+    # 断言 [False, True] 两次尝试
+    assert scrapling_calls == [False, True]
+    assert any(c[0] == "Fetcher.get" for c in _FakeFetcher.calls)
+    assert any(c[0] == "StealthyFetcher.fetch" for c in _FakeStealthyFetcher.calls)
+    # fail-closed
+    assert result.method == ExtractMethod.FAILED
+    assert not result.extraction_success
+    # 签名落账
+    assert len(sig_written) == 1
