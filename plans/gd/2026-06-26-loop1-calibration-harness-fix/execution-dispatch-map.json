@@ -35,12 +35,24 @@
         "src/akb2/quality/intake/models.py"
       ],
       "deliverables": [
-        {"path": "src/akb2/quality/intake/extract.py", "kind": "file", "must_exist": true},
-        {"path": "tests/test_extract_scrapling_fallback.py", "kind": "file", "must_exist": true}
+        {
+          "path": "src/akb2/quality/intake/extract.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/test_extract_scrapling_fallback.py",
+          "kind": "file",
+          "must_exist": true
+        }
       ],
       "blocked_by": [],
-      "can_parallel_with": ["t2b-preflight-corpus"],
-      "sc_refs": ["SC-5"],
+      "can_parallel_with": [
+        "t2b-preflight-corpus"
+      ],
+      "sc_refs": [
+        "SC-5"
+      ],
       "verify": [
         {
           "sc_ref": "SC-5",
@@ -80,14 +92,35 @@
         "src/akb2/quality/intake/models.py"
       ],
       "deliverables": [
-        {"path": "src/akb2/quality/intake/preflight.py", "kind": "file", "must_exist": true},
-        {"path": "evals/main-pipeline-quality/corpus.yaml", "kind": "file", "must_exist": true},
-        {"path": "evals/main-pipeline-quality/fixtures", "kind": "directory", "must_exist": true},
-        {"path": "tests/test_corpus_preflight.py", "kind": "file", "must_exist": true}
+        {
+          "path": "src/akb2/quality/intake/preflight.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "evals/main-pipeline-quality/corpus.yaml",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "evals/main-pipeline-quality/fixtures",
+          "kind": "directory",
+          "must_exist": true
+        },
+        {
+          "path": "tests/test_corpus_preflight.py",
+          "kind": "file",
+          "must_exist": true
+        }
       ],
       "blocked_by": [],
-      "can_parallel_with": ["t2a-scrapling-fix"],
-      "sc_refs": ["SC-3", "SC-7"],
+      "can_parallel_with": [
+        "t2a-scrapling-fix"
+      ],
+      "sc_refs": [
+        "SC-3",
+        "SC-7"
+      ],
       "verify": [
         {
           "sc_ref": "SC-3",
@@ -132,12 +165,28 @@
         "docs/constitution.md"
       ],
       "deliverables": [
-        {"path": "src/akb2/quality/calibration.py", "kind": "file", "must_exist": true},
-        {"path": "tests/test_calibration_harness_diagnostics.py", "kind": "file", "must_exist": true}
+        {
+          "path": "src/akb2/quality/calibration.py",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "tests/test_calibration_harness_diagnostics.py",
+          "kind": "file",
+          "must_exist": true
+        }
       ],
-      "blocked_by": ["t2a-scrapling-fix", "t2b-preflight-corpus"],
+      "blocked_by": [
+        "t2a-scrapling-fix",
+        "t2b-preflight-corpus"
+      ],
       "can_parallel_with": [],
-      "sc_refs": ["SC-1", "SC-2", "SC-4", "SC-6"],
+      "sc_refs": [
+        "SC-1",
+        "SC-2",
+        "SC-4",
+        "SC-6"
+      ],
       "verify": [
         {
           "sc_ref": "SC-1",
@@ -181,19 +230,37 @@
   "waves": [
     {
       "wave_id": "w1",
-      "track_ids": ["t2a-scrapling-fix", "t2b-preflight-corpus"],
+      "track_ids": [
+        "t2a-scrapling-fix",
+        "t2b-preflight-corpus"
+      ],
       "description": "并行执行两条 task-packet：t2a Scrapling fallback API 修复（extract.py），t2b preflight 模块 + corpus 双层 + per-entry feed 元数据扩展。owned_paths 不重叠，互不 blocked_by。"
     },
     {
       "wave_id": "w2",
-      "track_ids": ["akb2-calibration-harness-diagnostics-t1"],
+      "track_ids": [
+        "akb2-calibration-harness-diagnostics-t1"
+      ],
       "description": "串行执行 t1：calibration.py 镜像 ExtractionContext + 诊断三分类 + 9 字段 frontmatter + live/fixture 分层评分。blocked_by t2a（extract.py deliverable）+ t2b（corpus.yaml deliverable）。"
     }
   ],
   "merge_gates": [
-    {"gate_id": "G1", "description": "child executor 只写 task_packet.owned_paths 内文件，不越界到对方 lane 或包 A"},
-    {"gate_id": "G2", "description": "每条 SC verify 实跑（test/assertion/command），result=PASS 有 evidence，不伪报"},
-    {"gate_id": "G3", "description": "wave 1 两个 child 都返回后主 agent 才合并并进 wave 2"},
-    {"gate_id": "G4", "description": "t1 在 wave 2 启动前 t2a+t2b 的 deliverables 物理存在且 verified=true"}
-  ]
+    {
+      "gate_id": "G1",
+      "description": "child executor 只写 task_packet.owned_paths 内文件，不越界到对方 lane 或包 A"
+    },
+    {
+      "gate_id": "G2",
+      "description": "每条 SC verify 实跑（test/assertion/command），result=PASS 有 evidence，不伪报"
+    },
+    {
+      "gate_id": "G3",
+      "description": "wave 1 两个 child 都返回后主 agent 才合并并进 wave 2"
+    },
+    {
+      "gate_id": "G4",
+      "description": "t1 在 wave 2 启动前 t2a+t2b 的 deliverables 物理存在且 verified=true"
+    }
+  ],
+  "overrides_rationale": "constitution.md v1.2.0 是 master-plan GOAL_SOURCE 治理前提（计划包b依赖），CLAUDE.md 是工程文档同步（主质量管线命令+quality/loops 模块说明）。二者是计划阶段产物，虽不在 track.owned_paths（owned 是源码/测试 deliverable），但是计划包b执行的必要治理前提，非源码 deliverable 越界。建议后续单独 commit 到 main 作为计划阶段基线。"
 }

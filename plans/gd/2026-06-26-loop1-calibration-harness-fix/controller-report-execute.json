@@ -97,6 +97,14 @@
     {
       "path": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-26-loop1-calibration-harness-fix/stage-dispatch-ledger-execute-w2.json",
       "hash": "7b003af4a12ddd0367709ab024029494dfeab977c0b1e160e9d3a2ddbdffd2bc"
+    },
+    {
+      "path": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-26-loop1-calibration-harness-fix/stage-dispatch-ledger-execute-hotfix1.json",
+      "hash": "ccbdaa4dfcfef3acb1b852f5128d233a08f141b06a0e5bdb4f37fc0aefc2134b"
+    },
+    {
+      "path": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-26-loop1-calibration-harness-fix/stage-dispatch-ledger-execute-hotfix2.json",
+      "hash": "a1bc0a32e695eddeba02a54bea63bbb9f7773c27105e1c7b6bdb151e8d522420"
     }
   ],
   "suite_target_closure": [
