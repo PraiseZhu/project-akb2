@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0",
+  "stage": "plan",
+  "parent_run_id": "content-lane-quality-plan-a",
+  "batch_id": "batch-001",
+  "recorded_at": "2026-06-26T15:10:00+08:00",
+  "hashes_revised_at": "2026-06-26T21:16:32+08:00",
+  "hash_revision_note": "result_hash/merge_report_hash 于 2026-06-26 晚刷新,以匹配当日 re-plan 重写后的 proposal/merge-report 实际内容(原 15:10 记录的是 round-1 起草版,re-plan 未同步更新本 ledger 导致 hash 漂移)。proposal 仍为 hash 锚定 planning 快照、非执行验收源(见 master-plan Authority Layer)。",
+  "child_agent_count": 2,
+  "max_parallel": 2,
+  "child_jobs": [
+    {
+      "job_id": "t1-foundations",
+      "result_path": "plans/gd/2026-06-26-content-lane-quality/dispatch/t1-foundations-proposal.md",
+      "result_hash": "dd6a55158c89cf38fb047d4d42255ab8a5343dc13cd88123cea5914683ad954d",
+      "status": "completed"
+    },
+    {
+      "job_id": "t2-concept",
+      "result_path": "plans/gd/2026-06-26-content-lane-quality/dispatch/t2-concept-proposal.md",
+      "result_hash": "1ed153a88d774ce09a67130b36f070ad347f1fe2b75dddb8114fdbdebec2d336",
+      "status": "completed"
+    }
+  ],
+  "main_agent_merge": {
+    "merge_report_path": "plans/gd/2026-06-26-content-lane-quality/dispatch/merge-report.md",
+    "merge_report_hash": "b333da78de2b2d58d5ea49f4395eb2d1e1e7c73e12030a1ae4763d17f279d1bc",
+    "final_decision": "APPROVED",
+    "blocking_buckets": []
+  }
+}
