@@ -22,7 +22,6 @@ from src.akb2.quality.integrity_floor import (
     evaluate_integrity_floor,
 )
 
-
 # ----------------------------- helpers ----------------------------- #
 
 
@@ -320,7 +319,7 @@ content_lane: concept
 
     def test_entailment_model_is_gpt54(self, monkeypatch):
         """canary 须证明 entailment 由 GPT-5.4 判（非 deepseek 自证，P7 异族）。"""
-        from src.akb2.quality.grader import PRIMARY_GRADER_MODEL, FALLBACK_GRADER_MODEL
+        from src.akb2.quality.grader import FALLBACK_GRADER_MODEL, PRIMARY_GRADER_MODEL
         # 模型族断言（不需真调网关）
         assert PRIMARY_GRADER_MODEL != "deepseek", "entailment 不可由 deepseek 自证"
         assert "gpt" in PRIMARY_GRADER_MODEL.lower() or "5.4" in PRIMARY_GRADER_MODEL

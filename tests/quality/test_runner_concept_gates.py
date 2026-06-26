@@ -14,12 +14,10 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from src.akb2.quality.grader import (
     PRIMARY_GRADER_MODEL,
-    GraderResult,
     RUBRIC_DIMENSIONS_BY_LANE,
+    GraderResult,
 )
 from src.akb2.quality.integrity_floor import FloorResult
 
@@ -180,8 +178,8 @@ class TestRepairConvergedConceptGates:
 
     def test_repair_converged_poisoned_trace_rejected(self):
         """initial defect → repair 收敛 → final entailment=false → reject（不写 PASS）。"""
-        from src.akb2.quality.runner import _run_quality_segments
         from src.akb2.quality.checks_structural import Defect
+        from src.akb2.quality.runner import _run_quality_segments
 
         defect = Defect(dimension="x", location="L", defect="d", suggestion="s")
         initial_grader = _grader(defects=[defect], entailment=False, dim_scores={})
@@ -200,8 +198,8 @@ class TestRepairConvergedConceptGates:
 
     def test_repair_converged_low_score_rejected(self):
         """initial defect → repair 收敛 → final 低分 → reject（加权分不能靠 repair 绕过）。"""
-        from src.akb2.quality.runner import _run_quality_segments
         from src.akb2.quality.checks_structural import Defect
+        from src.akb2.quality.runner import _run_quality_segments
 
         defect = Defect(dimension="x", location="L", defect="d", suggestion="s")
         initial_grader = _grader(defects=[defect], entailment=True, dim_scores={})
@@ -222,8 +220,8 @@ class TestRepairConvergedConceptGates:
 
     def test_repair_converged_entailment_none_fail_closed(self):
         """repair 收敛但 final entailment=None（grader 未评）→ concept fail-closed reject。"""
-        from src.akb2.quality.runner import _run_quality_segments
         from src.akb2.quality.checks_structural import Defect
+        from src.akb2.quality.runner import _run_quality_segments
 
         defect = Defect(dimension="x", location="L", defect="d", suggestion="s")
         initial_grader = _grader(defects=[defect], entailment=None, dim_scores={})
@@ -241,8 +239,8 @@ class TestRepairConvergedConceptGates:
 
     def test_repair_converged_high_score_entailment_true_passes(self):
         """repair 收敛 + final entailment=true + 高分 → PASS（concept 门通过）。"""
-        from src.akb2.quality.runner import _run_quality_segments
         from src.akb2.quality.checks_structural import Defect
+        from src.akb2.quality.runner import _run_quality_segments
 
         defect = Defect(dimension="x", location="L", defect="d", suggestion="s")
         initial_grader = _grader(defects=[defect], entailment=True, dim_scores={})

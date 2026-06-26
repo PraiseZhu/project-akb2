@@ -109,6 +109,7 @@ class TestConceptWeightedScore:
     def test_lane_threshold_takes_effect(self, monkeypatch):
         """codex worker：改 lanes.concept.threshold 即改 concept 判定（不被顶层 threshold 覆盖）。"""
         import copy
+
         from src.akb2.quality import weighted_score as ws
 
         spec = ws._load_rubric_spec()

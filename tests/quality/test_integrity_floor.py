@@ -26,7 +26,6 @@ from src.akb2.quality.integrity_floor import (
     evaluate_integrity_floor,
 )
 
-
 # ----------------------------- fixtures ----------------------------- #
 
 
@@ -294,9 +293,9 @@ class TestRunnerFloorEarlyReturn:
         floor_pass = FloorResult(passed=True, failed_floors=[], reason="", content_lane="concept")
 
         with patch("src.akb2.quality.checks_structural.run_candidate_self_gate") as mock_sg, \
-             patch("src.akb2.quality.grader.run_grader_detailed") as mock_grader, \
-             patch("src.akb2.quality.repair.run_repair_loop") as mock_repair:
-            # self-gate 返回空缺陷 → 不进 grader/repair（converged True 路径）
+             patch("src.akb2.quality.grader.run_grader_detailed"), \
+             patch("src.akb2.quality.repair.run_repair_loop"):
+            # patch grader/repair 防真调用；本测试只验 floor pass 后 self-gate 被触达（不 early-return）
             mock_sg.return_value = []
             _run_quality_segments(
                 candidate_text="c",

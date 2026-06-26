@@ -21,7 +21,6 @@ from src.akb2.quality.grader import (
 from src.akb2.quality.integrity_floor import evaluate_integrity_floor
 from src.akb2.quality.weighted_score import compute_weighted_score
 
-
 # ----------------------------- helpers ----------------------------- #
 
 
@@ -123,7 +122,7 @@ class TestConceptPositive:
         没覆盖 runner 真链路。改成跑 _run_quality_segments（self-gate + grader + concept 硬门），
         mock self-gate 通过 + grader 全维满分+entailment=true + floor 过 → converged=True。
         """
-        from src.akb2.quality.grader import GraderResult, PRIMARY_GRADER_MODEL
+        from src.akb2.quality.grader import PRIMARY_GRADER_MODEL, GraderResult
         from src.akb2.quality.integrity_floor import FloorResult
         from src.akb2.quality.runner import _run_quality_segments
 
@@ -252,8 +251,8 @@ class TestAdversarial:
         但 H3 深度 0.3 <1.0（最小合规）→ 实际由 grader F4/地板 H3 维拒。
         本测试验加权分计算：H3 低分仍可能总分过阈，需地板/grader 独立把关（H3 独立于地板）。
         """
-        from src.akb2.quality.weighted_score import _lane_weight_map
         from src.akb2.quality.grader import _load_rubric_spec
+        from src.akb2.quality.weighted_score import _lane_weight_map
 
         weights = _lane_weight_map(_load_rubric_spec(), "concept")
         # H3 score=0.3, 其它满分

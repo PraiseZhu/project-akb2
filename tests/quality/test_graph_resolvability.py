@@ -11,15 +11,12 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import pytest
-
 from src.akb2.quality.checks_structural import (
     _resolve_graph_node,
     check_a4_graph_edges,
     run_candidate_self_gate,
     run_structural_checks,
 )
-
 
 # ----------------------------- _resolve_graph_node ----------------------------- #
 

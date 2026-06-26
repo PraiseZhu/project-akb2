@@ -179,7 +179,8 @@ def _core_value_f4_failed(extract_data: dict, content_lane: str) -> tuple[bool, 
         named_set = set(named)
         if len(named_set) < CONCEPT_MIN_MECHANISM_COMPONENTS:
             return True, (
-                f"concept F4：唯一命名机制组件 {len(named_set)} < {CONCEPT_MIN_MECHANISM_COMPONENTS}"
+                f"concept F4：唯一命名机制组件 {len(named_set)} < "
+                f"{CONCEPT_MIN_MECHANISM_COMPONENTS}"
                 f"（输入 {len(named)} 条，去重后 {len(named_set)}）"
             )
         edges = extract_data.get("causal_edges", []) or []

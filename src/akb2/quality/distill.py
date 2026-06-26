@@ -152,7 +152,8 @@ _EXTRACT_SCHEMA: dict[str, Any] = {
                         "type": "string",
                         "minLength": 4,
                     },
-                    # step-3 SC-3c：akb_interpretation claim 带 traces_to（指向 source_grounded anchor）。
+                    # step-3 SC-3c：akb_interpretation claim 带 traces_to
+                    # （指向 source_grounded anchor）。
                     # source_grounded claim 可省；layer① 地板由 integrity_floor 校验。
                     "traces_to": {
                         "type": "array",
@@ -672,7 +673,8 @@ def _build_extract_segment_messages(
             "akb_interpretation 占比必须 ≤40%。\n"
             "- evidence_gap 写原文未覆盖/未证明/未量化/未比较的具体盲区，"
             "须含盲区词(未提供/未量化/未覆盖/缺少/没有/未验证/未比较)。\n"
-            "- akb_interpretation claim 必带 traces_to：指向它所解读的 source_grounded claim 的 anchor"
+            "- akb_interpretation claim 必带 traces_to：指向它所解读的 "
+            "source_grounded claim 的 anchor"
             "（如 [\"§A\"]），source_grounded claim 可省 traces_to。\n"
             "- tldr 是综合全文主旨，不是复制单条 claim。"
         ),
@@ -686,7 +688,8 @@ def _build_extract_segment_messages(
             "- mechanism_components: 命名机制组件数组，每项 {name, role}——概念型原文须 ≥3 个"
             "命名组件（如 'work_selector'/'quality_gate'），role 写该组件在机制里的职责。\n"
             "- causal_edges: 因果边数组，每项 {from, to, relation}，from/to 必须是"
-            "mechanism_components 里的 name，relation 写因果关系（如 activates/feeds/writes_to）。\n"
+            "mechanism_components 里的 name，relation 写因果关系"
+            "（如 activates/feeds/writes_to）。\n"
             "- 只抽取原文明确给出的步骤、组件、流程或配置，不要补 AKB 自己的命令。\n"
             "- param_entries: 参数/配置/选项数组，每项 {key, value}；value 统一写成字符串。"
         ),

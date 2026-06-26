@@ -852,7 +852,8 @@ def _check_concept_hard_gates(
         return (
             "entailment_not_evaluated",
             "concept 车道 require interpretation_entailment，grader 未评（fail-closed）",
-            {**base_meta, "interpretation_entailment": None, "rejection": "entailment_not_evaluated",
+            {**base_meta, "interpretation_entailment": None,
+             "rejection": "entailment_not_evaluated",
              "weighted_score_not_computed": True},
         )
     from src.akb2.quality.weighted_score import compute_weighted_score
@@ -904,7 +905,6 @@ def _run_quality_segments(
     from src.akb2.quality.checks_structural import run_candidate_self_gate
     from src.akb2.quality.grader import (
         REQUIRED_RUBRIC_VERSION,
-        RUBRIC_DIMENSIONS,
         _dimensions_for_lane,
         run_grader_detailed,
     )
