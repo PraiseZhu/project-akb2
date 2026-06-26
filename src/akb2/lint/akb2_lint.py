@@ -52,12 +52,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-
-import os
 
 # NOTE: VAULT_ROOT is overridden at runtime by main() via --vault-root or vault.toml.
 # This computed default (parents[2] = Project AKB2/src/) is intentionally wrong when
@@ -1068,7 +1067,7 @@ def write_manifest(findings, path, op_id, scanned, version,
                    raw_files=None, deprecated_pages=None):
     """Write JSONL manifest. v0.3 adds auxiliary scope fields."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     p0 = sum(1 for x in findings if x["severity"] == "P0")
     p1 = sum(1 for x in findings if x["severity"] == "P1")
     p2 = sum(1 for x in findings if x["severity"] == "P2")
@@ -1144,7 +1143,7 @@ def write_report(findings, path, scanned, op_id, version, baseline,
         "## 摘要",
         "",
         f"- 工具：`akb2-lint.py` {version}（Python stdlib，无依赖）",
-        f"- 位置：`.akb-runtime/lint/akb2-lint.py`",
+        "- 位置：`.akb-runtime/lint/akb2-lint.py`",
         f"- 规则：{len(rule_ids)} 条（all standards-backed）",
         f"- 扫描 active 页数：{len(scanned)}",
     ]

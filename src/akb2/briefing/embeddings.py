@@ -103,7 +103,7 @@ class EmbeddingClient:
     # -- cache helpers ------------------------------------------------------
 
     def _key(self, text: str) -> str:
-        h = hashlib.sha256(f"{self.model}\x00{text}".encode("utf-8")).hexdigest()
+        h = hashlib.sha256(f"{self.model}\x00{text}".encode()).hexdigest()
         return h
 
     def _cache_path(self, key: str) -> Path:

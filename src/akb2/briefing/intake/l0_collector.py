@@ -14,7 +14,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .base import BaseCollector, REPO_ROOT, load_config
+from .base import REPO_ROOT, BaseCollector, load_config
 
 FIXTURE_PATH = REPO_ROOT / "tests/fixtures/intake/dry-run-2026-05-27/sample.json"
 

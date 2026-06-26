@@ -15,7 +15,7 @@ import json
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 # 合成阶段专用模型（可由环境变量覆盖）
@@ -88,7 +88,7 @@ def _log_raw_response(model: str, raw: str) -> None:
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
         entry = json.dumps(
-            {"ts": datetime.now(timezone.utc).isoformat(), "model": model, "raw_len": len(raw)},
+            {"ts": datetime.now(UTC).isoformat(), "model": model, "raw_len": len(raw)},
             ensure_ascii=False,
         )
         with open(log_dir / "synthesis-raw.jsonl", "a") as f:
@@ -143,7 +143,7 @@ def _fallback_synthesis(scored_input: dict, date: str | None = None) -> dict:
     # 取 score 最高的前 5 条
     top = sorted(tweets, key=lambda t: t.get("score", 0), reverse=True)[:5]
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     resolved_date = date or now.strftime("%Y-%m-%d")
 
     exec_summary = (
@@ -253,7 +253,7 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
     # P0 fix: 用短序号 [1][2]... 而非 19 位 ID，解决 DeepSeek 无法准确回显长整数 ID 的问题
     tweets_text, idx_to_id = _build_indexed_tweet_listing(top)
 
-    resolved_date = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    resolved_date = date or datetime.now(UTC).strftime("%Y-%m-%d")
     prompt_path = _PROMPT_PATH
 
     if prompt_path.exists():
@@ -344,7 +344,7 @@ def _merge_with_input(
 
     return {
         "date": model_out.get("date") or resolved_date,
-        "generated_at": model_out.get("generated_at") or datetime.now(timezone.utc).isoformat(),
+        "generated_at": model_out.get("generated_at") or datetime.now(UTC).isoformat(),
         "source": {"name": "deepseek_synthesis", "collector_version": "1.0.0"},
         "scoring_summary": {
             "total_tweets": len(all_tweets),

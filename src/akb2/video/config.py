@@ -12,7 +12,6 @@ import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 
 def _resolve_ytdlp(default_bin: str = "yt-dlp") -> str:
@@ -111,7 +110,7 @@ class VideoConfig:
     pending_filename: str = "pending_research.json"
 
     # -- cookies 路径 --
-    cookies_path: Optional[Path] = None  # None = 自动探测
+    cookies_path: Path | None = None  # None = 自动探测
 
     # -- NLM profile --
     nlm_profile: str = "default"
@@ -122,7 +121,7 @@ class VideoConfig:
 
     # -- LLM adapter 配置（gateway + deepseek v4pro）--
     # key 优先级：env AKB2_LLM_API_KEY → keychain claude-ai-gateway → None（无 key 降级）
-    llm_api_key: Optional[str] = field(default_factory=_resolve_llm_api_key)
+    llm_api_key: str | None = field(default_factory=_resolve_llm_api_key)
     llm_base_url: str = field(default_factory=lambda: os.environ.get(
         "AKB2_LLM_BASE_URL", "https://llm-proxy.tapsvc.com/v1"
     ))

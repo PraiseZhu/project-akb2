@@ -30,7 +30,6 @@ from pathlib import Path
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Fixture content — gate-valid for query-result template
 # ---------------------------------------------------------------------------
@@ -135,6 +134,7 @@ def promote_module(repo_root: Path):
     if src_path not in sys.path:
         sys.path.insert(0, src_path)
     import importlib
+
     import akb2.promotion.promote as mod
     importlib.reload(mod)
     return mod

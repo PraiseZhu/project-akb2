@@ -15,7 +15,6 @@ import pytest
 
 from src.akb2.video.collector import CatalogDBAdapter, VideoCollector
 from src.akb2.video.config import VideoConfig
-from src.akb2.video.llm_adapter import LLMAdapter
 
 # ---------------------------------------------------------------------------
 # Fixtures

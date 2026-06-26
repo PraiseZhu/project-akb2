@@ -13,7 +13,6 @@ from .paths import PathValidationError, validate_output_paths
 from .render import render_outputs
 from .writer import PairedWriteError, write_output_pair
 
-
 SCAN_SCOPES = ("global", "project_scripts_bin")
 KNOWN_USER_LABELS = {
     str(Path("~/.codex/skills").expanduser().resolve()): "codex_skills",

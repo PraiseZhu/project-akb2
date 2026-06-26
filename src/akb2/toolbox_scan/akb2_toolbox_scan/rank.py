@@ -26,14 +26,13 @@ import json
 import sys
 import uuid
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any, Iterable
 
 from .paths import PathValidationError, validate_ranking_paths
 from .writer import PairedWriteError, write_output_pair
-
 
 # ---------------------------------------------------------------------------
 # Scoring + tier dictionaries
@@ -483,7 +482,7 @@ def render_ranking_outputs(
     operation_id: str | None = None,
 ) -> tuple[str, str]:
     op_id = operation_id or f"akb2-c2-rank-{uuid.uuid4().hex[:12]}"
-    ranked_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ranked_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # JSONL: every input record gets a ranking line.
     lines: list[str] = []

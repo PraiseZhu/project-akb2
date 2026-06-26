@@ -9,11 +9,11 @@ from __future__ import annotations
 import json
 import uuid
 from collections import Counter
-from datetime import date, datetime, timezone
+from collections.abc import Iterable
+from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Iterable
 
-from .discover import RootSummary, ScanRecord, ScanResult
+from .discover import ScanRecord, ScanResult
 
 
 def render_outputs(
@@ -26,7 +26,7 @@ def render_outputs(
     scan_scope: str = "global",
     previous_manifest_label: str | None = None,
 ) -> tuple[str, str]:
-    scanned_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    scanned_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     sid = scan_id or f"akb2-toolbox-scan-{uuid.uuid4().hex[:12]}"
 
     jsonl_lines = []

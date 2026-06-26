@@ -1,8 +1,9 @@
 """Three-state fallback judge — Layer1 OK / fail → Layer2 / fail → Layer3 / skip."""
 
+from collections.abc import Callable
 from datetime import date
 from pathlib import Path
-from typing import Callable, Literal, NamedTuple
+from typing import Literal, NamedTuple
 
 from . import Candidate, CollectorResult
 

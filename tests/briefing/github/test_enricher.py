@@ -4,7 +4,6 @@ from unittest import mock
 
 from akb2.briefing.github.enricher import enrich, enrich_batch
 
-
 SAMPLE_REPO_DATA = {
     "stargazers_count": 15234,
     "language": "Python",

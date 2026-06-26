@@ -13,15 +13,19 @@ import logging
 import socket
 import sys
 import time
-from pathlib import Path
 
-from src.akb2.video.config import VideoConfig
+from src.akb2.video.assembler import (
+    Assembler,
+    CandidateTargetExists,
+    GateRejected,
+    PromotionTargetNotFound,
+)
 from src.akb2.video.collector import VideoCollector
-from src.akb2.video.researcher import VideoResearcher
+from src.akb2.video.config import VideoConfig
 from src.akb2.video.extractor import Extractor
-from src.akb2.video.reasoner import ConceptStore, Reasoner
-from src.akb2.video.assembler import Assembler, CandidateTargetExists, GateRejected, PromotionTargetNotFound
 from src.akb2.video.llm_adapter import DeepSeekAdapter
+from src.akb2.video.reasoner import ConceptStore, Reasoner
+from src.akb2.video.researcher import VideoResearcher
 
 logger = logging.getLogger("akb2.video")
 
@@ -218,9 +222,9 @@ def _run_single_source(config: VideoConfig, url: str, dry_run: bool) -> int:
 def _run_fixture(config: VideoConfig, dry_run: bool) -> int:
     """使用 fixture 跑 mock 全链路。"""
     try:
-        from src.akb2.video.researcher import ResearchOutput
         from src.akb2.video.extractor import ExtractedFields, KeyFinding, SourceSpan
-        from src.akb2.video.reasoner import ReasonedLinks, RelatedConcept, ProposedNode
+        from src.akb2.video.reasoner import ProposedNode, ReasonedLinks, RelatedConcept
+        from src.akb2.video.researcher import ResearchOutput
 
         # 构造 mock 数据
         video_meta = {

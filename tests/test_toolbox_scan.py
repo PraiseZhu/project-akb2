@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Import smoke tests (pythonpath must include src/akb2/toolbox_scan)
 # ---------------------------------------------------------------------------
@@ -54,8 +53,9 @@ def test_toolbox_scan_paths_importable():
 
 def test_toolbox_scan_rootspec_fields():
     """RootSpec dataclass must have path and kind fields."""
-    from akb2_toolbox_scan.discover import RootSpec
     import dataclasses
+
+    from akb2_toolbox_scan.discover import RootSpec
 
     fields = {f.name for f in dataclasses.fields(RootSpec)}
     assert "path" in fields, "RootSpec must have 'path' field"

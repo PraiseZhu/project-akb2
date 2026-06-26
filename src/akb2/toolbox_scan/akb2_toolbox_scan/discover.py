@@ -12,12 +12,11 @@ from __future__ import annotations
 import os
 import re
 import stat
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator
 
 from .fingerprint import FingerprintResult, HeaderSniff, fingerprint, sniff_header
-
 
 SCRIPT_EXTENSIONS = {".sh", ".bash", ".js", ".mjs", ".cjs", ".ts", ".py", ".rb"}
 PROJECT_SCRIPT_EXTENSIONS = {

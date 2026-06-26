@@ -1,8 +1,6 @@
 """Tests for star_history.py — snapshot recording + velocity_7d computation."""
 
-import pytest
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from datetime import UTC, datetime, timedelta
 
 from akb2.briefing.github.star_history import StarHistory
 
@@ -33,7 +31,7 @@ class TestStarHistory:
     def test_velocity_7d_positive_growth(self):
         """≥7 day span → return delta."""
         sh = StarHistory(":memory:")
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         old_time = (now - timedelta(days=8)).isoformat()
 
         # Insert old snapshot directly to simulate 8-day span
@@ -51,7 +49,7 @@ class TestStarHistory:
     def test_velocity_7d_zero_growth(self):
         """Stars unchanged over 7+ days → 0 delta."""
         sh = StarHistory(":memory:")
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         old_time = (now - timedelta(days=7)).isoformat()
 
         sh._conn.execute(
@@ -68,7 +66,7 @@ class TestStarHistory:
     def test_velocity_7d_picks_oldest_sufficient_span(self):
         """With multiple old snapshots, pick the one >=6 days back."""
         sh = StarHistory(":memory:")
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # 10 days ago
         t1 = (now - timedelta(days=10)).isoformat()

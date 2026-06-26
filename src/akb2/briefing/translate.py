@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import datetime, timezone
 
 # 翻译阶段模型链（实测：gemini 每次调用固定开销最低 ~24s，deepseek/glm ~42-47s，
 # 质量三家持平；故主力 gemini，备用按不同厂商排 deepseek→glm，规避单厂商故障。

@@ -1,9 +1,8 @@
 """L0' paper-bot List 占位器 collector。"""
 import argparse
 import json
-from pathlib import Path
 
-from .base import BaseCollector, REPO_ROOT
+from .base import REPO_ROOT, BaseCollector
 
 FIXTURE_PATH = REPO_ROOT / "tests/fixtures/intake/dry-run-2026-05-27/sample.json"
 

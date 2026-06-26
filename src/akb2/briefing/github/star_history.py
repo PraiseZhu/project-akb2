@@ -4,7 +4,7 @@ Modeled after dedup_sqlite.py — same lightweight sqlite3 pattern.
 """
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -28,7 +28,7 @@ class StarHistory:
 
     def record(self, repo_url: str, stars: int) -> None:
         """Record a star-count snapshot at the current time."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         self._conn.execute(
             "INSERT INTO star_history (repo_url, stars, recorded_at) VALUES (?, ?, ?)",
             (repo_url, stars, now),

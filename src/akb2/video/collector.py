@@ -13,14 +13,12 @@ from __future__ import annotations
 import fcntl
 import json
 import logging
-import os
 import re
 import sqlite3
 import subprocess
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 from src.akb2.video.config import VideoConfig
 from src.akb2.video.constants import (

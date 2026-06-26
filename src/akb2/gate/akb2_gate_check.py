@@ -30,7 +30,6 @@ AKB 2.0 Phase C-3 Gate 自动检查 — L3 提议层
 
 import argparse
 import datetime as _dt
-import hashlib
 import json
 import os
 import re
@@ -754,7 +753,7 @@ def build_manifest_record(
         "actor": ACTOR,
         "started_at": now,
         "finished_at": now,
-        "source": f"akb_gate_check L3 proposal scan",
+        "source": "akb_gate_check L3 proposal scan",
         "reason": (
             f"L3 static gate check on {rel_candidate}; "
             "reviewer must approve L4 in separate plan"
@@ -906,7 +905,7 @@ def cmd_check(args: argparse.Namespace) -> int:
                 for d in write_diff:
                     sys.stderr.write(f"  {d}\n")
                 return EXIT_GUARD_VIOLATION
-            print(f"## manifest written")
+            print("## manifest written")
             print(f"  path: {manifest_path}")
             print(f"  records: {len(records)}")
         finally:

@@ -1,14 +1,10 @@
 """Tests for fallback_judge — three-state decision: Layer1 OK / fail→Layer2 / fail→Layer3 / skip."""
 
 import json
-from datetime import date, datetime, timezone
-from pathlib import Path
 from unittest import mock
 
-import pytest
-
-from akb2.briefing.github.intake import Candidate, CollectorResult, _ZERO_RECENCY_STATS
-from akb2.briefing.github.intake.fallback_judge import decide, FallbackDecision
+from akb2.briefing.github.intake import _ZERO_RECENCY_STATS, Candidate, CollectorResult
+from akb2.briefing.github.intake.fallback_judge import FallbackDecision, decide
 
 
 def _make_l1_result(ok=True, num_candidates=10, num_failed=5):

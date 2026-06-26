@@ -6,7 +6,6 @@ from pathlib import Path
 
 import jsonschema
 
-
 SCHEMA_PATH = Path(__file__).resolve().parent / "schemas" / "github_briefing_v1.json"
 
 

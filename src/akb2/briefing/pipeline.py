@@ -380,7 +380,7 @@ def build_briefing_markdown(
     the gate CLI on this file produces the same proposed_gate_decision.
     collector_name: 实际 collector 名（SC-P3b-1）；dry-run 时传 "dry_run"。
     """
-    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    now_iso = datetime.datetime.now(datetime.UTC).isoformat()
     tweets = synth.get("tweets", [])
     focus_discussions = synth.get("focus_discussions", [])
 
@@ -388,11 +388,11 @@ def build_briefing_markdown(
         "---",
         f"date: {date}",
         f"proposed_gate_decision: {gate_decision}",
-        f"source: social_trends_v1_1",
+        "source: social_trends_v1_1",
         f"generated_at: {now_iso}",
-        f"page_status: candidate",
-        f"source_type: news",
-        f"template_type: synthesis",
+        "page_status: candidate",
+        "source_type: news",
+        "template_type: synthesis",
         "evidence_paths:",
         f"  - social/{collector_name}",
         "future_questions:",
@@ -446,7 +446,7 @@ def build_briefing_markdown(
         f"- 总推文数：{total}",
         f"- 精选推文：{scored}",
         f"- 生成时间：{now_iso}",
-        f"- 数据源：social_trends_v1_1",
+        "- 数据源：social_trends_v1_1",
         "",
     ]
 
@@ -462,16 +462,16 @@ def build_temp_briefing_markdown(
     """Build briefing markdown WITHOUT gate decision in frontmatter (for initial gate check).
     collector_name: 实际 collector 名（SC-P3b-1）；dry-run 时传 "dry_run"。
     """
-    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    now_iso = datetime.datetime.now(datetime.UTC).isoformat()
     tweets = synth.get("tweets", [])
 
     frontmatter_lines = [
         "---",
         f"date: {date}",
-        f"page_status: candidate",
-        f"source_type: news",
-        f"template_type: synthesis",
-        f"source: social_trends_v1_1",
+        "page_status: candidate",
+        "source_type: news",
+        "template_type: synthesis",
+        "source: social_trends_v1_1",
         f"generated_at: {now_iso}",
         "evidence_paths:",
         f"  - social/{collector_name}",

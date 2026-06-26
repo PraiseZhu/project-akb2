@@ -14,8 +14,8 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass, field
+from datetime import UTC
 from pathlib import Path
-
 
 HEADER_BYTES = 4096
 SECRET_PATTERNS = (
@@ -101,6 +101,6 @@ def sniff_header(path: Path) -> HeaderSniff:
 
 
 def _iso_mtime(seconds: float) -> str:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    return datetime.fromtimestamp(seconds, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.fromtimestamp(seconds, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
