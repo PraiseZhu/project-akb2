@@ -278,8 +278,8 @@ Just news, no how-to content.
 
         # 验证负样本 URL
         neg_urls = {e["url"] for e in negative}
-        assert "https://x.com/zyndai/status/2064344562110263722" in neg_urls, (
-            "缺少洗稿型负样本 URL"
+        assert "fixture:x-plagiarism-negative" in neg_urls, (
+            "缺少洗稿型负样本 URL（B 已转 fixture:x-plagiarism-negative）"
         )
         assert "fixture:google-io-2026-news" in neg_urls, (
             "缺少新闻型负样本 fixture URL"
