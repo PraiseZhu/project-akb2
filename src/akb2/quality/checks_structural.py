@@ -1096,7 +1096,14 @@ def run_candidate_self_gate(
     # test_how_interpretation_steps_do_not_count_against_core_ratio）；三态在此只读报告，
     # 让 SG 能区分 source_operation / source_fact / akb_interpretation。
     split_summary = _provenance_split_summary(text)
-    if total_provenance > 0 and akb_count / total_provenance > MAX_AKB_INTERPRETATION_RATIO:
+    # step-3 SC-3c/Decision-1：concept 车道删 ≤40% 比例上限，改逐条 traces_to 溯源
+    # （由 integrity_floor._interpretation_traceability_failed 硬判，层① 确定性地板）；
+    # procedural 保留原 ≤40% cap（零回归）。
+    if (
+        content_lane != "concept"
+        and total_provenance > 0
+        and akb_count / total_provenance > MAX_AKB_INTERPRETATION_RATIO
+    ):
         split_note = ""
         if split_summary is not None:
             split_note = (

@@ -1614,8 +1614,15 @@ def _validate_extract_output(data: dict[str, Any], content_lane: str = "") -> No
     # 3.5 provenance 配比校验：akb_interpretation 占比 >40% → 走重试（宪法 P4 失败可见）
     # prompt 已要求占比 ≤40%；此处兜底——可直接引用原文的 claim 必须用 source_grounded，
     # 否则成稿锚定率塌方（rubric 论断锚定率 / 解读分离）。40% 上限允许少量库内解读。
+    # step-3 SC-3c/Decision-1：concept 车道删 ≤40% 比例上限，改逐条 traces_to 溯源
+    # （由 integrity_floor._interpretation_traceability_failed 硬判，层① 确定性地板）；
+    # procedural 保留原 ≤40% cap（零回归）。
     akb_count = sum(1 for c in claims if c.get("provenance") == "akb_interpretation")
-    if claims and akb_count / len(claims) > 0.40:
+    if (
+        content_lane != "concept"
+        and claims
+        and akb_count / len(claims) > 0.40
+    ):
         raise ValueError(
             f"akb_interpretation 占比 {akb_count}/{len(claims)} > 40%"
             f"（可直接引用原文的 claim 必须用 source_grounded）"

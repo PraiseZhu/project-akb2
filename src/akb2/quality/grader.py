@@ -115,6 +115,11 @@ class GraderResult:
     threshold: float | None = None
     integrity_floor_results: list[dict[str, Any]] = field(default_factory=list)
     dimension_scores: dict[str, float] = field(default_factory=dict)
+    # step-3 SC-3c/Decision-1 层②：异族 grader(GPT-5.4) 判每条 akb_interpretation 是否
+    # 真从 cited anchor 推出（entailment 成立）。拒 poisoned-trace（anchor 真实但与
+    # interpretation 语义无关）。二值地板字段（不进加权维 enum、不加权），fail 即 reject
+    # （promote 不放行）。生产模型 deepseek 不自证（P7 异族）；None=未评（旧响应/非 concept）。
+    interpretation_entailment: bool | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +197,11 @@ def _build_grader_prompt(candidate_text: str, rubric_text: str) -> list[dict[str
 1. 每个维度给出 pass 或 fail 判定
 2. 如果 fail，必须给出具体的 defect 描述和修复建议
 3. 每条缺陷必须包含 location 字段（指明稿件中的具体位置，如节标题/段落/字段名）
-4. 输出必须是严格的 JSON 格式"""
+4. 输出必须是严格的 JSON 格式
+5. 解读推导成立性（interpretation_entailment，布尔）：判断每条 akb_interpretation
+   是否真从其所引 [raw §X] anchor 推出。anchor 真实存在但与解读语义无关
+   （poisoned-trace，挂羊头卖狗肉）→ false；推导真成立 → true。concept 车道必填此字段，
+   procedural 可省。此字段是异族硬判地板，false 即整体 reject（不可被加权分补偿）。"""
     user_prompt = f"""请评审以下候选页:
 
 {candidate_text}
@@ -281,6 +290,17 @@ def _build_grader_schema() -> dict[str, Any]:
                     "required": ["name", "pass"],
                     "additionalProperties": False,
                 },
+            },
+            # step-3 SC-3c/Decision-1 层②：异族 grader entailment 地板字段（可选，二值）。
+            # GPT-5.4 判每条 akb_interpretation 是否真从 cited anchor 推出，拒 poisoned-trace。
+            # None/缺省=未评（旧响应/非 concept 车道，零回归）。
+            "interpretation_entailment": {
+                "type": "boolean",
+                "description": (
+                    "解读推导成立性（异族硬判）：每条 akb_interpretation 是否真从"
+                    " cited anchor 推出。anchor 真实但与解读语义无关→false（poisoned-trace）。"
+                    " concept 车道必填；procedural 可省。"
+                ),
             },
         },
         "required": ["dimensions"],
@@ -446,6 +466,7 @@ def _parse_grader_extensions(raw_content: str | dict) -> dict[str, Any]:
             "threshold": threshold,
             "integrity_floor_results": [],
             "dimension_scores": {},
+            "interpretation_entailment": None,
         }
 
     floor_raw = data.get("integrity_floor") or []
@@ -469,11 +490,19 @@ def _parse_grader_extensions(raw_content: str | dict) -> dict[str, Any]:
             score * weights.get(name, 0.0) for name, score in dim_scores.items()
         )
 
+    # step-3 SC-3c/Decision-1 层②：异族 grader entailment 地板字段（二值，可选）。
+    # 模型给 boolean 直接用；缺省/非 bool → None（未评，零回归）。
+    entailment_raw = data.get("interpretation_entailment")
+    interpretation_entailment: bool | None = (
+        bool(entailment_raw) if isinstance(entailment_raw, bool) else None
+    )
+
     return {
         "weighted_total": weighted_total,
         "threshold": threshold,
         "integrity_floor_results": floor_results,
         "dimension_scores": dim_scores,
+        "interpretation_entailment": interpretation_entailment,
     }
 
 
@@ -540,6 +569,7 @@ def run_grader_detailed(candidate_text: str, content_lane: str = "") -> GraderRe
                     threshold=ext["threshold"],
                     integrity_floor_results=ext["integrity_floor_results"],
                     dimension_scores=ext["dimension_scores"],
+                    interpretation_entailment=ext["interpretation_entailment"],
                 )
             # 解析失败：记录原因，继续重试（循环耗尽后退出走兜底）
             result.primary_failed = True
@@ -570,6 +600,7 @@ def run_grader_detailed(candidate_text: str, content_lane: str = "") -> GraderRe
                 result.threshold = ext["threshold"]
                 result.integrity_floor_results = ext["integrity_floor_results"]
                 result.dimension_scores = ext["dimension_scores"]
+                result.interpretation_entailment = ext["interpretation_entailment"]
                 return result
             result.fallback_failed = True
             result.fallback_failure_reason = _parse_failure_reason(
@@ -627,6 +658,7 @@ def run_grader_with_fixture_detailed(
                     threshold=ext["threshold"],
                     integrity_floor_results=ext["integrity_floor_results"],
                     dimension_scores=ext["dimension_scores"],
+                    interpretation_entailment=ext["interpretation_entailment"],
                 )
             result.primary_failure_reason = _parse_failure_reason(
                 PRIMARY_GRADER_MODEL, response.content
@@ -658,6 +690,7 @@ def run_grader_with_fixture_detailed(
                     result.threshold = ext["threshold"]
                     result.integrity_floor_results = ext["integrity_floor_results"]
                     result.dimension_scores = ext["dimension_scores"]
+                    result.interpretation_entailment = ext["interpretation_entailment"]
                     return result
                 result.fallback_failure_reason = _parse_failure_reason(
                     FALLBACK_GRADER_MODEL, response.content
