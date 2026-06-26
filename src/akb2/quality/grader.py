@@ -93,6 +93,38 @@ REQUIRED_RUBRIC_VERSION: str = _load_rubric_spec()["rubric_version"]
 RUBRIC_DIMENSIONS: list[str] = _rubric_dimension_names()
 
 
+def _rubric_dimension_names_by_lane(
+    spec: dict[str, Any] | None = None,
+) -> dict[str, list[str]]:
+    """从 spec 派生 {lane: [维名]}（step-3 SC-3f/A3-6：grader 按 lane 选维度集）。
+
+    - procedural = 全局 dimensions（旧行为 10 维，零回归）。
+    - concept = lanes.concept.dimensions 7 维（逐字含 (H3)/(H2) 后缀）。
+    不在 .py 手写维名——全部从 spec 动态派生（改 rubric.yaml 即改维度集）。
+    """
+    spec = spec or _load_rubric_spec()
+    by_lane: dict[str, list[str]] = {}
+    by_lane["procedural"] = _rubric_dimension_names(spec)
+    lanes = spec.get("lanes", {}) or {}
+    concept_dims: list[str] = []
+    for dim in (lanes.get("concept") or {}).get("dimensions", []) or []:
+        if isinstance(dim, dict) and dim.get("name"):
+            concept_dims.append(str(dim["name"]))
+    by_lane["concept"] = concept_dims
+    return by_lane
+
+
+# 按 lane 选维度集（SC-3f/A3-6：动态派生不硬编码）
+RUBRIC_DIMENSIONS_BY_LANE: dict[str, list[str]] = _rubric_dimension_names_by_lane()
+
+
+def _dimensions_for_lane(content_lane: str) -> list[str]:
+    """按车道选维度集（未知/缺省 → procedural 旧行为，零回归）。"""
+    return RUBRIC_DIMENSIONS_BY_LANE.get(
+        str(content_lane or "").strip().lower(), RUBRIC_DIMENSIONS
+    )
+
+
 @dataclass
 class GraderResult:
     """评分器详细结果，保留 fallback 原因供 canary/runner 审计。"""
@@ -213,13 +245,15 @@ def _build_grader_prompt(candidate_text: str, rubric_text: str) -> list[dict[str
     ]
 
 
-def _build_grader_schema() -> dict[str, Any]:
+def _build_grader_schema(content_lane: str = "") -> dict[str, Any]:
     """构建评分输出的 JSON Schema。
 
     Step.3 扩展（spec FR-008）：维度 enum 从 spec 派生（RUBRIC_DIMENSIONS）；
     输出对象扩展可选字段——逐维 score、顶层 weighted_total/threshold/integrity_floor
     逐项。新字段均**可选**（非 required），旧响应（无这些字段）仍合法解析（零回归）；
     weighted_total 仅产出记录、不参与本 step 判定（判据切换属 step-3）。
+
+    step-3 SC-3f/A3-6：维度 enum 按 lane 动态派生（concept=7 维，procedural=10 维）。
     """
     floor_names = [f.get("name") for f in _load_rubric_spec().get("integrity_floor", [])]
     return {
@@ -233,7 +267,7 @@ def _build_grader_schema() -> dict[str, Any]:
                         "dimension": {
                             "type": "string",
                             "description": "量规维度名称",
-                            "enum": RUBRIC_DIMENSIONS,
+                            "enum": _dimensions_for_lane(content_lane),
                         },
                         "pass": {"type": "boolean"},
                         # Step.3 扩展：逐维 score（可选，仅记录，不参与本 step 判定）
@@ -308,18 +342,24 @@ def _build_grader_schema() -> dict[str, Any]:
     }
 
 
-def _canonical_dimension_name(raw_name: Any) -> str | None:
-    """将允许的维度名变体归一到 canonical 中文名。
+def _canonical_dimension_name(
+    raw_name: Any, content_lane: str = ""
+) -> str | None:
+    """将允许的维度名变体归一到 canonical 中文名（按车道选维度集）。
 
     模型偶尔会返回 "论断锚定率 (Claim Anchor Rate)"。这仍是同一维度；
     但未知维度、id 数字、错别字仍必须拒收。
+
+    step-3 SC-3f/A3-6：维度集按 lane 动态派生（concept=7 维，procedural=10 维），
+    不在 .py 硬编码——_dimensions_for_lane 从 rubric.yaml 读。
     """
     if not isinstance(raw_name, str):
         return None
     name = raw_name.strip()
-    if name in RUBRIC_DIMENSIONS:
+    allowed = _dimensions_for_lane(content_lane)
+    if name in allowed:
         return name
-    for dim in RUBRIC_DIMENSIONS:
+    for dim in allowed:
         if name.startswith(f"{dim} (") and name.endswith(")"):
             return dim
     return None
@@ -327,10 +367,14 @@ def _canonical_dimension_name(raw_name: Any) -> str | None:
 
 def _parse_grader_output(
     raw_content: str | dict,
+    content_lane: str = "",
 ) -> tuple[list[Defect], bool]:
     """解析 LLM 评分输出为 Defect 清单。
 
     FR-006: 缺 location 的条目整批拒收。
+
+    step-3 SC-3f/A3-6：维度集按 lane 动态派生（concept=7 维，procedural=10 维），
+    seen_dimensions 须等于该 lane 维度集。
 
     Returns:
         (defects, parse_success): parse_success=False 表示解析失败
@@ -368,7 +412,7 @@ def _parse_grader_output(
         dim_keys = set(dim.keys())
         if not _dim_required <= dim_keys or (dim_keys - _dim_allowed):
             return [], False
-        dim_name = _canonical_dimension_name(dim.get("dimension"))
+        dim_name = _canonical_dimension_name(dim.get("dimension"), content_lane)
         if dim_name is None:
             return [], False
         seen_dimensions.add(dim_name)
@@ -415,7 +459,7 @@ def _parse_grader_output(
                 )
             )
 
-    if seen_dimensions != set(RUBRIC_DIMENSIONS):
+    if seen_dimensions != set(_dimensions_for_lane(content_lane)):
         return [], False
 
     return defects, True
@@ -543,7 +587,7 @@ def run_grader_detailed(candidate_text: str, content_lane: str = "") -> GraderRe
     """
     rubric_text = _load_rubric_text()
     messages = _build_grader_prompt(candidate_text, rubric_text)
-    response_schema = _build_grader_schema()
+    response_schema = _build_grader_schema(content_lane)
 
     result = GraderResult(
         defects=[], model_used="none", suspended=True, content_lane=content_lane
@@ -557,7 +601,7 @@ def run_grader_detailed(candidate_text: str, content_lane: str = "") -> GraderRe
                 messages=messages,
                 response_schema=response_schema,
             )
-            defects, parse_ok = _parse_grader_output(response.content)
+            defects, parse_ok = _parse_grader_output(response.content, content_lane)
             if parse_ok:
                 ext = _parse_grader_extensions(response.content)
                 return GraderResult(
@@ -589,7 +633,7 @@ def run_grader_detailed(candidate_text: str, content_lane: str = "") -> GraderRe
                 messages=messages,
                 response_schema=response_schema,
             )
-            defects, parse_ok = _parse_grader_output(response.content)
+            defects, parse_ok = _parse_grader_output(response.content, content_lane)
             if parse_ok:
                 ext = _parse_grader_extensions(response.content)
                 result.defects = defects
@@ -623,6 +667,7 @@ def run_grader(candidate_text: str, content_lane: str = "") -> tuple[list[Defect
 def run_grader_with_fixture_detailed(
     candidate_text: str,
     mock_route_llm: Any,
+    content_lane: str = "",
 ) -> GraderResult:
     """使用 fixture LLM 响应运行评分器（测试用）。
 
@@ -635,7 +680,7 @@ def run_grader_with_fixture_detailed(
     """
     rubric_text = _load_rubric_text()
     messages = _build_grader_prompt(candidate_text, rubric_text)
-    response_schema = _build_grader_schema()
+    response_schema = _build_grader_schema(content_lane)
 
     result = GraderResult(defects=[], model_used="none", suspended=True)
 
@@ -647,7 +692,7 @@ def run_grader_with_fixture_detailed(
             response_schema=response_schema,
         )
         if response is not None:
-            defects, parse_ok = _parse_grader_output(response.content)
+            defects, parse_ok = _parse_grader_output(response.content, content_lane)
             if parse_ok:
                 ext = _parse_grader_extensions(response.content)
                 return GraderResult(
@@ -679,7 +724,7 @@ def run_grader_with_fixture_detailed(
                 response_schema=response_schema,
             )
             if response is not None:
-                defects, parse_ok = _parse_grader_output(response.content)
+                defects, parse_ok = _parse_grader_output(response.content, content_lane)
                 if parse_ok:
                     ext = _parse_grader_extensions(response.content)
                     result.defects = defects
