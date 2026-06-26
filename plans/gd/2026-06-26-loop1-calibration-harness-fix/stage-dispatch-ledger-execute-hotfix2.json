@@ -16,7 +16,7 @@
   ],
   "main_agent_merge": {
     "merge_report_path": "plans/gd/2026-06-26-loop1-calibration-harness-fix/merge-report-execute.md",
-    "merge_report_hash": "b5d32f8c6e81478510568a6afae6bda1835144ebf605d2ab5e0f14bc68fb88e4",
+    "merge_report_hash": "c20e1fd4adc491c356f74e663e329200777f35e7923189f3d606bd46ab4fa4c4",
     "final_decision": "REQUIRES_CHANGES",
     "blocking_buckets": [
       "SC-1_end_to_end_pkg_a_admission"

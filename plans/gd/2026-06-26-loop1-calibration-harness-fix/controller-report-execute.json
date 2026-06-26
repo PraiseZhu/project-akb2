@@ -8,9 +8,7 @@
   "primary_gate": {
     "verdict": "REQUIRES_CHANGES",
     "blocking": [
-      "SC-1_end_to_end_FAIL",
-      "P1_3_constitution",
-      "P2_3_hotfix_ledger"
+      "SC-1_end_to_end_FAIL"
     ]
   },
   "secondary_gate": {
@@ -92,19 +90,19 @@
   "batch_ledgers": [
     {
       "path": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-26-loop1-calibration-harness-fix/stage-dispatch-ledger-execute-w1.json",
-      "hash": "f8a89d95ce83a3b78195fb15fd5c18d12c84fab8487a81a3a225f58f543314eb"
+      "hash": "990ebb0e197678e79338ebcbafd1736f89b3bd4678116df84c07529deeecb49b"
     },
     {
       "path": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-26-loop1-calibration-harness-fix/stage-dispatch-ledger-execute-w2.json",
-      "hash": "7b003af4a12ddd0367709ab024029494dfeab977c0b1e160e9d3a2ddbdffd2bc"
+      "hash": "e345ea7ca043161ff31868d95e39b9a8ac8a470243cc0175c09af44af9410f1d"
     },
     {
       "path": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-26-loop1-calibration-harness-fix/stage-dispatch-ledger-execute-hotfix1.json",
-      "hash": "ccbdaa4dfcfef3acb1b852f5128d233a08f141b06a0e5bdb4f37fc0aefc2134b"
+      "hash": "0771f936cc60edaeae21da48983c881d2f5dbc1b01a1562e18bdc0379f25d78e"
     },
     {
       "path": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-26-loop1-calibration-harness-fix/stage-dispatch-ledger-execute-hotfix2.json",
-      "hash": "a1bc0a32e695eddeba02a54bea63bbb9f7773c27105e1c7b6bdb151e8d522420"
+      "hash": "2ef1c82d254b01751879e2d9c46bbe486b77a60cf13f2fe1bfb23168eeb80c01"
     }
   ],
   "suite_target_closure": [
