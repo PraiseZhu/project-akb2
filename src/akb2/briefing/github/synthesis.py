@@ -62,10 +62,8 @@ def _build_prompt(repos: list[dict[str, Any]]) -> str:
     return (
         f"{system}\n\n"
         f"<input>\n{repos_xml}\n</input>\n\n"
-        (
-            '<output_format>\n[{"repo_url": "...", "summary": "...", '
-            '"use_case": "..."}, ...]\n</output_format>'
-        )
+        '<output_format>\n[{"repo_url": "...", "summary": "...", '
+        '"use_case": "..."}, ...]\n</output_format>'
     )
 
 

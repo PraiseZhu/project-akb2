@@ -277,10 +277,8 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
             f"Analyze the following AI/ML tweets from {resolved_date} "
             f"and output a JSON object conforming to social_trends_v1_1 schema.\n\n"
             f"Tweets:\n{tweets_text}\n\n"
-            (
-                "Return JSON with fields: date, generated_at, source, scoring_summary, "
-                "tweets, focus_discussions."
-            )
+            "Return JSON with fields: date, generated_at, source, scoring_summary, "
+            "tweets, focus_discussions."
         )
 
     last_err: Exception | None = None

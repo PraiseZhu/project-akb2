@@ -148,10 +148,8 @@ def _render_report(
     lines.append("")
     lines.append(
         "> Read-only scanner output. Never executes a candidate, never writes outside "
-        (
-            "`manifests/workspace-scan/` and `docs/phase-c-reports/`, "
-            "never promotes anything to active."
-        )
+        "`manifests/workspace-scan/` and `docs/phase-c-reports/`, "
+        "never promotes anything to active."
     )
     lines.append("")
 
