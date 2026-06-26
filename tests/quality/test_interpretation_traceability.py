@@ -257,30 +257,71 @@ class TestProductionTracesTo:
 
 
 class TestRealCanary:
-    """SC-7 真机 canary：poisoned_trace_real_canary / entailment_model_is_gpt54。
+    """SC-7 真机 canary：真 GPT-5.4（tapsvc 网关）判 poisoned-trace。
 
-    需 gpt-5.4 网关 + AKB2_GRADER_CANARY_LIVE=1；本机无网关 → skip-not-run
-    （step-3 文档允许，不计 SC-7 pass）。canary 不可用时 fail-closed/skip。
+    设 OPENAI_BASE_URL=tapsvc + OPENAI_API_KEY=ANTHROPIC_API_KEY（ tapsvc 网关 key），
+    真跑 run_grader_detailed，断言模型族==gpt-5.4 且 interpretation_entailment=false。
+    预算超限（429 ExceededBudget）→ skip-not-run（key 有效，仅日预算用完，次日 UTC 0点重置）。
     """
 
-    def test_poisoned_trace_real_canary(self, monkeypatch):
-        import os
+    _POISONED_TRACE_CANDIDATE = """---
+title: poisoned-trace canary
+content_lane: concept
+---
 
-        if not os.environ.get("AKB2_GRADER_CANARY_LIVE"):
-            pytest.skip("真机 canary 需 AKB2_GRADER_CANARY_LIVE=1 + gpt-5.4 网关（属 SC-7）")
-        # 真机路径：固定 poisoned-trace prompt 走真 GPT-5.4，断言模型族==PRIMARY_GRADER_MODEL
-        # 且 interpretation_entailment=false。本机无网关，此处只占位标 not_run。
+## 核心论点
+
+- [raw §A] (source_grounded) 原文：Loop engineering 把 agent 工作收束为有停止条件的反馈循环。
+- (akb_interpretation) AKB 解读：React 的 useEffect hook 在组件挂载后执行副作用清理。[raw §A]
+
+（解读 cited §A 关于 Loop engineering，但解读内容是 React useEffect——anchor 真实但语义无关 = poisoned-trace）
+"""
+
+    def _setup_tapsvc_gateway(self, monkeypatch):
+        """强制 gpt-5.4 走 tapsvc 网关（避免外部官方 OPENAI_API_KEY 打 api.openai.com 401）。"""
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://llm-proxy.tapsvc.com")
+        # tapsvc 网关 key（与 ANTHROPIC_API_KEY 同源）；若外部 OPENAI_API_KEY 是官方错 key 则覆盖
+        tapsvc_key = (
+            __import__("os").environ.get("AI_GATEWAY_API_KEY")
+            or __import__("os").environ.get("TAPTAP_API_KEY")
+            or __import__("os").environ.get("ANTHROPIC_API_KEY", "")
+        )
+        if tapsvc_key:
+            monkeypatch.setenv("OPENAI_API_KEY", tapsvc_key)
+
+    def test_poisoned_trace_real_canary(self, monkeypatch):
+        """真 GPT-5.4 判 poisoned-trace → interpretation_entailment=false。"""
+        if not __import__("os").environ.get("AKB2_GRADER_CANARY_LIVE"):
+            pytest.skip("设 AKB2_GRADER_CANARY_LIVE=1 启用真机 canary")
+        self._setup_tapsvc_gateway(monkeypatch)
         from src.akb2.quality.grader import PRIMARY_GRADER_MODEL, run_grader_detailed
+        from src.akb2.quality.llm_router import LLMProviderError
 
         assert "gpt" in PRIMARY_GRADER_MODEL.lower() or "5.4" in PRIMARY_GRADER_MODEL
-        pytest.skip("canary 真机执行需人工在 mac mini 跑（本机无 gpt-5.4 网关）")
+        try:
+            result = run_grader_detailed(self._POISONED_TRACE_CANDIDATE, content_lane="concept")
+        except LLMProviderError as exc:
+            msg = str(exc)
+            if "ExceededBudget" in msg or "429" in msg or "daily cap" in msg.lower():
+                pytest.skip(f"tapsvc 网关日预算超限（key 有效），次日 UTC 0点重置后重跑: {msg[:120]}")
+            if "401" in msg or "invalid_api_key" in msg:
+                pytest.fail(f"tapsvc 网关 key 无效（401）— 检查 ANTHROPIC_API_KEY/AI_GATEWAY_API_KEY: {msg[:120]}")
+            pytest.skip(f"网关暂不可用（{type(exc).__name__}）: {msg[:120]}")
+        # canary 不可降级 gemini（异族硬判，P7）；suspended/未真跑 gpt-5.4 → skip（预算/网关）
+        if result.suspended or "gpt" not in (result.model_used or "").lower() and "5.4" not in (result.model_used or ""):
+            reason = result.primary_failure_reason or f"suspended={result.suspended} model={result.model_used}"
+            if "ExceededBudget" in reason or "429" in reason or "daily cap" in reason.lower() or result.suspended:
+                pytest.skip(f"canary 未真跑 gpt-5.4（预算/网关）：{reason[:140]}")
+            pytest.fail(f"canary 未用 GPT-5.4（model={result.model_used}）：{reason[:140]}")
+        # poisoned-trace → entailment=false（真 GPT-5.4 应拒）
+        assert result.interpretation_entailment is False, (
+            f"poisoned-trace 应被 GPT-5.4 判 entailment=false，实际={result.interpretation_entailment}"
+        )
 
     def test_entailment_model_is_gpt54(self, monkeypatch):
-        import os
-
-        if not os.environ.get("AKB2_GRADER_CANARY_LIVE"):
-            pytest.skip("真机 canary 需 AKB2_GRADER_CANARY_LIVE=1 + gpt-5.4 网关（属 SC-7）")
-        from src.akb2.quality.grader import PRIMARY_GRADER_MODEL
-
-        # canary 须证明 entailment 由 GPT-5.4 判，非 deepseek 自证
-        assert PRIMARY_GRADER_MODEL != "deepseek"
+        """canary 须证明 entailment 由 GPT-5.4 判（非 deepseek 自证，P7 异族）。"""
+        from src.akb2.quality.grader import PRIMARY_GRADER_MODEL, FALLBACK_GRADER_MODEL
+        # 模型族断言（不需真调网关）
+        assert PRIMARY_GRADER_MODEL != "deepseek", "entailment 不可由 deepseek 自证"
+        assert "gpt" in PRIMARY_GRADER_MODEL.lower() or "5.4" in PRIMARY_GRADER_MODEL
+        assert FALLBACK_GRADER_MODEL != "deepseek"
