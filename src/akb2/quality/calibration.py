@@ -289,22 +289,45 @@ def _process_corpus_entry(
     final_status = pipeline_result.get("final_status", "unknown")
     result["final_status"] = final_status
 
+    # P0-0：携 runner 机读诊断字段（content_lane/failed_node/error_class），
+    # 报告据此区分真实失败阶段，不再只靠 final_status 粗映射。
+    result["content_lane"] = pipeline_result.get("content_lane", "")
+    result["failed_node"] = pipeline_result.get("failed_node")
+    result["error_class"] = pipeline_result.get("error_class")
+
     if expected == "ingest":
         # path 5: 正样本——期望通过
         if final_status in ("promoted", "proposal_passed"):
             result["passed"] = True
         else:
             result["passed"] = False
-            result["failure_segment"] = _classify_failure_segment(final_status)
+            # 优先用 runner 返回的真实失败节点；缺失时回落 final_status 粗映射。
+            result["failure_segment"] = (
+                pipeline_result.get("failed_node")
+                or _classify_failure_segment(final_status)
+            )
             result["failure_reason"] = pipeline_result.get("error", "未知原因")
             result["failure_attribution"] = _classify_attribution(
                 final_status, pipeline_result
             )
+            # grader 环境不可用（GPT-5.4 down / 双裁判挂）是裁判环境问题，不是代码缺陷：
+            # 单列 grader_unavailable / environment_blocked，避免与真实质量缺陷混桶。
+            ec = str(pipeline_result.get("error_class") or "")
+            if ec.startswith("grader_") and (
+                "fallback_not_allowed" in ec or "all_down" in ec
+            ):
+                result["failure_segment"] = "grader_unavailable"
+                result["failure_attribution"] = "environment_blocked"
     else:
         # path 6: 负样本——期望拒收
         if final_status == "rejected":
             result["passed"] = True  # 拒收 = 正样本场景中的 "pass"
             result["final_status"] = "rejected_correctly"
+            # P0-0：保留底层真实拒因，避免 rejected_correctly 抹掉"靠哪道门拒"。
+            result["underlying_final_status"] = "rejected"
+            result["underlying_error"] = pipeline_result.get("error")
+            result["underlying_failed_node"] = pipeline_result.get("failed_node")
+            result["underlying_error_class"] = pipeline_result.get("error_class")
         else:
             result["passed"] = False
             result["failure_segment"] = "admission"

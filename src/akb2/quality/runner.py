@@ -1259,6 +1259,7 @@ def _run_pipeline_segments(
         # SC-6：reason 已带"准入未通过:"前缀（admission.py 拼装），此处幂等不再重复加，
         # 否则 factory.json failure_reason 出现"准入未通过: 准入未通过: ..."双前缀。
         error = reason if str(reason).startswith("准入未通过") else f"准入未通过: {reason}"
+        # P0-0：失败返回携机读诊断字段（calibration 据此区分真实失败阶段）。
         return {
             "converged": False,
             "rounds": rounds,
@@ -1266,6 +1267,9 @@ def _run_pipeline_segments(
             "promotion_mode": "none",
             "final_status": "rejected",
             "error": error,
+            "content_lane": content_lane,
+            "failed_node": "admission",
+            "error_class": error.split(":", 1)[1].strip() if ":" in error else "admission",
         }
 
     _log_event(config, "admission", "admission", content_hash,
@@ -1308,6 +1312,9 @@ def _run_pipeline_segments(
             "promotion_mode": "none",
             "final_status": "failed",
             "error": f"提炼失败: {error_detail}",
+            "content_lane": content_lane,
+            "failed_node": failed_node,
+            "error_class": "distill_failed",
         }
 
     _log_event(config, "distill_extract", "distill_extract", content_hash,
@@ -1389,6 +1396,9 @@ def _run_pipeline_segments(
                 "promotion_mode": "none",
                 "final_status": "rejected",
                 "error": f"完整性地板未过（不可补偿）: {error_detail}",
+                "content_lane": quality_meta.get("content_lane", content_lane),
+                "failed_node": "integrity_floor",
+                "error_class": error_class,
             }
         _log_event(config, "abort", "repair_loop", content_hash,
                    {"error_class": error_class, "error": error_detail,
@@ -1405,6 +1415,9 @@ def _run_pipeline_segments(
             "promotion_mode": "none",
             "final_status": "failed",
             "error": f"质量不达标: {error_class} — {error_detail}",
+            "content_lane": content_lane,
+            "failed_node": "grader" if str(error_class).startswith("grader_") else "repair_loop",
+            "error_class": error_class,
         }
 
     _log_event(config, "repair_loop", "repair_loop", content_hash,
@@ -1435,6 +1448,9 @@ def _run_pipeline_segments(
         "promotion_mode": promotion_mode,
         "final_status": "promoted" if promoted else "proposal_passed",
         "error": None if promoted else promote_detail,
+        "content_lane": content_lane,
+        "failed_node": None,
+        "error_class": None,
     }
 
 
