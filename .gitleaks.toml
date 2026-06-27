@@ -1,0 +1,15 @@
+title = "AKB2 gitleaks config"
+
+# 继承 gitleaks 默认规则集（覆盖所有常见密钥模式），仅追加项目专属 allowlist。
+[extend]
+useDefault = true
+
+# SC PRE-2：raw-html fixtures 是抓回的网页快照（测试数据），含 sk- 前缀 CSS 类
+# （sk-assistant-code-block-button / sk-dark / sk-icon 等，最长 29 字符），会被默认
+# generic-api-key 规则按长度+熵误报为密钥。整目录 allowlist——该目录是测试 fixture，
+# 不放真密钥；真密钥扫描仍覆盖仓内其余全部路径。
+[[allowlist]]
+description = "raw-html 测试 fixture 含 sk- 前缀 CSS 类（非密钥）"
+paths = [
+    'evals/main-pipeline-quality/fixtures/raw-html/**',
+]
