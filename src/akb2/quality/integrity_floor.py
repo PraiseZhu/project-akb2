@@ -62,6 +62,7 @@ class FloorResult:
     failed_floors: list[str] = field(default_factory=list)
     reason: str = ""
     content_lane: str = ""
+    meta: dict = field(default_factory=dict)
 
 
 def _is_concept_lane(content_lane: str) -> bool:
@@ -114,7 +115,7 @@ def _evidence_honesty_failed(extract_data: dict) -> tuple[bool, str]:
     return False, ""
 
 
-def _interpretation_traceability_failed(extract_data: dict) -> tuple[bool, str]:
+def _interpretation_traceability_failed(extract_data: dict) -> tuple[bool, str, bool]:
     """③ 解读分离层①：每条 akb_interpretation 带 traces_to 指向真实存在的 source_grounded anchor。
 
     确定性 pre-grader 地板——只判「溯源标注存在且指向真实锚点」，不判「推导是否成立」
@@ -123,6 +124,10 @@ def _interpretation_traceability_failed(extract_data: dict) -> tuple[bool, str]:
     akb_interpretation 来源：claims（provenance=akb_interpretation 的条目）+ argumentation
     （provenance=akb_interpretation 的条目）。每条须带 traces_to 列表，列表中 ≥1 个 anchor
     在 claims 的 source_grounded anchor 集合里真实存在。
+
+    Returns:
+        (failed, reason, skipped_no_grounded) — 第 3 项 SC-5：grounded 空且有 interpretation
+        时 traceability 被豁免（不可满足），供 evaluate 写 meta 治诊断变弱。
     """
     claims = extract_data.get("claims", []) or []
     argumentation = extract_data.get("argumentation", []) or []
@@ -152,7 +157,7 @@ def _interpretation_traceability_failed(extract_data: dict) -> tuple[bool, str]:
         if not trace_anchors:
             return True, (
                 f"akb_interpretation[{i}] 缺 traces_to 溯源标注（无据飘浮读后感）"
-            )
+            ), False
         # SC-5：grounded_anchors 空时豁免——"≥1 traces_to 命中真实 grounded anchor"
         # 在无 source_grounded anchor 时不可满足（无源页 fixture 等场景，extraction 产不出
         # grounded anchor），floor ③ 不应误判 fail；缺 grounded 的真问题由 floor ①
@@ -161,8 +166,12 @@ def _interpretation_traceability_failed(extract_data: dict) -> tuple[bool, str]:
             return True, (
                 f"akb_interpretation[{i}] traces_to {trace_anchors} 未指向任何真实存在的"
                 " source_grounded anchor"
-            )
-    return False, ""
+            ), False
+    # SC-5：grounded 空且有 interpretation → traceability 豁免（不可满足），返 skipped 标志
+    # 供 evaluate_integrity_floor 写 meta（治诊断变弱——失败归因从 traceability 转
+    # claim_anchor_rate，需可见，防未来弱化 floor ① 变 false negative）。
+    skipped_no_grounded = (not grounded_anchors) and bool(interpretations)
+    return False, "", skipped_no_grounded
 
 
 def _core_value_f4_failed(extract_data: dict, content_lane: str) -> tuple[bool, str]:
@@ -242,10 +251,16 @@ def evaluate_integrity_floor(extract_data: dict, content_lane: str = "") -> Floo
         failed.append(FLOOR_EVIDENCE_HONESTY)
         reasons.append(honesty_reason)
 
-    trace_failed, trace_reason = _interpretation_traceability_failed(extract_data)
+    trace_failed, trace_reason, trace_skipped = _interpretation_traceability_failed(
+        extract_data
+    )
     if trace_failed:
         failed.append(FLOOR_INTERPRETATION_TRACEABILITY)
         reasons.append(trace_reason)
+    trace_meta: dict = {}
+    if trace_skipped:
+        # SC-5：traceability 因 grounded 空被豁免——写可见 meta，治诊断变弱
+        trace_meta["traceability_skipped_no_grounded_anchor"] = True
 
     f4_failed, f4_reason = _core_value_f4_failed(extract_data, content_lane)
     if f4_failed:
@@ -257,4 +272,5 @@ def evaluate_integrity_floor(extract_data: dict, content_lane: str = "") -> Floo
         failed_floors=failed,
         reason="; ".join(reasons),
         content_lane=content_lane,
+        meta=trace_meta,
     )

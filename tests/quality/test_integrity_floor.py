@@ -168,6 +168,10 @@ class TestInterpretationTraceability:
         assert FLOOR_INTERPRETATION_TRACEABILITY not in r.failed_floors, (
             "grounded_anchors 空时 traceability 应豁免（SC-5）"
         )
+        # SC-5：豁免时 meta 可见（治诊断变弱——失败归因转 claim_anchor_rate，需可见）
+        assert r.meta.get("traceability_skipped_no_grounded_anchor") is True, (
+            "grounded 空豁免时须写 traceability_skipped_no_grounded_anchor meta（SC-5）"
+        )
 
 
 # ----------------------------- ④ F4 core_value ----------------------------- #
