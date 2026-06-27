@@ -3858,7 +3858,7 @@ def _filter_resolvable_graph_edges(
     concepts: list[str],
     known_concepts: list[str] | None,
     pending_queue: list[str] | None,
-) -> tuple[list[dict[str, Any]], list[str]]:
+) -> tuple[list[dict[str, Any]], list[str], list[str]]:
     """SC-2b-b2：渲染前过滤 target 不在 known∪sources∪pending 的图谱边/概念引用。
 
     extraction LLM 可能发明 vault 里不存在的 slug（如 loop-engineering——既非概念也非
@@ -3866,12 +3866,15 @@ def _filter_resolvable_graph_edges(
     compose 渲染前确定性过滤，不让悬空 slug 进候选页（"从源头不发明"，用户 SC-2b-b2
     决策）。复用 _resolve_graph_node（含 SC-2a 前缀归一化 + pending 共指）做判定。
 
+    SC-2（worker round-4）：返回 dropped_targets 供 compose 写可见 meta，治静默失败
+    （Karpathy #12——旧版 drop 边无日志，grader 看稀疏图谱不知何因）。
+
     tradeoff（用户已接受）：生产 vault 概念全时几乎不过滤；校准薄种子库下引用未 seeded
     概念的边会被 drop，图谱可能偏稀疏——但候选不再被 self-gate 整篇拒。
     known/pending 均 None 时不过滤（兼容 _build_body 旧调用，默认不传）。
     """
     if known_concepts is None and pending_queue is None:
-        return graph_edges, concepts
+        return graph_edges, concepts, []
     from src.akb2.quality.checks_structural import _resolve_graph_node
 
     def _edge_target(e: dict[str, Any]) -> str:
@@ -3883,15 +3886,26 @@ def _filter_resolvable_graph_edges(
             or ""
         )
 
-    filtered_edges = [
+    kept_edges = [
         e
         for e in graph_edges
         if _resolve_graph_node(_edge_target(e), known_concepts, pending_queue)
     ]
-    filtered_concepts = [
+    kept_concepts = [
         c for c in concepts if _resolve_graph_node(str(c), known_concepts, pending_queue)
     ]
-    return filtered_edges, filtered_concepts
+    # SC-2：记录被 drop 的 target（治静默失败——grader/ledger 能看到哪些边被删、为什么）
+    dropped = [
+        _edge_target(e)
+        for e in graph_edges
+        if not _resolve_graph_node(_edge_target(e), known_concepts, pending_queue)
+    ]
+    dropped += [
+        str(c)
+        for c in concepts
+        if not _resolve_graph_node(str(c), known_concepts, pending_queue)
+    ]
+    return kept_edges, kept_concepts, dropped
 
 
 def _build_body(
@@ -3935,7 +3949,8 @@ def _build_body(
     # SC-2b-b2：渲染前过滤 target 不在 known∪sources∪pending 的图谱边/概念。
     # 发明的悬空 slug（如 loop-engineering）不进候选页，避免 A4/A5
     # fail-closed 整篇拒。known/pending 均 None 时不过滤（兼容旧调用）。
-    graph_edges, concepts = _filter_resolvable_graph_edges(
+    # SC-2：dropped_graph_targets 供图谱节写可见 meta（治静默失败）。
+    graph_edges, concepts, dropped_graph_targets = _filter_resolvable_graph_edges(
         graph_edges, concepts, known_concepts, pending_queue
     )
 
@@ -4080,13 +4095,18 @@ def _build_body(
     # 图谱关系：表头对齐检查器/评分器英文契约(GRAPH_EDGE_COLUMNS=target/relation/strength/evidence)
     # evidence 不截断(旧 [:80] 截断丢依据);fallback 边降 weak(旧 medium 偏高)
     # cell 经 _md_table_cell 转义 | + 压平换行(否则 evidence 含 | 拆成 >4 列,A4 只拒 <4 列→假绿)
+    _GRAPH_TABLE_HEADER = (
+        "| target | relation | strength | provenance | evidence |\n"
+        "|--------|----------|----------|------------|----------|"
+    )
     if graph_edges:
-        graph_rows = "\n".join(
+        rows = "\n".join(
             f"| {_md_table_cell(edge['concept'])} | {_md_table_cell(edge['relation_type'])} "
             f"| {edge['strength']} | {edge['provenance']} | "
             f"{_md_table_cell(edge.get('evidence', ''))} |"
             for edge in (_normalize_graph_edge(e) for e in graph_edges)
         )
+        graph_rows = f"{_GRAPH_TABLE_HEADER}\n{rows}"
     elif concepts:
         # concept 来自 LLM referenced_concepts,可能含 | → 同样转义(altitude:所有插值 cell 一致转义)
         fallback_anchor = claims[0].get("anchor", "§A") if claims else "§A"
@@ -4094,15 +4114,27 @@ def _build_body(
             f"[raw {fallback_anchor}] (akb_interpretation) "
             "见原文概念引用，候选阶段按推测关联保守标 weak。"
         )
-        graph_rows = "\n".join(
+        rows = "\n".join(
             f"| {_md_table_cell(c)} | related | weak | "
             f"akb_interpretation | {fallback_cell} |"
             for c in concepts
         )
+        graph_rows = f"{_GRAPH_TABLE_HEADER}\n{rows}"
     else:
+        # SC-2（worker round-4）：全过滤空时**不出占位符表格行**——A4 会把
+        # `| （无相关概念） |` 当 edge target 拒（compose_self_gate_failed，满仓 11/18
+        # 挂此）。改输出普通段落（非 table），A4 无 table 行可解析→不拒。dropped 可见
+        # meta 治静默失败（Karpathy #12——旧版 drop 边无日志，grader 不知何因）。
+        dropped_note = ""
+        if dropped_graph_targets:
+            uniq = list(dict.fromkeys(dropped_graph_targets))[:8]
+            dropped_note = (
+                f"\n\n<!-- graph_edges_dropped: {uniq} — 未命中 known/pending，"
+                "待图谱校准。graph_empty_after_resolve_filter=true -->"
+            )
         graph_rows = (
-            "| （无相关概念） | — | weak | akb_interpretation | "
-            "(akb_interpretation) 无可证实图谱边。 |"
+            "（本候选暂无可证实的图谱边——所有引用概念在 resolve 阶段未命中 "
+            "known/pending。待图谱校准确认后补边。）" + dropped_note
         )
 
     concepts_text = ", ".join(concepts) if concepts else "（见图谱关系）"
@@ -4178,10 +4210,8 @@ def _build_body(
 
 ## 图谱关系
 
-下表图谱边按 evidence 的 provenance 判定；weak 边仍需后续图谱校准确认。
+图谱边按 evidence 的 provenance 判定；weak 边仍需后续图谱校准确认。
 
-| target | relation | strength | provenance | evidence |
-|--------|----------|----------|------------|----------|
 {graph_rows}
 
 ## Future Questions

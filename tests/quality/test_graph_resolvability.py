@@ -257,7 +257,7 @@ class TestFilterUnresolvableEdges:
             "anthropic-effective-context-engineering",
             "mcp-spec",
         ]
-        fe, fc = _filter_resolvable_graph_edges(edges, concepts, known, None)
+        fe, fc, _dropped = _filter_resolvable_graph_edges(edges, concepts, known, None)
         kept_targets = [e.get("concept") or e.get("target") for e in fe]
         assert "loop-engineering" not in kept_targets, "发明 slug 须被过滤"
         assert "concept-context-engineering" in kept_targets
@@ -273,7 +273,7 @@ class TestFilterUnresolvableEdges:
         from src.akb2.quality.distill import _filter_resolvable_graph_edges
 
         edges = [{"concept": "whatever-invented"}]
-        fe, fc = _filter_resolvable_graph_edges(edges, ["whatever-invented"], None, None)
+        fe, fc, _dropped = _filter_resolvable_graph_edges(edges, ["whatever-invented"], None, None)
         assert fe == edges, "known/pending 均 None 时须原样返回（兼容）"
         assert fc == ["whatever-invented"]
 
@@ -282,7 +282,83 @@ class TestFilterUnresolvableEdges:
         from src.akb2.quality.distill import _filter_resolvable_graph_edges
 
         edges = [{"concept": "context-engineering", "relation_type": "related"}]
-        fe, _ = _filter_resolvable_graph_edges(
+        fe, _, _dropped = _filter_resolvable_graph_edges(
             edges, [], ["concept-context-engineering"], None
         )
         assert fe == edges, "裸名 target 须经 SC-2a 前缀归一化保留"
+
+
+# ----------------------------- SC-2 占位符协议 ----------------------------- #
+
+
+_GRAPH_PARAGRAPH_CANDIDATE = """---
+title: 空图谱段落测试
+---
+
+## TLDR
+
+概念正文。
+
+## 图谱关系
+
+图谱边按 evidence 的 provenance 判定。
+
+（本候选暂无可证实的图谱边——所有引用概念在 resolve 阶段未命中 known/pending。）
+"""
+
+_GRAPH_PLACEHOLDER_TABLE_CANDIDATE = """---
+title: 占位符测试
+---
+
+## 图谱关系
+
+| target | relation | strength | provenance | evidence |
+|--------|----------|----------|------------|----------|
+| （无相关概念） | — | weak | akb_interpretation | 无可证实图谱边。 |
+"""
+
+
+class TestSC2PlaceholderProtocol:
+    """SC-2（worker round-4）：空图谱不出占位符表格行（A4 会把占位当 edge 拒）。
+
+    compose 全过滤空时输出普通段落（非 table），A4 无 table 行可解析→不拒。
+    若占位符 table 行出现（compose 回退），A4 仍拒（锁防回退）。
+    """
+
+    def test_paragraph_graph_no_a4_resolve_defect(self):
+        """空图谱出段落 → A4 无 table 行 → 不报 resolve 缺陷（SC-2 主验收）。"""
+        defects = check_a4_graph_edges(
+            _GRAPH_PARAGRAPH_CANDIDATE,
+            known_concepts=["concept-x"],
+            pending_queue=None,
+            content_lane="concept",
+        )
+        assert not any(
+            "resolve" in getattr(d, "dimension", "").lower() for d in defects
+        ), "段落图谱不应触发 A4-图谱resolve（SC-2）"
+
+    def test_placeholder_table_row_still_rejected(self):
+        """回归锁：占位符 `| （无相关概念） |` 出现在 table → A4 仍拒（防 compose 回退）。"""
+        defects = check_a4_graph_edges(
+            _GRAPH_PLACEHOLDER_TABLE_CANDIDATE,
+            known_concepts=["concept-x"],
+            pending_queue=None,
+            content_lane="concept",
+        )
+        assert any(
+            "无相关概念" in getattr(d, "defect", "") for d in defects
+        ), "占位符 table 行应被 A4 拒（锁防 compose 回退到占位符）"
+
+    def test_filter_returns_dropped_targets(self):
+        """SC-2：filter 返回 dropped_targets（治静默失败——grader/ledger 可见）。"""
+        from src.akb2.quality.distill import _filter_resolvable_graph_edges
+
+        edges = [
+            {"concept": "concept-x", "relation_type": "related"},
+            {"concept": "loop-engineering", "relation_type": "related"},
+        ]
+        kept_e, kept_c, dropped = _filter_resolvable_graph_edges(
+            edges, ["loop-engineering"], ["concept-x"], None
+        )
+        assert "loop-engineering" in dropped, "被 drop 的 target 须进 dropped 列表"
+        assert len(kept_e) == 1, "concept-x 须保留"
