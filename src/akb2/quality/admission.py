@@ -33,6 +33,10 @@ from typing import Any
 
 LANE_CONCEPT: str = "concept"
 LANE_PROCEDURAL: str = "procedural"
+# P0-c：非知识出口。新闻播报/产品发布/营销/纯观点既不讲机制也不教操作，
+# LLM 判 reject → 直接拒收（不混进通过态 content_lane，下游不下传 reject）。
+# 堵 lane 放松后"新闻被判 concept → how_tendency 豁免 → 溜过准入"的后门。
+LANE_REJECT: str = "reject"
 
 # ---------------------------------------------------------------------------
 # 具名常量（宪法 P4）
@@ -53,7 +57,10 @@ _ADMISSION_CHECK_SCHEMA: dict[str, Any] = {
 _LANE_CLASSIFY_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "content_lane": {"type": "string", "enum": [LANE_CONCEPT, LANE_PROCEDURAL]},
+        "content_lane": {
+            "type": "string",
+            "enum": [LANE_CONCEPT, LANE_PROCEDURAL, LANE_REJECT],
+        },
         "reason": {"type": "string", "maxLength": 300},
     },
     "required": ["content_lane"],
@@ -188,25 +195,31 @@ def run_admission(
     #    不是准入判定门。分类器不可用且无确定性证据 → fail-closed（lane_failed=True）。
     content_lane, lane_failed, lane_reason = _classify_content_lane(body, route_llm_fn)
 
+    # P0-c：非知识内容（新闻/营销/会议recap/纯观点）显式拒收门——不依赖 how_tendency。
+    # 堵后门：lane 放松后新闻可能被判 concept → how_tendency 豁免 → 溜过准入（W5/w7 实证）。
+    lane_rejected = content_lane == LANE_REJECT
+
     # how_tendency 路由化（spec FR-003）：concept 车道下其 fail 不使 passed=False。
     # 纯概念内容（无命令）天然 how_tendency=fail，旧逻辑会误拒——本改动让 how_tendency
     # 在 concept 车道仅作路由信号、不计入 all_passed。procedural 车道 how fail 仍拒收。
-    # lane 分类失败时不豁免（lane 未知，按最严判，how fail 仍计入）。
+    # lane 分类失败/reject 时不豁免（按最严判，how fail 仍计入）。
     def _check_counts_for_admission(c: AdmissionCheck) -> bool:
         if c.name == "how_tendency" and content_lane == LANE_CONCEPT and not lane_failed:
             return True  # concept 车道：how_tendency 不作拒收门
         return c.passed
 
     all_checks_pass = all(_check_counts_for_admission(c) for c in checks)
-    # 车道分类失败（LLM 不可用 + 无确定性证据）→ fail-closed 拒收（SC-4）
-    all_passed = all_checks_pass and not lane_failed
+    # 车道分类失败（SC-4 fail-closed）或非知识 reject（P0-c）→ 拒收
+    all_passed = all_checks_pass and not lane_failed and not lane_rejected
 
     reason = ""
     if not all_passed:
         failed = [
             c.name for c in checks if not _check_counts_for_admission(c)
         ]
-        if lane_failed:
+        if lane_rejected:
+            failed.append(f"non_knowledge({lane_reason})")
+        elif lane_failed:
             failed.append("content_lane")
         reason = f"准入未通过: {', '.join(failed)}"
 
@@ -223,7 +236,8 @@ def run_admission(
         passed=all_passed,
         checks=checks,
         reason=reason,
-        content_lane="" if lane_failed else content_lane,
+        # reject/分类失败都不下传 content_lane（reject 不混进通过态，w9）。
+        content_lane="" if (lane_failed or lane_rejected) else content_lane,
     )
 
 
@@ -560,7 +574,15 @@ _HOWTO_TITLE_RE = re.compile(
     r"(?im)^#{1,3}\s+.*(?:how\s+to|how\s+do\s+i|tutorial|教程|如何|"
     r"配置指南|安装指南|setup\s+guide|step[- ]by[- ]step)"
 )
-_NUMBERED_WITH_CMD_RE = re.compile(r"(?m)^\s*\d+\.\s+.*`[^`]+`")
+# NUMBERED 修复（w8/w9）：旧 `.*`[^`]+`` 把编号行里任意反引号（API 名 agent.plan()、
+# 模型名 DeepSeek-V3、概念术语）都当命令，导致概念文编号机制点误判 procedural。改为反引号内
+# 须以真 CLI 命令/shell 关键字开头才算 command recipe；其余交 LLM 主判 intent（宁漏判不误判）。
+_NUMBERED_WITH_CMD_RE = re.compile(
+    r"(?m)^\s*\d+\.\s+.*`\s*(?:\$\s*)?(?:sudo\s+)?"
+    r"(?:npm|pnpm|yarn|pip3?|python3?|node|git|cd|mkdir|rm|cp|mv|"
+    r"echo|export|curl|wget|make|docker|kubectl|bash|sh|brew|apt|go|cargo|"
+    r"pytest|ruff|mypy)\b"
+)
 
 
 def _has_strong_procedural_signal(body: str) -> bool:
@@ -626,13 +648,15 @@ def _classify_content_lane(
         {
             "role": "system",
             "content": (
-                "你判断内容的「主要意图」属于「概念型」还是「操作型」。"
+                "你判断内容的「主要意图」属于「概念型」「操作型」还是「非知识」。"
                 "概念型(concept): 主旨是阐述机制/架构/设计原则/模型，讲清「为什么/是什么」；"
                 "即便夹有示例代码、API 名或编号机制点，只要它们是为例证概念、"
                 "不是教操作，仍判 concept。"
                 "操作型(procedural): 主旨是教「怎么做」——可执行步骤、命令、配置、工作流是内容主线。"
+                "非知识(reject): 新闻播报/产品发布公告/会议 recap/融资动态/营销软文/纯观点抒发，"
+                "既不阐述可复用机制、也不教可执行操作 → 输出 reject；不得为二选一硬塞 concept。"
                 "按主要意图判，不要因出现代码就判 procedural。"
-                "输出 JSON: {\"content_lane\": \"concept\"|\"procedural\", \"reason\": \"...\"}。"
+                "输出 JSON: {content_lane: concept|procedural|reject, reason: ...}。"
                 "reason 最多 150 字符。"
             ),
         },
@@ -653,6 +677,9 @@ def _classify_content_lane(
     if lane is None:
         # 输出非法（无合法 content_lane）→ fail-closed（不静默归车道）
         return "", True, "车道分类输出非法（缺合法 content_lane 枚举值）"
+    if lane == LANE_REJECT:
+        # P0-c：非知识内容显式拒收。lane_failed=False 以区分"分类器失败"（SC-4）。
+        return LANE_REJECT, False, "非知识内容（新闻/营销/会议recap/纯观点），拒收"
     return lane, False, "LLM 主判 intent 车道"
 
 
@@ -673,7 +700,7 @@ def _validate_and_normalize_lane(content: str | dict) -> str | None:
         return None
 
     lane = parsed.get("content_lane") if isinstance(parsed, dict) else None
-    if lane in (LANE_CONCEPT, LANE_PROCEDURAL):
+    if lane in (LANE_CONCEPT, LANE_PROCEDURAL, LANE_REJECT):
         return lane
     return None
 

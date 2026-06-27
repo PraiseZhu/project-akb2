@@ -167,10 +167,11 @@ class TestNegativeSamples:
                 model_used="gemini-2.5-flash",
                 calls_used=1,
             ),
-            # SC-1：news 靠 how_tendency 拒——intent-based 下 concept 车道绕过 how，
-            # mock 设 lane=procedural 让 how 门生效。
+            # P0-c：news → LLM 判 reject（非知识），admission reject 门直接拒收。
+            # 旧测试 mock lane=procedural 靠 how 门拒 = 造假绿，绕过"新闻被判什么 lane"
+            # 的真实危险路径（W7/w9）。改 mock reject 真验 reject 门。
             "lane": LLMResponse(
-                content={"content_lane": "procedural", "reason": "mock: how 导向"},
+                content={"content_lane": "reject", "reason": "mock: 纯新闻播报，非知识"},
                 model_used="gemini-2.5-flash",
                 calls_used=1,
             ),
@@ -186,14 +187,13 @@ class TestNegativeSamples:
         assert result.passed is False, (
             f"新闻型负样本应被拒收，实际 passed={result.passed}"
         )
-
-        # 验证 How 倾向判定 fail
-        how_check = next(
-            (c for c in result.checks if c.name == "how_tendency"), None
+        # P0-c：拒收主因是 non_knowledge reject 门，不是靠 how_tendency 造假绿。
+        assert "non_knowledge" in result.reason, (
+            f"新闻应靠 non_knowledge reject 门拒，实际 reason={result.reason}"
         )
-        assert how_check is not None, "应有 How 倾向判定"
-        assert how_check.passed is False, (
-            f"How 倾向判定应为 fail: {how_check.reason}"
+        # reject 不下传 content_lane（不混进通过态，w9）。
+        assert result.content_lane == "", (
+            f"reject 不应下传 content_lane，实际={result.content_lane!r}"
         )
 
     def test_rejected_samples_zero_distill_calls(self, tmp_path: Path) -> None:
@@ -237,9 +237,9 @@ Just news, no how-to content.
                 model_used="gemini-2.5-flash",
                 calls_used=1,
             ),
-            # SC-1：靠 how_tendency 拒——mock 设 lane=procedural 让 how 门生效。
+            # P0-c：news → reject 门拒（非 how_tendency 造假绿）。
             "lane": LLMResponse(
-                content={"content_lane": "procedural", "reason": "mock: how 导向"},
+                content={"content_lane": "reject", "reason": "mock: 纯新闻，非知识"},
                 model_used="gemini-2.5-flash",
                 calls_used=1,
             ),

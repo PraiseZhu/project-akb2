@@ -412,10 +412,9 @@ def admission_fail_news_response() -> dict[str, Any]:
             model_used="gemini-2.5-flash",
             calls_used=1,
         ),
-        # SC-1：news 样本靠 how_tendency 拒——intent-based 下 concept 车道会绕过 how，
-        # 故 mock 设 lane=procedural 让 how 门生效（模拟 how 导向语料）。
+        # P0-c：news → reject（非知识），admission reject 门拒。不再 mock procedural 造假绿（W7/w9）。
         "lane": LLMResponse(
-            content={"content_lane": "procedural", "reason": "mock: how 导向语料"},
+            content={"content_lane": "reject", "reason": "mock: 纯新闻播报，非知识"},
             model_used="gemini-2.5-flash",
             calls_used=1,
         ),
