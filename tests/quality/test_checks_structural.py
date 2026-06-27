@@ -1354,10 +1354,13 @@ class TestSGMustCoverCallSiteProvenance:
         assert "raw_content = None" in src
 
     def test_repair_callsites_use_raw_text_param(self):
-        """repair.py 两处调用点：raw_text 来自 run_repair_loop 参数，同源 raw。"""
+        """repair.py 两处 self-gate 调用：raw_text 同源 + P3 透传 content_lane（w6/w9）。"""
         src = self._read(_CALLSITE_SOURCE_PATHS["repair"])
-        # 两处调用点都用 raw_text（非截断/异源）。
-        assert src.count("run_candidate_self_gate(current_text, raw_text)") == 2
+        # P3：两处 self-gate 都透传 content_lane（concept 稿不再被按 procedural 默认复验）。
+        # 调用已拆行（E501 修复），匹配参数行而非整调用串。
+        assert src.count(
+            "current_text, raw_text, content_lane=content_lane"
+        ) == 2
         # raw_text 是 run_repair_loop 的参数（非局部拼接/截断）。
         assert "raw_text: str | None = None," in src
 

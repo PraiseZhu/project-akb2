@@ -999,6 +999,9 @@ def _run_quality_segments(
             "weighted_score_not_computed": True,
             "grader_not_called": True,
             "content_lane": content_lane,
+            # P3：floor_result.meta（如 traceability_skipped_no_grounded_anchor）作为子 dict
+            # 穿进 quality_meta，让 694d423 的可见诊断不丢（w7：原未穿到 runner）。
+            "floor_meta": getattr(floor_result, "meta", {}) or {},
         }
         return (
             False,
@@ -1388,7 +1391,8 @@ def _run_pipeline_segments(
                         "weighted_score_not_computed": quality_meta.get(
                             "weighted_score_not_computed", True
                         ),
-                        "grader_not_called": quality_meta.get("grader_not_called", True)})
+                        "grader_not_called": quality_meta.get("grader_not_called", True),
+                        "floor_meta": quality_meta.get("floor_meta", {})})
             return {
                 "converged": False,
                 "rounds": rounds,

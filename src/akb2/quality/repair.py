@@ -1545,13 +1545,17 @@ def run_repair_loop(
                     named_sections.add(section)
             deterministic_only = all(_is_deterministic_repair_defect(d) for d in current_defects)
             # 确定性修复后先过 A 层；能直接修掉的缺陷不再喂给 LLM 猜。
-            new_a_defects = checks_structural.run_candidate_self_gate(current_text, raw_text)
+            new_a_defects = checks_structural.run_candidate_self_gate(
+                current_text, raw_text, content_lane=content_lane
+            )
             trace_payload["a_defects_after"] = _defects_to_summary(new_a_defects)
             graded_after_deterministic = False
             if deterministic_only and not new_a_defects:
                 graded_after_deterministic = True
                 if mock_route_llm is not None:
-                    grader_result = run_grader_with_fixture_detailed(current_text, mock_route_llm)
+                    grader_result = run_grader_with_fixture_detailed(
+                        current_text, mock_route_llm, content_lane=content_lane
+                    )
                 else:
                     from src.akb2.quality.grader import run_grader_detailed
 
@@ -1689,7 +1693,9 @@ def run_repair_loop(
         current_text = repaired_text
 
         # 重新过 A 层
-        new_a_defects = checks_structural.run_candidate_self_gate(current_text, raw_text)
+        new_a_defects = checks_structural.run_candidate_self_gate(
+            current_text, raw_text, content_lane=content_lane
+        )
         trace_payload["a_defects_after"] = _defects_to_summary(new_a_defects)
 
         if new_a_defects:
@@ -1702,7 +1708,9 @@ def run_repair_loop(
 
         # A 通过，过 B 层
         if mock_route_llm is not None:
-            grader_result = run_grader_with_fixture_detailed(current_text, mock_route_llm)
+            grader_result = run_grader_with_fixture_detailed(
+                current_text, mock_route_llm, content_lane=content_lane
+            )
         else:
             from src.akb2.quality.grader import run_grader_detailed
 

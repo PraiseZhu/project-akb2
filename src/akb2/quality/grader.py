@@ -215,10 +215,16 @@ def _build_grader_weight_floor_note() -> str:
     )
 
 
-def _build_grader_prompt(candidate_text: str, rubric_text: str) -> list[dict[str, str]]:
-    """构建评分 prompt（system + user）。"""
+def _build_grader_prompt(
+    candidate_text: str, rubric_text: str, content_lane: str = ""
+) -> list[dict[str, str]]:
+    """构建评分 prompt（system + user）。lane-aware：concept 评 7 维、procedural 评 10 维。"""
     weight_floor_note = _build_grader_weight_floor_note()
-    system_prompt = f"""你是一个知识库内容质量评审专家。请根据以下 10 维量规对候选页进行评分。
+    # P3：维度按 lane 限定，修旧硬编码"10 维"对 concept（7 维）的语义漂移（w9）。
+    dims = _dimensions_for_lane(content_lane)
+    lane_label = content_lane or "默认"
+    system_prompt = f"""你是一个知识库内容质量评审专家。请根据以下量规评分。
+本车道（{lane_label}）评判维度限定为 {len(dims)} 维，以量规与输出 schema 的维度枚举为准。
 
 量规:
 {rubric_text}
@@ -226,7 +232,7 @@ def _build_grader_prompt(candidate_text: str, rubric_text: str) -> list[dict[str
 {weight_floor_note}
 
 评审规则:
-1. 每个维度给出 pass 或 fail 判定
+1. 每个维度给出 pass 或 fail 判定（仅评判上述限定维度）
 2. 如果 fail，必须给出具体的 defect 描述和修复建议
 3. 每条缺陷必须包含 location 字段（指明稿件中的具体位置，如节标题/段落/字段名）
 4. 输出必须是严格的 JSON 格式
@@ -616,7 +622,7 @@ def run_grader_detailed(candidate_text: str, content_lane: str = "") -> GraderRe
         RuntimeError: 量规文件加载失败。
     """
     rubric_text = _load_rubric_text()
-    messages = _build_grader_prompt(candidate_text, rubric_text)
+    messages = _build_grader_prompt(candidate_text, rubric_text, content_lane=content_lane)
     response_schema = _build_grader_schema(content_lane)
 
     result = GraderResult(
@@ -709,7 +715,7 @@ def run_grader_with_fixture_detailed(
         tuple[list[Defect], str, bool]: 同 run_grader。
     """
     rubric_text = _load_rubric_text()
-    messages = _build_grader_prompt(candidate_text, rubric_text)
+    messages = _build_grader_prompt(candidate_text, rubric_text, content_lane=content_lane)
     response_schema = _build_grader_schema(content_lane)
 
     result = GraderResult(defects=[], model_used="none", suspended=True)
