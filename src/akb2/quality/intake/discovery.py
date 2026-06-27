@@ -316,7 +316,9 @@ def _fetch_listing_via_scrapling(
     try:
         from scrapling import Fetcher
 
-        page = Fetcher().fetch(listing_url)
+        # SC-3（CI-2 同款）：Fetcher.get 是 classmethod（非 .fetch，scrapling 0.4+），
+        # 原 Fetcher().fetch 抛 AttributeError 被 try/except 吞成静默 None。
+        page = Fetcher.get(listing_url)
     except Exception:
         return None
 
