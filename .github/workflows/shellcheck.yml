@@ -1,0 +1,19 @@
+name: Shellcheck
+
+on:
+  push:
+    paths: ["**/*.sh"]
+  pull_request:
+    paths: ["**/*.sh"]
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest          # ubuntu-latest 预装 shellcheck
+    steps:
+      - uses: actions/checkout@v4
+      # 扫全部 tracked .sh(与触发口径 **/*.sh 一致),仅 error 级阻断。
+      # 本地实测 48 个 .sh 在 --severity=error 下全过。
+      - run: git ls-files -z "*.sh" | xargs -0 -r shellcheck --severity=error

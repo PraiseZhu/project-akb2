@@ -9,7 +9,10 @@ dependencies = [
     "httpx>=0.24",
     "langgraph>=0.2",
     "openai>=1.0",
-    "scrapling>=0.4.8",
+    # scrapling 的 Fetcher/StealthyFetcher(quality/intake/{discovery,extract}.py)需要
+    # [fetchers] extra,它带入 curl_cffi、playwright 等。裸 scrapling 不含这些,
+    # 干净环境安装会缺 curl_cffi → 运行/测试报 ModuleNotFoundError。
+    "scrapling[fetchers]>=0.4.8",
     "docling>=2.0.0",
 ]
 
@@ -17,6 +20,9 @@ dependencies = [
 dev = [
     "pytest>=7.0",
     "ruff>=0.1.0",
+    # 仅测试用:tests/quality/test_intake_orchestrator.py 用 feedparser 校验 feed 解析
+    # 正常路径(生产代码用 xml.etree 自解析,不依赖 feedparser)。
+    "feedparser>=6.0",
 ]
 
 [build-system]
