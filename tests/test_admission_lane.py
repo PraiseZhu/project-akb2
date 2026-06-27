@@ -187,16 +187,24 @@ class TestClassifierCases:
         )
         assert result.content_lane == LANE_PROCEDURAL
 
-    def test_classifier_cases_mixed_goes_procedural(self, tmp_path: Path) -> None:
-        """混合内容（机制+命令）归 procedural（spec FR-002 从严）。"""
+    def test_mixed_goes_to_llm_not_short_circuited(self, tmp_path: Path) -> None:
+        """SC-1（worker round-4）：混合内容（机制+2 命令）不再 deterministic 短路 procedural。
+
+        旧 spec FR-002「混合从严归 procedural」被反转——2 个 illustrative 命令不足以确定性
+        判 procedural（需 ≥3 shell 命令 / how-to 标题 / 含命令编号步才短路）。混合交 LLM
+        主判 intent。满仓 12/18 失败的根因就是旧短路把概念博客误判 procedural。
+        """
         ledger = str(tmp_path / "ledger.jsonl")
         result = run_admission(
-            raw_path="raw/mixed--raw--2026-06-26.md",
+            raw_path="raw/mixed--raw--2026-06-27.md",
             raw_content=_MIXED_BODY,
             ledger_path=ledger,
-            route_llm_fn=_llm_returns_lane(LANE_CONCEPT),
+            route_llm_fn=_llm_returns_lane(LANE_CONCEPT),  # LLM 判 concept（主旨是机制）
         )
-        assert result.content_lane == LANE_PROCEDURAL
+        # 不再短路 procedural；LLM 被调用并判 concept
+        assert result.content_lane == LANE_CONCEPT, (
+            "混合内容（2 命令）应交 LLM 主判，不短路 procedural（SC-1）"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -331,6 +339,98 @@ class TestConceptWithIncidentalCode:
             route_llm_fn=_llm_returns_lane(LANE_PROCEDURAL),
         )
         assert result.content_lane == LANE_PROCEDURAL
+
+
+# ---------------------------------------------------------------------------
+# SC-1（worker round-4）：concept intent + 示例代码/API/编号机制点不得短路 procedural
+# ---------------------------------------------------------------------------
+
+# 概念阐述 + 2 个 fenced Python illustrative call（非 bash，非 how-to）→ 应交 LLM 判 concept
+_CONCEPT_WITH_2_FENCED_CALLS = """# The Four-Layer Loop Model
+
+Loop engineering describes a conceptual architecture for AI agents. The model
+separates orchestration from execution. Understanding this distinction reframes
+the engineering problem from prompt-authoring to loop-design.
+
+```python
+result = agent.run(task)
+queue.dispatch(job)
+```
+
+The two calls above illustrate the execution layer, not a how-to guide.
+"""
+
+# 概念阐述 + 3 个编号机制点（无命令）→ 应交 LLM 判 concept
+_CONCEPT_WITH_3_NUMBERED_MECHANISM = """# The Four-Layer Loop Model
+
+The model has four conceptual layers:
+
+1. The trigger layer defines when work begins
+2. The orchestration layer decides what to do
+3. The execution layer performs the work
+4. The observability layer records outcomes
+
+These are conceptual components of the architecture, not procedural steps.
+"""
+
+# 概念阐述 + prose 里 API 名（agent.plan()/execute()/ledger.append()）→ 应交 LLM 判 concept
+_CONCEPT_WITH_API_NAMES_IN_PROSE = """# The Four-Layer Loop Model
+
+Loop engineering describes a conceptual architecture. The orchestration layer
+calls agent.plan() and agent.execute() to decide and perform work. The
+observability layer uses ledger.append() to record outcomes. This model
+explains why convergence emerges from bounded stopping conditions rather than
+raw model intelligence. The distinction reframes the engineering problem.
+"""
+
+
+class TestConceptIntentNotShortCircuited:
+    """SC-1（worker round-4）：concept intent + 示例代码/API/编号机制点不得被 deterministic 短路成 procedural。
+
+    满仓 12/18 失败根因：旧 `count>=2` 短路把这些概念样本判成 procedural。新逻辑只对
+    强 procedural 形态（≥3 shell 命令 / how-to 标题 / 含命令编号步）短路，其余交 LLM。
+    """
+
+    def test_concept_with_2_fenced_calls_judged_concept(self, tmp_path: Path) -> None:
+        """2 个 Python illustrative call 不触发强 procedural 短路 → LLM 判 concept。"""
+        from src.akb2.quality.admission import _has_strong_procedural_signal
+
+        assert not _has_strong_procedural_signal(_CONCEPT_WITH_2_FENCED_CALLS), (
+            "2 个 Python call 不构成强 procedural 信号（SC-1）"
+        )
+        result = run_admission(
+            raw_path="raw/concept-2calls--raw--2026-06-27.md",
+            raw_content=_CONCEPT_WITH_2_FENCED_CALLS,
+            ledger_path=str(tmp_path / "ledger.jsonl"),
+            route_llm_fn=_llm_returns_lane(LANE_CONCEPT),
+        )
+        assert result.content_lane == LANE_CONCEPT
+
+    def test_concept_with_3_numbered_mechanism_judged_concept(self, tmp_path: Path) -> None:
+        """3 个编号机制点（无命令）不触发强 procedural 短路 → LLM 判 concept。"""
+        from src.akb2.quality.admission import _has_strong_procedural_signal
+
+        assert not _has_strong_procedural_signal(_CONCEPT_WITH_3_NUMBERED_MECHANISM)
+        result = run_admission(
+            raw_path="raw/concept-3num--raw--2026-06-27.md",
+            raw_content=_CONCEPT_WITH_3_NUMBERED_MECHANISM,
+            ledger_path=str(tmp_path / "ledger.jsonl"),
+            route_llm_fn=_llm_returns_lane(LANE_CONCEPT),
+        )
+        assert result.content_lane == LANE_CONCEPT
+
+    def test_concept_with_api_names_in_prose_judged_concept(self, tmp_path: Path) -> None:
+        """prose 里 API 名（agent.plan() 等）不触发强 procedural 短路 → LLM 判 concept。"""
+        from src.akb2.quality.admission import _has_strong_procedural_signal
+
+        assert not _has_strong_procedural_signal(_CONCEPT_WITH_API_NAMES_IN_PROSE)
+        result = run_admission(
+            raw_path="raw/concept-api--raw--2026-06-27.md",
+            raw_content=_CONCEPT_WITH_API_NAMES_IN_PROSE,
+            ledger_path=str(tmp_path / "ledger.jsonl"),
+            route_llm_fn=_llm_returns_lane(LANE_CONCEPT),
+        )
+        assert result.content_lane == LANE_CONCEPT
 
 
 if __name__ == "__main__":

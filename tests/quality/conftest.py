@@ -142,6 +142,21 @@ def make_mock_route_llm(responses: dict[str, Any] | None = None):
         _call_counts[key] = idx + 1
         lookup = f"{key}:{idx}"
 
+        # SC-1：lane 分类调用按 prompt 关键词识别（index 脆弱——novelty 调不调取决于
+        # wiki_references，lane 的 :idx 会漂移）。lane 调用走 "lane" key 或默认 concept，
+        # 不走 :idx，避免与 novelty 的 :idx 冲突。只用 "主要意图"（lane prompt 专属词），
+        # 不用 "概念型/操作型"（distill 的 prompt 也有，会误命中）。
+        sys_prompt = messages[0]["content"] if messages else ""
+        is_lane_call = "主要意图" in sys_prompt
+        if is_lane_call:
+            if "lane" in _responses:
+                return _responses["lane"]
+            return LLMResponse(
+                content={"content_lane": "concept", "reason": "mock lane default"},
+                model_used=key,
+                calls_used=1,
+            )
+
         if lookup in _responses:
             return _responses[lookup]
         if key in _responses:
@@ -372,6 +387,7 @@ def admission_pass_responses() -> dict[str, Any]:
             model_used="gemini-2.5-flash",
             calls_used=1,
         ),
+        # SC-1：lane 走 lane-aware mock 默认 concept（黄金样张是 Loop Engineering 概念文章）。
     }
 
 
@@ -393,6 +409,13 @@ def admission_fail_news_response() -> dict[str, Any]:
         ),
         "gemini-flash:2": LLMResponse(
             content={"pass": True, "reason": "无既有 wiki 引用，默认通过"},
+            model_used="gemini-2.5-flash",
+            calls_used=1,
+        ),
+        # SC-1：news 样本靠 how_tendency 拒——intent-based 下 concept 车道会绕过 how，
+        # 故 mock 设 lane=procedural 让 how 门生效（模拟 how 导向语料）。
+        "lane": LLMResponse(
+            content={"content_lane": "procedural", "reason": "mock: how 导向语料"},
             model_used="gemini-2.5-flash",
             calls_used=1,
         ),

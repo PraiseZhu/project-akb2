@@ -167,6 +167,13 @@ class TestNegativeSamples:
                 model_used="gemini-2.5-flash",
                 calls_used=1,
             ),
+            # SC-1：news 靠 how_tendency 拒——intent-based 下 concept 车道绕过 how，
+            # mock 设 lane=procedural 让 how 门生效。
+            "lane": LLMResponse(
+                content={"content_lane": "procedural", "reason": "mock: how 导向"},
+                model_used="gemini-2.5-flash",
+                calls_used=1,
+            ),
         })
 
         result = run_admission(
@@ -227,6 +234,12 @@ Just news, no how-to content.
             ),
             "gemini-flash:2": LLMResponse(
                 content={"pass": True, "reason": "默认通过"},
+                model_used="gemini-2.5-flash",
+                calls_used=1,
+            ),
+            # SC-1：靠 how_tendency 拒——mock 设 lane=procedural 让 how 门生效。
+            "lane": LLMResponse(
+                content={"content_lane": "procedural", "reason": "mock: how 导向"},
                 model_used="gemini-2.5-flash",
                 calls_used=1,
             ),

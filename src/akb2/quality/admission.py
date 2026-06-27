@@ -552,17 +552,55 @@ def _scan_procedural_evidence_count(body: str) -> int:
         return 0
 
 
+# SC-1（worker round-4 修法）：强 procedural 信号阈值。只有明确 tutorial/command recipe
+# 形态才确定性短路，避免把"概念文章夹示例代码/API/编号机制点"误判 procedural。真根因是
+# source_operation scanner 双角色复用（must-cover inventory 高召回 + lane intent 短路）。
+STRONG_PROCEDURAL_CMD_MIN = 3  # ≥3 shell 命令 → command recipe 形态
+_HOWTO_TITLE_RE = re.compile(
+    r"(?im)^#{1,3}\s+.*(?:how\s+to|how\s+do\s+i|tutorial|教程|如何|"
+    r"配置指南|安装指南|setup\s+guide|step[- ]by[- ]step)"
+)
+_NUMBERED_WITH_CMD_RE = re.compile(r"(?m)^\s*\d+\.\s+.*`[^`]+`")
+
+
+def _has_strong_procedural_signal(body: str) -> bool:
+    """SC-1：只有强 procedural 形态才确定性短路（不调 LLM）。
+
+    旧逻辑 `_scan_procedural_evidence_count >= 2` 把任何 2+ 可执行操作（含 illustrative
+    code/API/编号机制点）短路成 procedural，导致概念博客带示例代码就被误判 procedural
+    → how_tendency 不豁免 + procedural F4 H1<1 拒（满仓 12/18 失败的根因）。本函数只对
+    **强 procedural 形态**短路：shell command density（≥3 命令）/ how-to 标题 /
+    ≥3 含反引号命令的编号步。其余（含混合、概念+示例代码）交 LLM 主判 intent。
+    """
+    # 1. shell 命令密度（$ cmd 或 bash/sh block 命令行）
+    try:
+        from src.akb2.quality.source_ops_scanners import operations
+
+        if len(operations.scan_cli_commands(body)) >= STRONG_PROCEDURAL_CMD_MIN:
+            return True
+    except ImportError:
+        pass
+    # 2. how-to 标题
+    if _HOWTO_TITLE_RE.search(body):
+        return True
+    # 3. ≥3 含反引号命令的编号步（imperative + command）
+    if len(_NUMBERED_WITH_CMD_RE.findall(body)) >= STRONG_PROCEDURAL_CMD_MIN:
+        return True
+    return False
+
+
 def _classify_content_lane(
     body: str,
     route_llm_fn: Any,
 ) -> tuple[str, bool, str]:
     """车道分类：concept / procedural 二值（spec FR-001/FR-002）。
 
-    判定顺序（混合归 procedural，含可执行操作即 procedural）:
-        1. 确定性证据优先：raw 含 ≥ LANE_PROCEDURAL_MIN_EVIDENCE 个可执行操作
-           （命令/代码块/编号步骤）→ procedural（无歧义，不调 LLM）。
-        2. 无确定性证据 → 轻量 LLM（gemini-flash）判 concept / procedural。
-           schema 校验：仅接受 content_lane ∈ {concept, procedural}。
+    SC-1（worker round-4 修法）：**LLM 主判 intent + deterministic 仅作强 procedural 信号**。
+        1. 确定性短路：仅强 procedural 形态（≥3 shell 命令 / how-to 标题 / ≥3 含命令编号步）
+           → procedural（无歧义 command recipe/tutorial，不调 LLM）。
+        2. 其余（含混合、概念+示例代码/API/编号机制点）→ LLM 主判 intent。
+           illustrative code/API/编号机制点不再直接短路——避免概念博客误判 procedural。
+        schema 校验：仅接受 content_lane ∈ {concept, procedural}。
 
     fail-closed（SC-4，不静默归车道）:
         - LLM 路由不可用（RouterConfigError/RuntimeError）→ (("", True, reason))
@@ -574,21 +612,26 @@ def _classify_content_lane(
     """
     from src.akb2.quality.llm_router import RouterConfigError
 
-    # 1. 确定性 procedural 证据（含可执行操作即 procedural，混合从严归 procedural）
-    if _scan_procedural_evidence_count(body) >= LANE_PROCEDURAL_MIN_EVIDENCE:
-        return LANE_PROCEDURAL, False, "含可执行操作（命令/代码/步骤），判操作型车道"
+    # 1. 强 procedural 形态才确定性短路（command recipe / how-to tutorial）
+    if _has_strong_procedural_signal(body):
+        return (
+            LANE_PROCEDURAL,
+            False,
+            "强 procedural 信号（shell 命令密度/how-to 标题/含命令编号步），判操作型车道",
+        )
 
-    # 2. 无确定性证据 → LLM 轻判 concept / procedural
+    # 2. 其余 → LLM 主判 intent（concept vs procedural）
     content_snippet = body[:MAX_ADMISSION_CONTENT_CHARS]
     messages = [
         {
             "role": "system",
             "content": (
-                "你判断内容属于「概念型」还是「操作型」。"
-                "概念型(concept): 阐述机制/架构/设计原则/模型，讲清「为什么/是什么」，"
-                "不含可直接执行的命令或步骤。"
-                "操作型(procedural): 含可执行步骤、命令、代码、配置、工作流，"
-                "讲清「怎么做」。若同时含两者（混合），一律归操作型(procedural)。"
+                "你判断内容的「主要意图」属于「概念型」还是「操作型」。"
+                "概念型(concept): 主旨是阐述机制/架构/设计原则/模型，讲清「为什么/是什么」；"
+                "即便夹有示例代码、API 名或编号机制点，只要它们是为例证概念、"
+                "不是教操作，仍判 concept。"
+                "操作型(procedural): 主旨是教「怎么做」——可执行步骤、命令、配置、工作流是内容主线。"
+                "按主要意图判，不要因出现代码就判 procedural。"
                 "输出 JSON: {\"content_lane\": \"concept\"|\"procedural\", \"reason\": \"...\"}。"
                 "reason 最多 150 字符。"
             ),
@@ -610,7 +653,7 @@ def _classify_content_lane(
     if lane is None:
         # 输出非法（无合法 content_lane）→ fail-closed（不静默归车道）
         return "", True, "车道分类输出非法（缺合法 content_lane 枚举值）"
-    return lane, False, "LLM 轻判车道"
+    return lane, False, "LLM 主判 intent 车道"
 
 
 def _validate_and_normalize_lane(content: str | dict) -> str | None:
