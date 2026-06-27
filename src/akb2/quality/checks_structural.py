@@ -148,13 +148,14 @@ FORBIDDEN_HARDCODED_COMPARISONS: tuple[str, ...] = (
     "wiki/sources/langchain-plan-and-execute-agents.md",
     "wiki/sources/anthropic-multi-agent-research-system.md",
 )
+# P2-C：去掉裸字"占位"——它过宽，误伤正文里的"占位/占位符"（模型把英文 placeholder
+# 译成中文触发，满仓 #16）。真模板残留有 {{}}/<TODO/待补充 等明确标记兜底。
 TEMPLATE_RESIDUE_MARKERS: tuple[str, ...] = (
     "{{",
     "}}",
     "<TODO",
     "TODO:",
     "待补充",
-    "占位",
     "lorem ipsum",
 )
 
@@ -1102,7 +1103,9 @@ def _normalize_must_cover_text(s: str) -> str:
     （内容根本没渲染时归一化后仍不匹配 → 仍报缺陷）。
     """
     s = re.sub(r"\[raw\s*§[A-Z0-9]+\]", " ", s)  # 去 [raw §X] 锚点
-    s = re.sub(r"[`*#>_]", " ", s)  # 去 markdown 标记
+    # P2-C：单引号 ' 与反引号 ` 同去——渲染侧 _sanitize 把 literal 反引号换成 '，
+    # 校验侧也消掉 '，两侧同口径（修 `Conv`→'Conv' 后 must_cover 失配，满仓 #6/#16）。
+    s = re.sub(r"[`'*#>_]", " ", s)  # 去 markdown 标记 + 单引号
     s = re.sub(r"(?m)^\s*\d+\.\s*", " ", s)  # 去列表前缀 N.
     s = re.sub(r"\s+", " ", s)  # 压空白
     return s.strip().lower()
