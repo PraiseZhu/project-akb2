@@ -223,6 +223,27 @@ def _extract_via_defuddle(url: str, html: str | None = None) -> dict[str, Any]:
         return {}
 
 
+# P0-a：HTML 噪音清洗。scrapling fallback 旧逻辑把整页 rendered HTML（含 <script> JS bundle）
+# 当正文返回，word_count 爆到 9 万~36 万、source_operation 被 JS API 名污染顶垮 how_tendency
+# （满仓 5 篇 #2/#7/#12/#13/#16）。去 script/style 噪音后让 defuddle 抽，兜底也用纯文本。
+_SCRIPT_STYLE_RE = re.compile(
+    r"<(script|style)\b[^>]*>.*?</\1>", re.DOTALL | re.IGNORECASE
+)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _strip_html_noise(html: str) -> str:
+    """去 <script>/<style> 块（保留其余结构供 defuddle 抽取）。"""
+    return _SCRIPT_STYLE_RE.sub(" ", html)
+
+
+def _html_to_clean_text(html: str) -> str:
+    """去 script/style + 所有标签 + 压空白，得纯正文文本（fallback 用，非脏 HTML）。"""
+    text = _SCRIPT_STYLE_RE.sub(" ", html)
+    text = _HTML_TAG_RE.sub(" ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def _extract_via_scrapling(
     url: str, html: str | None = None, browser_mode: bool = False
 ) -> dict[str, Any]:
@@ -253,21 +274,27 @@ def _extract_via_scrapling(
         if not rendered_html.strip():
             return {}
 
-        # 转交 defuddle：出干净 markdown 正文 + 从 meta/JSON-LD 抽 title/author/published。
-        # 解决 scrapling 原先返回脏 HTML + author/published 恒空的问题。
-        extracted = _extract_via_defuddle(url, html=rendered_html)
+        # 转交 defuddle：先去 script/style 噪音再抽（P0-a），避免 JS bundle 当正文。
+        clean_html = _strip_html_noise(rendered_html)
+        extracted = _extract_via_defuddle(url, html=clean_html)
         if extracted and extracted.get("content"):
             return extracted
 
-        # defuddle 无法从渲染 HTML 抽取时兜底：用 scrapling 自身 title + 渲染 HTML。
-        # content 仍为未清洗 HTML，下游 word_count/质量判定可识别。
+        # defuddle 仍抽不出时：用去标签纯文本兜底（非原始脏 HTML）。
+        # P0-a：旧逻辑返回整页 rendered_html（含 JS bundle），word_count 爆到 27 万、
+        # source_operation 被 JS API 名污染顶垮 how_tendency。去噪后正文不足则 fail-closed。
+        clean_text = _html_to_clean_text(rendered_html)
+        wc = _count_words(clean_text)
+        if wc < MIN_CONTENT_LENGTH:
+            # 去噪后正文不足 → 抽取失败（fail-closed），不喂脏数据进下游。
+            return {}
         title: str = str(getattr(page, "title", "") or "")
         return {
             "title": title,
             "author": "",
             "published": "",
-            "content": rendered_html,
-            "word_count": _count_words(rendered_html),
+            "content": clean_text,
+            "word_count": wc,
         }
 
     except Exception as exc:

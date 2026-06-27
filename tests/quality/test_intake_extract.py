@@ -515,7 +515,8 @@ class TestExtractViaScrapling:
         try:
             extract_mod._extract_via_defuddle = lambda url, html=None: clean
             with patch("scrapling.StealthyFetcher") as MockStealthy:
-                MockStealthy.return_value.fetch.return_value = mock_page
+                # classmethod 形式（scrapling 0.4.8）：StealthyFetcher.fetch(url)，非实例 .fetch
+                MockStealthy.fetch.return_value = mock_page
                 result = _extract_via_scrapling("https://cf.example/a", browser_mode=True)
         finally:
             extract_mod._extract_via_defuddle = original

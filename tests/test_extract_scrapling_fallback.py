@@ -35,7 +35,14 @@ class _FakePage:
 
     def __init__(
         self,
-        html: str = "<html><body>rendered content long enough to pass</body></html>",
+        html: str = (
+            "<html><body><article>"
+            + (
+                "This is a substantial paragraph of real article body content "
+                "explaining the concept in depth and detail. " * 30
+            )
+            + "</article></body></html>"
+        ),
     ) -> None:
         self.html_content = html
         self.body = html.encode("utf-8")
@@ -153,11 +160,39 @@ def test_scrapling_raises_returns_empty_dict() -> None:
     assert any(c[0] == "Fetcher.get" for c in _FakeFetcher.calls)
 
 
+# ---------------------------------------------------------------------------
+# (e) P0-a: HTML 清洗去 <script> JS bundle —— 满仓 5 篇污染根因
+# ---------------------------------------------------------------------------
+
+
+def test_html_cleanup_strips_script_js() -> None:
+    """P0-a: 清洗去掉 <script> JS bundle，正文不被 JS API 名污染（满仓污染根因）。"""
+    from akb2.quality.intake.extract import _html_to_clean_text, _strip_html_noise
+
+    dirty = (
+        "<html><head><script>"
+        "var a=p.charAt(0);b.slice(1);c.substring(2);d.indexOf(3);"
+        "</script></head><body><article><h1>Real Title</h1>"
+        "<p>This is the actual readable article body about a concept.</p>"
+        "</article></body></html>"
+    )
+    clean = _html_to_clean_text(dirty)
+    assert "Real Title" in clean
+    assert "actual readable article body" in clean
+    # JS API 名（p.charAt/b.slice）是满仓污染的 source_operation 源，不应残留正文
+    assert "charAt" not in clean and "slice" not in clean
+    assert "<script" not in clean
+    assert "<script" not in _strip_html_noise(dirty)
+
+
 def test_extract_content_fail_closed_on_scrapling_error(
     tmp_path: pytest.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """extract_content 在 scrapling 抛错时不崩：method==FAILED，给 failures_path 时落签名。"""
     _FakeFetcher.raise_exc = RuntimeError("scrapling boom")
+    # P0-a：默认 _FakePage 已含足够正文（fallback 会成功），故 browser 也须抛错，
+    # 才能验证 adaptive+browser 双失败 → fail-closed 落签名（本测试意图：scrapling 抛错）。
+    _FakeStealthyFetcher.raise_exc = RuntimeError("scrapling boom")
 
     # 拦截 _record_fetch_fail，避免依赖真实 signatures 模块
     sig_written: list[tuple[str, str, str]] = []
