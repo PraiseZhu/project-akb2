@@ -120,5 +120,96 @@ class TestLaneVisibleInLedger:
         assert admission_events[0]["details"].get("content_lane") == LANE_PROCEDURAL
 
 
+class TestVaultConceptIndexLoader:
+    """SC-2b-b1：loader 把 wiki/sources/*.md slug 折进 known_concepts。"""
+
+    def test_loader_folds_source_slugs_into_known_concepts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """源 wikilink（指向 wiki/sources/ 已存在页）不应判死链。
+
+        满仓观测：[[anthropic-effective-context-engineering]] 在 wiki/sources/ 存在，
+        但旧 loader 只 glob wiki/concepts/，源 slug 永不进 known_concepts → 误判死链
+        （生产也中招）。resolver docstring 已明示 known_concepts=概念或源。
+        """
+        from src.akb2.loops import paths as paths_mod
+        from src.akb2.quality import runner
+
+        vault = tmp_path / "vault"
+        (vault / "wiki" / "concepts").mkdir(parents=True)
+        (vault / "wiki" / "sources").mkdir(parents=True)
+        (vault / "staging" / "pending").mkdir(parents=True)
+        (vault / "wiki" / "concepts" / "concept-context-engineering.md").write_text(
+            "# c\n", encoding="utf-8"
+        )
+        (vault / "wiki" / "sources" / "anthropic-effective-context-engineering.md").write_text(
+            "# s\n", encoding="utf-8"
+        )
+
+        monkeypatch.setattr(paths_mod, "get_akb2_root", lambda: vault)
+        monkeypatch.setattr(paths_mod, "get_staging_root", lambda: vault / "staging")
+
+        config = runner.RunnerConfig(
+            raw_dir=str(tmp_path / "raw"),
+            ledger_path=str(tmp_path / "ledger.jsonl"),
+            staging_dir=str(vault / "staging"),
+            vault_root=str(vault),
+            failures_path=str(tmp_path / "failures.jsonl"),
+            grader_result_dir=str(tmp_path / "grader"),
+        )
+        idx = runner._load_vault_concept_index(config)
+
+        assert "concept-context-engineering" in idx["known_concepts"]
+        assert "anthropic-effective-context-engineering" in idx["known_concepts"], (
+            "loader 须把 wiki/sources/*.md slug 折进 known_concepts（SC-2b-b1）"
+        )
+        assert idx["status"] == runner.LANE_INDEX_STATUS_OK
+
+
+class TestAdmissionReasonNoDoublePrefix:
+    """SC-6：admission 失败的 pipeline error 不重复拼"准入未通过:"前缀。"""
+
+    def test_admission_failure_error_no_double_prefix(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """admission reason 已带前缀 → pipeline error 幂等不双前缀。
+
+        满仓观测：factory.json failure_reason = "准入未通过: 准入未通过: how_tendency"，
+        runner 把 admission 已带前缀的 reason 又包了一层。
+        """
+        from src.akb2.quality import runner
+
+        config = runner.RunnerConfig(
+            raw_dir=str(tmp_path / "raw"),
+            ledger_path=str(tmp_path / "ledger.jsonl"),
+            staging_dir=str(tmp_path / "staging"),
+            vault_root=str(tmp_path / "vault"),
+            failures_path=str(tmp_path / "failures.jsonl"),
+            grader_result_dir=str(tmp_path / "grader"),
+        )
+        monkeypatch.setattr(runner, "_load_vault_concept_index", lambda cfg, exclude_slug="": {
+            "status": runner.LANE_INDEX_STATUS_FIRST_RUN,
+            "wiki_references": [],
+            "known_concepts": [],
+            "pending_queue": [],
+            "counts": {},
+            "source_paths": [],
+        })
+        monkeypatch.setattr(runner, "_existing_source_page_for_raw", lambda *a, **k: None)
+        monkeypatch.setattr(
+            runner,
+            "_run_admission_segment",
+            lambda *a, **k: (False, "准入未通过: how_tendency", [], ""),
+        )
+        result = runner._run_pipeline_segments(
+            "raw/concept--raw--2026-06-27.md", "RAW BODY", config
+        )
+        assert result["final_status"] == "rejected"
+        assert result["error"] == "准入未通过: how_tendency", (
+            "error 不应重复'准入未通过:'前缀（SC-6）"
+        )
+        assert "准入未通过: 准入未通过" not in result["error"]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -1168,3 +1168,38 @@ def test_stratified_diagnostic_keys_all_paths(monkeypatch):
     assert result["source"] == "live"
     assert result["failure_class"] is not None
     assert result["failure_segment"] == "intake_raw"
+
+
+class TestClassifyAttributionNoCircularReasoning:
+    """SC-7：归因不再循环论证（how_tendency 拒收不机械归 corpus_inappropriate）。
+
+    旧启发式 rejected+how_tendency→corpus_inappropriate 把"分类器误判概念为 procedural"
+    包装成"语料不当"，直接导致交接文档误诊 7 条概念样本。SC-7 后 how_tendency 归
+    pipeline_defect，仅 topic_relevance/fetch_failed 才确定性归语料不当。
+    """
+
+    def test_topic_relevance_rejection_is_corpus_inappropriate(self):
+        from src.akb2.quality.calibration import _classify_attribution
+
+        assert _classify_attribution(
+            "rejected", {"error": "准入未通过: topic_relevance"}
+        ) == "corpus_inappropriate"
+
+    def test_how_tendency_rejection_is_pipeline_defect(self):
+        from src.akb2.quality.calibration import _classify_attribution
+
+        assert _classify_attribution(
+            "rejected", {"error": "准入未通过: how_tendency"}
+        ) == "pipeline_defect", "how_tendency 拒收不再机械归语料不当（SC-7）"
+
+    def test_fetch_failed_is_corpus_inappropriate(self):
+        from src.akb2.quality.calibration import _classify_attribution
+
+        assert _classify_attribution("fetch_failed", {"error": "死链"}) == "corpus_inappropriate"
+
+    def test_distill_failure_is_pipeline_defect(self):
+        from src.akb2.quality.calibration import _classify_attribution
+
+        assert _classify_attribution(
+            "failed", {"error": "compose_self_gate_failed: ..."}
+        ) == "pipeline_defect"

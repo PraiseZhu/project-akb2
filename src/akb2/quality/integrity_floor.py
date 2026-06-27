@@ -153,7 +153,11 @@ def _interpretation_traceability_failed(extract_data: dict) -> tuple[bool, str]:
             return True, (
                 f"akb_interpretation[{i}] 缺 traces_to 溯源标注（无据飘浮读后感）"
             )
-        if not any(t in grounded_anchors for t in trace_anchors):
+        # SC-5：grounded_anchors 空时豁免——"≥1 traces_to 命中真实 grounded anchor"
+        # 在无 source_grounded anchor 时不可满足（无源页 fixture 等场景，extraction 产不出
+        # grounded anchor），floor ③ 不应误判 fail；缺 grounded 的真问题由 floor ①
+        # claim_anchor_rate 抓（test_fail_no_grounded_claims 已锁）。
+        if grounded_anchors and not any(t in grounded_anchors for t in trace_anchors):
             return True, (
                 f"akb_interpretation[{i}] traces_to {trace_anchors} 未指向任何真实存在的"
                 " source_grounded anchor"

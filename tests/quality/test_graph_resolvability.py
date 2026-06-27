@@ -14,6 +14,7 @@ from unittest.mock import patch
 from src.akb2.quality.checks_structural import (
     _resolve_graph_node,
     check_a4_graph_edges,
+    check_a5_wikilinks,
     run_candidate_self_gate,
     run_structural_checks,
 )
@@ -175,3 +176,113 @@ class TestSelfGateThreading:
             _, kwargs = mock_a4.call_args
             assert kwargs.get("known_concepts") == ["概念a"]
             assert kwargs.get("pending_queue") == ["概念x"]
+
+
+# ----------------------------- SC-2a 前缀归一化 ----------------------------- #
+
+
+class TestPrefixNormalization:
+    """SC-2a：concept-<name> 与裸名 <name> 互为等价（vault 概念页规范为带前缀）。
+
+    实测失败谱：生成器输出裸名 context-engineering / 源 slug，而 vault 概念页
+    命名为 concept-context-engineering，精确匹配下裸名被判死链。归一化后等价。
+    """
+
+    def test_bare_target_resolves_prefixed_known(self):
+        """裸名 target 命中 concept- 前缀 known（SC-2a 验收主例）。"""
+        assert _resolve_graph_node(
+            "context-engineering", ["concept-context-engineering"], None
+        ) is True
+
+    def test_prefixed_target_resolves_bare_known(self):
+        """反向：concept- 前缀 target 命中裸名 known。"""
+        assert _resolve_graph_node(
+            "concept-context-engineering", ["context-engineering"], None
+        ) is True
+
+    def test_bare_target_prefixed_pending_coref(self):
+        """pending 以 concept- 前缀累积共指，裸名 target 也能 resolve。"""
+        assert _resolve_graph_node(
+            "loop-engineering", None, ["concept-loop-engineering"] * 3
+        ) is True
+
+    def test_distinct_slugs_still_unresolved(self):
+        """归一化不产生误报：target 与 known 是不同概念 → 仍不 resolve。"""
+        assert _resolve_graph_node(
+            "loop-engineering", ["concept-context-engineering"], None
+        ) is False
+
+    def test_a5_bare_wikilink_against_prefixed_known_no_defect(self):
+        """A5：[[context-engineering]] 在 known=[concept-context-engineering] 下不报死链。"""
+        text = "正文 [[context-engineering]] 结尾"
+        defects = check_a5_wikilinks(
+            text, pending_queue=None, known_concepts=["concept-context-engineering"]
+        )
+        assert defects == []
+
+    def test_a5_prefixed_wikilink_against_bare_known_no_defect(self):
+        """A5 反向：[[concept-context-engineering]] 在 known=[context-engineering] 下不报。"""
+        text = "正文 [[concept-context-engineering]] 结尾"
+        defects = check_a5_wikilinks(
+            text, pending_queue=None, known_concepts=["context-engineering"]
+        )
+        assert defects == []
+
+    def test_a5_empty_allowed_still_skips(self):
+        """SC-2a 不破坏空索引跳过（无 known/pending → 不报死链）。"""
+        text = "正文 [[whatever]] 结尾"
+        defects = check_a5_wikilinks(text, pending_queue=None, known_concepts=None)
+        assert defects == []
+
+
+# ----------------------------- SC-2b-b2 渲染前过滤悬空边 ----------------------------- #
+
+
+class TestFilterUnresolvableEdges:
+    """SC-2b-b2：compose 渲染前过滤 target 不在 known∪sources∪pending 的图谱边/概念。"""
+
+    def test_drops_invented_slug_keeps_known_and_source(self):
+        """loop-engineering（既非概念也非源）被 drop；concept-x 与源 slug 保留。"""
+        from src.akb2.quality.distill import _filter_resolvable_graph_edges
+
+        edges = [
+            {"concept": "concept-context-engineering", "relation_type": "related"},
+            {"concept": "loop-engineering", "relation_type": "related"},
+            {"target": "anthropic-effective-context-engineering", "relation_type": "related"},
+        ]
+        concepts = ["concept-context-engineering", "loop-engineering", "mcp-spec"]
+        # known 含 concept + source（b1 折叠后 loader 喂两者）
+        known = [
+            "concept-context-engineering",
+            "anthropic-effective-context-engineering",
+            "mcp-spec",
+        ]
+        fe, fc = _filter_resolvable_graph_edges(edges, concepts, known, None)
+        kept_targets = [e.get("concept") or e.get("target") for e in fe]
+        assert "loop-engineering" not in kept_targets, "发明 slug 须被过滤"
+        assert "concept-context-engineering" in kept_targets
+        assert "anthropic-effective-context-engineering" in kept_targets, (
+            "源 slug 须保留（b1 折叠后 known 含源）"
+        )
+        assert "loop-engineering" not in fc
+        assert "concept-context-engineering" in fc
+        assert "mcp-spec" in fc
+
+    def test_none_known_no_filter_for_compat(self):
+        """known/pending 均 None 时不过滤（兼容 _build_body 旧调用，默认不传）。"""
+        from src.akb2.quality.distill import _filter_resolvable_graph_edges
+
+        edges = [{"concept": "whatever-invented"}]
+        fe, fc = _filter_resolvable_graph_edges(edges, ["whatever-invented"], None, None)
+        assert fe == edges, "known/pending 均 None 时须原样返回（兼容）"
+        assert fc == ["whatever-invented"]
+
+    def test_bare_concept_target_resolves_via_prefix_norm(self):
+        """SC-2a 协同：裸名 target 经前缀归一化命中 concept- 前缀 known。"""
+        from src.akb2.quality.distill import _filter_resolvable_graph_edges
+
+        edges = [{"concept": "context-engineering", "relation_type": "related"}]
+        fe, _ = _filter_resolvable_graph_edges(
+            edges, [], ["concept-context-engineering"], None
+        )
+        assert fe == edges, "裸名 target 须经 SC-2a 前缀归一化保留"

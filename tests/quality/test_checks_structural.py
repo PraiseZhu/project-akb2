@@ -703,6 +703,47 @@ class TestCandidateSelfGate:
         defects = run_candidate_self_gate(text, valid_raw_content)
         assert any(d.dimension == "SG-novelty-hardcoded" for d in defects)
 
+    def test_concept_lane_zero_commands_no_how_density_defect(
+        self, valid_candidate_page, valid_raw_content
+    ):
+        """SC-3：concept 车道 + 操作步骤节存在但 0 可执行命令 → 不判 SG-how-density fail。
+
+        满仓观测：Context Engineering 概念样本挂 `SG-how-density 0<3`。代码查证表明
+        how-density 门已 lane-aware（how_density_min=0 if concept），透传链完整；该失败
+        是样本被误判 procedural（SC-1 同根）所致，非 how-density 门缺 lane-aware。
+        本测试锁死 concept 车道豁免行为，防未来回归把 SC-1 下游保障打掉。
+        """
+        # 在「论证与解释」节内插入一个无反引号命令的 ### 操作步骤 子节
+        text = valid_candidate_page.replace(
+            "崩溃恢复只需读最后一条账本记录 [raw §B]。\n",
+            "崩溃恢复只需读最后一条账本记录 [raw §B]。\n\n"
+            "### 操作步骤\n\n"
+            "概念型内容无可执行命令，本节阐述操作要点而不提供代码。\n",
+        )
+        # 守卫：操作步骤节存在且 0 可执行命令（否则测试本身失效）
+        from src.akb2.quality.checks_structural import (
+            _how_executable_commands,
+            _how_section_text,
+        )
+
+        assert _how_section_text(text) != "", "测试素材须有 ### 操作步骤 节"
+        assert _how_executable_commands(text) == [], "测试素材须 0 可执行命令"
+
+        # concept 车道：how_density_min=0 → 不判 SG-how-density
+        defects_concept = run_candidate_self_gate(
+            text, valid_raw_content, content_lane="concept"
+        )
+        assert not any(d.dimension == "SG-how-density" for d in defects_concept), (
+            "concept 车道 + 0 命令不应判 SG-how-density（SC-3）"
+        )
+        # 对比：procedural 车道同样 0 命令 → 仍判 fail（锁死 lane-aware 不退化）
+        defects_proc = run_candidate_self_gate(
+            text, valid_raw_content, content_lane=""
+        )
+        assert any(d.dimension == "SG-how-density" for d in defects_proc), (
+            "procedural 车道 0 命令应判 SG-how-density（零回归）"
+        )
+
 
 # ---------------------------------------------------------------------------
 # A4: 图谱边四列齐 — 正负用例
@@ -1210,6 +1251,26 @@ class TestSGMustCoverFailClosed:
         defects = run_candidate_self_gate(text, raw_content=_MUST_COVER_RAW)
         must_cover = [d for d in defects if d.dimension == "SG-must-cover"]
         assert must_cover == [], f"已逐字渲染却报 must_cover 缺陷: {must_cover}"
+
+    def test_must_cover_match_tolerates_markdown_reformatting(self):
+        """SC-4：raw 字面量带 **bold**，候选渲染去 ** → 不应误判缺陷（归一化匹配）。
+
+        满仓 simonwillison "1. **A computation graph**..." 挂此：compose 渲染同源内容
+        时格式微调（去 **/插 [raw §X] 锚点），逐字匹配 `literal in section_text` 失败。
+        归一化后比实质内容，仍 fail-closed 真缺失（内容根本没渲染时不匹配）。
+        """
+        raw = "1. **Run npm install** to fetch deps.\n2. Run npm test."
+        # 候选渲染时去掉了 **（compose 重格式化，插了 [raw §X] 锚点）
+        steps = (
+            "- [raw §A] (source_grounded) 1. Run npm install to fetch deps.\n"
+            "- [raw §B] (source_grounded) 2. Run npm test."
+        )
+        text = _candidate_with_how_steps(steps)
+        defects = run_candidate_self_gate(text, raw_content=raw)
+        must_cover = [d for d in defects if d.dimension == "SG-must-cover"]
+        assert must_cover == [], (
+            f"markdown 重格式化不应误判 must_cover 缺陷（SC-4）: {must_cover}"
+        )
 
     def test_missing_boundary_is_defect(self):
         """SC-3.1 边界漏渲染：适用边界节不含原文边界字面量 → SG-must-cover Defect。"""

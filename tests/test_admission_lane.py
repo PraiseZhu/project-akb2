@@ -275,5 +275,63 @@ class TestLaneLLMUnavailableFailClosed:
         assert "content_lane" in rejection["details"]["failed_checks"]
 
 
+# ---------------------------------------------------------------------------
+# SC-1（bugfix）：概念文章夹单个示例代码块不应被确定性判 procedural
+# ---------------------------------------------------------------------------
+
+# 概念阐述 + 单个示例代码块：SC-1 前 count=1 ≥ 旧阈值 1 → 确定性 procedural
+# （how_tendency 随之正当拒收概念内容，实测 7/18 满仓正样本卡此）；SC-1 后阈值=2，
+# count=1 < 2 → 不短路，交 LLM 轻判。
+_CONCEPT_WITH_ONE_BLOCK = """# The Four-Layer Loop Model
+
+Loop engineering describes a conceptual architecture for AI agents. The model has four
+conceptual layers: the trigger layer defines when work begins, the orchestration layer
+decides what to do, the execution layer performs the work, and the observability layer
+records outcomes. This model explains why agent reliability depends on loop design
+rather than prompt quality. The fundamental principle is that convergence emerges from
+explicit bounded stopping conditions. Understanding this distinction reframes the
+engineering problem from prompt-authoring to loop-design.
+
+```bash
+python -m akb2.quality.runner --once
+```
+
+As shown above, the runner invocation is merely illustrative of the execution layer.
+"""
+
+
+class TestConceptWithIncidentalCode:
+    """SC-1：概念文章夹单个示例代码块（count=1）应交 LLM 轻判，不短路 procedural。"""
+
+    def test_one_code_block_defers_to_llm_and_lands_concept(self, tmp_path: Path) -> None:
+        """count=1 < 阈值 2 → 不短路 procedural，交 LLM 轻判 → concept。"""
+        from src.akb2.quality.admission import _scan_procedural_evidence_count
+
+        # 守卫：测试素材确实只有 1 个可执行操作（否则测试本身失效）
+        assert _scan_procedural_evidence_count(_CONCEPT_WITH_ONE_BLOCK) == 1
+
+        ledger = str(tmp_path / "ledger.jsonl")
+        result = run_admission(
+            raw_path="raw/concept-one-block--raw--2026-06-27.md",
+            raw_content=_CONCEPT_WITH_ONE_BLOCK,
+            ledger_path=ledger,
+            route_llm_fn=_llm_returns_lane(LANE_CONCEPT),
+        )
+        assert result.content_lane == LANE_CONCEPT, (
+            "单个示例代码块不应确定性判 procedural；应交 LLM 轻判 concept（SC-1）"
+        )
+
+    def test_one_code_block_llm_procedural_still_procedural(self, tmp_path: Path) -> None:
+        """count=1 交 LLM，LLM 判 procedural 时仍 procedural（LLM 裁决被尊重）。"""
+        ledger = str(tmp_path / "ledger.jsonl")
+        result = run_admission(
+            raw_path="raw/concept-one-block--raw--2026-06-27.md",
+            raw_content=_CONCEPT_WITH_ONE_BLOCK,
+            ledger_path=ledger,
+            route_llm_fn=_llm_returns_lane(LANE_PROCEDURAL),
+        )
+        assert result.content_lane == LANE_PROCEDURAL
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -2173,6 +2173,8 @@ def compose_candidate(
         route_llm_fn,
         must_cover=must_cover_items,
         raw_content=raw_content,
+        known_concepts=known_concepts,
+        pending_queue=pending_queue,
     )
 
     # 组装完整候选页
@@ -3851,6 +3853,47 @@ def _ground_how_step_commands_in_raw(
     return grounded
 
 
+def _filter_resolvable_graph_edges(
+    graph_edges: list[dict[str, Any]],
+    concepts: list[str],
+    known_concepts: list[str] | None,
+    pending_queue: list[str] | None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """SC-2b-b2：渲染前过滤 target 不在 known∪sources∪pending 的图谱边/概念引用。
+
+    extraction LLM 可能发明 vault 里不存在的 slug（如 loop-engineering——既非概念也非
+    源），若进入候选页，A4-图谱resolve/A5-wikilink 会 fail-closed 拒整篇。本函数在
+    compose 渲染前确定性过滤，不让悬空 slug 进候选页（"从源头不发明"，用户 SC-2b-b2
+    决策）。复用 _resolve_graph_node（含 SC-2a 前缀归一化 + pending 共指）做判定。
+
+    tradeoff（用户已接受）：生产 vault 概念全时几乎不过滤；校准薄种子库下引用未 seeded
+    概念的边会被 drop，图谱可能偏稀疏——但候选不再被 self-gate 整篇拒。
+    known/pending 均 None 时不过滤（兼容 _build_body 旧调用，默认不传）。
+    """
+    if known_concepts is None and pending_queue is None:
+        return graph_edges, concepts
+    from src.akb2.quality.checks_structural import _resolve_graph_node
+
+    def _edge_target(e: dict[str, Any]) -> str:
+        return str(
+            e.get("concept")
+            or e.get("target")
+            or e.get("target_id")
+            or e.get("source_id")
+            or ""
+        )
+
+    filtered_edges = [
+        e
+        for e in graph_edges
+        if _resolve_graph_node(_edge_target(e), known_concepts, pending_queue)
+    ]
+    filtered_concepts = [
+        c for c in concepts if _resolve_graph_node(str(c), known_concepts, pending_queue)
+    ]
+    return filtered_edges, filtered_concepts
+
+
 def _build_body(
     extract_data: dict[str, Any],
     raw_path: str,
@@ -3858,6 +3901,8 @@ def _build_body(
     *,
     must_cover: list[Any] | None = None,
     raw_content: str | None = None,
+    known_concepts: list[str] | None = None,
+    pending_queue: list[str] | None = None,
 ) -> str:
     """构建 10 节正文（确定性脚本，只填 extract_data 槽位，不调 LLM）。
 
@@ -3886,6 +3931,13 @@ def _build_body(
     argumentation: list[dict[str, Any]] = extract_data.get("argumentation") or []
     applicability_boundary = (extract_data.get("applicability_boundary") or "").strip()
     graph_edges: list[dict[str, Any]] = extract_data.get("graph_edges") or []
+
+    # SC-2b-b2：渲染前过滤 target 不在 known∪sources∪pending 的图谱边/概念。
+    # 发明的悬空 slug（如 loop-engineering）不进候选页，避免 A4/A5
+    # fail-closed 整篇拒。known/pending 均 None 时不过滤（兼容旧调用）。
+    graph_edges, concepts = _filter_resolvable_graph_edges(
+        graph_edges, concepts, known_concepts, pending_queue
+    )
 
     supported_how_steps = _supported_how_steps(how_steps, claims, raw_anchor_texts)
     if not supported_how_steps:

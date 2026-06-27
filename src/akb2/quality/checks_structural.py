@@ -479,6 +479,33 @@ def check_a3_raw_anchors(text: str, raw_content: str | None = None) -> list[Defe
 # ---------------------------------------------------------------------------
 
 
+_CONCEPT_PREFIX = "concept-"
+
+
+def _slug_normalize_variants(slug: str) -> set[str]:
+    """返回一个 slug 的归一化等价形式集合（裸名 + concept- 前缀互译）。
+
+    vault 概念页命名规范为 concept-<name>（main-pipeline-golden-sample.md 回边
+    concept-{harness-engineering,...}；wiki/concepts/ 文件名同前缀；现有概念页
+    正文 68 处 [[concept-X]] wikilink 一致），但候选生成器可能输出裸名 <name>。
+    resolver/A5 若只做精确成员判定，裸名引用即使指向已存在概念页也会被判死链
+    （SC-2a 实测：context-engineering 对不上 concept-context-engineering）。
+    本函数让两种写法互为等价，纯字符串操作、不调 LLM、不做语义猜测。
+
+    非 concept- 开头的 slug 会额外生成 concept- 前缀形式参与匹配——若对方
+    集合无该前缀项则自然不命中，不产生误报。
+    """
+    s = slug.strip().lower()
+    if not s:
+        return set()
+    variants = {s}
+    if s.startswith(_CONCEPT_PREFIX):
+        variants.add(s[len(_CONCEPT_PREFIX):])
+    else:
+        variants.add(f"{_CONCEPT_PREFIX}{s}")
+    return variants
+
+
 def _resolve_graph_node(
     target: str,
     known_concepts: list[str] | None,
@@ -489,17 +516,25 @@ def _resolve_graph_node(
     边 target 能 resolve 当且仅当：命中 known_concepts（已有概念页/源），
     或 pending_queue 中 ≥GRAPH_PENDING_COREF_MIN 个共指（同名候选累积到阈值）。
 
+    SC-2a：target 与 known/pending 均经 _slug_normalize_variants 归一化，
+    使 concept-<name> 与裸名 <name> 互为等价（vault 概念页命名规范为带前缀）。
+
     本函数刻意只做集合/计数（确定性），不 import llm_router、不做语义猜测——
     SC-3e 用 monkeypatch 一切 router 入口 raise 后本函数仍正确来硬证（import allowlist 断言）。
     """
     norm = target.strip().lower()
     if not norm:
         return False
-    known = {str(c).strip().lower() for c in (known_concepts or [])}
-    if norm in known:
+    target_variants = _slug_normalize_variants(norm)
+    known: set[str] = set()
+    for c in (known_concepts or []):
+        known |= _slug_normalize_variants(str(c))
+    if target_variants & known:
         return True
     pending = [str(c).strip().lower() for c in (pending_queue or [])]
-    coref = sum(1 for c in pending if c == norm)
+    coref = sum(
+        1 for c in pending if _slug_normalize_variants(c) & target_variants
+    )
     return coref >= GRAPH_PENDING_COREF_MIN
 
 
@@ -845,10 +880,13 @@ def check_a5_wikilinks(
         known_concepts: 已知的概念列表（可选）
     """
     defects: list[Defect] = []
-    allowed = set(pending_queue or []) | set(known_concepts or [])
+    # SC-2a：allowed 经 _slug_normalize_variants 归一化，使 concept-<name> 与裸名等价。
+    allowed: set[str] = set()
+    for _s in (pending_queue or []) + (known_concepts or []):
+        allowed |= _slug_normalize_variants(str(_s))
 
     if not allowed:
-        # 没有已知概念列表时跳过检查
+        # 没有已知概念列表时跳过检查（空索引不报死链——SC-2a 调查铁证）
         return defects
 
     body = _extract_body_text(text)
@@ -859,7 +897,7 @@ def check_a5_wikilinks(
 
     for link in links:
         link_clean = link.strip()
-        if link_clean not in allowed:
+        if not (_slug_normalize_variants(link_clean) & allowed):
             defects.append(
                 Defect(
                     dimension="A5-wikilink死链",
@@ -1052,6 +1090,22 @@ def _has_forbidden_hardcoded_novelty(body: str, rel_path: str) -> bool:
         "hard-coded",
     )
     return any(marker in line.lower() for marker in forbidden_markers) or line == rel_path
+
+
+def _normalize_must_cover_text(s: str) -> str:
+    """SC-4：归一化 must_cover 匹配文本——去 [raw §X] 锚点/markdown 标记/列表前缀/压空白。
+
+    旧 gate `literal in section_text` 逐字匹配：compose 渲染同源内容时插 [raw §X]
+    锚点、保留 **bold**/`code` 标记、"N. " 前缀，导致同源内容匹配不上 → 假 fail
+    （满仓 simonwillison "1. **A computation graph**..." / code.claude 两条挂此）。
+    归一化后只比"实质内容是否渲染"，tolerant 格式差异、仍 fail-closed 真缺失
+    （内容根本没渲染时归一化后仍不匹配 → 仍报缺陷）。
+    """
+    s = re.sub(r"\[raw\s*§[A-Z0-9]+\]", " ", s)  # 去 [raw §X] 锚点
+    s = re.sub(r"[`*#>_]", " ", s)  # 去 markdown 标记
+    s = re.sub(r"(?m)^\s*\d+\.\s*", " ", s)  # 去列表前缀 N.
+    s = re.sub(r"\s+", " ", s)  # 压空白
+    return s.strip().lower()
 
 
 def run_candidate_self_gate(
@@ -1253,7 +1307,11 @@ def run_candidate_self_gate(
         }
         for item in must_cover_items:
             section_text = must_cover_section_text.get(item.must_cover_class, "")
-            if item.literal not in section_text:
+            # SC-4：归一化后比实质内容，tolerant compose 重格式化（[raw §X]/**/`/N. 前缀），
+            # 仍 fail-closed 真缺失（内容没渲染时归一化后也不匹配）。
+            if _normalize_must_cover_text(item.literal) not in _normalize_must_cover_text(
+                section_text
+            ):
                 section_name = must_cover_section_name.get(
                     item.must_cover_class, "正文"
                 )

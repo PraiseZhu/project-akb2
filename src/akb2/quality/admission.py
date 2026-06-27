@@ -61,9 +61,11 @@ _LANE_CLASSIFY_SCHEMA: dict[str, Any] = {
 }
 
 # procedural 确定性证据阈值：raw 含 ≥ 该数量可执行操作（命令/代码块/编号步骤）
-# 即判 procedural（含可执行操作即 procedural，混合归 procedural，spec FR-002）。
-# 此为确定性硬证据，不依赖 LLM——有命令的内容客观是操作型，分类无歧义。
-LANE_PROCEDURAL_MIN_EVIDENCE: int = 1
+# 即判 procedural（混合归 procedural，spec FR-002）。
+# SC-1：阈值=2——单个示例代码块（count=1）不构成操作型，交 LLM 轻判 concept/procedural；
+# 含 ≥2 个可执行操作才视为客观无歧义 procedural（教程/工作流式），不依赖 LLM。
+# 实测锚点：_MIXED_BODY(2 命令)→procedural（mixed 测试锁死）；ONE_BLOCK(1 命令)→交 LLM。
+LANE_PROCEDURAL_MIN_EVIDENCE: int = 2
 
 # 内容截断长度：送入 LLM 判定的最大字符数
 # 主题相关性取 4000 字足以覆盖导语+前几段核心内容。
@@ -535,8 +537,9 @@ def _scan_procedural_evidence_count(body: str) -> int:
     只用 source_ops_scanners.operations 扫描器（kind=source_operation，纯代码无 LLM）。
     **不数** source_boundary / source_conclusion——那两类语义边界纯概念内容也有
     （如"适用于…""关键洞察是…"），不构成可执行操作；若计入会把纯概念内容误判
-    procedural。含可执行操作（命令/代码/步骤）即客观无歧义 procedural（spec FR-002 混合
-    从严归 procedural）；无则交 LLM 轻判 concept/procedural。
+    procedural。含 ≥LANE_PROCEDURAL_MIN_EVIDENCE 个可执行操作即客观无歧义 procedural
+    （spec FR-002 混合从严归 procedural）；单个示例代码块或无则交 LLM 轻判
+    concept/procedural（SC-1：概念文章夹单个示例代码块不应被确定性判 procedural）。
     扫描器不可用（导入失败）时返回 0，把车道判定交给 LLM。
     """
     try:

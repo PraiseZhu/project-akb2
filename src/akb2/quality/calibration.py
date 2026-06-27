@@ -612,15 +612,20 @@ def _classify_attribution(
 ) -> str:
     """归因失败: 管线缺陷 vs 语料不当。
 
-    简单启发式:
-        - fetch_fail → 语料不当（死链）
-        - rejected (admission fail) → 语料不当（不符合入库标准）
-        - 其他终态 → 管线缺陷
+    SC-7：how_tendency 拒收不再机械归 corpus_inappropriate——how_tendency 门是管线
+    判定（concept 车道下豁免），其 fail 暗示 lane 分类可能把概念内容误判 procedural，
+    属管线缺陷风险，不能等同于"语料本身 how 向"。旧启发式（rejected+how_tendency
+    →corpus_inappropriate）是循环论证：把"分类器误判"包装成"语料不当"，直接导致
+    交接文档把 7 条概念样本的 lane 误判错诊为"语料不当"。仅 topic_relevance（离题，
+    客观语料问题）与 fetch_failed（死链）才确定性归 corpus_inappropriate。
     """
     if final_status == "rejected":
         error = pipeline_result.get("error", "")
-        if "how_tendency" in str(error) or "topic_relevance" in str(error):
+        if "topic_relevance" in str(error):
             return "corpus_inappropriate"
+        # how_tendency / novelty / content_lane 等拒收归 pipeline_defect——
+        # 这些是管线门判定（含 lane 分类），不机械责怪语料。
+        return "pipeline_defect"
     if final_status == "fetch_failed":
         return "corpus_inappropriate"
     return "pipeline_defect"

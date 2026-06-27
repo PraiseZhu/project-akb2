@@ -150,6 +150,25 @@ class TestInterpretationTraceability:
         r = evaluate_integrity_floor(d, "concept")
         assert FLOOR_INTERPRETATION_TRACEABILITY in r.failed_floors
 
+    def test_pass_empty_grounded_skips_traceability(self):
+        """SC-5：grounded_anchors 空时 traceability 豁免（vacuously unsatisfiable）。
+
+        无源页 fixture（vercel-ai-sdk-nosource）无 §-anchor 结构，extraction 产不出
+        grounded anchor；"≥1 traces_to 命中真实 grounded anchor"不可满足，floor ③ 不应
+        误判 fail。缺 grounded 的真问题由 floor ① claim_anchor_rate 抓（不在此断言）。
+        满仓观测：该 fixture 挂 `traces_to ['§J_DISCUSSION'] 未指向任何真实 source`。
+        """
+        d = _concept_pass_extract()
+        # 全部 claim 改 akb_interpretation（无 grounded）+ 都给 traces_to
+        for c in d["claims"]:
+            c["provenance"] = "akb_interpretation"
+            if "traces_to" not in c:
+                c["traces_to"] = ["§A"]
+        r = evaluate_integrity_floor(d, "concept")
+        assert FLOOR_INTERPRETATION_TRACEABILITY not in r.failed_floors, (
+            "grounded_anchors 空时 traceability 应豁免（SC-5）"
+        )
+
 
 # ----------------------------- ④ F4 core_value ----------------------------- #
 

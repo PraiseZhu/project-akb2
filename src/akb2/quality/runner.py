@@ -398,7 +398,8 @@ def _load_vault_concept_index(
     """确定性装载 vault 概念/wiki 索引（纯文件扫描，无 LLM，符合宪法 P5 单向 vault→工程）。
 
     Decision-2（洗稿生产接线）+ A3-8（图谱 resolve 生产真传 known/pending）：
-        - known_concepts = glob `<akb2_root>/wiki/concepts/*.md` 的 slug 集
+        - known_concepts = glob `<akb2_root>/wiki/concepts/*.md` + `wiki/sources/*.md`
+          的 slug 集（SC-2b-b1：概念页+源页，resolver 把两者都当合法 resolve 目标）
         - pending_queue  = 读 `<staging>/pending/concept-backlinks.jsonl` 的 concept slug
         - wiki_references = `<akb2_root>/wiki/**/*.md` 各页 TLDR 摘要（≤5），**排除当前源
           slug**（防自比对误判洗稿）
@@ -440,9 +441,13 @@ def _load_vault_concept_index(
         }
 
     try:
-        known_concepts = sorted(
-            p.stem for p in (wiki_dir / "concepts").glob("*.md")
-        )
+        # SC-2b-b1：把 wiki/sources/*.md slug 折进 known_concepts——resolver docstring
+        # 已明示 known_concepts=概念或源，但旧 loader 只 glob concepts，导致源 wikilink
+        # （如 [[anthropic-effective-context-engineering]]）即便指向已存在源页也判死链
+        # （生产也中招，不止校准环境）。
+        concept_slugs = [p.stem for p in (wiki_dir / "concepts").glob("*.md")]
+        source_slugs = [p.stem for p in (wiki_dir / "sources").glob("*.md")]
+        known_concepts = sorted(set(concept_slugs) | set(source_slugs))
         wiki_pages = sorted(wiki_dir.rglob("*.md"))
         wiki_references: list[str] = []
         source_paths: list[str] = []
@@ -1251,13 +1256,16 @@ def _run_pipeline_segments(
     if not passed:
         _log_event(config, "abort", "admission", content_hash,
                    {"reason": reason, "content_lane": content_lane})
+        # SC-6：reason 已带"准入未通过:"前缀（admission.py 拼装），此处幂等不再重复加，
+        # 否则 factory.json failure_reason 出现"准入未通过: 准入未通过: ..."双前缀。
+        error = reason if str(reason).startswith("准入未通过") else f"准入未通过: {reason}"
         return {
             "converged": False,
             "rounds": rounds,
             "promoted": False,
             "promotion_mode": "none",
             "final_status": "rejected",
-            "error": f"准入未通过: {reason}",
+            "error": error,
         }
 
     _log_event(config, "admission", "admission", content_hash,
