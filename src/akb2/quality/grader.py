@@ -192,12 +192,27 @@ def _load_rubric_text() -> str:
     return text
 
 
-def _build_grader_weight_floor_note() -> str:
-    """从 spec 构建 weight / threshold / integrity_floor 说明（Step.3 注入 prompt）。"""
+def _build_grader_weight_floor_note(content_lane: str = "") -> str:
+    """从 spec 构建 weight / threshold / integrity_floor 说明（Step.3 注入 prompt）。
+
+    R2/wA#2 修复：权重表按**车道**维度集构建。旧逻辑无条件用全局 ``dimensions``
+    （= procedural 10 维），喂给 concept 文后模型按 procedural 维度名输出 → 不在
+    concept 7 维 enum → schema parse 失败 → 退 gemini → runner 守卫拒收
+    （满仓 #1/3/4/5/9/11/14 全死于此，误报成 grader 环境不可用）。
+    """
     spec = _load_rubric_spec()
+    lane = str(content_lane or "").strip().lower()
+    lane_cfg = (spec.get("lanes") or {}).get(lane) or {}
+    lane_dims = lane_cfg.get("dimensions") if isinstance(lane_cfg, dict) else None
+    dims_source = (
+        lane_dims
+        if isinstance(lane_dims, list) and lane_dims
+        else spec.get("dimensions", [])
+    )
     weight_lines = [
         f"  - {d.get('name')}: weight={d.get('weight')}"
-        for d in spec.get("dimensions", [])
+        + (f"（{d.get('note')}）" if d.get("note") else "")
+        for d in dims_source
         if isinstance(d, dict)
     ]
     floor_lines = [
@@ -219,15 +234,40 @@ def _build_grader_prompt(
     candidate_text: str, rubric_text: str, content_lane: str = ""
 ) -> list[dict[str, str]]:
     """构建评分 prompt（system + user）。lane-aware：concept 评 7 维、procedural 评 10 维。"""
-    weight_floor_note = _build_grader_weight_floor_note()
+    weight_floor_note = _build_grader_weight_floor_note(content_lane)
     # P3：维度按 lane 限定，修旧硬编码"10 维"对 concept（7 维）的语义漂移（w9）。
     dims = _dimensions_for_lane(content_lane)
     lane_label = content_lane or "默认"
+    spec = _load_rubric_spec()
+    lane_key = str(content_lane or "").strip().lower()
+    _lane_cfg = (spec.get("lanes") or {}).get(lane_key) or {}
+    lane_dim_specs = _lane_cfg.get("dimensions") if isinstance(_lane_cfg, dict) else None
+    # R2/wA#2：显式逐字列出本车道必须输出的维度，杜绝模型输出别车道维度名
+    # 导致 schema enum 不匹配 → parse 失败。
+    dim_enum_block = (
+        f"本车道必须且只能输出以下 {len(dims)} 个维度，每个维度的 dimension 字段"
+        "必须与下列名称逐字一致，不得输出任何其他维度名：\n"
+        + "\n".join(f"  {i + 1}. {d}" for i, d in enumerate(dims))
+    )
+    # 量规判据：concept 车道的维度不在 10-dimensions.md（该 md 只描述 procedural
+    # 10 维），其判据来自 rubric.yaml lanes.concept 的 note；procedural 用 md 全文。
+    if (
+        isinstance(lane_dim_specs, list)
+        and lane_dim_specs
+        and lane_key not in ("", "procedural")
+    ):
+        rubric_body = "本车道维度判据（来自 rubric.yaml）:\n" + "\n".join(
+            f"- {d.get('name')}（weight={d.get('weight')}）: {d.get('note', '')}"
+            for d in lane_dim_specs
+            if isinstance(d, dict)
+        )
+    else:
+        rubric_body = f"量规:\n{rubric_text}"
     system_prompt = f"""你是一个知识库内容质量评审专家。请根据以下量规评分。
-本车道（{lane_label}）评判维度限定为 {len(dims)} 维，以量规与输出 schema 的维度枚举为准。
+本车道（{lane_label}）评判维度限定为 {len(dims)} 维。
+{dim_enum_block}
 
-量规:
-{rubric_text}
+{rubric_body}
 
 {weight_floor_note}
 
@@ -239,12 +279,25 @@ def _build_grader_prompt(
 5. 解读推导成立性（interpretation_entailment，布尔）：判断每条 akb_interpretation
    是否真从其所引 [raw §X] anchor 推出。anchor 真实存在但与解读语义无关
    （poisoned-trace，挂羊头卖狗肉）→ false；推导真成立 → true。concept 车道必填此字段，
-   procedural 可省。此字段是异族硬判地板，false 即整体 reject（不可被加权分补偿）。"""
+   procedural 可省。此字段是异族硬判地板，false 即整体 reject（不可被加权分补偿）。
+
+输出 JSON 结构（必须严格使用以下字段名，不得用 verdict / overall_decision / overall_pass
+等其他字段名；上列每个维度都必须各输出恰好一条）:
+{{
+  "dimensions": [
+    {{"dimension": "<上列维度名之一，逐字一致>", "pass": true, "defects": []}},
+    {{"dimension": "<另一维度名>", "pass": false,
+      "defects": [{{"location": "<具体位置>", "defect": "<缺陷>", "suggestion": "<修复建议>"}}]}}
+  ],
+  "interpretation_entailment": true
+}}
+字段约束: "pass" 必须是布尔 true/false（不是 "pass"/"fail" 字符串）；"defects" 必须是数组，
+pass=true 时为空数组 []，pass=false 时至少一条，每条含 location/defect/suggestion 三个字符串。"""
     user_prompt = f"""请评审以下候选页:
 
 {candidate_text}
 
-请输出 JSON 格式的评审结果。"""
+请只输出上述结构的 JSON，不要包裹 markdown 代码块，不要附加额外字段。"""
     return [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
@@ -361,13 +414,32 @@ def _canonical_dimension_name(
     """
     if not isinstance(raw_name, str):
         return None
-    name = raw_name.strip()
     allowed = _dimensions_for_lane(content_lane)
+    name = raw_name.strip()
     if name in allowed:
         return name
     for dim in allowed:
         if name.startswith(f"{dim} (") and name.endswith(")"):
             return dim
+
+    # 容差匹配（R2/wA#2）：concept 维度名自带 (H3)/(H2) 后缀, 模型常丢后缀或用全角
+    # 括号（）→ 逐字 enum 对账失败 → 整批 parse 失败 → 退 gemini → 守卫拒收。
+    # 归一全/半角括号后, 按"首个括号前的基名"匹配（各车道基名唯一, 不放松到误配）。
+    def _norm(s: str) -> str:
+        return s.strip().replace("（", "(").replace("）", ")")
+
+    def _base(s: str) -> str:
+        return _norm(s).split("(")[0].strip()
+
+    name_norm = _norm(name)
+    norm_to_canon = {_norm(d): d for d in allowed}
+    if name_norm in norm_to_canon:
+        return norm_to_canon[name_norm]
+    name_base = _base(name)
+    if name_base:
+        for dim in allowed:
+            if _base(dim) == name_base:
+                return dim
     return None
 
 
