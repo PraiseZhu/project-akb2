@@ -42,6 +42,12 @@ LANE_REJECT: str = "reject"
 # 具名常量（宪法 P4）
 # ---------------------------------------------------------------------------
 
+# 准入四判定（topic / how / novelty / lane）共用的 LLM 模型族（宪法 P7 异族分离）。
+# 准入只判「源是否值得提炼」、不判提炼产物 → maker=DeepSeek 族 / checker=gpt-5.4 族，
+# 两族异族不破。router 仅支持 "deepseek-v4-pro"（llm_router._MODEL_CONFIG），
+# 传其他 family 名会抛 RouterConfigError 使准入四路全 fail-closed。
+ADMISSION_MODEL: str = "deepseek-v4-pro"
+
 # 准入判定输出 schema（每项判定结果）
 _ADMISSION_CHECK_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -138,6 +144,11 @@ class AdmissionResult:
     checks: list[AdmissionCheck] = field(default_factory=list)
     reason: str = ""
     content_lane: str = ""
+    # lane_reason：车道分类器给出的理由（与 content_lane 配对）。
+    # 全路径透出——pass 路径也可见（不止 reject），供 runner 落 ledger 做
+    # P1 语义审计的逐篇可读 trace（spec FR-008 / 宪法 P4 失败可见）。仅观测字段，
+    # 不参与判定（lane 判定仍由 content_lane/lane_failed/lane_rejected 驱动）。
+    lane_reason: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +249,9 @@ def run_admission(
         reason=reason,
         # reject/分类失败都不下传 content_lane（reject 不混进通过态，w9）。
         content_lane="" if (lane_failed or lane_rejected) else content_lane,
+        # lane_reason 全路径透出（pass/reject/fail 均可见，不止 reject），
+        # 供 runner 落 ledger 做 P1 语义审计逐篇可读 trace。仅观测，不参与判定。
+        lane_reason=lane_reason,
     )
 
 
@@ -411,7 +425,7 @@ def _check_topic_relevance(
 
     try:
         response = route_llm_fn(
-            "gemini-flash",
+            ADMISSION_MODEL,
             messages,
             response_schema=_ADMISSION_CHECK_SCHEMA,
         )
@@ -463,7 +477,7 @@ def _check_how_tendency(
 
     try:
         response = route_llm_fn(
-            "gemini-flash",
+            ADMISSION_MODEL,
             messages,
             response_schema=_ADMISSION_CHECK_SCHEMA,
         )
@@ -526,7 +540,7 @@ def _check_novelty(
 
     try:
         response = route_llm_fn(
-            "gemini-flash",
+            ADMISSION_MODEL,
             messages,
             response_schema=_ADMISSION_CHECK_SCHEMA,
         )
@@ -665,7 +679,7 @@ def _classify_content_lane(
 
     try:
         response = route_llm_fn(
-            "gemini-flash",
+            ADMISSION_MODEL,
             messages,
             response_schema=_LANE_CLASSIFY_SCHEMA,
         )

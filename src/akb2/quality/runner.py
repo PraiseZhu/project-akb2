@@ -553,7 +553,7 @@ def _run_admission_segment(
     wiki_references: list[str] | None = None,
     index_status: str = LANE_INDEX_STATUS_OK,
     content_hash: str = "",
-) -> tuple[bool, str, list, str]:
+) -> tuple[bool, str, list, str, str]:
     """段 2: 准入判定（Decision-2：装载 vault wiki_references 喂 novelty）。
 
     wiki_references 由 pipeline 经 _load_vault_concept_index 装载传入；novelty 在生产
@@ -561,7 +561,7 @@ def _run_admission_segment(
     load_error 时写 ledger `novelty_index_unavailable` 并返回 hold/reject（不静默 pass）。
 
     Returns:
-        (passed, reason, checks, content_lane)
+        (passed, reason, checks, content_lane, lane_reason)
     """
     from src.akb2.quality.admission import run_admission
 
@@ -587,6 +587,7 @@ def _run_admission_segment(
             f"准入未通过: novelty_index_unavailable ({index_status})",
             [],
             "",
+            "",
         )
 
     result = run_admission(
@@ -595,7 +596,7 @@ def _run_admission_segment(
         ledger_path=config.ledger_path,
         wiki_references=wiki_references,
     )
-    return result.passed, result.reason, result.checks, result.content_lane
+    return result.passed, result.reason, result.checks, result.content_lane, result.lane_reason
 
 
 def _run_distill_segment(
@@ -1271,9 +1272,10 @@ def _run_pipeline_segments(
     )
     passed, reason = admission_ret[0], admission_ret[1]
     content_lane = admission_ret[3] if len(admission_ret) > 3 else ""
+    lane_reason = admission_ret[4] if len(admission_ret) > 4 else ""
     if not passed:
         _log_event(config, "abort", "admission", content_hash,
-                   {"reason": reason, "content_lane": content_lane})
+                   {"reason": reason, "content_lane": content_lane, "lane_reason": lane_reason})
         # SC-6：reason 已带"准入未通过:"前缀（admission.py 拼装），此处幂等不再重复加，
         # 否则 factory.json failure_reason 出现"准入未通过: 准入未通过: ..."双前缀。
         error = reason if str(reason).startswith("准入未通过") else f"准入未通过: {reason}"
@@ -1291,7 +1293,7 @@ def _run_pipeline_segments(
         }
 
     _log_event(config, "admission", "admission", content_hash,
-               {"passed": True, "content_lane": content_lane})
+               {"passed": True, "content_lane": content_lane, "lane_reason": lane_reason})
 
     # Segment 3-4: 提炼
     _log_event(

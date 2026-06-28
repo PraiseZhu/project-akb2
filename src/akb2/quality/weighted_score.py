@@ -92,6 +92,7 @@ def compute_weighted_score(
     weights = _lane_weight_map(spec, content_lane)
 
     # dim→weight 按全名 join；维名不在权重表 → KeyError（不静默零权重）
+    is_concept = str(content_lane or "").strip().lower() == "concept"
     score = 0.0
     for name, sc in dimension_scores.items():
         if name not in weights:
@@ -99,7 +100,22 @@ def compute_weighted_score(
                 f"维度 {name!r} 不在 {content_lane or 'procedural'} 车道 rubric 权重表"
                 f"（已知权重维: {sorted(weights)}）"
             )
-        s = sc if isinstance(sc, (int, float)) else 0.0
+        # SC-1（p0-1）：concept 车道每维 score 必须是合法 0~1 数值
+        # （拒 bool/非数值/越界 fail-closed，不静默当 0 放行）；procedural 保持旧口径零回归。
+        if isinstance(sc, bool) or not isinstance(sc, (int, float)):
+            if is_concept:
+                return ScoreResult(
+                    score=0.0, threshold=threshold, passed=False,
+                    lane=content_lane, dimension_weights=weights,
+                )
+            s = 0.0
+        elif is_concept and (sc < 0 or sc > 1):
+            return ScoreResult(
+                score=0.0, threshold=threshold, passed=False,
+                lane=content_lane, dimension_weights=weights,
+            )
+        else:
+            s = sc
         score += s * weights[name]
 
     # concept: 要求所有 lane 维度都有 score（缺维 = 评估不完整 → fail-closed，不静默放行）。

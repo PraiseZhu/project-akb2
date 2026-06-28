@@ -52,13 +52,13 @@ def test_reject_lane_rejects_admission_without_relying_on_how(tmp_path):
         "and release dates without explaining mechanisms or teaching steps.\n"
     )
     mock_llm = make_mock_route_llm({
-        "gemini-flash:0": LLMResponse(
+        "deepseek-v4-pro:0": LLMResponse(
             content={"pass": True, "reason": "topic"}, model_used="m", calls_used=1
         ),
-        "gemini-flash:1": LLMResponse(
+        "deepseek-v4-pro:1": LLMResponse(
             content={"pass": False, "reason": "no how"}, model_used="m", calls_used=1
         ),
-        "gemini-flash:2": LLMResponse(
+        "deepseek-v4-pro:2": LLMResponse(
             content={"pass": True, "reason": "novel"}, model_used="m", calls_used=1
         ),
         "lane": LLMResponse(

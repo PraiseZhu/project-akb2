@@ -50,7 +50,7 @@ def _write_tmp_rubric(tmp_dir: Path, weight: float, threshold: float) -> None:
             f'{indent}- name: "{d}"\n{indent}  weight: {weight}' for d in dims
         )
 
-    rubric = f"""rubric_version: "1.1.0"
+    rubric = f"""rubric_version: "{grader.REQUIRED_RUBRIC_VERSION}"
 dimensions:
 {_dim_block("  ")}
 integrity_floor:
@@ -69,8 +69,8 @@ lanes:
         evaluated_by: structural
 """
     (tmp_dir / "rubric.yaml").write_text(rubric, encoding="utf-8")
-    # 配套 md（_load_rubric_text 读它验版本 1.1.0 + 维名在文本里）
-    md = "# rubric\n#\n# 版本: 1.1.0\n\n" + "\n".join(f"## {d}\n判据。" for d in dims)
+    # 配套 md（_load_rubric_text 读它验版本 = REQUIRED_RUBRIC_VERSION + 维名在文本里）
+    md = f"# rubric\n#\n# 版本: {grader.REQUIRED_RUBRIC_VERSION}\n\n" + "\n".join(f"## {d}\n判据。" for d in dims)
     (tmp_dir / "10-dimensions.md").write_text(md, encoding="utf-8")
 
 
@@ -169,17 +169,20 @@ class TestDualUnavailableSuspended:
 
 class TestVersionMatch:
     def test_version_match(self) -> None:
-        """REQUIRED_RUBRIC_VERSION 从 spec 读，与 rubric.yaml 内 version 一致（1.1.0）。"""
+        """REQUIRED_RUBRIC_VERSION 从 spec 读，与 rubric.yaml 内 version 一致（动态自跟随）。"""
         import yaml
 
         spec = yaml.safe_load(
             (grader.RUBRIC_DIR / "rubric.yaml").read_text(encoding="utf-8")
         )
         assert grader.REQUIRED_RUBRIC_VERSION == spec["rubric_version"]
-        assert grader.REQUIRED_RUBRIC_VERSION == "1.1.0"
-        # _load_rubric_text 断言读 spec version（10-dimensions.md 同步到 1.1.0）
+        # 动态自跟随：不写死版本号，bump 后 REQUIRED 与 spec 自动同步（防下次 bump 又红）
+        assert grader.REQUIRED_RUBRIC_VERSION == spec["rubric_version"]
+        # _load_rubric_text 断言读 spec version（10-dimensions.md 头部含当前版本，不靠历史残留蒙混）
         text = grader._load_rubric_text()
-        assert "1.1.0" in text
+        assert grader.REQUIRED_RUBRIC_VERSION in text, (
+            f"10-dimensions.md 应含当前版本 {grader.REQUIRED_RUBRIC_VERSION}"
+        )
 
 
 class TestPrimaryCanaryReal:

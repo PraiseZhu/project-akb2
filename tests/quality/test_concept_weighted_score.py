@@ -3,8 +3,8 @@
 覆盖：
   - concept 7 维权重和 == 10（从 rubric.yaml lanes.concept 读，不硬编码）。
   - 维名 ⊆ grader concept 维名集（无 KeyError/静默零权重）。
-  - 正样本（全维高分）≥ 6.5 → pass。
-  - 最小合规 H3 深度 ≤1.0 且总分 <6.5 → 拒（H3 深度独立于地板，对抗踩线）。
+  - 正样本（全维高分）≥ 6.0 → pass。
+  - 最小合规 H3 深度 ≤1.0 且总分 <6.0 → 拒（H3 深度独立于地板，对抗踩线）。
   - 维名不在权重表 → KeyError（不静默零权重）。
   - 阈值从 rubric.yaml 读（改 YAML threshold 即改判分，SC-3 外置）。
 """
@@ -42,19 +42,19 @@ class TestConceptWeightedScore:
         assert set(w.keys()) == expected
 
     def test_positive_sample_passes_threshold(self):
-        """正样本：全维满分(score=1.0)→总分=权重和=10 ≥ 6.5 → pass。"""
+        """正样本：全维满分(score=1.0)→总分=权重和=10 ≥ 6.0 → pass。"""
         w = _concept_weights()
         scores = {name: 1.0 for name in w}
         r = compute_weighted_score(scores, "concept")
         assert abs(r.score - 10.0) < 1e-6
-        assert r.threshold == 6.5
+        assert r.threshold == 6.0
         assert r.passed is True
 
     def test_minimal_compliant_h3_depth_below_threshold(self):
-        """最小合规 H3 深度 ≤1.0 且总分 <6.5 → 拒（H3 独立于地板，防辅助分顶过）。
+        """最小合规 H3 深度 ≤1.0 且总分 <6.0 → 拒（H3 独立于地板，防辅助分顶过）。
 
-        H3 维度（概念机制清晰度(H3)）score=1.0（最小合规），其它维全 0 → 总分=3.5 <6.5。
-        对抗样本靠辅助分过 6.5 在此被拒：H3 深度独立，最小合规不足以过阈。
+        H3 维度（概念机制清晰度(H3)）score=1.0（最小合规），其它维全 0 → 总分=3.5 <6.0。
+        对抗样本靠辅助分过 6.0 在此被拒：H3 深度独立，最小合规不足以过阈。
         """
         w = _concept_weights()
         scores = {name: (1.0 if "H3" in name else 0.0) for name in w}
@@ -72,7 +72,7 @@ class TestConceptWeightedScore:
         w = _concept_weights()
         scores = {name: (0.0 if "H3" in name else 1.0) for name in w}
         r = compute_weighted_score(scores, "concept")
-        # 总分 = 10 - 3.5 = 6.5（边界，>=threshold → passed=True）
+        # 总分 = 10 - 3.5 = 6.5（边界，>=threshold 6.0 → passed=True）
         # 注：H3 深度独立由地板/grader 把关，加权分只算过阈；H3=0 的对抗由地板 F4/grader 拒
         assert abs(r.score - 6.5) < 1e-6
 
@@ -85,8 +85,8 @@ class TestConceptWeightedScore:
     def test_threshold_from_rubric_yaml(self):
         """阈值从 rubric.yaml 读（改 YAML threshold 即改判分，SC-3 外置）。"""
         r = compute_weighted_score({}, "concept")
-        assert r.threshold == 6.5  # rubric.yaml threshold=6.5
-        # 空维度 → score=0 < 6.5 → 不通过
+        assert r.threshold == 6.0  # rubric.yaml concept threshold=6.0
+        # 空维度 → score=0 < 6.0 → 不通过
         assert r.passed is False
         assert r.score == 0.0
 

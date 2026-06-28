@@ -433,5 +433,56 @@ class TestConceptIntentNotShortCircuited:
         assert result.content_lane == LANE_CONCEPT
 
 
+# ---------------------------------------------------------------------------
+# SC-4：准入四判定统一模型族 deepseek-v4-pro（宪法 P7 异族分离）
+# ---------------------------------------------------------------------------
+
+
+class TestAdmissionModelFamily:
+    """SC-4：准入 topic/how/novelty/lane 四路 route_llm_fn 收到的 model_family
+    均为 deepseek-v4-pro（具名常量 ADMISSION_MODEL），异族 Maker/Checker 不破。"""
+
+    def test_admission_uses_deepseek_v4_pro_all_four_calls(
+        self, tmp_path: Path
+    ) -> None:
+        """concept 内容 + wiki_references 触发 topic/how/novelty/lane 四路 LLM 调用，
+        每路收到的 model_family 必须是 deepseek-v4-pro。"""
+        from src.akb2.quality.admission import ADMISSION_MODEL
+        from src.akb2.quality.llm_router import LLMResponse
+
+        seen: list[str] = []
+
+        def _mock(model_family, messages, response_schema=None, **kwargs):
+            seen.append(model_family)
+            sys_prompt = messages[0]["content"] if messages else ""
+            # lane 分类 prompt 含「主要意图」/「概念型」/「操作型」
+            if "主要意图" in sys_prompt or "概念型" in sys_prompt or "操作型" in sys_prompt:
+                return LLMResponse(
+                    content={"content_lane": LANE_CONCEPT, "reason": "mock concept"},
+                    model_used="deepseek-v4-pro",
+                )
+            # topic / how / novelty 一律 pass
+            return LLMResponse(
+                content={"pass": True, "reason": "mock pass"},
+                model_used="deepseek-v4-pro",
+            )
+
+        ledger = str(tmp_path / "ledger.jsonl")
+        result = run_admission(
+            raw_path="raw/concept--raw--2026-06-26.md",
+            raw_content=_CONCEPT_BODY,
+            ledger_path=ledger,
+            wiki_references=["Loop Engineering: bounded agent loops"],
+            route_llm_fn=_mock,
+        )
+
+        assert seen, "应至少触发一次 route_llm_fn 调用"
+        assert ADMISSION_MODEL == "deepseek-v4-pro"
+        assert all(f == "deepseek-v4-pro" for f in seen), (
+            f"准入四路 model_family 应全为 deepseek-v4-pro，实收: {seen}"
+        )
+        assert result.passed is True
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

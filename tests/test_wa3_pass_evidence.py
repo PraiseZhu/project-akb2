@@ -17,7 +17,7 @@ from src.akb2.quality.runner import _check_concept_hard_gates
 def test_concept_pass_populates_evidence_in_meta():
     """concept 全维高分 + entailment True → 通过, 且 base_meta 拿到非 null 证据。"""
     dims = _dimensions_for_lane("concept")
-    dim_scores = {d: 9.0 for d in dims}
+    dim_scores = {d: 0.9 for d in dims}  # p0-1: 0~1 标度（旧 9.0 越界被 fail-closed 拦）
     base: dict = {"grader_model_used": "gpt-5.4"}
     result = _check_concept_hard_gates(True, dim_scores, "concept", base)
     assert result is None  # 通过

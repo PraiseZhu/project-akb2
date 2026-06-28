@@ -12,7 +12,7 @@
 # calibration_status: initial —— 全部 concept 权重/阈值为初始结构占位，真实数值由后续
 # 满仓校准回填（spec FR-010），非终值。step-3 只读消费此表、不回写。
 
-rubric_version: "1.1.0"
+rubric_version: "1.2.0"
 
 # 全局默认维度集（= procedural 旧 10 维，等价旧行为）。lanes 内可覆盖。
 # 这是 grader 在无 lane 信息时的默认维度集，保证旧行为零回归。
@@ -104,7 +104,7 @@ lanes:
   # 注：calibration_status=initial，权重为结构占位、待满仓校准回填（spec FR-010）。
   concept:
     calibration_status: initial
-    threshold: 6.5
+    threshold: 6.0
     dimensions:
       - name: "概念机制清晰度(H3)"
         weight: 3.5

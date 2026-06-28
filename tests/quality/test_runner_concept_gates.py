@@ -5,7 +5,7 @@ codex cross-review P1 修复验证：_run_quality_segments 在 concept 车道 gr
 
   - poisoned-trace（entailment=false）→ runner reject（error_class=poisoned_trace_entailment）。
   - entailment=None（grader 未评）→ concept fail-closed reject（entailment_not_evaluated）。
-  - 低加权分（<6.5）→ runner reject（weighted_score_below_threshold）。
+  - 低加权分（<6.0）→ runner reject（weighted_score_below_threshold）。
   - entailment=true + 高分 → runner converged=True（pass）。
   - procedural 不启 concept 门（entailment=None 仍过，零回归）。
 """
@@ -88,7 +88,7 @@ class TestRunnerEntailmentGate:
     def test_entailment_true_proceeds_to_weighted_score(self):
         """entailment=true → 进入加权分判定（不在此拒）。"""
         # 高分 → 过；这里验 entailment=true 不在 entailment 门拒
-        high_scores = {d: 1.0 for d in _CONCEPT_DIMS}  # 全 1.0 → 10.0 ≥6.5
+        high_scores = {d: 1.0 for d in _CONCEPT_DIMS}  # 全 1.0 → 10.0 ≥6.0
         grader = _grader(defects=[], entailment=True, dim_scores=high_scores)
         converged, error_class, _, _ = _run(grader)
         assert converged
@@ -97,30 +97,30 @@ class TestRunnerEntailmentGate:
 
 class TestRunnerWeightedScoreGate:
     def test_low_score_rejected(self):
-        """concept 加权分 <6.5 → runner reject（weighted_score_below_threshold）。"""
-        # 只 H3=1.0，其它 0 → 3.5 <6.5
+        """concept 加权分 <6.0 → runner reject（weighted_score_below_threshold）。"""
+        # 只 H3=1.0，其它 0 → 3.5 <6.0
         low = {d: (1.0 if "H3" in d else 0.0) for d in _CONCEPT_DIMS}
         grader = _grader(defects=[], entailment=True, dim_scores=low)
         converged, error_class, _, meta = _run(grader)
         assert not converged
         assert error_class == "weighted_score_below_threshold"
         assert meta["weighted_score"] == 3.5
-        assert meta["weighted_threshold"] == 6.5
+        assert meta["weighted_threshold"] == 6.0
 
     def test_high_score_passes(self):
-        """concept 全维满分 → 加权分 10.0 ≥6.5 → runner converged=True。"""
+        """concept 全维满分 → 加权分 10.0 ≥6.0 → runner converged=True。"""
         high = {d: 1.0 for d in _CONCEPT_DIMS}
         grader = _grader(defects=[], entailment=True, dim_scores=high)
         converged, _, _, _ = _run(grader)
         assert converged
 
     def test_threshold_boundary(self):
-        """总分恰 6.5（边界）→ >= threshold → pass（pass meta 不含 weighted_score，只有 reject 才含）。"""
+        """总分 6.5（>= threshold 6.0 → pass；pass meta 不含 weighted_score，只有 reject 才含）。"""
         # H3=0 + 其它满分 → 10-3.5=6.5
         boundary = {d: (0.0 if "H3" in d else 1.0) for d in _CONCEPT_DIMS}
         grader = _grader(defects=[], entailment=True, dim_scores=boundary)
         converged, _, _, _ = _run(grader)
-        # 6.5 >= 6.5 → pass（pass meta 不带 weighted_score，故不在此断言该 key）
+        # 6.5 >= 6.0 → pass（pass meta 不带 weighted_score，故不在此断言该 key）
         assert converged
 
 
@@ -203,7 +203,7 @@ class TestRepairConvergedConceptGates:
 
         defect = Defect(dimension="x", location="L", defect="d", suggestion="s")
         initial_grader = _grader(defects=[defect], entailment=True, dim_scores={})
-        # final 只 H3=1.0 → 3.5 <6.5
+        # final 只 H3=1.0 → 3.5 <6.0
         low = {d: (1.0 if "H3" in d else 0.0) for d in _CONCEPT_DIMS}
         repair = _repair_result(entailment=True, dim_scores=low)
         with patch("src.akb2.quality.checks_structural.run_candidate_self_gate", return_value=[]), \

@@ -1229,12 +1229,26 @@ def _trace_root_from_failures(failures_path: str, initial_text: str) -> Path:
     return root
 
 
+# P0-5 观测标记：repair 逐轮 trace 含 final_defects 快照（spec FR-008 / 宪法 P4
+# 失败可见）。置 True 表示观测已落地，test_admission_observability 据此转真。
+# 仅观测字段，不参与收敛判定（判定仍由 current_defects 驱动）。
+REPAIR_TRACE_HAS_ROUND_FINAL_DEFECTS: bool = True
+
+
 def _write_repair_trace(
     trace_root: Path,
     round_num: int,
     payload: dict[str, Any],
+    final_defects: list[Any] | None = None,
 ) -> str:
-    """写单轮 repair trace，返回 artifact 路径。"""
+    """写单轮 repair trace，返回 artifact 路径。
+
+    final_defects：本轮结束时剩余缺陷（Defect 列表，观测用）。非 None 时注入
+    payload["final_defects"] = _defects_to_summary(final_defects)，使逐轮缺陷演化
+    可读（第 N 轮 final_defects → 第 N+1 轮 input_defects）。仅观测，不参与收敛判定。
+    """
+    if final_defects is not None:
+        payload["final_defects"] = _defects_to_summary(final_defects)
     path = trace_root / f"round-{round_num}.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return str(path)
@@ -1575,7 +1589,9 @@ def run_repair_loop(
                 if grader_result.suspended:
                     trace_payload["status"] = "grader_suspended"
                     trace_payload["after_text_hash"] = _compute_text_hash(current_text)
-                    trace_paths.append(_write_repair_trace(trace_root, round_num, trace_payload))
+                    trace_paths.append(
+                        _write_repair_trace(trace_root, round_num, trace_payload, current_defects)
+                    )
                     return _fail_closed(
                         failures_path,
                         current_text,
@@ -1589,7 +1605,9 @@ def run_repair_loop(
                 if grader_result.fallback_used:
                     trace_payload["status"] = "grader_degraded"
                     trace_payload["after_text_hash"] = _compute_text_hash(current_text)
-                    trace_paths.append(_write_repair_trace(trace_root, round_num, trace_payload))
+                    trace_paths.append(
+                        _write_repair_trace(trace_root, round_num, trace_payload, current_defects)
+                    )
                     return _fail_closed(
                         failures_path,
                         current_text,
@@ -1604,7 +1622,9 @@ def run_repair_loop(
                 if not current_defects:
                     trace_payload["status"] = "converged_after_deterministic"
                     trace_payload["after_text_hash"] = _compute_text_hash(current_text)
-                    trace_paths.append(_write_repair_trace(trace_root, round_num, trace_payload))
+                    trace_paths.append(
+                        _write_repair_trace(trace_root, round_num, trace_payload, current_defects)
+                    )
                     return {
                         "converged": True,
                         "rounds": round_num,
@@ -1678,7 +1698,9 @@ def run_repair_loop(
             trace_payload["status"] = "route_failed"
             trace_payload["route_error"] = str(exc)
             trace_payload["after_text_hash"] = _compute_text_hash(current_text)
-            trace_paths.append(_write_repair_trace(trace_root, round_num, trace_payload))
+            trace_paths.append(
+                _write_repair_trace(trace_root, round_num, trace_payload, current_defects)
+            )
             return _fail_closed(
                 failures_path,
                 current_text,
@@ -1697,7 +1719,9 @@ def run_repair_loop(
             # 但仍继续下一轮（可能修复指令不同）
             trace_payload["status"] = "discarded_changed_sections"
             trace_payload["after_text_hash"] = _compute_text_hash(current_text)
-            trace_paths.append(_write_repair_trace(trace_root, round_num, trace_payload))
+            trace_paths.append(
+                _write_repair_trace(trace_root, round_num, trace_payload, current_defects)
+            )
             continue
 
         # 更新当前文本
@@ -1718,7 +1742,9 @@ def run_repair_loop(
             current_defects = new_a_defects
             trace_payload["status"] = "a_defects_remaining"
             trace_payload["after_text_hash"] = _compute_text_hash(current_text)
-            trace_paths.append(_write_repair_trace(trace_root, round_num, trace_payload))
+            trace_paths.append(
+                _write_repair_trace(trace_root, round_num, trace_payload, current_defects)
+            )
             continue
 
         # A 通过，过 B 层
@@ -1736,7 +1762,9 @@ def run_repair_loop(
             # B 层挂起 → fail-closed
             trace_payload["status"] = "grader_suspended"
             trace_payload["after_text_hash"] = _compute_text_hash(current_text)
-            trace_paths.append(_write_repair_trace(trace_root, round_num, trace_payload))
+            trace_paths.append(
+                _write_repair_trace(trace_root, round_num, trace_payload, current_defects)
+            )
             return _fail_closed(
                 failures_path,
                 current_text,
@@ -1751,7 +1779,9 @@ def run_repair_loop(
         if grader_result.fallback_used:
             trace_payload["status"] = "grader_degraded"
             trace_payload["after_text_hash"] = _compute_text_hash(current_text)
-            trace_paths.append(_write_repair_trace(trace_root, round_num, trace_payload))
+            trace_paths.append(
+                _write_repair_trace(trace_root, round_num, trace_payload, current_defects)
+            )
             return _fail_closed(
                 failures_path,
                 current_text,
@@ -1769,7 +1799,9 @@ def run_repair_loop(
             # 收敛: 无缺陷
             trace_payload["status"] = "converged"
             trace_payload["after_text_hash"] = _compute_text_hash(current_text)
-            trace_paths.append(_write_repair_trace(trace_root, round_num, trace_payload))
+            trace_paths.append(
+                _write_repair_trace(trace_root, round_num, trace_payload, current_defects)
+            )
             return {
                 "converged": True,
                 "rounds": round_num,
@@ -1782,7 +1814,9 @@ def run_repair_loop(
             }
         trace_payload["status"] = "b_defects_remaining"
         trace_payload["after_text_hash"] = _compute_text_hash(current_text)
-        trace_paths.append(_write_repair_trace(trace_root, round_num, trace_payload))
+        trace_paths.append(
+            _write_repair_trace(trace_root, round_num, trace_payload, current_defects)
+        )
 
     # 3 轮耗尽后仍有缺陷 → fail-closed
     return _fail_closed(

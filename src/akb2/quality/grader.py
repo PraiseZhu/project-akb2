@@ -220,13 +220,28 @@ def _build_grader_weight_floor_note(content_lane: str = "") -> str:
         for f in spec.get("integrity_floor", [])
         if isinstance(f, dict)
     ]
+    is_concept = str(content_lane or "").strip().lower() == "concept"
+    # SC-1（p0-1）：concept 车道 prompt 诚实显示 lane threshold（6.0），不用顶层 6.5 误导；
+    # 并钉逐维 score 必出 0~1（不是 0~10），供加权分复算。
+    lane_threshold = lane_cfg.get("threshold") if isinstance(lane_cfg, dict) else None
+    display_threshold = (
+        lane_threshold
+        if isinstance(lane_threshold, (int, float))
+        else spec.get("threshold")
+    )
+    score_note = (
+        "每个维度必须附 0~1 的 score（0=完全不达该维、1=完全达标，不是 0~10），"
+        "供加权分复算；可附 integrity_floor 逐项 pass/fail。"
+        if is_concept
+        else "可选：每个维度可附 score 数值；可附 integrity_floor 逐项 pass/fail。"
+    )
     return (
         "维度权重（rubric_version "
-        f"{spec.get('rubric_version')}，通过阈值 threshold={spec.get('threshold')}）:\n"
+        f"{spec.get('rubric_version')}，通过阈值 threshold={display_threshold}）:\n"
         + "\n".join(weight_lines)
         + "\n完整性地板（任一不达即拒，不可被高分补偿）:\n"
         + "\n".join(floor_lines)
-        + "\n可选：每个维度可附 score 数值；可附 integrity_floor 逐项 pass/fail。"
+        + "\n" + score_note
     )
 
 
@@ -315,6 +330,20 @@ def _build_grader_schema(content_lane: str = "") -> dict[str, Any]:
     step-3 SC-3f/A3-6：维度 enum 按 lane 动态派生（concept=7 维，procedural=10 维）。
     """
     floor_names = [f.get("name") for f in _load_rubric_spec().get("integrity_floor", [])]
+    # SC-1（p0-1）：concept 车道逐维 score 必填 + 钉 0~1 尺度（0=完全不达、1=完全达标），
+    # 强制模型产出逐维 score 供加权分复算；procedural 保持可选零回归（不改判定行为）。
+    is_concept = str(content_lane or "").strip().lower() == "concept"
+    score_field: dict[str, Any] = {
+        "type": "number",
+        "description": (
+            "该维度评分（0~1，0=完全不达该维、1=完全达标，concept 车道必填）"
+            if is_concept
+            else "该维度评分（可选，仅记录）"
+        ),
+    }
+    if is_concept:
+        score_field["minimum"] = 0
+        score_field["maximum"] = 1
     return {
         "type": "object",
         "properties": {
@@ -329,11 +358,8 @@ def _build_grader_schema(content_lane: str = "") -> dict[str, Any]:
                             "enum": _dimensions_for_lane(content_lane),
                         },
                         "pass": {"type": "boolean"},
-                        # Step.3 扩展：逐维 score（可选，仅记录，不参与本 step 判定）
-                        "score": {
-                            "type": "number",
-                            "description": "该维度评分（可选，仅记录）",
-                        },
+                        # Step.3 扩展：逐维 score（concept 车道必填 + 0~1，procedural 可选）
+                        "score": score_field,
                         "defects": {
                             "type": "array",
                             "items": {
@@ -357,7 +383,11 @@ def _build_grader_schema(content_lane: str = "") -> dict[str, Any]:
                             },
                         },
                     },
-                    "required": ["dimension", "pass", "defects"],
+                    "required": (
+                        ["dimension", "pass", "defects", "score"]
+                        if is_concept
+                        else ["dimension", "pass", "defects"]
+                    ),
                     "additionalProperties": False,
                 },
             },
@@ -481,8 +511,13 @@ def _parse_grader_output(
 
     defects: list[Defect] = []
     seen_dimensions: set[str] = set()
-    # Step.4：必须含 {dimension,pass,defects}，可选含 score（扩展字段）；其他未知键拒。
-    _dim_required = {"dimension", "pass", "defects"}
+    # SC-1（p0-1）：concept 车道逐维 score 必填 + 0~1（强制产出，拒缺/非数值/越界 fail-closed，
+    # 不静默当 0）；procedural 保持可选零回归。其他未知键拒。
+    is_concept = str(content_lane or "").strip().lower() == "concept"
+    _dim_required = (
+        {"dimension", "pass", "defects", "score"} if is_concept
+        else {"dimension", "pass", "defects"}
+    )
     _dim_allowed = _dim_required | {"score"}
     for dim in dimensions:
         if not isinstance(dim, dict):
@@ -494,6 +529,14 @@ def _parse_grader_output(
         if dim_name is None:
             return [], False
         seen_dimensions.add(dim_name)
+        # SC-1（p0-1）：concept 每维 score 必须是合法 0~1 数值
+        # （拒 bool/非数值/越界 fail-closed，杜绝静默当 0 放行）
+        if is_concept:
+            score_val = dim.get("score")
+            if isinstance(score_val, bool) or not isinstance(score_val, (int, float)):
+                return [], False
+            if score_val < 0 or score_val > 1:
+                return [], False
         passed = dim["pass"]
         if not isinstance(passed, bool):
             return [], False
@@ -627,12 +670,22 @@ def _parse_grader_extensions(
         for f in floor_raw
         if isinstance(f, dict) and "name" in f and "pass" in f
     ]
+    is_concept = str(content_lane or "").strip().lower() == "concept"
     dim_scores: dict[str, float] = {}
     for dim in data.get("dimensions", []) or []:
         if isinstance(dim, dict) and "score" in dim:
             name = _canonical_dimension_name(dim.get("dimension"), content_lane)
-            if name is not None and isinstance(dim["score"], (int, float)):
-                dim_scores[name] = float(dim["score"])
+            score_val = dim["score"]
+            if (
+                name is not None
+                and isinstance(score_val, (int, float))
+                and not isinstance(score_val, bool)
+            ):
+                # SC-1（p0-1）：concept 车道越界 score 视为缺 score（parse 层已拒，
+                # 此处防御性兜底 → 缺维 fail-closed 由 compute_weighted_score 兜底）
+                if is_concept and (score_val < 0 or score_val > 1):
+                    continue
+                dim_scores[name] = float(score_val)
 
     # weighted_total = Σ(score_i × weight_i)，权重取自 rubric.yaml（改 weight 即改此值）
     weighted_total: float | None = None

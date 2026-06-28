@@ -103,17 +103,17 @@ class TestNegativeSamples:
 
         # 使用 LLMResponse 直接构造 mock 响应
         mock_llm = make_mock_route_llm({
-            "gemini-flash:0": LLMResponse(
+            "deepseek-v4-pro:0": LLMResponse(
                 content={"pass": True, "reason": "命中 AI Agent 领域"},
                 model_used="gemini-2.5-flash",
                 calls_used=1,
             ),
-            "gemini-flash:1": LLMResponse(
+            "deepseek-v4-pro:1": LLMResponse(
                 content={"pass": True, "reason": "含 agent 设计模式"},
                 model_used="gemini-2.5-flash",
                 calls_used=1,
             ),
-            "gemini-flash:2": LLMResponse(
+            "deepseek-v4-pro:2": LLMResponse(
                 content={"pass": False, "reason": "与既有 wiki 高度重叠，零增量"},
                 model_used="gemini-2.5-flash",
                 calls_used=1,
@@ -152,17 +152,17 @@ class TestNegativeSamples:
         ledger_path = tmp_path / "test-ledger.jsonl"
 
         mock_llm = make_mock_route_llm({
-            "gemini-flash:0": LLMResponse(
+            "deepseek-v4-pro:0": LLMResponse(
                 content={"pass": True, "reason": "命中 AI Agent 领域"},
                 model_used="gemini-2.5-flash",
                 calls_used=1,
             ),
-            "gemini-flash:1": LLMResponse(
+            "deepseek-v4-pro:1": LLMResponse(
                 content={"pass": False, "reason": "纯新闻播报，无可执行步骤或代码"},
                 model_used="gemini-2.5-flash",
                 calls_used=1,
             ),
-            "gemini-flash:2": LLMResponse(
+            "deepseek-v4-pro:2": LLMResponse(
                 content={"pass": True, "reason": "无既有 wiki 引用，默认通过"},
                 model_used="gemini-2.5-flash",
                 calls_used=1,
@@ -222,17 +222,17 @@ Just news, no how-to content.
 """
 
         mock_llm = make_mock_route_llm({
-            "gemini-flash:0": LLMResponse(
+            "deepseek-v4-pro:0": LLMResponse(
                 content={"pass": True, "reason": "命中领域"},
                 model_used="gemini-2.5-flash",
                 calls_used=1,
             ),
-            "gemini-flash:1": LLMResponse(
+            "deepseek-v4-pro:1": LLMResponse(
                 content={"pass": False, "reason": "无 how-to"},
                 model_used="gemini-2.5-flash",
                 calls_used=1,
             ),
-            "gemini-flash:2": LLMResponse(
+            "deepseek-v4-pro:2": LLMResponse(
                 content={"pass": True, "reason": "默认通过"},
                 model_used="gemini-2.5-flash",
                 calls_used=1,

@@ -79,7 +79,7 @@ def test_parser_accepts_correct_concept_shape():
     dims = _dimensions_for_lane("concept")
     data = {
         "dimensions": [
-            {"dimension": d, "pass": True, "defects": []} for d in dims
+            {"dimension": d, "pass": True, "defects": [], "score": 0.8} for d in dims
         ],
         "interpretation_entailment": True,
     }

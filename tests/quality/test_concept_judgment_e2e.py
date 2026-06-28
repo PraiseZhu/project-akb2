@@ -103,7 +103,7 @@ def _run_judgment(extract: dict, grader_content: dict) -> tuple[bool, str]:
     if grader.interpretation_entailment is False:
         return False, "grader:poisoned-trace(entailment=false)"
 
-    # 3. 加权分（<6.5 → 拒）
+    # 3. 加权分（<6.0 → 拒）
     score = compute_weighted_score(grader.dimension_scores, "concept")
     if not score.passed:
         return False, f"score:{score.score}<{score.threshold}"
