@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.0",
+  "stage": "plan",
+  "parent_run_id": "loop1-content-quality-plan-20260628",
+  "batch_id": "batch-plan-w1",
+  "recorded_at": "2026-06-28T11:30:00Z",
+  "child_agent_count": 2,
+  "max_parallel": 2,
+  "child_jobs": [
+    {
+      "job_id": "t-p0-planner",
+      "result_path": "plans/gd/2026-06-28-loop1-content-quality/child-drafts/p0-draft.md",
+      "result_hash": "ade2513e7303519c1f3ad26dc03b06fdb1dce4b8987a8c21491766eaecbac400",
+      "status": "completed"
+    },
+    {
+      "job_id": "t-v2-planner",
+      "result_path": "plans/gd/2026-06-28-loop1-content-quality/child-drafts/v2-draft.md",
+      "result_hash": "20ddc854759a820699c5d6d7ed1e84748dc2bc0cd5bbaa747ae166a474cc357f",
+      "status": "completed"
+    }
+  ],
+  "main_agent_merge": {
+    "merge_report_path": "plans/gd/2026-06-28-loop1-content-quality/reports/merge-report.md",
+    "merge_report_hash": "ccceece65dc91929ced66fe16c3cd633bd006e16311094ab41c26dbe6a7a18d2",
+    "final_decision": "APPROVED",
+    "blocking_buckets": []
+  }
+}
