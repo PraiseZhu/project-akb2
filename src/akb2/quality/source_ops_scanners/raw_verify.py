@@ -100,6 +100,54 @@ _RESERVED_LITERAL_TOKENS: frozenset[str] = frozenset(
 )
 
 # ---------------------------------------------------------------------------
+# Prose / reference literals — excluded from the INLINE fabrication recheck
+# ---------------------------------------------------------------------------
+#
+# ``_BACKTICK_COMMAND_RE`` captures EVERY inline backtick span. SC-4 deliberately
+# rechecks all *technical* literals (commands, configs, code) against raw — that
+# is correct and must be preserved. But markdown backticks also wrap PROSE and
+# REFERENCES, which are not copy-pasteable technical literals and whose absence
+# from raw is not "fabrication". Two such shapes false-flagged real concept
+# pages in full-warehouse calibration #0/#2/#8/#10/#17:
+#   - numbered-list PROSE wrapped in backticks: ``1. Pick the next task`` — a
+#     step DESCRIPTION (the ``1. `` sits INSIDE the backtick span), not a
+#     command. (Distinct from ``1. ... `cmd` `` where ``1.`` is the line prefix
+#     OUTSIDE the backticks and the captured literal is the real ``cmd``.)
+#   - repo slugs: ``owner/repo`` — a citation/reference, not a command.
+#
+# Everything else (``trigger={...}`` config, ``deploy-preview --target`` /
+# ``configure --env prod`` commands, arbitrary tool invocations, code) stays
+# fully rechecked, so the SC-4 "every grounded technical literal" intent and the
+# dangerous-command blocklist are untouched. FENCED ```` ```bash ```` blocks are
+# also unchanged (every line still fully rechecked — no fenced-bypass reopen).
+_NUMBERED_PROSE_PREFIX_RE = re.compile(r"^\s*\d+[.)]\s")
+# Repo slug ``owner/repo``: exactly one slash, word/.-/_ on both sides, no space.
+# A reference, not a command. File-path-shaped tokens that ARE commands (e.g.
+# ``./build.sh arg``) carry a space/arg and so are not matched here.
+_REPO_SLUG_RE = re.compile(r"^[A-Za-z0-9][\w.-]*/[\w.-]+$")
+
+
+def _is_prose_or_reference_literal(literal: str) -> bool:
+    """True for backtick literals that are PROSE/REFERENCE, not technical literals.
+
+    Such literals are excluded from the raw fabrication recheck (their absence
+    from raw is not a fabricated command/config/code):
+      - numbered-list prose wrapped in backticks (``1. Pick the next task``);
+      - repo slugs (``owner/repo``).
+
+    All other literals — configs, code, commands, arbitrary tool invocations —
+    stay fully rechecked, preserving SC-4. The dangerous-command blocklist still
+    runs on excluded literals too (caller responsibility).
+    """
+    s = literal.strip()
+    if not s:
+        return False
+    if _NUMBERED_PROSE_PREFIX_RE.match(s):
+        return True
+    return bool(_REPO_SLUG_RE.match(s))
+
+
+# ---------------------------------------------------------------------------
 # Dangerous-command blocklist (附加拦截层)
 # ---------------------------------------------------------------------------
 #
@@ -504,8 +552,25 @@ def verify_commands_in_raw(
     violations: list[Violation] = []
 
     for m in _BACKTICK_COMMAND_RE.finditer(candidate_body):
+        literal = m.group(1)
+        if _is_prose_or_reference_literal(literal):
+            # Prose (numbered step) or reference (repo slug) — not a technical
+            # literal, so absence from raw is not fabrication. Still intercept
+            # an unmistakably destructive literal hiding here (dangerous
+            # blocklist stays universal).
+            stripped = literal.strip()
+            if not _is_reserved_token(stripped) and _is_dangerous_command(stripped):
+                violations.append(
+                    Violation(
+                        command=stripped,
+                        reason="含危险操作（破坏性/权限/网络/凭据）",
+                        candidate_offset=m.start(1),
+                        raw_nearest_line=None,
+                    )
+                )
+            continue
         violation = _classify_command_violation(
-            m.group(1),
+            literal,
             raw_text,
             candidate_offset=m.start(1),
         )
