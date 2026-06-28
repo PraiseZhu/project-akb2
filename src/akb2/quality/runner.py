@@ -871,6 +871,11 @@ def _check_concept_hard_gates(
              "weighted_score": score_result.score, "weighted_threshold": score_result.threshold,
              "rejection": "weighted_score_below_threshold"},
         )
+    # wA#3：通过时把异族硬判证据写回 base_meta，使落盘 PASS artifact 带证据（非 null），
+    # 不丢 interpretation_entailment / weighted_score 证据链（护栏⑥）。
+    base_meta["interpretation_entailment"] = True
+    base_meta["weighted_score"] = score_result.score
+    base_meta["weighted_threshold"] = score_result.threshold
     return None
 
 
@@ -1086,6 +1091,10 @@ def _run_quality_segments(
             )
             if _gate is not None:
                 return (False, _gate[0], _gate[1], _gate[2])
+            # wA#3：concept 通过时把硬门回填的证据并回 grader_meta，落盘 PASS 带证据。
+            for _ev in ("interpretation_entailment", "weighted_score", "weighted_threshold"):
+                if _ev in _base:
+                    grader_meta[_ev] = _base[_ev]
         _persist_grader_pass(grader_meta)
         meta = {
             "a_defect_count": 0, "a_defect_summary": [],
@@ -1159,6 +1168,10 @@ def _run_quality_segments(
     )
     if _gate is not None:
         return (False, _gate[0], _gate[1], _gate[2])
+    # wA#3：repair 收敛通过时把硬门回填的证据并回 effective_grader_meta，落盘 PASS 带证据。
+    for _ev in ("interpretation_entailment", "weighted_score", "weighted_threshold"):
+        if _ev in meta_final:
+            effective_grader_meta[_ev] = meta_final[_ev]
     _persist_grader_pass(effective_grader_meta)
     return True, "", "", meta_final
 
