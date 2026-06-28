@@ -1113,6 +1113,8 @@ def _run_quality_segments(
         golden_sample_text=golden_text,
         raw_text=raw_content,
         content_lane=content_lane,
+        known_concepts=known_concepts,
+        pending_queue=pending_queue,
     )
 
     repair_rounds = repair_result.get("rounds", 0)

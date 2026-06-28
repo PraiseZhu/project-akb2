@@ -1451,11 +1451,18 @@ def run_repair_loop(
     golden_sample_text: str | None = None,
     raw_text: str | None = None,
     content_lane: str = "",
+    known_concepts: list[str] | None = None,
+    pending_queue: list[str] | None = None,
 ) -> dict[str, Any]:
     """执行定点修复循环。
 
     content_lane（step-1 透传字段）：透传给修复轮内的 run_grader_detailed regrade，
     仅随评分记录、不参与修复触发/收敛判定（lane-aware repair 属条件包 C）。
+
+    known_concepts / pending_queue（B1 修复）：vault loader 提供的图谱解析上下文，
+    透传给修复轮内的 run_candidate_self_gate，使 repair 轮的 A4 图谱 resolve 与主链
+    首过 self-gate 用**同一** known/pending 输入。旧版 repair 不传（用 None 复验），
+    concept 稿的有效概念边在 repair 轮可能被误判 unresolved（与首过语义不一致）。
 
     流程:
         1. 合并 A+B 缺陷清单
@@ -1546,7 +1553,11 @@ def run_repair_loop(
             deterministic_only = all(_is_deterministic_repair_defect(d) for d in current_defects)
             # 确定性修复后先过 A 层；能直接修掉的缺陷不再喂给 LLM 猜。
             new_a_defects = checks_structural.run_candidate_self_gate(
-                current_text, raw_text, content_lane=content_lane
+                current_text,
+                raw_text,
+                pending_queue=pending_queue,
+                known_concepts=known_concepts,
+                content_lane=content_lane,
             )
             trace_payload["a_defects_after"] = _defects_to_summary(new_a_defects)
             graded_after_deterministic = False
@@ -1694,7 +1705,11 @@ def run_repair_loop(
 
         # 重新过 A 层
         new_a_defects = checks_structural.run_candidate_self_gate(
-            current_text, raw_text, content_lane=content_lane
+            current_text,
+            raw_text,
+            pending_queue=pending_queue,
+            known_concepts=known_concepts,
+            content_lane=content_lane,
         )
         trace_payload["a_defects_after"] = _defects_to_summary(new_a_defects)
 

@@ -1354,15 +1354,18 @@ class TestSGMustCoverCallSiteProvenance:
         assert "raw_content = None" in src
 
     def test_repair_callsites_use_raw_text_param(self):
-        """repair.py 两处 self-gate 调用：raw_text 同源 + P3 透传 content_lane（w6/w9）。"""
+        """repair.py 两处 self-gate 调用：raw_text 同源 + 透传 content_lane + B1 透传
+        known_concepts/pending_queue（w6/w9 + B1）。"""
         src = self._read(_CALLSITE_SOURCE_PATHS["repair"])
-        # P3：两处 self-gate 都透传 content_lane（concept 稿不再被按 procedural 默认复验）。
-        # 调用已拆行（E501 修复），匹配参数行而非整调用串。
-        assert src.count(
-            "current_text, raw_text, content_lane=content_lane"
-        ) == 2
-        # raw_text 是 run_repair_loop 的参数（非局部拼接/截断）。
+        # B1：两处 self-gate 都透传 known_concepts/pending_queue/content_lane，使
+        # repair 轮图谱 resolve 与主链首过 self-gate 用同一上下文（不再用 None 复验）。
+        assert src.count("known_concepts=known_concepts,") == 2
+        assert src.count("pending_queue=pending_queue,") == 2
+        assert src.count("content_lane=content_lane,") == 2
+        # raw_text / known_concepts / pending_queue 是 run_repair_loop 的参数（非局部拼接）。
         assert "raw_text: str | None = None," in src
+        assert "known_concepts: list[str] | None = None," in src
+        assert "pending_queue: list[str] | None = None," in src
 
     def test_runner_callsite_uses_non_none_raw_content(self):
         """runner.py: raw_content 是 _run_quality_segments 的非可选 str 参数，源于磁盘读。
