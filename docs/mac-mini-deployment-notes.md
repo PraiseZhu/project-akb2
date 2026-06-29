@@ -132,6 +132,7 @@ ls "/Volumes/AKB2/Obsidian/Praise Space/AKB2.0/"
 | B1 | 用户名/HOME 验证 | `echo $HOME` 应为 `/Users/praise`，否则改 plist EnvironmentVariables 中的 PATH 和 find-python311.sh 的 HOME 探测 | pyenv 路径硬编码，HOME 不同即失效 |
 | B2 | pyenv 装好 3.11+ | `pyenv versions \| grep "3\.1[1-9]"` | 找不到 Python 整个链路死 |
 | B3 | `pip install -e .` 成功 | `pip list \| grep -i akb2` | 模块 import 失败 |
+| B3a | defuddle CLI 可用 | `defuddle parse --help`；推荐包：`defuddle@0.19.1`（`npm install -g defuddle`）。当前兼容现状：`defuddle-cli@0.7.0` 也提供 `defuddle` 命令，但该包已 deprecated，长期策略应迁到 `defuddle` 本体。 | 主链路抓取层静态页抽取失效，intake 会进入 fallback 或 fail-closed |
 | B4 | 时区设置 | `sudo systemsetup -gettimezone` = Asia/Shanghai | 07:30 实际触发时间错 |
 | B5 | AKB2 磁盘挂载 + Syncthing folder 配好 + Obsidian 打开新 vault | Finder / Obsidian / Syncthing 检查 | 写入成功但其它 Mac 或 Obsidian 看不到 |
 | B6 | VAULT_ROOT 父目录存在且可写 | `test -w "/Volumes/AKB2/Obsidian"` | pipeline fail |

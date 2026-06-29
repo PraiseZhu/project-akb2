@@ -332,6 +332,10 @@ def run_intake(
 
     for source in sources:
         slug = source.get("slug", "unknown")
+        status = str(source.get("status", "trial") or "trial").strip().lower()
+        if status in {"down", "disabled"}:
+            logger.info("Skipping source=%s status=%s", slug, status)
+            continue
 
         # 发现文章（RSS feed；feed_content=None 表示真实抓取）
         try:

@@ -20,12 +20,12 @@ sources:
 
   - slug: anthropic-engineering
     domain: anthropic.com
-    feed_url: https://www.anthropic.com/engineering/feed
+    feed_url:
     listing_url: https://www.anthropic.com/engineering
     rate_limit: 3600
-    status: trial
+    status: down
     category: core
-    notes: "AI Agent / Claude 工程团队官方博客"
+    notes: "AI Agent / Claude 工程团队官方博客；2026-06 实测无可用 RSS/Atom feed，原 /engineering/feed 为 404，暂禁 feed 发现，待官方提供 feed 后恢复 trial。"
 
   - slug: openai-blog
     domain: openai.com

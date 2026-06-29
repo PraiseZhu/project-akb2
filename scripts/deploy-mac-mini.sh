@@ -76,6 +76,31 @@ abort_if_failed() {
 # sed 替换值转义(& | \ 都可能破坏 sed 表达式)
 sed_escape() { printf '%s' "$1" | sed -e 's/[&|\\]/\\&/g'; }
 
+launchctl_domain_label() { printf 'gui/%s/%s' "$UID_N" "$LABEL"; }
+
+wait_for_launchctl_teardown() {
+  _domain_label="$(launchctl_domain_label)"
+  _last_err=""
+  for _attempt in 1 2 3 4 5 6 7 8 9 10; do
+    _last_err="$(launchctl print "$_domain_label" 2>&1 >/dev/null || true)"
+    if printf '%s\n' "$_last_err" | grep -qiE 'Could not find service|not found'; then
+      ok "旧服务已 teardown:${_domain_label}"
+      return 0
+    fi
+    sleep 1
+  done
+  fail "bootout 后等待 ${_domain_label} teardown 超时;最后 launchctl print stderr:${_last_err:-<empty>}"
+  return 1
+}
+
+bootstrap_launchagent() {
+  if _bootstrap_err="$(launchctl bootstrap "gui/$UID_N" "$DST" 2>&1 >/dev/null)"; then
+    return 0
+  fi
+  fail "$LABEL bootstrap 失败:${_bootstrap_err:-<no stderr>}"
+  return 1
+}
+
 # ──────────────────────────────────────────────────────────────────────────
 # 1) 前置检查
 # ──────────────────────────────────────────────────────────────────────────
@@ -175,6 +200,11 @@ if [[ "$FAIL_COUNT" -eq 0 && -n "${PY:-}" ]]; then
   else
     warn "B-dep(软)scrapling 缺失:仅影响 intake 抓取,runner 处理既有 raw 队列不受影响"
   fi
+  if command -v defuddle >/dev/null 2>&1 && defuddle parse --help >/dev/null 2>&1; then
+    ok "B-dep defuddle CLI 可用:$(command -v defuddle)"
+  else
+    fail "B-dep defuddle CLI 缺失或不可执行:请安装 defuddle(推荐 npm install -g defuddle；当前兼容 defuddle-cli@0.7.0)"
+  fi
   if "$PY" -c "import playwright" 2>/dev/null; then
     info "B-dep(软)playwright 在(StealthyFetcher;还需 $PY -m playwright install chromium)"
   else
@@ -245,11 +275,12 @@ fi
 
 # 回滚:恢复上次 good(或首装则移除新 plist)
 rollback() {
-  launchctl bootout "gui/$UID_N/$LABEL" 2>/dev/null || true
+  launchctl bootout "$(launchctl_domain_label)" 2>/dev/null || true
+  wait_for_launchctl_teardown || true
   if [[ "$HAD_OLD" -eq 1 && -n "$BACKUP" && -f "$BACKUP" ]]; then
     mv -f "$BACKUP" "$DST"; BACKUP=""
     # 诚实报告旧服务是否真的重新加载成功(RunAtLoad=true,bootstrap 即拉起)
-    if launchctl bootstrap "gui/$UID_N" "$DST" 2>/dev/null; then
+    if bootstrap_launchagent; then
       printf '↩️  已恢复旧 plist 并重新加载成功\n' >&2
     else
       printf '↩️  已恢复旧 plist,但 launchctl 重新加载失败,需手动 bootstrap 旧服务\n' >&2
@@ -264,9 +295,22 @@ rollback() {
 mv -f "$TMP_PLIST" "$DST"; TMP_PLIST=""
 ok "plist 原子写入:$DST"
 
-# bootout 旧 + bootstrap 新
-launchctl bootout "gui/$UID_N/$LABEL" 2>/dev/null || true
-if ! launchctl bootstrap "gui/$UID_N" "$DST" 2>/dev/null; then
+# bootout 旧 + 等待 teardown + bootstrap 新
+if launchctl print "$(launchctl_domain_label)" >/dev/null 2>&1; then
+  if launchctl bootout "$(launchctl_domain_label)"; then
+    if ! wait_for_launchctl_teardown; then
+      rollback
+      abort_if_failed
+    fi
+  else
+    fail "$LABEL bootout 失败"
+    rollback
+    abort_if_failed
+  fi
+else
+  info "旧服务未加载,跳过 bootout"
+fi
+if ! bootstrap_launchagent; then
   fail "$LABEL bootstrap 失败 → 回滚"
   rollback
   abort_if_failed

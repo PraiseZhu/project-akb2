@@ -79,11 +79,17 @@ class TestSchemaScoreOptional:
         assert "score" not in dim_item["required"], "concept score 不应必填（G3 撤销）"
 
     def test_concept_schema_score_no_min_max(self):
-        """G3: concept schema score 无 minimum/maximum（撤销 0~1 钉尺度）。"""
+        """G3/Plan B：concept schema 已无 score 字段（移除以修 Azure strict 400）。
+
+        Plan B（用户选定）：Azure strict structured output 要求 strict object 的
+        required==properties；G3 要求 score 全车道 optional（不在 required）。二者冲突，
+        故从 schema properties 移除 score（concept weighted 由逐维 pass 派生、不读 score）。
+        G3 意图保留：score 不 required / 缺 score 不 fail / weighted 由 pass 派生 / 不读 score。
+        此改是因设计刻意变更（Plan B 移除 score）做的测试维护，非为掩盖回归。
+        """
         schema = grader._build_grader_schema("concept")
-        score_field = schema["properties"]["dimensions"]["items"]["properties"]["score"]
-        assert "minimum" not in score_field
-        assert "maximum" not in score_field
+        dim_props = schema["properties"]["dimensions"]["items"]["properties"]
+        assert "score" not in dim_props, "Plan B: concept schema 已移除 score 字段"
 
     def test_procedural_schema_score_optional(self):
         """procedural schema score 不在 required（零回归）。"""

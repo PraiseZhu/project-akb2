@@ -123,14 +123,20 @@ class TestRubricChangeChangesScoring:
 
 class TestSchemaExtended:
     def test_schema_extended(self) -> None:
-        """grader schema 含逐维 score + weighted_total + threshold + integrity_floor。"""
+        """grader schema 含 weighted_total + threshold + integrity_floor（Plan B 已移除逐维 score）。
+
+        Plan B（用户选定）：为修 Azure strict structured output 的 required==properties 约束
+        导致的 400，从 schema properties 移除逐维 score（concept weighted 由逐维 pass 派生、
+        不读 score）。G3/Step.3 意图保留：score 不 required、不读 score、weighted 由 pass 派生。
+        此改是因设计刻意变更（Plan B 移除 score）做的测试维护，非为掩盖回归。
+        """
         schema = grader._build_grader_schema()
         props = schema["properties"]
         assert "weighted_total" in props, "schema 应含 weighted_total"
         assert "threshold" in props, "schema 应含 threshold"
         assert "integrity_floor" in props, "schema 应含 integrity_floor 逐项"
         dim_props = props["dimensions"]["items"]["properties"]
-        assert "score" in dim_props, "维度对象应含可选 score"
+        assert "score" not in dim_props, "Plan B: 维度对象已移除 score 字段"
 
 
 class TestMissingLocationRejected:
