@@ -11,5 +11,5 @@ useDefault = true
 [allowlist]
 description = "raw-html 测试 fixture 含 sk- 前缀 CSS 类（非密钥）"
 paths = [
-    'evals/main-pipeline-quality/fixtures/raw-html/**',
+    'evals/main-pipeline-quality/fixtures/raw-html/.*',
 ]
