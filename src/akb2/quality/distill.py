@@ -49,6 +49,11 @@ MAX_EXTRACT_RETRIES: int = 3
 MAX_EXTRACT_CHARS: int = 50_000
 # how_steps 可执行下限：prompt 要求 ≥3 条 executable=true 且 command 非空（How 可执行性）
 HOW_STEPS_MIN_EXECUTABLE: int = 3
+# step-3 SC-3a/A3-5：concept 车道命名机制组件下限（F4 结构真相源）。
+# concept extract 改判 len(mechanism_components)≥3（替代 procedural 的 executable≥3 门）。
+CONCEPT_MIN_MECHANISM_COMPONENTS: int = 3
+# step-1 content_lane 枚举：concept（概念型）/ procedural（操作型，默认兼容）。
+CONTENT_LANE_CONCEPT: str = "concept"
 HOW_STEPS_MAX_RENDERED: int = 3
 CLAIMS_MAX_ITEMS: int = 5
 GATE_REASON_MAX_CHARS: int = 150
@@ -147,6 +152,13 @@ _EXTRACT_SCHEMA: dict[str, Any] = {
                         "type": "string",
                         "minLength": 4,
                     },
+                    # step-3 SC-3c：akb_interpretation claim 带 traces_to
+                    # （指向 source_grounded anchor）。
+                    # source_grounded claim 可省；layer① 地板由 integrity_floor 校验。
+                    "traces_to": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
                 },
                 "required": ["text", "anchor", "provenance", "evidence_gap"],
                 "additionalProperties": False,
@@ -173,8 +185,43 @@ _EXTRACT_SCHEMA: dict[str, Any] = {
                         "type": "string",
                         "enum": ["source_operation", "source_fact", "akb_interpretation"],
                     },
+                    # step-3 SC-3a：三级 how 标注（H1/H2/H3），非 required（旧响应兼容）。
+                    "how_level": {
+                        "type": "string",
+                        "enum": ["H1", "H2", "H3"],
+                    },
                 },
                 "required": ["instruction", "command", "executable"],
+                "additionalProperties": False,
+            },
+            "minItems": 0,
+        },
+        # step-3 SC-3a/A3-5：命名机制组件 + 因果边（concept F4 结构真相源）。
+        # 顶层 minItems=0 非 required——procedural 零回归（不产），concept 由
+        # _validate_extract_output 按 lane 硬卡 ≥3；F4 只读这两字段不反解 H3 标签。
+        "mechanism_components": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "minLength": 1},
+                    "role": {"type": "string"},
+                },
+                "required": ["name"],
+                "additionalProperties": False,
+            },
+            "minItems": 0,
+        },
+        "causal_edges": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "from": {"type": "string", "minLength": 1},
+                    "to": {"type": "string", "minLength": 1},
+                    "relation": {"type": "string"},
+                },
+                "required": ["from", "to"],
                 "additionalProperties": False,
             },
             "minItems": 0,
@@ -206,6 +253,11 @@ _EXTRACT_SCHEMA: dict[str, Any] = {
                     "provenance": {
                         "type": "string",
                         "enum": ["source_grounded", "akb_interpretation"],
+                    },
+                    # step-3 SC-3c：akb_interpretation argumentation 带 traces_to
+                    "traces_to": {
+                        "type": "array",
+                        "items": {"type": "string"},
                     },
                 },
                 "required": ["claim_anchor", "explanation", "provenance"],
@@ -273,6 +325,7 @@ _CLAIMS_SCHEMA: dict[str, Any] = {
                         "enum": ["source_grounded", "akb_interpretation"],
                     },
                     "evidence_gap": {"type": "string", "minLength": 4},
+                    "traces_to": {"type": "array", "items": {"type": "string"}},
                 },
                 "required": ["text", "anchor", "provenance", "evidence_gap"],
                 "additionalProperties": False,
@@ -297,8 +350,48 @@ _HOW_PARAMS_SCHEMA: dict[str, Any] = {
                     "instruction": {"type": "string", "minLength": 2},
                     "command": {"type": "string"},
                     "executable": {"type": "boolean"},
+                    # step-3 SC-3a：三级 how 标注（H1 命令级 / H2 数据流-状态-接口 /
+                    # H3 命名机制组件+因果边）。normalize 阶段（_normalize_how_step）
+                    # 必为每条注入 how_level（默认 H1），故此字段 required——出站 strict
+                    # schema 不留缺字段口子；concept 车道允许 H1==0（地板改判 F4 结构字段）。
+                    "how_level": {
+                        "type": "string",
+                        "enum": ["H1", "H2", "H3"],
+                    },
                 },
-                "required": ["instruction", "command", "executable"],
+                "required": ["instruction", "command", "executable", "how_level"],
+                "additionalProperties": False,
+            },
+            "minItems": 0,
+        },
+        # step-3 SC-3a/A3-5：命名机制组件数组（concept F4 的结构真相源）。
+        # 顶层 required + minItems=0——procedural 不产组件时为空数组（零回归），concept
+        # 由 _validate_extract_output 按 lane 硬卡 ≥3。组件 role normalize 必填（默认 ""）。
+        "mechanism_components": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "minLength": 1},
+                    "role": {"type": "string"},
+                },
+                "required": ["name", "role"],
+                "additionalProperties": False,
+            },
+            "minItems": 0,
+        },
+        # step-3 SC-3a/A3-5：因果边数组，from/to 必须指向 mechanism_components 的 name。
+        # F4 只读此结构字段判机制完整性，不从自然语言反解 H3 标签。relation normalize 必填。
+        "causal_edges": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "from": {"type": "string", "minLength": 1},
+                    "to": {"type": "string", "minLength": 1},
+                    "relation": {"type": "string"},
+                },
+                "required": ["from", "to", "relation"],
                 "additionalProperties": False,
             },
             "minItems": 0,
@@ -317,7 +410,7 @@ _HOW_PARAMS_SCHEMA: dict[str, Any] = {
             "minItems": 0,
         },
     },
-    "required": ["how_steps", "param_entries"],
+    "required": ["how_steps", "mechanism_components", "causal_edges", "param_entries"],
     "additionalProperties": False,
 }
 
@@ -353,6 +446,11 @@ _ARGUMENTATION_SCHEMA: dict[str, Any] = {
                     "provenance": {
                         "type": "string",
                         "enum": ["source_grounded", "akb_interpretation"],
+                    },
+                    # step-3 SC-3c：akb_interpretation argumentation 带 traces_to
+                    "traces_to": {
+                        "type": "array",
+                        "items": {"type": "string"},
                     },
                 },
                 "required": ["claim_anchor", "explanation", "provenance"],
@@ -460,6 +558,7 @@ class ComposeResult:
 def extract_claims(
     raw_content: str,
     route_llm_fn: Any = None,
+    content_lane: str = "",
 ) -> ExtractResult:
     """段 1: raw → 结构化 JSON 抽取。
 
@@ -469,6 +568,8 @@ def extract_claims(
     Args:
         raw_content: raw 文件全文内容。
         route_llm_fn: LLM 路由函数注入（fixture 测试用）。
+        content_lane: 内容车道（concept/procedural，step-1 透传字段）。本 step 仅
+            透传给 _validate_extract_output、行为不变；lane-aware 改判属 step-3。
 
     Returns:
         ExtractResult: 含 success / data / retries_used / error。
@@ -520,7 +621,7 @@ def extract_claims(
                         )
                     parsed_segments[segment_name] = segment_data
             merged = _merge_extract_segments(parsed_segments)
-            _validate_extract_output(merged)
+            _validate_extract_output(merged, content_lane=content_lane)
         except SemanticJitterError as exc:
             # Step-7: 语义 segment 连续不稳定达阈值 → fail-closed（不无限重试，有界）。
             return ExtractResult(
@@ -572,12 +673,23 @@ def _build_extract_segment_messages(
             "akb_interpretation 占比必须 ≤40%。\n"
             "- evidence_gap 写原文未覆盖/未证明/未量化/未比较的具体盲区，"
             "须含盲区词(未提供/未量化/未覆盖/缺少/没有/未验证/未比较)。\n"
+            "- akb_interpretation claim 必带 traces_to：指向它所解读的 "
+            "source_grounded claim 的 anchor"
+            "（如 [\"§A\"]），source_grounded claim 可省 traces_to。\n"
             "- tldr 是综合全文主旨，不是复制单条 claim。"
         ),
         "how_params": (
-            "只抽取 how_steps 与 param_entries。\n"
-            "- how_steps: 对象数组 {instruction, command, executable}，"
-            "至少 3 条 executable=true 且 command 非空。\n"
+            "抽取 how_steps、mechanism_components、causal_edges 与 param_entries。\n"
+            "- how_steps: 对象数组 {instruction, command, executable, how_level}；"
+            "操作型原文至少 3 条 executable=true 且 command 非空。\n"
+            "- how_level: 标注每步的机制层级——H1=命令级（可直接执行的命令/调用）；"
+            "H2=数据流/状态/接口说明级（讲清数据怎么流、状态怎么变、接口怎么对接）；"
+            "H3=命名机制组件+因果边级（讲清是哪几个命名组件、组件间因果如何驱动）。\n"
+            "- mechanism_components: 命名机制组件数组，每项 {name, role}——概念型原文须 ≥3 个"
+            "命名组件（如 'work_selector'/'quality_gate'），role 写该组件在机制里的职责。\n"
+            "- causal_edges: 因果边数组，每项 {from, to, relation}，from/to 必须是"
+            "mechanism_components 里的 name，relation 写因果关系"
+            "（如 activates/feeds/writes_to）。\n"
             "- 只抽取原文明确给出的步骤、组件、流程或配置，不要补 AKB 自己的命令。\n"
             "- param_entries: 参数/配置/选项数组，每项 {key, value}；value 统一写成字符串。"
         ),
@@ -590,7 +702,8 @@ def _build_extract_segment_messages(
             "只抽取 argumentation。\n"
             "- 为 claims 中每个重要 anchor 写一条论证说明。\n"
             "- 每项含 claim_anchor(如 §A)、explanation、provenance。\n"
-            "- 若 explanation 是归纳或操作化判断，provenance 用 akb_interpretation。"
+            "- 若 explanation 是归纳或操作化判断，provenance 用 akb_interpretation，"
+            "且必带 traces_to 指向所引的 source_grounded anchor（如 [\"§A\"]）。\n"
             "- 输出顶层必须是 {\"argumentation\":[...]}，不能用 claims/arguments/items 等同义 key。"
         ),
         "graph": (
@@ -662,6 +775,12 @@ def _normalize_extract_segment(
                 _normalize_how_step(item, idx)
                 for idx, item in enumerate(parsed.get("how_steps", []), 1)
             ],
+            # step-3 SC-3a/A3-5：concept F4 结构真相源——命名机制组件 + 因果边。
+            # 从 how_params segment 原始响应携出（procedural 不产 → 归一为空数组，零回归）。
+            "mechanism_components": _normalize_mechanism_components(
+                parsed.get("mechanism_components")
+            ),
+            "causal_edges": _normalize_causal_edges(parsed.get("causal_edges")),
             "param_entries": [
                 _normalize_param_entry(item)
                 for item in (param_entries or [])
@@ -736,11 +855,20 @@ def _normalize_claim(item: dict[str, Any]) -> dict[str, Any]:
     gap = str(item.get("evidence_gap") or item.get("gap") or "").strip()
     if not gap:
         gap = "未提供：原文未提供该论点的量化验证、反例或对比数据。"
+    # step-3 SC-3c：保留 traces_to（akb_interpretation 溯源到 source_grounded anchor）
+    traces_to_raw = item.get("traces_to") or []
+    if isinstance(traces_to_raw, str):
+        traces_to = [str(t).strip() for t in [traces_to_raw] if str(t).strip()]
+    elif isinstance(traces_to_raw, list):
+        traces_to = [str(t).strip() for t in traces_to_raw if str(t).strip()]
+    else:
+        traces_to = []
     return {
         "text": text,
         "anchor": anchor,
         "provenance": provenance,
         "evidence_gap": gap,
+        "traces_to": traces_to,
     }
 
 
@@ -850,31 +978,97 @@ def _normalize_how_step(item: Any, idx: int) -> dict[str, Any]:
             default="",
         )
         provenance = str(item.get("provenance") or "").strip()
+        raw_how_level = str(item.get("how_level") or "").strip().upper()
     else:
         instruction = str(item).strip()
         command = ""
         executable = None
         anchor = ""
         provenance = ""
+        raw_how_level = ""
     if not command and instruction:
         command = _infer_source_command_from_instruction(instruction)
     command = _expand_placeholder_command(command, instruction, idx)
     if provenance not in {"source_grounded", "akb_interpretation"}:
         provenance = "source_grounded" if anchor else "akb_interpretation"
+    final_command = command
+    final_executable = bool(command) if executable is None else bool(executable)
     normalized = {
         "instruction": instruction,
-        "command": command,
-        "executable": bool(command) if executable is None else bool(executable),
+        "command": final_command,
+        "executable": final_executable,
         "anchor": anchor,
         "provenance": provenance,
         # step-5: 三态细分标注层（source_operation / source_fact / akb_interpretation）。
         # 与 provenance 二态并存：source_grounded → source_operation|source_fact；
         # akb_interpretation → akb_interpretation。消费者仍读 marker，本字段仅标注。
         "provenance_split": how_step_provenance_split(
-            {"provenance": provenance}, command, anchor
+            {"provenance": provenance}, final_command, anchor
         ),
+        # step-3 SC-3a：三级 how 标注。LLM 给的 H1/H2/H3 直采；否则按结构兜底——
+        # 有可执行命令 → H1（命令级）；无命令的 how 不能标 H1（concept 机制说明不是命令），
+        # 兜底 H2（数据流/状态/接口说明级）。H3 由 LLM 显式标，不从命令反推。
+        "how_level": _normalize_how_level(raw_how_level, final_command, final_executable),
     }
     return normalized
+
+
+def _normalize_how_level(raw_how_level: str, command: str, executable: bool) -> str:
+    """归一 how_level（H1/H2/H3），按结构兜底缺失值。
+
+    SC-3a/风险表：concept 无 command 的 how 不标 H1（否则地板误判 concept H1≥1）。
+    - LLM 显式给 H1/H2/H3 → 直采。
+    - 缺失且有可执行命令 → H1（命令级）。
+    - 缺失且无命令 → H2（说明级，非命令）；H3 须 LLM 显式标，不从命令反推。
+    """
+    if raw_how_level in {"H1", "H2", "H3"}:
+        return raw_how_level
+    if executable and command.strip():
+        return "H1"
+    return "H2"
+
+
+def _normalize_mechanism_components(raw: Any) -> list[dict[str, str]]:
+    """归一命名机制组件数组（concept F4 结构真相源）。
+
+    每项 → {name, role}（role 默认 ""，满足 strict schema required）。无名字的项丢弃。
+    procedural 不产此字段 → 返回空数组（零回归）。
+    """
+    if not isinstance(raw, list):
+        return []
+    components: list[dict[str, str]] = []
+    for item in raw:
+        if isinstance(item, dict):
+            name = str(item.get("name") or item.get("component") or "").strip()
+            role = str(item.get("role") or "").strip()
+        elif isinstance(item, str):
+            name = item.strip()
+            role = ""
+        else:
+            continue
+        if name:
+            components.append({"name": name, "role": role})
+    return components
+
+
+def _normalize_causal_edges(raw: Any) -> list[dict[str, str]]:
+    """归一因果边数组（from→to 指向命名组件）。
+
+    每项 → {from, to, relation}（relation 默认 ""，满足 strict schema required）。
+    缺 from/to 的项丢弃。procedural 不产 → 返回空数组（零回归）。
+    """
+    if not isinstance(raw, list):
+        return []
+    edges: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        src = str(item.get("from") or item.get("source") or "").strip()
+        dst = str(item.get("to") or item.get("target") or "").strip()
+        relation = str(item.get("relation") or item.get("relation_type") or "").strip()
+        if src and dst:
+            edges.append({"from": src, "to": dst, "relation": relation})
+    return edges
 
 
 def _infer_source_command_from_instruction(instruction: str) -> str:
@@ -1067,7 +1261,16 @@ def _normalize_argumentation(
     provenance = str(item.get("provenance") or "").strip()
     if provenance not in {"source_grounded", "akb_interpretation"}:
         provenance = "source_grounded" if anchor else "akb_interpretation"
-    return {"claim_anchor": anchor, "explanation": text, "provenance": provenance}
+    # step-3 SC-3c：保留 traces_to（akb_interpretation 溯源）
+    traces_to_raw = item.get("traces_to") or []
+    if isinstance(traces_to_raw, str):
+        traces_to = [str(t).strip() for t in [traces_to_raw] if str(t).strip()]
+    elif isinstance(traces_to_raw, list):
+        traces_to = [str(t).strip() for t in traces_to_raw if str(t).strip()]
+    else:
+        traces_to = []
+    return {"claim_anchor": anchor, "explanation": text, "provenance": provenance,
+            "traces_to": traces_to}
 
 
 def _validate_extract_segment(segment_name: str, data: dict[str, Any]) -> None:
@@ -1075,18 +1278,23 @@ def _validate_extract_segment(segment_name: str, data: dict[str, Any]) -> None:
     schema = _DISTILL_SEGMENT_SCHEMAS[segment_name]
     data_for_schema = data
     if segment_name == "how_params":
-        # how_params 出站 strict schema 只暴露 3 个模型字段；anchor/provenance
-        # 是本地 normalizer 为正文锚定补的内部字段，不能反过来污染 strict schema。
+        # how_params 出站 strict schema 暴露 3 个模型字段 + how_level（normalize 必填）；
+        # anchor/provenance/provenance_split 是本地 normalizer 为正文锚定补的内部字段，
+        # 不进 strict schema。step-3：how_level + mechanism_components/causal_edges 是
+        # concept F4 结构真相源，必须随 segment 校验（strict required 已覆盖）。
         data_for_schema = {
             "how_steps": [
                 {
                     "instruction": step.get("instruction", ""),
                     "command": step.get("command", ""),
                     "executable": bool(step.get("executable")),
+                    "how_level": step.get("how_level", "H1"),
                 }
                 for step in data.get("how_steps", [])
                 if isinstance(step, dict)
             ],
+            "mechanism_components": data.get("mechanism_components", []),
+            "causal_edges": data.get("causal_edges", []),
             "param_entries": data.get("param_entries", []),
         }
     try:
@@ -1295,6 +1503,9 @@ def _merge_extract_segments(
     merged = {
         "claims": claims,
         "how_steps": how_steps,
+        # step-3 SC-3a/A3-5：concept F4 结构真相源随 merged 输出携出（procedural 空数组）。
+        "mechanism_components": how_params.get("mechanism_components", []),
+        "causal_edges": how_params.get("causal_edges", []),
         "params": params,
         "referenced_concepts": enrichment["referenced_concepts"],
         "tldr": segments["claims"].get("tldr", ""),
@@ -1377,8 +1588,19 @@ def _build_local_enrichment(
     }
 
 
-def _validate_extract_output(data: dict[str, Any]) -> None:
-    """校验抽取输出的结构完整性。
+def _is_concept_lane(content_lane: str) -> bool:
+    """判断 content_lane 是否为概念型车道（concept）。其余（含空串）按 procedural 兼容。"""
+    return str(content_lane or "").strip().lower() == CONTENT_LANE_CONCEPT
+
+
+def _validate_extract_output(data: dict[str, Any], content_lane: str = "") -> None:
+    """校验抽取输出的结构完整性（lane-aware，SC-3a/A3-1）。
+
+    Args:
+        data: 抽取输出 dict。
+        content_lane: 内容车道（concept/procedural）。procedural（默认）保留
+            executable≥3 extract 门（零回归）；concept 改判 mechanism_components≥3
+            （允许 H1==0、不卡 executable），核心价值是命名机制组件+因果边。
 
     Raises:
         ValueError: 校验未通过。
@@ -1433,31 +1655,56 @@ def _validate_extract_output(data: dict[str, Any]) -> None:
     # 3.5 provenance 配比校验：akb_interpretation 占比 >40% → 走重试（宪法 P4 失败可见）
     # prompt 已要求占比 ≤40%；此处兜底——可直接引用原文的 claim 必须用 source_grounded，
     # 否则成稿锚定率塌方（rubric 论断锚定率 / 解读分离）。40% 上限允许少量库内解读。
+    # step-3 SC-3c/Decision-1：concept 车道删 ≤40% 比例上限，改逐条 traces_to 溯源
+    # （由 integrity_floor._interpretation_traceability_failed 硬判，层① 确定性地板）；
+    # procedural 保留原 ≤40% cap（零回归）。
     akb_count = sum(1 for c in claims if c.get("provenance") == "akb_interpretation")
-    if claims and akb_count / len(claims) > 0.40:
+    if (
+        content_lane != "concept"
+        and claims
+        and akb_count / len(claims) > 0.40
+    ):
         raise ValueError(
             f"akb_interpretation 占比 {akb_count}/{len(claims)} > 40%"
             f"（可直接引用原文的 claim 必须用 source_grounded）"
         )
 
-    # 3.6 how_steps 可执行数量校验：prompt 已要求 ≥3 条 executable=true 且 command 非空，
-    # 此处兜底——否则真实 extract 可合法通过但成稿缺 How 可执行性（rubric How 密度/可执行性）。
+    # 3.6 how_steps 可执行数量校验（lane-aware，SC-3a/A3-1）：
+    # - procedural（默认/兼容）：保留 ≥3 条 executable=true 且 command 非空的 extract 门
+    #   （零回归）——否则真实 extract 可合法通过但成稿缺 How 可执行性（rubric How 密度）。
+    # - concept：改判 len(mechanism_components)≥3（允许 H1==0、不卡 executable）——概念型
+    #   知识的核心价值是命名机制组件+因果边（F4 结构真相源），不是命令密度。
     # 注：本校验作用于 extract 输出（maker 提案层），命令是否最终渲染进候选页由
     # _build_body 的 emission-前回查 raw 护栏裁决（治本2）；此处只保证 maker 提出了
-    # 足量可执行候选步骤。
+    # 足量可执行候选步骤 / 足量命名机制组件。
     how_steps = data.get("how_steps", []) or []
-    executable_steps = sum(
-        1
-        for s in how_steps
-        if isinstance(s, dict)
-        and s.get("executable") is True
-        and str(s.get("command", "")).strip()
-    )
-    if executable_steps < HOW_STEPS_MIN_EXECUTABLE:
-        raise ValueError(
-            f"how_steps 可执行步骤 {executable_steps} < {HOW_STEPS_MIN_EXECUTABLE}"
-            f"（需 executable=true 且 command 非空的可复制步骤）"
+    if _is_concept_lane(content_lane):
+        mechanism_components = data.get("mechanism_components", []) or []
+        named_components = [
+            c
+            for c in mechanism_components
+            if isinstance(c, dict) and str(c.get("name", "")).strip()
+        ]
+        if len(named_components) < CONCEPT_MIN_MECHANISM_COMPONENTS:
+            raise ValueError(
+                f"concept 车道 mechanism_components 命名组件 {len(named_components)} "
+                f"< {CONCEPT_MIN_MECHANISM_COMPONENTS}"
+                f"（概念型知识须 ≥{CONCEPT_MIN_MECHANISM_COMPONENTS} 个命名机制组件，"
+                "F4 结构真相源）"
+            )
+    else:
+        executable_steps = sum(
+            1
+            for s in how_steps
+            if isinstance(s, dict)
+            and s.get("executable") is True
+            and str(s.get("command", "")).strip()
         )
+        if executable_steps < HOW_STEPS_MIN_EXECUTABLE:
+            raise ValueError(
+                f"how_steps 可执行步骤 {executable_steps} < {HOW_STEPS_MIN_EXECUTABLE}"
+                f"（需 executable=true 且 command 非空的可复制步骤）"
+            )
 
     # 4. 新增字段非空校验
     tldr = data.get("tldr", "")
@@ -1509,16 +1756,23 @@ def _validate_extract_output(data: dict[str, Any]) -> None:
 def build_deterministic_extract_result(
     raw_content: str,
     raw_path: str = "",
+    content_lane: str = "",
 ) -> ExtractResult:
     """Build a conservative ExtractResult when the maker LLM is unavailable.
 
     This is a maker fallback, not a quality bypass: the composed candidate still
     goes through local structural checks, GPT-5.4 grading, repair, and five-gate
     proposal handling.
+
+    content_lane（SC-3a）：传给 _build_deterministic_extract_data + _validate_extract_output。
+    concept 车道额外注入 mechanism_components/causal_edges（满足 F4 结构真相源 ≥3 组件门），
+    procedural 行为不变（零回归）。
     """
     try:
-        data = _build_deterministic_extract_data(raw_content, raw_path)
-        _validate_extract_output(data)
+        data = _build_deterministic_extract_data(
+            raw_content, raw_path, content_lane=content_lane
+        )
+        _validate_extract_output(data, content_lane=content_lane)
     except Exception as exc:
         return ExtractResult(
             success=False,
@@ -1532,6 +1786,7 @@ def build_deterministic_extract_result(
 def _build_deterministic_extract_data(
     raw_content: str,
     raw_path: str = "",
+    content_lane: str = "",
 ) -> dict[str, Any]:
     """Turn anchored raw text into the same shape as LLM extraction output."""
     anchor_blocks = _extract_anchor_blocks(raw_content)
@@ -1713,9 +1968,29 @@ def _build_deterministic_extract_data(
             "evidence_kind": "interpretation",
         },
     ]
+    # step-3 SC-3a/A3-5：concept 车道注入命名机制组件 + 因果边（F4 结构真相源 ≥3 组件门）。
+    # 这些是 deterministic fallback 对来源 loop 结构的保守命名映射（与 how_steps 同源、
+    # 锚定 raw），不向 raw 注入编造；procedural 不注入（空数组，零回归）。
+    mechanism_components: list[dict[str, str]] = []
+    causal_edges: list[dict[str, str]] = []
+    if _is_concept_lane(content_lane):
+        mechanism_components = [
+            {"name": "trigger", "role": "启动 loop 的调度/事件/手动入口"},
+            {"name": "work_selector", "role": "读账本选下一个待处理工作单元"},
+            {"name": "quality_gate", "role": "校验输出达标、不达标进修复闭环"},
+            {"name": "ledger", "role": "记录每段生命周期事件、支撑崩溃恢复"},
+        ]
+        causal_edges = [
+            {"from": "trigger", "to": "work_selector", "relation": "activates"},
+            {"from": "work_selector", "to": "quality_gate", "relation": "feeds"},
+            {"from": "quality_gate", "to": "ledger", "relation": "writes_result_to"},
+            {"from": "ledger", "to": "work_selector", "relation": "informs_recovery_of"},
+        ]
     return {
         "claims": claims,
         "how_steps": how_steps,
+        "mechanism_components": mechanism_components,
+        "causal_edges": causal_edges,
         "params": params,
         "referenced_concepts": concepts,
         "tldr": (
@@ -1805,6 +2080,9 @@ def compose_candidate(
     output_dir: str | None = None,
     route_llm_fn: Any = None,
     raw_content: str | None = None,
+    content_lane: str = "",
+    known_concepts: list[str] | None = None,
+    pending_queue: list[str] | None = None,
 ) -> ComposeResult:
     """段 2: 按模板成稿 10 节，落 staging/candidate/<batch>/。
 
@@ -1821,6 +2099,13 @@ def compose_candidate(
             calibration 等只构造 raw_path 但不落地文件的链路也能拿到原文，
             避免 must_cover/命令接地因 read_text 失败而静默失真。None 时回退
             读磁盘 raw_path（生产 7 段链路 raw 已落地，行为不变）。
+        content_lane: 内容车道（concept/procedural，step-1 透传字段）。写入 candidate
+            frontmatter 的 content_lane 键；本 step 不参与判定分支。
+        known_concepts: 已知概念 slug 集（step-1 vault loader 装载）。透传给 compose 内
+            第一道 self-gate 的图谱 resolve（A3-8），使概念引用在生产路径真能 resolve，
+            不再因 fixture 恒空而被掩盖。None 时行为同旧（self-gate 默认空集）。
+        pending_queue: pending 队列概念 slug 集（step-1 vault loader 装载）。同 known_concepts，
+            透传给第一道 self-gate。
 
     Returns:
         ComposeResult: 含 success / candidate_path / frontmatter。
@@ -1859,7 +2144,7 @@ def compose_candidate(
     candidate_path = os.path.join(output_dir, candidate_filename)
 
     # 构建 frontmatter（确定性代码写死，防范已知坑 1-3）
-    frontmatter = _build_frontmatter(raw_path, extract_result.data)
+    frontmatter = _build_frontmatter(raw_path, extract_result.data, content_lane=content_lane)
 
     # raw_content 同源读取：must_cover 扫描与 self-gate A3 锚点校验共用同一份原文，
     # 避免截断/不一致导致 must_cover 账本与锚点校验脱节。
@@ -1888,6 +2173,8 @@ def compose_candidate(
         route_llm_fn,
         must_cover=must_cover_items,
         raw_content=raw_content,
+        known_concepts=known_concepts,
+        pending_queue=pending_queue,
     )
 
     # 组装完整候选页
@@ -1896,7 +2183,17 @@ def compose_candidate(
     try:
         from src.akb2.quality.checks_structural import run_candidate_self_gate
 
-        compose_defects = run_candidate_self_gate(full_page, raw_content=raw_content)
+        # step-3 SC-3e/A3-8：compose 内第一道 self-gate 真传 known_concepts/pending_queue
+        # 实参（step-1 vault loader 装载，经 compose_candidate 形参透传）+ content_lane，
+        # 使概念边在生产路径真做确定性 resolve、SG-how-density 按车道选 gate_min，
+        # 不再因传 None/缺 lane 被 fixture 恒空掩盖。
+        compose_defects = run_candidate_self_gate(
+            full_page,
+            raw_content=raw_content,
+            known_concepts=known_concepts,
+            pending_queue=pending_queue,
+            content_lane=content_lane,
+        )
     except Exception as exc:
         return ComposeResult(
             success=False,
@@ -2009,11 +2306,15 @@ def _extract_key_findings(claims: list[dict[str, Any]]) -> list[str]:
 def _build_frontmatter(
     raw_path: str,
     extract_data: dict[str, Any],
+    content_lane: str = "",
 ) -> dict[str, Any]:
     """构建 frontmatter（确定性代码）。
 
     candidate 阶段产出 active-ready 的全字段集（除 reviewer/reviewed_at——
     那两项由 promote 升格时的机器 reviewer 写入，见 CONTENT-LIFECYCLE §6.1）。
+
+    content_lane（step-1）：concept/procedural 车道写入 candidate frontmatter 的
+    content_lane 键，使车道随候选页持久化、供 grader/repair/promote 全链可见。
 
     已知坑:
         1. gate_decision 写死 null（不许预填 active，防 HC-09 拦）
@@ -2066,6 +2367,7 @@ def _build_frontmatter(
         "confidence": "medium",
         # 状态（短）
         "status": "candidate",
+        "content_lane": content_lane,  # 内容车道（step-1：concept/procedural）
         "gate_decision": None,  # 写死 null（已知坑 1）
         "gate_reason": gate_reason,  # ≤150 字符（已知坑 3）
         "star_level": 0,  # 0 星基线（STAR-RATING；升星引擎=循环3）
@@ -3551,6 +3853,61 @@ def _ground_how_step_commands_in_raw(
     return grounded
 
 
+def _filter_resolvable_graph_edges(
+    graph_edges: list[dict[str, Any]],
+    concepts: list[str],
+    known_concepts: list[str] | None,
+    pending_queue: list[str] | None,
+) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    """SC-2b-b2：渲染前过滤 target 不在 known∪sources∪pending 的图谱边/概念引用。
+
+    extraction LLM 可能发明 vault 里不存在的 slug（如 loop-engineering——既非概念也非
+    源），若进入候选页，A4-图谱resolve/A5-wikilink 会 fail-closed 拒整篇。本函数在
+    compose 渲染前确定性过滤，不让悬空 slug 进候选页（"从源头不发明"，用户 SC-2b-b2
+    决策）。复用 _resolve_graph_node（含 SC-2a 前缀归一化 + pending 共指）做判定。
+
+    SC-2（worker round-4）：返回 dropped_targets 供 compose 写可见 meta，治静默失败
+    （Karpathy #12——旧版 drop 边无日志，grader 看稀疏图谱不知何因）。
+
+    tradeoff（用户已接受）：生产 vault 概念全时几乎不过滤；校准薄种子库下引用未 seeded
+    概念的边会被 drop，图谱可能偏稀疏——但候选不再被 self-gate 整篇拒。
+    known/pending 均 None 时不过滤（兼容 _build_body 旧调用，默认不传）。
+    """
+    if known_concepts is None and pending_queue is None:
+        return graph_edges, concepts, []
+    from src.akb2.quality.checks_structural import _resolve_graph_node
+
+    def _edge_target(e: dict[str, Any]) -> str:
+        return str(
+            e.get("concept")
+            or e.get("target")
+            or e.get("target_id")
+            or e.get("source_id")
+            or ""
+        )
+
+    kept_edges = [
+        e
+        for e in graph_edges
+        if _resolve_graph_node(_edge_target(e), known_concepts, pending_queue)
+    ]
+    kept_concepts = [
+        c for c in concepts if _resolve_graph_node(str(c), known_concepts, pending_queue)
+    ]
+    # SC-2：记录被 drop 的 target（治静默失败——grader/ledger 能看到哪些边被删、为什么）
+    dropped = [
+        _edge_target(e)
+        for e in graph_edges
+        if not _resolve_graph_node(_edge_target(e), known_concepts, pending_queue)
+    ]
+    dropped += [
+        str(c)
+        for c in concepts
+        if not _resolve_graph_node(str(c), known_concepts, pending_queue)
+    ]
+    return kept_edges, kept_concepts, dropped
+
+
 def _build_body(
     extract_data: dict[str, Any],
     raw_path: str,
@@ -3558,6 +3915,8 @@ def _build_body(
     *,
     must_cover: list[Any] | None = None,
     raw_content: str | None = None,
+    known_concepts: list[str] | None = None,
+    pending_queue: list[str] | None = None,
 ) -> str:
     """构建 10 节正文（确定性脚本，只填 extract_data 槽位，不调 LLM）。
 
@@ -3586,6 +3945,14 @@ def _build_body(
     argumentation: list[dict[str, Any]] = extract_data.get("argumentation") or []
     applicability_boundary = (extract_data.get("applicability_boundary") or "").strip()
     graph_edges: list[dict[str, Any]] = extract_data.get("graph_edges") or []
+
+    # SC-2b-b2：渲染前过滤 target 不在 known∪sources∪pending 的图谱边/概念。
+    # 发明的悬空 slug（如 loop-engineering）不进候选页，避免 A4/A5
+    # fail-closed 整篇拒。known/pending 均 None 时不过滤（兼容旧调用）。
+    # SC-2：dropped_graph_targets 供图谱节写可见 meta（治静默失败）。
+    graph_edges, concepts, dropped_graph_targets = _filter_resolvable_graph_edges(
+        graph_edges, concepts, known_concepts, pending_queue
+    )
 
     supported_how_steps = _supported_how_steps(how_steps, claims, raw_anchor_texts)
     if not supported_how_steps:
@@ -3728,13 +4095,18 @@ def _build_body(
     # 图谱关系：表头对齐检查器/评分器英文契约(GRAPH_EDGE_COLUMNS=target/relation/strength/evidence)
     # evidence 不截断(旧 [:80] 截断丢依据);fallback 边降 weak(旧 medium 偏高)
     # cell 经 _md_table_cell 转义 | + 压平换行(否则 evidence 含 | 拆成 >4 列,A4 只拒 <4 列→假绿)
+    _GRAPH_TABLE_HEADER = (
+        "| target | relation | strength | provenance | evidence |\n"
+        "|--------|----------|----------|------------|----------|"
+    )
     if graph_edges:
-        graph_rows = "\n".join(
+        rows = "\n".join(
             f"| {_md_table_cell(edge['concept'])} | {_md_table_cell(edge['relation_type'])} "
             f"| {edge['strength']} | {edge['provenance']} | "
             f"{_md_table_cell(edge.get('evidence', ''))} |"
             for edge in (_normalize_graph_edge(e) for e in graph_edges)
         )
+        graph_rows = f"{_GRAPH_TABLE_HEADER}\n{rows}"
     elif concepts:
         # concept 来自 LLM referenced_concepts,可能含 | → 同样转义(altitude:所有插值 cell 一致转义)
         fallback_anchor = claims[0].get("anchor", "§A") if claims else "§A"
@@ -3742,15 +4114,27 @@ def _build_body(
             f"[raw {fallback_anchor}] (akb_interpretation) "
             "见原文概念引用，候选阶段按推测关联保守标 weak。"
         )
-        graph_rows = "\n".join(
+        rows = "\n".join(
             f"| {_md_table_cell(c)} | related | weak | "
             f"akb_interpretation | {fallback_cell} |"
             for c in concepts
         )
+        graph_rows = f"{_GRAPH_TABLE_HEADER}\n{rows}"
     else:
+        # SC-2（worker round-4）：全过滤空时**不出占位符表格行**——A4 会把
+        # `| （无相关概念） |` 当 edge target 拒（compose_self_gate_failed，满仓 11/18
+        # 挂此）。改输出普通段落（非 table），A4 无 table 行可解析→不拒。dropped 可见
+        # meta 治静默失败（Karpathy #12——旧版 drop 边无日志，grader 不知何因）。
+        dropped_note = ""
+        if dropped_graph_targets:
+            uniq = list(dict.fromkeys(dropped_graph_targets))[:8]
+            dropped_note = (
+                f"\n\n<!-- graph_edges_dropped: {uniq} — 未命中 known/pending，"
+                "待图谱校准。graph_empty_after_resolve_filter=true -->"
+            )
         graph_rows = (
-            "| （无相关概念） | — | weak | akb_interpretation | "
-            "(akb_interpretation) 无可证实图谱边。 |"
+            "（本候选暂无可证实的图谱边——所有引用概念在 resolve 阶段未命中 "
+            "known/pending。待图谱校准确认后补边。）" + dropped_note
         )
 
     concepts_text = ", ".join(concepts) if concepts else "（见图谱关系）"
@@ -3826,10 +4210,8 @@ def _build_body(
 
 ## 图谱关系
 
-下表图谱边按 evidence 的 provenance 判定；weak 边仍需后续图谱校准确认。
+图谱边按 evidence 的 provenance 判定；weak 边仍需后续图谱校准确认。
 
-| target | relation | strength | provenance | evidence |
-|--------|----------|----------|------------|----------|
 {graph_rows}
 
 ## Future Questions

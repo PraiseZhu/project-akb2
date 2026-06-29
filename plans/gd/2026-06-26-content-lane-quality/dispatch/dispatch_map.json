@@ -1,0 +1,117 @@
+{
+  "dispatch_id": "content-lane-quality-plan-a",
+  "source_master_plan": "plans/gd/2026-06-26-content-lane-quality/master-plan.md",
+  "goal_chain": {
+    "PROJECT_GOAL": "让循环1 从事实上的命令清单库变成能同时收录概念型与操作型知识的概念图谱知识库（内容类型分流标准落地，spec: specs/content-lane-quality/spec.md）",
+    "CHAIN_GOAL": "把宪法 v1.2.0 认可的『完整性地板（硬 pass/fail）+ 车道感知加权质量分（过阈不排序）』模型实现为循环1 的判定代码（原则 6/8）",
+    "PHASE_GOAL": "产出包 A『改标准』的 master/step/task-packet 计划套装——车道地基、量规外置、concept 判定三步，每步绑定可执行 verify 的 SC"
+  },
+  "max_parallel_planning": 2,
+  "max_parallel_execution": 1,
+  "max_parallel_review": 2,
+  "max_parallel_validation": 2,
+  "tracks": [
+    {
+      "track_id": "t1-foundations",
+      "mode": "plan",
+      "agent_role": "child_planner",
+      "owned_paths": [
+        "plans/gd/2026-06-26-content-lane-quality/step-1-lane-foundation.md",
+        "plans/gd/2026-06-26-content-lane-quality/step-2-rubric-externalize.md"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "plans/gd/2026-06-26-content-lane-quality/step-3-concept-judgment.md"
+      ],
+      "required_context": [
+        "specs/content-lane-quality/spec.md",
+        "docs/constitution.md",
+        "skillpack/quality/rubric/10-dimensions.md",
+        "src/akb2/quality/admission.py",
+        "src/akb2/quality/grader.py"
+      ],
+      "deliverables": [
+        {
+          "path": "plans/gd/2026-06-26-content-lane-quality/step-1-lane-foundation.md",
+          "kind": "file",
+          "must_exist": true
+        },
+        {
+          "path": "plans/gd/2026-06-26-content-lane-quality/step-2-rubric-externalize.md",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [],
+      "can_parallel_with": ["t2-concept"],
+      "sc_refs": ["SC-1", "SC-2"],
+      "verify": [
+        {
+          "sc_ref": "SC-1",
+          "method": "path",
+          "cmd": "test -f plans/gd/2026-06-26-content-lane-quality/step-1-lane-foundation.md && echo PASS",
+          "expect": "PASS"
+        },
+        {
+          "sc_ref": "SC-2",
+          "method": "path",
+          "cmd": "test -f plans/gd/2026-06-26-content-lane-quality/step-2-rubric-externalize.md && echo PASS",
+          "expect": "PASS"
+        }
+      ]
+    },
+    {
+      "track_id": "t2-concept",
+      "mode": "plan",
+      "agent_role": "child_planner",
+      "owned_paths": [
+        "plans/gd/2026-06-26-content-lane-quality/step-3-concept-judgment.md"
+      ],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "plans/gd/2026-06-26-content-lane-quality/step-1-lane-foundation.md",
+        "plans/gd/2026-06-26-content-lane-quality/step-2-rubric-externalize.md"
+      ],
+      "required_context": [
+        "specs/content-lane-quality/spec.md",
+        "docs/constitution.md",
+        "skillpack/quality/rubric/10-dimensions.md",
+        "src/akb2/quality/distill.py",
+        "src/akb2/quality/checks_structural.py"
+      ],
+      "deliverables": [
+        {
+          "path": "plans/gd/2026-06-26-content-lane-quality/step-3-concept-judgment.md",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [],
+      "can_parallel_with": ["t1-foundations"],
+      "sc_refs": ["SC-3"],
+      "verify": [
+        {
+          "sc_ref": "SC-3",
+          "method": "path",
+          "cmd": "test -f plans/gd/2026-06-26-content-lane-quality/step-3-concept-judgment.md && echo PASS",
+          "expect": "PASS"
+        }
+      ]
+    }
+  ],
+  "waves": [
+    {
+      "wave_id": "w1",
+      "track_ids": ["t1-foundations", "t2-concept"],
+      "description": "并行起草包 A 三步计划草稿：t1 基础两步（车道地基+量规外置），t2 concept 判定核心；owned_paths 无重叠、互不依赖"
+    }
+  ],
+  "merge_gates": [
+    { "gate_id": "G1", "description": "child 输出格式合规（按 gd-child-plan-output 结构 + proposal block schema）" },
+    { "gate_id": "G2", "description": "child 草稿 owned_paths 不越界、不重叠" },
+    { "gate_id": "G3", "description": "每个 step 的 SC 绑定可执行 verify（command/path/assertion/test）" },
+    { "gate_id": "G4", "description": "task packet 自包含、无『见上文/按之前讨论』" },
+    { "gate_id": "G5", "description": "wave1 两 child 全完成后主 agent 才合并写 master/step/task-packet" },
+    { "gate_id": "G6", "description": "child 草稿冲突时主 agent 写仲裁理由后再合并" }
+  ]
+}

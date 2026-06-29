@@ -103,17 +103,17 @@ class TestNegativeSamples:
 
         # 使用 LLMResponse 直接构造 mock 响应
         mock_llm = make_mock_route_llm({
-            "gemini-flash:0": LLMResponse(
+            "deepseek-v4-pro:0": LLMResponse(
                 content={"pass": True, "reason": "命中 AI Agent 领域"},
                 model_used="gemini-2.5-flash",
                 calls_used=1,
             ),
-            "gemini-flash:1": LLMResponse(
+            "deepseek-v4-pro:1": LLMResponse(
                 content={"pass": True, "reason": "含 agent 设计模式"},
                 model_used="gemini-2.5-flash",
                 calls_used=1,
             ),
-            "gemini-flash:2": LLMResponse(
+            "deepseek-v4-pro:2": LLMResponse(
                 content={"pass": False, "reason": "与既有 wiki 高度重叠，零增量"},
                 model_used="gemini-2.5-flash",
                 calls_used=1,
@@ -152,18 +152,26 @@ class TestNegativeSamples:
         ledger_path = tmp_path / "test-ledger.jsonl"
 
         mock_llm = make_mock_route_llm({
-            "gemini-flash:0": LLMResponse(
+            "deepseek-v4-pro:0": LLMResponse(
                 content={"pass": True, "reason": "命中 AI Agent 领域"},
                 model_used="gemini-2.5-flash",
                 calls_used=1,
             ),
-            "gemini-flash:1": LLMResponse(
+            "deepseek-v4-pro:1": LLMResponse(
                 content={"pass": False, "reason": "纯新闻播报，无可执行步骤或代码"},
                 model_used="gemini-2.5-flash",
                 calls_used=1,
             ),
-            "gemini-flash:2": LLMResponse(
+            "deepseek-v4-pro:2": LLMResponse(
                 content={"pass": True, "reason": "无既有 wiki 引用，默认通过"},
+                model_used="gemini-2.5-flash",
+                calls_used=1,
+            ),
+            # P0-c：news → LLM 判 reject（非知识），admission reject 门直接拒收。
+            # 旧测试 mock lane=procedural 靠 how 门拒 = 造假绿，绕过"新闻被判什么 lane"
+            # 的真实危险路径（W7/w9）。改 mock reject 真验 reject 门。
+            "lane": LLMResponse(
+                content={"content_lane": "reject", "reason": "mock: 纯新闻播报，非知识"},
                 model_used="gemini-2.5-flash",
                 calls_used=1,
             ),
@@ -179,14 +187,13 @@ class TestNegativeSamples:
         assert result.passed is False, (
             f"新闻型负样本应被拒收，实际 passed={result.passed}"
         )
-
-        # 验证 How 倾向判定 fail
-        how_check = next(
-            (c for c in result.checks if c.name == "how_tendency"), None
+        # P0-c：拒收主因是 non_knowledge reject 门，不是靠 how_tendency 造假绿。
+        assert "non_knowledge" in result.reason, (
+            f"新闻应靠 non_knowledge reject 门拒，实际 reason={result.reason}"
         )
-        assert how_check is not None, "应有 How 倾向判定"
-        assert how_check.passed is False, (
-            f"How 倾向判定应为 fail: {how_check.reason}"
+        # reject 不下传 content_lane（不混进通过态，w9）。
+        assert result.content_lane == "", (
+            f"reject 不应下传 content_lane，实际={result.content_lane!r}"
         )
 
     def test_rejected_samples_zero_distill_calls(self, tmp_path: Path) -> None:
@@ -215,18 +222,24 @@ Just news, no how-to content.
 """
 
         mock_llm = make_mock_route_llm({
-            "gemini-flash:0": LLMResponse(
+            "deepseek-v4-pro:0": LLMResponse(
                 content={"pass": True, "reason": "命中领域"},
                 model_used="gemini-2.5-flash",
                 calls_used=1,
             ),
-            "gemini-flash:1": LLMResponse(
+            "deepseek-v4-pro:1": LLMResponse(
                 content={"pass": False, "reason": "无 how-to"},
                 model_used="gemini-2.5-flash",
                 calls_used=1,
             ),
-            "gemini-flash:2": LLMResponse(
+            "deepseek-v4-pro:2": LLMResponse(
                 content={"pass": True, "reason": "默认通过"},
+                model_used="gemini-2.5-flash",
+                calls_used=1,
+            ),
+            # P0-c：news → reject 门拒（非 how_tendency 造假绿）。
+            "lane": LLMResponse(
+                content={"content_lane": "reject", "reason": "mock: 纯新闻，非知识"},
                 model_used="gemini-2.5-flash",
                 calls_used=1,
             ),
@@ -278,8 +291,8 @@ Just news, no how-to content.
 
         # 验证负样本 URL
         neg_urls = {e["url"] for e in negative}
-        assert "https://x.com/zyndai/status/2064344562110263722" in neg_urls, (
-            "缺少洗稿型负样本 URL"
+        assert "fixture:x-plagiarism-negative" in neg_urls, (
+            "缺少洗稿型负样本 URL（B 已转 fixture:x-plagiarism-negative）"
         )
         assert "fixture:google-io-2026-news" in neg_urls, (
             "缺少新闻型负样本 fixture URL"

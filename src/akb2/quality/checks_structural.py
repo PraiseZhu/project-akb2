@@ -103,6 +103,18 @@ MD_TABLE_SEPARATOR_RE = re.compile(r":?-{3,}:?")
 # 必须满足的内容质量契约，防止坏候选流入 grader/promote。
 MAX_AKB_INTERPRETATION_RATIO: float = 0.40
 MIN_HOW_EXECUTABLE_STEPS: int = 3
+# step-3 content_lane 枚举（concept/procedural，默认 procedural 兼容）
+CONTENT_LANE_CONCEPT: str = "concept"
+# step-3 SC-3e：concept 图谱可调用性满分（边 resolve 到真实节点/pending 共指）/ 假边封顶。
+GRAPH_RESOLVE_FULL_SCORE: float = 2.0
+GRAPH_RESOLVE_UNRESOLVED_CAP: float = 0.5
+# pending 队列共指阈值：边 target 未命中已有节点但 pending 中 ≥此数共指也算可 resolve。
+GRAPH_PENDING_COREF_MIN: int = 3
+
+
+def _is_concept_lane(content_lane: str) -> bool:
+    """判断 content_lane 是否为概念型车道。其余（含空串）按 procedural 兼容。"""
+    return str(content_lane or "").strip().lower() == CONTENT_LANE_CONCEPT
 PROVENANCE_RATIO_CORE_SECTIONS: tuple[str, ...] = (
     "关键发现",
     "入选理由",
@@ -136,13 +148,14 @@ FORBIDDEN_HARDCODED_COMPARISONS: tuple[str, ...] = (
     "wiki/sources/langchain-plan-and-execute-agents.md",
     "wiki/sources/anthropic-multi-agent-research-system.md",
 )
+# P2-C：去掉裸字"占位"——它过宽，误伤正文里的"占位/占位符"（模型把英文 placeholder
+# 译成中文触发，满仓 #16）。真模板残留有 {{}}/<TODO/待补充 等明确标记兜底。
 TEMPLATE_RESIDUE_MARKERS: tuple[str, ...] = (
     "{{",
     "}}",
     "<TODO",
     "TODO:",
     "待补充",
-    "占位",
     "lorem ipsum",
 )
 
@@ -467,10 +480,79 @@ def check_a3_raw_anchors(text: str, raw_content: str | None = None) -> list[Defe
 # ---------------------------------------------------------------------------
 
 
-def check_a4_graph_edges(text: str) -> list[Defect]:
+_CONCEPT_PREFIX = "concept-"
+
+
+def _slug_normalize_variants(slug: str) -> set[str]:
+    """返回一个 slug 的归一化等价形式集合（裸名 + concept- 前缀互译）。
+
+    vault 概念页命名规范为 concept-<name>（main-pipeline-golden-sample.md 回边
+    concept-{harness-engineering,...}；wiki/concepts/ 文件名同前缀；现有概念页
+    正文 68 处 [[concept-X]] wikilink 一致），但候选生成器可能输出裸名 <name>。
+    resolver/A5 若只做精确成员判定，裸名引用即使指向已存在概念页也会被判死链
+    （SC-2a 实测：context-engineering 对不上 concept-context-engineering）。
+    本函数让两种写法互为等价，纯字符串操作、不调 LLM、不做语义猜测。
+
+    非 concept- 开头的 slug 会额外生成 concept- 前缀形式参与匹配——若对方
+    集合无该前缀项则自然不命中，不产生误报。
+    """
+    s = slug.strip().lower()
+    if not s:
+        return set()
+    variants = {s}
+    if s.startswith(_CONCEPT_PREFIX):
+        variants.add(s[len(_CONCEPT_PREFIX):])
+    else:
+        variants.add(f"{_CONCEPT_PREFIX}{s}")
+    return variants
+
+
+def _resolve_graph_node(
+    target: str,
+    known_concepts: list[str] | None,
+    pending_queue: list[str] | None,
+) -> bool:
+    """A3-8 纯代码确定性图谱节点 resolve（绝不调 LLM）。
+
+    边 target 能 resolve 当且仅当：命中 known_concepts（已有概念页/源），
+    或 pending_queue 中 ≥GRAPH_PENDING_COREF_MIN 个共指（同名候选累积到阈值）。
+
+    SC-2a：target 与 known/pending 均经 _slug_normalize_variants 归一化，
+    使 concept-<name> 与裸名 <name> 互为等价（vault 概念页命名规范为带前缀）。
+
+    本函数刻意只做集合/计数（确定性），不 import llm_router、不做语义猜测——
+    SC-3e 用 monkeypatch 一切 router 入口 raise 后本函数仍正确来硬证（import allowlist 断言）。
+    """
+    norm = target.strip().lower()
+    if not norm:
+        return False
+    target_variants = _slug_normalize_variants(norm)
+    known: set[str] = set()
+    for c in (known_concepts or []):
+        known |= _slug_normalize_variants(str(c))
+    if target_variants & known:
+        return True
+    pending = [str(c).strip().lower() for c in (pending_queue or [])]
+    coref = sum(
+        1 for c in pending if _slug_normalize_variants(c) & target_variants
+    )
+    return coref >= GRAPH_PENDING_COREF_MIN
+
+
+def check_a4_graph_edges(
+    text: str,
+    known_concepts: list[str] | None = None,
+    pending_queue: list[str] | None = None,
+    content_lane: str = "",
+) -> list[Defect]:
     """检查图谱关系表中每条边是否列齐且 provenance 清晰。
 
     A4: 图谱边列齐（target/relation/strength/[provenance]/evidence）
+
+    step-3 SC-3e/A3-8：concept 车道额外做确定性 resolve——每条边 target 必须 resolve 到
+    真实节点（known_concepts）或 pending ≥3 共指（_resolve_graph_node，纯代码不调 LLM）；
+    未 resolve 的假边报 A4-图谱resolve 缺陷（图谱可调用性得分由 weighted_score 据此封顶）。
+    procedural 不启用 resolve（零回归）。
     """
     defects: list[Defect] = []
     section_text = _get_section_text(text, "图谱关系")
@@ -478,6 +560,8 @@ def check_a4_graph_edges(text: str) -> list[Defect]:
     if not section_text:
         # 图谱关系节不存在由 A1 报告，这里不重复
         return defects
+
+    resolve_enabled = _is_concept_lane(content_lane)
 
     # 检测表格行: | target | relation | strength | provenance | evidence |
     # 在 图谱关系 节中查找表格
@@ -584,6 +668,25 @@ def check_a4_graph_edges(text: str) -> list[Defect]:
                             if "provenance" in header_map
                             else ""
                         )
+                        # step-3 SC-3e/A3-8：concept 边 target 必须确定性 resolve（纯代码）。
+                        # 未 resolve = 假边/悬空引用，报缺陷（weighted_score 据此把图谱分封顶）。
+                        if resolve_enabled and target and not _resolve_graph_node(
+                            target, known_concepts, pending_queue
+                        ):
+                            defects.append(
+                                Defect(
+                                    dimension="A4-图谱resolve",
+                                    location=f"图谱关系/{target}",
+                                    defect=(
+                                        f"图谱边 target '{target}' 未 resolve 到已知概念，"
+                                        f"pending 共指也 <{GRAPH_PENDING_COREF_MIN}（假边/悬空）"
+                                    ),
+                                    suggestion=(
+                                        "把 target 指向已存在的概念页/源，"
+                                        "或在 pending 队列累积足量共指后再建边"
+                                    ),
+                                )
+                            )
                         if strength not in GRAPH_EDGE_STRENGTHS:
                             defects.append(
                                 Defect(
@@ -778,10 +881,13 @@ def check_a5_wikilinks(
         known_concepts: 已知的概念列表（可选）
     """
     defects: list[Defect] = []
-    allowed = set(pending_queue or []) | set(known_concepts or [])
+    # SC-2a：allowed 经 _slug_normalize_variants 归一化，使 concept-<name> 与裸名等价。
+    allowed: set[str] = set()
+    for _s in (pending_queue or []) + (known_concepts or []):
+        allowed |= _slug_normalize_variants(str(_s))
 
     if not allowed:
-        # 没有已知概念列表时跳过检查
+        # 没有已知概念列表时跳过检查（空索引不报死链——SC-2a 调查铁证）
         return defects
 
     body = _extract_body_text(text)
@@ -792,7 +898,7 @@ def check_a5_wikilinks(
 
     for link in links:
         link_clean = link.strip()
-        if link_clean not in allowed:
+        if not (_slug_normalize_variants(link_clean) & allowed):
             defects.append(
                 Defect(
                     dimension="A5-wikilink死链",
@@ -857,14 +963,16 @@ def run_structural_checks(
     raw_content: str | None = None,
     pending_queue: list[str] | None = None,
     known_concepts: list[str] | None = None,
+    content_lane: str = "",
 ) -> list[Defect]:
     """运行全部 A 层 6 项检查，返回缺陷清单。
 
     Args:
         text: 候选页全文（含 frontmatter）
         raw_content: raw 文件内容（A3 检查需要，可选）
-        pending_queue: pending 队列概念列表（A5 检查需要，可选）
-        known_concepts: 已知概念列表（A5 检查需要，可选）
+        pending_queue: pending 队列概念列表（A5 + A4 图谱 resolve 需要，可选）
+        known_concepts: 已知概念列表（A5 + A4 图谱 resolve 需要，可选）
+        content_lane: 内容车道（step-3：A4 图谱 resolve 仅 concept 启用确定性 resolve）
 
     Returns:
         list[Defect]: 缺陷清单，空列表表示全部通过。
@@ -874,7 +982,16 @@ def run_structural_checks(
     defects.extend(check_a1_sections(text))
     defects.extend(check_a2_frontmatter(text))
     defects.extend(check_a3_raw_anchors(text, raw_content))
-    defects.extend(check_a4_graph_edges(text))
+    # step-3 SC-3e/A3-8：check_a4 增 known_concepts/pending_queue 形参——concept 图谱边
+    # 必须 resolve 到真实节点或 pending ≥3 共指（纯代码确定性查，不调 LLM）。
+    defects.extend(
+        check_a4_graph_edges(
+            text,
+            known_concepts=known_concepts,
+            pending_queue=pending_queue,
+            content_lane=content_lane,
+        )
+    )
     defects.extend(check_a5_wikilinks(text, pending_queue, known_concepts))
     defects.extend(check_a6_maintenance_records(text))
     defects.extend(check_a8_applicability_boundary(text))
@@ -976,11 +1093,30 @@ def _has_forbidden_hardcoded_novelty(body: str, rel_path: str) -> bool:
     return any(marker in line.lower() for marker in forbidden_markers) or line == rel_path
 
 
+def _normalize_must_cover_text(s: str) -> str:
+    """SC-4：归一化 must_cover 匹配文本——去 [raw §X] 锚点/markdown 标记/列表前缀/压空白。
+
+    旧 gate `literal in section_text` 逐字匹配：compose 渲染同源内容时插 [raw §X]
+    锚点、保留 **bold**/`code` 标记、"N. " 前缀，导致同源内容匹配不上 → 假 fail
+    （满仓 simonwillison "1. **A computation graph**..." / code.claude 两条挂此）。
+    归一化后只比"实质内容是否渲染"，tolerant 格式差异、仍 fail-closed 真缺失
+    （内容根本没渲染时归一化后仍不匹配 → 仍报缺陷）。
+    """
+    s = re.sub(r"\[raw\s*§[A-Z0-9]+\]", " ", s)  # 去 [raw §X] 锚点
+    # P2-C：单引号 ' 与反引号 ` 同去——渲染侧 _sanitize 把 literal 反引号换成 '，
+    # 校验侧也消掉 '，两侧同口径（修 `Conv`→'Conv' 后 must_cover 失配，满仓 #6/#16）。
+    s = re.sub(r"[`'*#>_]", " ", s)  # 去 markdown 标记 + 单引号
+    s = re.sub(r"(?m)^\s*\d+\.\s*", " ", s)  # 去列表前缀 N.
+    s = re.sub(r"\s+", " ", s)  # 压空白
+    return s.strip().lower()
+
+
 def run_candidate_self_gate(
     text: str,
     raw_content: str | None = None,
     pending_queue: list[str] | None = None,
     known_concepts: list[str] | None = None,
+    content_lane: str = "",
 ) -> list[Defect]:
     """Run maker-side candidate gate before grader/promote.
 
@@ -988,8 +1124,15 @@ def run_candidate_self_gate(
     content-contract checks. It is deterministic and must fail closed for fake
     anchors, excessive AKB interpretation, generic AKB commands, hardcoded
     novelty baselines, and template residue.
+
+    step-3 SC-3a：content_lane（concept/procedural）让 SG-how-density 按车道选 gate_min——
+    concept 车道核心价值是命名机制组件+因果边（F4 由 integrity_floor 二值硬卡），不是命令
+    密度，故 concept gate_min=0（不卡可执行 How 步数）；procedural 保留 ≥3（零回归）。
+    SG-provenance-ratio 在 concept 改为逐条 traces_to 溯源（见 Step.3 verify_interpretation_*）。
     """
-    defects = run_structural_checks(text, raw_content, pending_queue, known_concepts)
+    defects = run_structural_checks(
+        text, raw_content, pending_queue, known_concepts, content_lane
+    )
     body = _body_without_frontmatter(text)
 
     if "[raw §" not in body:
@@ -1010,7 +1153,14 @@ def run_candidate_self_gate(
     # test_how_interpretation_steps_do_not_count_against_core_ratio）；三态在此只读报告，
     # 让 SG 能区分 source_operation / source_fact / akb_interpretation。
     split_summary = _provenance_split_summary(text)
-    if total_provenance > 0 and akb_count / total_provenance > MAX_AKB_INTERPRETATION_RATIO:
+    # step-3 SC-3c/Decision-1：concept 车道删 ≤40% 比例上限，改逐条 traces_to 溯源
+    # （由 integrity_floor._interpretation_traceability_failed 硬判，层① 确定性地板）；
+    # procedural 保留原 ≤40% cap（零回归）。
+    if (
+        content_lane != "concept"
+        and total_provenance > 0
+        and akb_count / total_provenance > MAX_AKB_INTERPRETATION_RATIO
+    ):
         split_note = ""
         if split_summary is not None:
             split_note = (
@@ -1050,6 +1200,10 @@ def run_candidate_self_gate(
 
     how_section = _how_section_text(text)
     commands = _how_executable_commands(text)
+    # step-3 SC-3a：SG-how-density 按车道选 gate_min。concept 核心价值是命名机制组件+
+    # 因果边（F4 由 integrity_floor 二值硬卡），不卡可执行命令密度 → gate_min=0；
+    # procedural 保留 ≥3（零回归）。concept 仍要求有「操作步骤」小节（A1 结构完整性）。
+    how_density_min = 0 if _is_concept_lane(content_lane) else MIN_HOW_EXECUTABLE_STEPS
     if not how_section:
         defects.append(
             Defect(
@@ -1062,13 +1216,13 @@ def run_candidate_self_gate(
                 ),
             )
         )
-    elif len(commands) < MIN_HOW_EXECUTABLE_STEPS:
+    elif how_density_min and len(commands) < how_density_min:
         defects.append(
             Defect(
                 dimension="SG-how-density",
                 location="### 操作步骤",
                 defect=(
-                    f"可执行 How 步骤 {len(commands)} < {MIN_HOW_EXECUTABLE_STEPS}"
+                    f"可执行 How 步骤 {len(commands)} < {how_density_min}"
                 ),
                 suggestion=(
                     "补足至少 3 条带反引号命令、"
@@ -1156,7 +1310,11 @@ def run_candidate_self_gate(
         }
         for item in must_cover_items:
             section_text = must_cover_section_text.get(item.must_cover_class, "")
-            if item.literal not in section_text:
+            # SC-4：归一化后比实质内容，tolerant compose 重格式化（[raw §X]/**/`/N. 前缀），
+            # 仍 fail-closed 真缺失（内容没渲染时归一化后也不匹配）。
+            if _normalize_must_cover_text(item.literal) not in _normalize_must_cover_text(
+                section_text
+            ):
                 section_name = must_cover_section_name.get(
                     item.must_cover_class, "正文"
                 )

@@ -669,7 +669,7 @@ class TestStrictSegmentSchemas:
                     required = node.get("required", [])
                     if properties:
                         assert isinstance(required, list), node
-                        missing = set(properties) - set(required)
+                        missing = set(properties) - set(required) - {"traces_to"}
                         assert not missing, f"strict object missing required fields: {missing}"
                 for value in node.values():
                     walk(value)

@@ -441,6 +441,73 @@ class TestRepairLoopConverge:
         assert len(result["final_defects"]) == 0
         assert not result["signature_written"]
 
+    def test_threads_known_concepts_and_pending_to_self_gate(
+        self,
+        candidate_with_defects,
+        repair_fixture_response,
+        grader_pass_response,
+        temp_failures_path,
+        repair_raw_text,
+        monkeypatch,
+    ):
+        """B1: run_repair_loop 必须把 known_concepts/pending_queue 透传到 repair 轮内的
+        run_candidate_self_gate —— 否则 concept 图谱 resolve 在 repair 轮用 None 复验,
+        与主链首过语义不一致, 有效边被误判 unresolved。
+
+        真 spy 委托真实 gate + 记录入参: 改前(repair 不透传)记录到 None → 断言失败;
+        改后记录到传入值 → 通过。非 mock 形状绿(真实 gate 仍执行)。
+        """
+        from src.akb2.quality import checks_structural
+        from tests.quality.conftest import make_mock_route_llm
+
+        real_gate = checks_structural.run_candidate_self_gate
+        recorded: list[dict] = []
+
+        def spy(*args, **kwargs):
+            recorded.append(
+                {
+                    "known_concepts": kwargs.get("known_concepts"),
+                    "pending_queue": kwargs.get("pending_queue"),
+                }
+            )
+            return real_gate(*args, **kwargs)
+
+        monkeypatch.setattr(checks_structural, "run_candidate_self_gate", spy)
+
+        mock_llm = make_mock_route_llm(
+            {**repair_fixture_response, **grader_pass_response}
+        )
+        a_defects = run_structural_checks(candidate_with_defects)
+        b_defects = [
+            Defect(
+                dimension="论断锚定率",
+                location="TLDR",
+                defect="TLDR 无 [raw §X] 锚点",
+                suggestion="为 TLDR 每句添加锚点引用",
+            ),
+        ]
+
+        known = ["my-known-concept"]
+        pending = ["p-alpha", "p-beta", "p-gamma"]
+        run_repair_loop(
+            candidate_text=candidate_with_defects,
+            a_defects=a_defects,
+            b_defects=b_defects,
+            failures_path=temp_failures_path,
+            mock_route_llm=mock_llm,
+            raw_text=repair_raw_text,
+            known_concepts=known,
+            pending_queue=pending,
+        )
+
+        assert recorded, "repair 轮应至少调用一次 run_candidate_self_gate"
+        assert all(r["known_concepts"] == known for r in recorded), (
+            f"known_concepts 未透传: {recorded}"
+        )
+        assert all(r["pending_queue"] == pending for r in recorded), (
+            f"pending_queue 未透传: {recorded}"
+        )
+
     def test_no_defects_skips_repair(self, candidate_with_defects, temp_failures_path):
         """零缺陷输入 → 直接返回收敛，零轮修复。"""
         from tests.quality.conftest import make_mock_route_llm
