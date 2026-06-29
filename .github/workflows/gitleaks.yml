@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0          # 扫描全部提交历史
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # 个人/公开仓库免费;transfer 进组织后私有仓库需 GITLEAKS_LICENSE。
