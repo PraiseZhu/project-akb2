@@ -100,6 +100,244 @@ _RESERVED_LITERAL_TOKENS: frozenset[str] = frozenset(
 )
 
 # ---------------------------------------------------------------------------
+# Prose / reference literals — excluded from the INLINE fabrication recheck
+# ---------------------------------------------------------------------------
+#
+# ``_BACKTICK_COMMAND_RE`` captures EVERY inline backtick span. SC-4 deliberately
+# rechecks all *technical* literals (commands, configs, code) against raw — that
+# is correct and must be preserved. But markdown backticks also wrap PROSE and
+# REFERENCES, which are not copy-pasteable technical literals and whose absence
+# from raw is not "fabrication". Two such shapes false-flagged real concept
+# pages in full-warehouse calibration #0/#2/#8/#10/#17:
+#   - numbered-list PROSE wrapped in backticks: ``1. Pick the next task`` — a
+#     step DESCRIPTION (the ``1. `` sits INSIDE the backtick span), not a
+#     command. (Distinct from ``1. ... `cmd` `` where ``1.`` is the line prefix
+#     OUTSIDE the backticks and the captured literal is the real ``cmd``.)
+#   - repo slugs: ``owner/repo`` — a citation/reference, not a command.
+#
+# Everything else (``trigger={...}`` config, ``deploy-preview --target`` /
+# ``configure --env prod`` commands, arbitrary tool invocations, code) stays
+# fully rechecked, so the SC-4 "every grounded technical literal" intent and the
+# dangerous-command blocklist are untouched. FENCED ```` ```bash ```` blocks are
+# also unchanged (every line still fully rechecked — no fenced-bypass reopen).
+_NUMBERED_PROSE_PREFIX_RE = re.compile(r"^\s*\d+[.)]\s")
+# Repo slug ``owner/repo``: exactly one slash, word/.-/_ on both sides, no space.
+# A reference, not a command. File-path-shaped tokens that ARE commands (e.g.
+# ``./build.sh arg``) carry a space/arg and so are not matched here.
+_REPO_SLUG_RE = re.compile(r"^[A-Za-z0-9][\w.-]*/[\w.-]+$")
+
+# p0-3: CLI 动词白名单（正向真命令识别）。以这些动词开头的 backtick literal 是真命令
+# 形态 → **不豁免**（必须回查，编造即报，如 ``pip install evil``）。复用 admission.py
+# _NUMBERED_WITH_CMD_RE 的 CLI 动词思路（npm/pip/python/git/docker...）。
+_CLI_VERB_TOKENS: frozenset[str] = frozenset({
+    "npm", "npx", "pip", "pip3", "python", "python3", "git", "docker",
+    "curl", "wget", "ssh", "scp", "sudo", "rm", "cp", "mv", "chmod",
+    "chown", "cd", "ls", "cat", "echo", "export", "source", "make",
+    "cargo", "go", "rustc", "gcc", "node", "yarn", "pnpm", "brew",
+    "apt", "apt-get", "yum", "systemctl", "launchctl", "tar", "unzip",
+    "mkdir", "touch", "grep", "sed", "awk", "find", "ps", "kill",
+    "openssl", "gpg", "kubectl", "helm", "terraform", "aws", "gcloud",
+    "az", "pytest", "ruff", "mypy", "eslint", "tsc", "vite", "webpack",
+    "rollup", "bash", "sh", "zsh", "fish",
+})
+
+# 技术形态符号：出现任一即非纯术语（保留回查，SC-4）。
+# p0-3 收紧（屏障反馈）：``-``（连字符）视为命令名形态（mcp-server / fabricated-cmd /
+# deploy-preview / missing-cmd），含 ``-`` 的 literal 不豁免（回查），避免编造命令漏放
+# （SC-3 护栏"真编造命令必报"）；纯术语（Conv / 和 / 组件协作）不含 ``-`` 仍豁免。
+# G2 自审：``|``（管道操作符）视为技术形态——单 ``|`` 的 shell 管道（X | sh）由
+# _is_table_fragment 收窄后不再豁免，此处 ``|`` 作 _is_pure_term 兜底（防漏放）；
+# 真表格/provenance 碎片（≥2 | 或含 marker）由 _is_table_fragment 先判豁免，不进此处。
+_TECH_SHAPE_SIGNS: frozenset[str] = frozenset({
+    "$", "--", "-", "=", "{", "}", "(", ")", "<", ">", "\"", "'",
+    "\\", ";", "&", "/", "|",
+})
+
+
+def _starts_with_cli_verb(s: str) -> bool:
+    """True if the literal starts with a known CLI verb (real command shape).
+
+    命中 → 真命令形态 → 必须回查（不豁免），即使其余部分编造（``pip install evil``）。
+    路径前缀的命令（``/usr/bin/python``）取 basename 后判。
+    """
+    stripped = s.strip()
+    if not stripped:
+        return False
+    first = stripped.split(maxsplit=1)[0]
+    if "/" in first:
+        first = first.rsplit("/", 1)[-1]
+    return first in _CLI_VERB_TOKENS
+
+
+# G2: provenance 标记——含任一即 provenance split 碎片（非命令），表格碎片豁免用。
+_PROVENANCE_MARKERS: frozenset[str] = frozenset({
+    "akb_interpretation", "source_grounded", "source_fact", "source_operation",
+})
+
+# G2 第 5 轮（gpt reviewer 精确方案）：ASCII 命令 token 正则——认合法命令名形态
+# （含数字/下划线/点号/连字符/前导数字：s3cmd/2to3/cmd_foo/tool.v1/apt-get/pip3）。
+# 用于 _cell_is_non_command 判大写首字母术语（match + 首大写 → 术语）。
+_ASCII_CMD_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+
+def _cell_is_non_command(cell: str) -> bool:
+    """True if a ``|``-split cell is definitively NON-command (strict allowlist).
+
+    G2 第 8 轮（gpt reviewer 终结性结构修复）：命令检测**无条件最先**跑（不带任何
+    跳过门禁），所有豁免只对"非命令 cell"生效，杜绝任一豁免形态（marker/CJK/excerpt/
+    术语）吞命令。修复 round 7 的 1c `if "..." not in cell` 门禁导致 `agentctl ...`
+    （命令带 `...` 参数）跳过命令检测、被 excerpt 放行。1c 用**首 token 不含 ``...``**
+    （非 cell 级）区分 `agentctl ...`（首 token `agentctl` 命令→挡）vs `u...`（首 token
+    `u...` excerpt→留）。
+    """
+    if not cell:
+        return True
+    # 0. provenance marker → 确证非命令（先判，marker 不被命令检测误伤）
+    if cell in _PROVENANCE_MARKERS:
+        return True
+    # 1. 无条件命令检测（命中任一 → 立即 return False 回查，不被 `...`/CJK 任何东西跳过）
+    # 1a. 含技术形态符 → 命令
+    if any(sign in cell for sign in _TECH_SHAPE_SIGNS):
+        return False
+    first = cell.split(maxsplit=1)[0]
+    # 1b. 首 token ∈ CLI 动词 → 命令
+    if first in _CLI_VERB_TOKENS:
+        return False
+    # 1c. 首 token 是 ASCII 命令 token（正则命中且首小写或数字，首 token 不含 `...`）→ 命令。
+    # 首 token 含 `...`（如 `u...`）是 excerpt 截断 → 排除，进 2a 窄 excerpt 判定。
+    if "..." not in first and _ASCII_CMD_TOKEN_RE.match(first) and not first[0].isupper():
+        return False
+    # 2. 过了命令检测（确认非命令首 token、无技术符号）才放行
+    # 2a. 窄 excerpt：纯短截断片段——无内部空格、无技术形态、整体含 `...`（如 `u...`）
+    if "..." in cell and " " not in cell and not any(
+        sign in cell for sign in _TECH_SHAPE_SIGNS
+    ):
+        return True
+    # 2b. 大写首字母 ASCII 术语（Conv/API/SDK）
+    if _ASCII_CMD_TOKEN_RE.match(first) and first[0].isupper():
+        return True
+    # 2c. 纯 CJK 或中文标点（此时已确保不是命令首 token）
+    if any("一" <= c <= "鿿" for c in cell):
+        return True
+    return False
+
+
+def _is_table_fragment(s: str) -> bool:
+    """True for markdown table / provenance-split fragments (not shell pipeline).
+
+    G2 第 6 轮（gpt reviewer 统一 allowlist）：去掉整串 marker 先判（round 5 加的
+    ``if any(marker in s): return True`` 被 ``agentctl | akb_interpretation | sh``
+    绕过——塞个 marker token 就整串豁免、跳过 cell allowlist）。改成 cell 级：
+    literal 豁免**当且仅当 EVERY cell 都确证非命令**（``_cell_is_non_command``）。
+    任一 cell 命令形态 → 不豁免（回查，守 SC-3"真编造命令必报"）。全 cell 非命令 +
+    (含 provenance marker 或 ≥2 列) → 豁免。
+    保留 #16 provenance split 碎片（``u... | akb_interpretation | 未提供...``：cell
+    ``u...`` excerpt + ``akb_interpretation`` marker + CJK，全非命令）豁免。
+    """
+    if "|" not in s:
+        return False
+    cells = [c.strip() for c in s.split("|")]
+    # 豁免当且仅当 EVERY cell 都确证非命令
+    if not all(_cell_is_non_command(c) for c in cells):
+        return False  # 任一 cell 命令形态 → 不豁免（回查）
+    # 全 cell 非命令 → 真表格/provenance 碎片
+    if any(marker in s for marker in _PROVENANCE_MARKERS):
+        return True
+    if s.count("|") >= 2:
+        return True
+    # 单 | 全 cell 非命令 但无 marker 无多列 → 默认回查（不豁免）
+    return False
+
+
+def _is_single_cjk_term(s: str) -> bool:
+    """True for single-char / short CJK terms (如 ``和``) — prose, not a command.
+
+    G2 第 8 轮（gpt 补充核查）：命令首 token 优先——防 `go 参数`/`agent 参`（命令首
+    token + 中文参数，len≤6）被 CJK 分支吞。首 token 命令 → False，再 CJK 放行。
+    """
+    stripped = s.strip()
+    if not stripped or len(stripped) > 6:
+        return False
+    if any(sign in stripped for sign in _TECH_SHAPE_SIGNS):
+        return False
+    # 命令检测优先：首 token 命令 → False（压倒 CJK 放行）
+    first = stripped.split(maxsplit=1)[0]
+    if first in _CLI_VERB_TOKENS:
+        return False
+    if "..." not in first and _ASCII_CMD_TOKEN_RE.match(first) and not first[0].isupper():
+        return False
+    return any("一" <= c <= "鿿" for c in stripped)
+
+
+def _is_pure_term(s: str) -> bool:
+    """True for pure terms — CJK term or Capitalized ASCII token (not a command).
+
+    G2 第 8 轮（gpt 补充核查）：命令首 token 优先——防 `agentctl 参数`/`cmd2 参数`
+    （命令首 token + 中文参数）被 CJK 分支吞（round 5 的 `any CJK → True` 在命令检测前）。
+    首 token 命令 → False，再 CJK/大写术语放行。
+    """
+    stripped = s.strip()
+    if not stripped or len(stripped) > 30:
+        return False
+    if "$" in stripped:
+        return False
+    if any(sign in stripped for sign in _TECH_SHAPE_SIGNS):
+        return False
+    # 命令检测优先：首 token 命令 → False（压倒 CJK 放行）
+    first = stripped.split(maxsplit=1)[0]
+    if first in _CLI_VERB_TOKENS:
+        return False
+    if "..." not in first and _ASCII_CMD_TOKEN_RE.match(first) and not first[0].isupper():
+        return False
+    # 过了命令检测才放行
+    # CJK 术语（中文，非命令）→ 豁免
+    if any("一" <= c <= "鿿" for c in stripped):
+        return True
+    # 大写首字母 ASCII 单 token（术语/缩写/库名：Conv/API/SDK/React）→ 豁免
+    if (
+        stripped.isascii()
+        and stripped.isalpha()
+        and " " not in stripped
+        and stripped[0].isupper()
+    ):
+        return True
+    # 裸小写 ASCII token（命令名形态）→ 不豁免（回查）
+    return False
+
+
+def _is_prose_or_reference_literal(literal: str) -> bool:
+    """True for backtick literals that are PROSE/REFERENCE/non-command, not technical.
+
+    p0-3 命令形态判定：在既有编号散文 + repo slug 之上扩展豁免——
+      - 单字/短词中文（``和``）；
+      - 含 ``|`` 的 markdown 表格/provenance split 碎片（``u... | akb_interpretation | ...``）；
+      - 纯术语/概念名（无 CLI 动词、无 ``$``、无路径/参数形态）。
+    正向真命令识别：以 CLI 动词白名单（npm/pip/python/git/docker...）开头的 literal 是
+    真命令形态，**不豁免**（必须回查，编造即报，如 ``pip install evil``）。
+    其他技术 literal（配置/代码/路径/带参数命令）也不豁免，保留 SC-4 全回查。
+    危险命令黑名单对豁免项仍跑（caller responsibility，双重拦截）。
+    """
+    s = literal.strip()
+    if not s:
+        return False
+    if _NUMBERED_PROSE_PREFIX_RE.match(s):
+        return True
+    if _REPO_SLUG_RE.match(s):
+        return True
+    # 正向真命令识别：CLI 动词白名单命中 → 真命令形态，不豁免（回查 + 危险黑名单）
+    if _starts_with_cli_verb(s):
+        return False
+    # 命令形态豁免（明确非命令形态）
+    if _is_table_fragment(s):
+        return True
+    if _is_single_cjk_term(s):
+        return True
+    if _is_pure_term(s):
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Dangerous-command blocklist (附加拦截层)
 # ---------------------------------------------------------------------------
 #
@@ -504,8 +742,25 @@ def verify_commands_in_raw(
     violations: list[Violation] = []
 
     for m in _BACKTICK_COMMAND_RE.finditer(candidate_body):
+        literal = m.group(1)
+        if _is_prose_or_reference_literal(literal):
+            # Prose (numbered step) or reference (repo slug) — not a technical
+            # literal, so absence from raw is not fabrication. Still intercept
+            # an unmistakably destructive literal hiding here (dangerous
+            # blocklist stays universal).
+            stripped = literal.strip()
+            if not _is_reserved_token(stripped) and _is_dangerous_command(stripped):
+                violations.append(
+                    Violation(
+                        command=stripped,
+                        reason="含危险操作（破坏性/权限/网络/凭据）",
+                        candidate_offset=m.start(1),
+                        raw_nearest_line=None,
+                    )
+                )
+            continue
         violation = _classify_command_violation(
-            m.group(1),
+            literal,
             raw_text,
             candidate_offset=m.start(1),
         )

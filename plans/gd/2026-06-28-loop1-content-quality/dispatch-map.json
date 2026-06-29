@@ -1,0 +1,97 @@
+{
+  "dispatch_id": "loop1-content-quality-plan",
+  "source_master_plan": "plans/gd/2026-06-28-loop1-content-quality/master-plan.md",
+  "goal_chain": {
+    "PROJECT_GOAL": "AKB2 无人值守自动化知识库工程：fail-closed 门控 + 异族 Maker/Checker + 实测价值裁决（ref docs/constitution.md 原则 3/6/7/8）",
+    "CHAIN_GOAL": "循环1 按内容车道分流质量标准，让概念型与操作型知识在不破完整性地板的前提下都能入库（ref specs/content-lane-quality/spec.md）",
+    "PHASE_GOAL": "PLAN 阶段：由 2 个 child_planner 并行起草 P0（当前管线诚实化+补观测）与 v2（多源提炼）的 step plan 草稿，主 agent 合并成 loop1 content-quality 计划套件"
+  },
+  "max_parallel_planning": 2,
+  "max_parallel_execution": 2,
+  "max_parallel_review": 2,
+  "max_parallel_validation": 2,
+  "tracks": [
+    {
+      "track_id": "t-p0-planner",
+      "mode": "plan",
+      "agent_role": "child_planner",
+      "owned_paths": ["plans/gd/2026-06-28-loop1-content-quality/child-drafts/p0-draft.md"],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "plans/gd/2026-06-28-loop1-content-quality/child-drafts/v2-draft.md"
+      ],
+      "required_context": [
+        "plans/gd/2026-06-28-loop1-execution-plan.md",
+        "plans/gd/2026-06-28-loop1-handoff.md",
+        "docs/constitution.md",
+        "specs/content-lane-quality/spec.md"
+      ],
+      "deliverables": [
+        {
+          "path": "plans/gd/2026-06-28-loop1-content-quality/child-drafts/p0-draft.md",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [],
+      "can_parallel_with": ["t-v2-planner"],
+      "sc_refs": ["SC-1"],
+      "verify": [
+        {
+          "sc_ref": "SC-1",
+          "method": "path",
+          "cmd": "test -f plans/gd/2026-06-28-loop1-content-quality/child-drafts/p0-draft.md && grep -q 'P0-1' plans/gd/2026-06-28-loop1-content-quality/child-drafts/p0-draft.md && echo PASS",
+          "expect": "PASS"
+        }
+      ]
+    },
+    {
+      "track_id": "t-v2-planner",
+      "mode": "plan",
+      "agent_role": "child_planner",
+      "owned_paths": ["plans/gd/2026-06-28-loop1-content-quality/child-drafts/v2-draft.md"],
+      "forbidden_paths": [
+        "/Users/praise/.claude/**",
+        "plans/gd/2026-06-28-loop1-content-quality/child-drafts/p0-draft.md"
+      ],
+      "required_context": [
+        "specs/multi-source-distill/spec.md",
+        "plans/gd/2026-06-28-loop1-execution-plan.md",
+        "docs/constitution.md"
+      ],
+      "deliverables": [
+        {
+          "path": "plans/gd/2026-06-28-loop1-content-quality/child-drafts/v2-draft.md",
+          "kind": "file",
+          "must_exist": true
+        }
+      ],
+      "blocked_by": [],
+      "can_parallel_with": ["t-p0-planner"],
+      "sc_refs": ["SC-9"],
+      "verify": [
+        {
+          "sc_ref": "SC-9",
+          "method": "path",
+          "cmd": "test -f plans/gd/2026-06-28-loop1-content-quality/child-drafts/v2-draft.md && grep -q 'v2' plans/gd/2026-06-28-loop1-content-quality/child-drafts/v2-draft.md && echo PASS",
+          "expect": "PASS"
+        }
+      ]
+    }
+  ],
+  "waves": [
+    {
+      "wave_id": "w1",
+      "track_ids": ["t-p0-planner", "t-v2-planner"],
+      "description": "PLAN 阶段唯一 wave：2 个 child_planner 并行起草 P0 与 v2 step plan 草稿"
+    }
+  ],
+  "merge_gates": [
+    {"gate_id": "G1", "description": "child 草稿格式合规（含 gd-child-plan-proposal-json block，过 gd-validate-child-proposal.py）"},
+    {"gate_id": "G2", "description": "两层: (1) PLAN 阶段 child deliverable 仅允许写 child-drafts/{p0,v2}-draft.md; (2) child draft 内的 execute packet proposals 可引用工作区实现路径(src/skillpack/tests/evals),但禁 ~/.claude vault 与 .. 穿越,且 execute 阶段须重生成 dispatch-map 并过 validator"},
+    {"gate_id": "G3", "description": "child 草稿不含 review verdict 字段（child_planner 不出 review 结论）"},
+    {"gate_id": "G4", "description": "每条 SC 绑定可执行 verify（method ∈ command/path/assertion/test）"},
+    {"gate_id": "G5", "description": "并行 wave 两 child 全完才进主 agent 合并"},
+    {"gate_id": "G6", "description": "两 child 草稿冲突时主 agent 写仲裁理由"}
+  ]
+}

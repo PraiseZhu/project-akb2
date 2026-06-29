@@ -8,7 +8,6 @@ presence of the p1e-delta merge artifacts. No live merge execution.
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 
 import pytest

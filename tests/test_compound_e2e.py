@@ -158,8 +158,10 @@ def test_index_apply_and_self_exclude(tmp_vault: Path, repo_root: Path):
     )
     assert result2.returncode == 0
     content = index_file.read_text()
-    lines = [l for l in content.split("\n") if l.startswith("- **")]
-    assert not any("00-Index" in l for l in lines), "00-Index.md must not appear as a page entry"
+    lines = [line for line in content.split("\n") if line.startswith("- **")]
+    assert not any("00-Index" in line for line in lines), (
+        "00-Index.md must not appear as a page entry"
+    )
 
 
 def test_save_trigger_plan_doc_exists(repo_root: Path):

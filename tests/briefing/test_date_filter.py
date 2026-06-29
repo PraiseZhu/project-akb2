@@ -1,9 +1,7 @@
 """test_date_filter.py — SC-6 / SC-7 日期过滤测试。"""
 from __future__ import annotations
 
-import sys
-from unittest.mock import patch, MagicMock
-
+from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
 # SC-7: _filter_recent 单元测试

@@ -7,7 +7,6 @@ import subprocess
 from datetime import date
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BACKSTOP_SH = PROJECT_ROOT / "scripts" / "briefing_backstop.sh"
 

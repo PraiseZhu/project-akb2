@@ -1,0 +1,160 @@
+{
+  "schema_version": "1.1",
+  "run_mode": "live",
+  "started_at": "2026-06-26T14:00:00Z",
+  "finished_at": "2026-06-26T15:30:00Z",
+  "aggregate_path": "plans/gd/2026-06-26-loop1-calibration-harness-fix/merge-report-execute.md",
+  "manifest_path": "plans/gd/2026-06-26-loop1-calibration-harness-fix/execution-dispatch-map.json",
+  "primary_gate": {
+    "verdict": "REQUIRES_CHANGES",
+    "blocking": [
+      "SC-1_end_to_end_FAIL"
+    ]
+  },
+  "secondary_gate": {
+    "verdict": "REQUIRES_CHANGES",
+    "blocking": [
+      "SC-1_end_to_end_FAIL"
+    ]
+  },
+  "gate_consistent": true,
+  "dirty_detected": false,
+  "jobs": [
+    {
+      "queue_job_id": "t2a-scrapling-fix",
+      "target_role": "execute",
+      "primary_target": "src/akb2/quality/intake/extract.py",
+      "bridge_exit": 0,
+      "bridge_stderr_path": null,
+      "bridge_stderr_summary": "none",
+      "raw_verdict": "completed",
+      "mapped_status": "approved",
+      "aggregate_bucket": "execute-t2a"
+    },
+    {
+      "queue_job_id": "t2b-preflight-corpus",
+      "target_role": "execute",
+      "primary_target": "evals/main-pipeline-quality/corpus.yaml",
+      "bridge_exit": 0,
+      "bridge_stderr_path": null,
+      "bridge_stderr_summary": "none",
+      "raw_verdict": "completed",
+      "mapped_status": "approved",
+      "aggregate_bucket": "execute-t2b"
+    },
+    {
+      "queue_job_id": "t2b-fix-continue-url",
+      "target_role": "execute",
+      "primary_target": "evals/main-pipeline-quality/corpus.yaml",
+      "bridge_exit": 0,
+      "bridge_stderr_path": null,
+      "bridge_stderr_summary": "none",
+      "raw_verdict": "completed",
+      "mapped_status": "approved",
+      "aggregate_bucket": "execute-t2b-fix"
+    },
+    {
+      "queue_job_id": "akb2-calibration-harness-diagnostics-t1",
+      "target_role": "execute",
+      "primary_target": "src/akb2/quality/calibration.py",
+      "bridge_exit": 0,
+      "bridge_stderr_path": null,
+      "bridge_stderr_summary": "none",
+      "raw_verdict": "completed",
+      "mapped_status": "approved",
+      "aggregate_bucket": "execute-t1"
+    },
+    {
+      "queue_job_id": "t1-fix-anchor",
+      "target_role": "execute",
+      "primary_target": "src/akb2/quality/calibration.py",
+      "bridge_exit": 0,
+      "bridge_stderr_path": null,
+      "bridge_stderr_summary": "none",
+      "raw_verdict": "completed",
+      "mapped_status": "approved",
+      "aggregate_bucket": "execute-t1-fix"
+    },
+    {
+      "queue_job_id": "t2a-fix-fallback",
+      "target_role": "execute",
+      "primary_target": "src/akb2/quality/intake/extract.py",
+      "bridge_exit": 0,
+      "bridge_stderr_path": null,
+      "bridge_stderr_summary": "none",
+      "raw_verdict": "completed",
+      "mapped_status": "approved",
+      "aggregate_bucket": "execute-t2a-fix"
+    },
+    {
+      "queue_job_id": "t1-fix-livefloor",
+      "target_role": "execute",
+      "primary_target": "src/akb2/quality/calibration.py",
+      "bridge_exit": 0,
+      "bridge_stderr_path": null,
+      "bridge_stderr_summary": "none",
+      "raw_verdict": "completed",
+      "mapped_status": "approved",
+      "aggregate_bucket": "execute-t1-fix-livefloor"
+    }
+  ],
+  "batch_ledgers": [
+    {
+      "path": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-26-loop1-calibration-harness-fix/stage-dispatch-ledger-execute-w1.json",
+      "hash": "990ebb0e197678e79338ebcbafd1736f89b3bd4678116df84c07529deeecb49b"
+    },
+    {
+      "path": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-26-loop1-calibration-harness-fix/stage-dispatch-ledger-execute-w2.json",
+      "hash": "e345ea7ca043161ff31868d95e39b9a8ac8a470243cc0175c09af44af9410f1d"
+    },
+    {
+      "path": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-26-loop1-calibration-harness-fix/stage-dispatch-ledger-execute-hotfix1.json",
+      "hash": "0771f936cc60edaeae21da48983c881d2f5dbc1b01a1562e18bdc0379f25d78e"
+    },
+    {
+      "path": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-26-loop1-calibration-harness-fix/stage-dispatch-ledger-execute-hotfix2.json",
+      "hash": "2ef1c82d254b01751879e2d9c46bbe486b77a60cf13f2fe1bfb23168eeb80c01"
+    },
+    {
+      "path": "/Users/praise/AI-Agent/Claude/projects/Project AKB2/plans/gd/2026-06-26-loop1-calibration-harness-fix/stage-dispatch-ledger-execute-hotfix3.json",
+      "hash": "70fdf9268a4a8b4e977e40f2d9056ebf0eb82a03ede924fbad8132fbc779e7db"
+    }
+  ],
+  "suite_target_closure": [
+    {
+      "target_id": "t2a-scrapling-fix",
+      "mapped_status": "approved",
+      "evidence_kind": "controller_approved"
+    },
+    {
+      "target_id": "t2b-preflight-corpus",
+      "mapped_status": "approved",
+      "evidence_kind": "controller_approved"
+    },
+    {
+      "target_id": "t2b-fix-continue-url",
+      "mapped_status": "approved",
+      "evidence_kind": "controller_approved"
+    },
+    {
+      "target_id": "akb2-calibration-harness-diagnostics-t1",
+      "mapped_status": "approved",
+      "evidence_kind": "controller_approved"
+    },
+    {
+      "target_id": "t1-fix-anchor",
+      "mapped_status": "approved",
+      "evidence_kind": "controller_approved"
+    },
+    {
+      "target_id": "t2a-fix-fallback",
+      "mapped_status": "approved",
+      "evidence_kind": "controller_approved"
+    },
+    {
+      "target_id": "t1-fix-livefloor",
+      "mapped_status": "approved",
+      "evidence_kind": "controller_approved"
+    }
+  ]
+}

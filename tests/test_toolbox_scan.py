@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Import smoke tests (pythonpath must include src/akb2/toolbox_scan)
 # ---------------------------------------------------------------------------
@@ -28,7 +27,7 @@ def test_toolbox_scan_package_importable():
 def test_toolbox_scan_discover_importable():
     """discover module must be importable and expose RootSpec and discover_candidates."""
     try:
-        from akb2_toolbox_scan.discover import RootSpec, discover_candidates
+        from akb2_toolbox_scan.discover import discover_candidates
     except ImportError as e:
         pytest.fail(f"discover module import failed: {e}")
     assert callable(discover_candidates), "discover_candidates must be callable"
@@ -54,8 +53,9 @@ def test_toolbox_scan_paths_importable():
 
 def test_toolbox_scan_rootspec_fields():
     """RootSpec dataclass must have path and kind fields."""
-    from akb2_toolbox_scan.discover import RootSpec
     import dataclasses
+
+    from akb2_toolbox_scan.discover import RootSpec
 
     fields = {f.name for f in dataclasses.fields(RootSpec)}
     assert "path" in fields, "RootSpec must have 'path' field"

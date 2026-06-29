@@ -1,9 +1,9 @@
 """统一 tweet schema + YAML 配置加载 + collector 基类。"""
 import json
-import os
-import yaml
 from abc import ABC, abstractmethod
 from pathlib import Path
+
+import yaml
 
 REPO_ROOT = Path(__file__).parent.parent.parent.parent.parent  # worktree root
 

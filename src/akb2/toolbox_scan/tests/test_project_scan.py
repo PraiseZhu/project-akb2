@@ -24,7 +24,10 @@ def _seed_akb(root: Path) -> None:
     (root / "toolbox" / "registry").mkdir(parents=True, exist_ok=True)
     (root / "toolbox" / "interfaces").mkdir(parents=True, exist_ok=True)
     (root / "toolbox" / "evals").mkdir(parents=True, exist_ok=True)
-    (root / "staging" / "candidate" / "toolbox-phase-b-2026-05-04").mkdir(parents=True, exist_ok=True)
+    (root / "staging" / "candidate" / "toolbox-phase-b-2026-05-04").mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
 
 def _write(path: Path, body: str = "echo hi\n", *, executable: bool = False) -> Path:
@@ -36,7 +39,11 @@ def _write(path: Path, body: str = "echo hi\n", *, executable: bool = False) -> 
 
 
 def _read_jsonl(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
 def _run_project(
@@ -75,7 +82,10 @@ class TestProjectClassification(unittest.TestCase):
             _write(proj / "bin" / "foo", body="#!/bin/sh\necho hi\n", executable=True)
             # negative cases
             _write(proj / "commands" / "foo.py", body="print('hi')\n")          # not collected
-            _write(proj / "scripts" / "commands" / "nested.py", body="print()\n")  # collected (nested)
+            _write(
+                proj / "scripts" / "commands" / "nested.py",
+                body="print()\n",
+            )  # collected (nested)
 
             rc = _run_project(akb, project_roots=[proj])
             self.assertEqual(rc, 0)
@@ -119,7 +129,10 @@ class TestExclusionList(unittest.TestCase):
             _write(proj / "scripts" / "real.sh")
             rc = _run_project(akb, project_roots=[proj])
             self.assertEqual(rc, 0)
-            paths = [r["relative_path"] for r in _read_jsonl(akb / "manifests" / "workspace-scan" / "x.jsonl")]
+            paths = [
+                r["relative_path"]
+                for r in _read_jsonl(akb / "manifests" / "workspace-scan" / "x.jsonl")
+            ]
             self.assertEqual(paths, ["scripts/real.sh"])
 
     def test_dot_dirs_pruned(self):
@@ -133,7 +146,10 @@ class TestExclusionList(unittest.TestCase):
             _write(proj / "scripts" / "ok.sh")
             rc = _run_project(akb, project_roots=[proj])
             self.assertEqual(rc, 0)
-            paths = [r["relative_path"] for r in _read_jsonl(akb / "manifests" / "workspace-scan" / "x.jsonl")]
+            paths = [
+                r["relative_path"]
+                for r in _read_jsonl(akb / "manifests" / "workspace-scan" / "x.jsonl")
+            ]
             self.assertEqual(paths, ["scripts/ok.sh"])
 
     def test_dist_and_build_pruned(self):
@@ -146,7 +162,10 @@ class TestExclusionList(unittest.TestCase):
             _write(proj / "scripts" / "real.sh")
             rc = _run_project(akb, project_roots=[proj])
             self.assertEqual(rc, 0)
-            paths = sorted(r["relative_path"] for r in _read_jsonl(akb / "manifests" / "workspace-scan" / "x.jsonl"))
+            paths = sorted(
+                r["relative_path"]
+                for r in _read_jsonl(akb / "manifests" / "workspace-scan" / "x.jsonl")
+            )
             self.assertEqual(paths, ["scripts/real.sh"])
 
 
@@ -219,7 +238,10 @@ class TestPreviousManifestDedup(unittest.TestCase):
             )
             rc = _run_project(akb, project_roots=[proj], previous_manifest=prev)
             self.assertEqual(rc, 0)
-            recs = {r["relative_path"]: r for r in _read_jsonl(akb / "manifests" / "workspace-scan" / "x.jsonl")}
+            recs = {
+                r["relative_path"]: r
+                for r in _read_jsonl(akb / "manifests" / "workspace-scan" / "x.jsonl")
+            }
             self.assertTrue(recs["scripts/x.sh"]["duplicate_of_prior_scan"])
             self.assertFalse(recs["scripts/y.sh"]["duplicate_of_prior_scan"])
             self.assertEqual(recs["scripts/x.sh"]["prior_manifest_path"], str(prev.resolve()))

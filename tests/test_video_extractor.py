@@ -8,18 +8,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest import mock
 
 import pytest
 
 from src.akb2.video.extractor import (
-    ExtractedFields,
     Extractor,
-    FutureQuestion,
-    KeyFinding,
-    SourceSpan,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

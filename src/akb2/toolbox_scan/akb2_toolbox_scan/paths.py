@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-
 MANIFEST_SUBDIR = ("manifests", "workspace-scan")
 RANKING_SUBDIR = ("manifests", "toolbox-ranking")
 REPORT_SUBDIR = ("docs", "phase-c-reports")

@@ -6,7 +6,6 @@ from pathlib import Path
 
 from .discover import ScanRecord
 
-
 PHASE_B_DIR = ("staging", "candidate", "toolbox-phase-b-2026-05-04")
 
 

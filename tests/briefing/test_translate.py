@@ -4,8 +4,6 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
-import pytest
-
 FIXTURE_SYNTH = {
     "date": "2026-05-30",
     "executive_summary": "Today AI agents showed strong growth with new memory tools.",
@@ -160,6 +158,7 @@ def test_key_quotes_translated_and_context_filled():
 def test_translate_covers_referenced_and_orphan():
     """展示集合中的推文（被引用 + 孤儿高分）都应有 zh_point。"""
     import copy
+
     from akb2.briefing.translate import translate_briefing
 
     # synth 有 3 条推文：id=1 被主题引用，id=2 孤儿高分，id=3 孤儿低分（不在展示集合）
@@ -253,6 +252,7 @@ def test_translate_degrades_without_llm():
 def test_missing_core_excerpt_zh_triggers_snippet_translate():
     """core_excerpt_en 通过子串校验但无 core_excerpt_zh 时，应单独翻译该核心段（Codex F2 回归）。"""
     import copy
+
     from akb2.briefing.translate import translate_briefing
 
     synth = copy.deepcopy(FIXTURE_SYNTH)
@@ -297,6 +297,7 @@ def test_missing_core_excerpt_zh_triggers_snippet_translate():
 def test_snippet_translate_failure_no_english_core_excerpt():
     """_translate_snippet 失败时 core_excerpt 不应回退英文原段（Codex R3 F1 回归）。"""
     import copy
+
     from akb2.briefing.translate import translate_briefing
 
     synth = copy.deepcopy(FIXTURE_SYNTH)
@@ -400,6 +401,7 @@ def test_short_tweet_no_excerpt():
 def test_core_excerpt_uses_selected_core_segment():
     """核心英文段在原文末尾时，core_excerpt 应使用模型直接翻译该段，而非整条译文前 400 字。"""
     import copy
+
     from akb2.briefing.translate import translate_briefing
 
     # 核心段在原文末尾（前 600 字是噪声，核心内容在后半部分）
@@ -445,8 +447,9 @@ def test_translate_model_chain_and_timeout():
     无余量（合成同模型有 300s 故能扛住）。故默认对齐合成的 300s，并接 AKB2_TRANSLATE_TIMEOUT
     env 使 plist 可覆盖。瞬时变慢由 300s 余量 + 8:00 补跑 agent 双层兜底。
     """
-    from akb2.briefing import translate as tr
     import inspect
+
+    from akb2.briefing import translate as tr
 
     assert tr._TRANSLATE_MODEL == "gemini-3.1-pro-preview", \
         f"翻译主力应为 gemini，实际 {tr._TRANSLATE_MODEL}"
@@ -515,6 +518,7 @@ def test_translate_topic_retranslated_if_english():
     """_apply_translation_inner：topic 翻译结果含英文时，触发 _translate_snippet 补译。"""
     import copy
     from unittest.mock import patch as _patch
+
     from akb2.briefing import translate as tr
     from akb2.briefing.translate import _apply_translation
 
@@ -553,6 +557,7 @@ def test_translate_topic_with_product_name_not_retranslated():
     """
     import copy
     from unittest.mock import patch as _patch
+
     from akb2.briefing import translate as tr
     from akb2.briefing.translate import _apply_translation
 
@@ -577,6 +582,7 @@ def test_translate_topic_chinese_no_retranslate():
     """topic 翻译结果已是中文时，不调 _translate_snippet（无多余 LLM 调用）。"""
     import copy
     from unittest.mock import patch as _patch
+
     from akb2.briefing import translate as tr
     from akb2.briefing.translate import _apply_translation
 
@@ -606,6 +612,7 @@ def test_translate_topic_chinese_no_retranslate():
 def test_lang_zh_tweet_skips_text_translation():
     """SC-P3a-2: lang=zh 的推文不替换 text（中文原文保留），zh_point 仍可写入。"""
     import copy
+
     from akb2.briefing.translate import _apply_translation
 
     synth = copy.deepcopy(FIXTURE_SYNTH)
@@ -635,6 +642,7 @@ def test_lang_zh_tweet_skips_text_translation():
 def test_lang_en_tweet_translated_normally():
     """SC-P3a-2: lang=en（或无 lang）的推文正常翻译，text 被中文译文替换。"""
     import copy
+
     from akb2.briefing.translate import _apply_translation
 
     synth = copy.deepcopy(FIXTURE_SYNTH)

@@ -703,6 +703,47 @@ class TestCandidateSelfGate:
         defects = run_candidate_self_gate(text, valid_raw_content)
         assert any(d.dimension == "SG-novelty-hardcoded" for d in defects)
 
+    def test_concept_lane_zero_commands_no_how_density_defect(
+        self, valid_candidate_page, valid_raw_content
+    ):
+        """SC-3：concept 车道 + 操作步骤节存在但 0 可执行命令 → 不判 SG-how-density fail。
+
+        满仓观测：Context Engineering 概念样本挂 `SG-how-density 0<3`。代码查证表明
+        how-density 门已 lane-aware（how_density_min=0 if concept），透传链完整；该失败
+        是样本被误判 procedural（SC-1 同根）所致，非 how-density 门缺 lane-aware。
+        本测试锁死 concept 车道豁免行为，防未来回归把 SC-1 下游保障打掉。
+        """
+        # 在「论证与解释」节内插入一个无反引号命令的 ### 操作步骤 子节
+        text = valid_candidate_page.replace(
+            "崩溃恢复只需读最后一条账本记录 [raw §B]。\n",
+            "崩溃恢复只需读最后一条账本记录 [raw §B]。\n\n"
+            "### 操作步骤\n\n"
+            "概念型内容无可执行命令，本节阐述操作要点而不提供代码。\n",
+        )
+        # 守卫：操作步骤节存在且 0 可执行命令（否则测试本身失效）
+        from src.akb2.quality.checks_structural import (
+            _how_executable_commands,
+            _how_section_text,
+        )
+
+        assert _how_section_text(text) != "", "测试素材须有 ### 操作步骤 节"
+        assert _how_executable_commands(text) == [], "测试素材须 0 可执行命令"
+
+        # concept 车道：how_density_min=0 → 不判 SG-how-density
+        defects_concept = run_candidate_self_gate(
+            text, valid_raw_content, content_lane="concept"
+        )
+        assert not any(d.dimension == "SG-how-density" for d in defects_concept), (
+            "concept 车道 + 0 命令不应判 SG-how-density（SC-3）"
+        )
+        # 对比：procedural 车道同样 0 命令 → 仍判 fail（锁死 lane-aware 不退化）
+        defects_proc = run_candidate_self_gate(
+            text, valid_raw_content, content_lane=""
+        )
+        assert any(d.dimension == "SG-how-density" for d in defects_proc), (
+            "procedural 车道 0 命令应判 SG-how-density（零回归）"
+        )
+
 
 # ---------------------------------------------------------------------------
 # A4: 图谱边四列齐 — 正负用例
@@ -1211,6 +1252,26 @@ class TestSGMustCoverFailClosed:
         must_cover = [d for d in defects if d.dimension == "SG-must-cover"]
         assert must_cover == [], f"已逐字渲染却报 must_cover 缺陷: {must_cover}"
 
+    def test_must_cover_match_tolerates_markdown_reformatting(self):
+        """SC-4：raw 字面量带 **bold**，候选渲染去 ** → 不应误判缺陷（归一化匹配）。
+
+        满仓 simonwillison "1. **A computation graph**..." 挂此：compose 渲染同源内容
+        时格式微调（去 **/插 [raw §X] 锚点），逐字匹配 `literal in section_text` 失败。
+        归一化后比实质内容，仍 fail-closed 真缺失（内容根本没渲染时不匹配）。
+        """
+        raw = "1. **Run npm install** to fetch deps.\n2. Run npm test."
+        # 候选渲染时去掉了 **（compose 重格式化，插了 [raw §X] 锚点）
+        steps = (
+            "- [raw §A] (source_grounded) 1. Run npm install to fetch deps.\n"
+            "- [raw §B] (source_grounded) 2. Run npm test."
+        )
+        text = _candidate_with_how_steps(steps)
+        defects = run_candidate_self_gate(text, raw_content=raw)
+        must_cover = [d for d in defects if d.dimension == "SG-must-cover"]
+        assert must_cover == [], (
+            f"markdown 重格式化不应误判 must_cover 缺陷（SC-4）: {must_cover}"
+        )
+
     def test_missing_boundary_is_defect(self):
         """SC-3.1 边界漏渲染：适用边界节不含原文边界字面量 → SG-must-cover Defect。"""
         # 用一个不含 "仅限生产环境使用" 的候选页（边界节改成别的文字）。
@@ -1274,26 +1335,53 @@ class TestSGMustCoverCallSiteProvenance:
         return Path(rel_path).read_text(encoding="utf-8")
 
     def test_distill_callsite_reads_real_raw_from_disk(self):
-        """distill.py: raw_content = Path(raw_path).read_text()，同源于原始 raw 文件。"""
+        """distill.py: raw_content = Path(raw_path).read_text()，同源于原始 raw 文件。
+
+        step-3 SC-3e/A3-8：compose 第一道 self-gate 改为多参调用（真传 known_concepts/
+        pending_queue/content_lane 做图谱 resolve），故断言由「整行字面」放宽为「call +
+        raw_content=raw_content 实参同行存在」——审计意图（raw_content 是权威源、fail-closed）
+        不变，仍验 raw_content 来自磁盘读 + OSError 时置 None。
+        """
         src = self._read(_CALLSITE_SOURCE_PATHS["distill"])
-        assert "run_candidate_self_gate(full_page, raw_content=raw_content)" in src
+        assert "run_candidate_self_gate(" in src
+        assert "raw_content=raw_content," in src
+        # step-3：第一闸真传 known/pending/lane（SC-3e），不再传 None 被 fixture 掩盖。
+        assert "known_concepts=known_concepts," in src
+        assert "pending_queue=pending_queue," in src
+        assert "content_lane=content_lane," in src
         assert "Path(raw_path).read_text(encoding=\"utf-8\")" in src
         # OSError 时 raw_content=None → fail-closed（不静默跳过）。
         assert "raw_content = None" in src
 
     def test_repair_callsites_use_raw_text_param(self):
-        """repair.py 两处调用点：raw_text 来自 run_repair_loop 参数，同源 raw。"""
+        """repair.py 两处 self-gate 调用：raw_text 同源 + 透传 content_lane + B1 透传
+        known_concepts/pending_queue（w6/w9 + B1）。"""
         src = self._read(_CALLSITE_SOURCE_PATHS["repair"])
-        # 两处调用点都用 raw_text（非截断/异源）。
-        assert src.count("run_candidate_self_gate(current_text, raw_text)") == 2
-        # raw_text 是 run_repair_loop 的参数（非局部拼接/截断）。
+        # B1：两处 self-gate 都透传 known_concepts/pending_queue/content_lane，使
+        # repair 轮图谱 resolve 与主链首过 self-gate 用同一上下文（不再用 None 复验）。
+        assert src.count("known_concepts=known_concepts,") == 2
+        assert src.count("pending_queue=pending_queue,") == 2
+        assert src.count("content_lane=content_lane,") == 2
+        # raw_text / known_concepts / pending_queue 是 run_repair_loop 的参数（非局部拼接）。
         assert "raw_text: str | None = None," in src
+        assert "known_concepts: list[str] | None = None," in src
+        assert "pending_queue: list[str] | None = None," in src
 
     def test_runner_callsite_uses_non_none_raw_content(self):
-        """runner.py: raw_content 是 _run_quality_segments 的非可选 str 参数，源于磁盘读。"""
+        """runner.py: raw_content 是 _run_quality_segments 的非可选 str 参数，源于磁盘读。
+
+        step-3 SC-3e/A3-8：runner 第二道 self-gate 改为多参调用（真传 known_concepts/
+        pending_queue/content_lane），断言由「整行字面」放宽为「call + candidate_text +
+        raw_content 同段存在」——审计意图（raw_content 非可选、源于磁盘读）不变。
+        """
         src = self._read(_CALLSITE_SOURCE_PATHS["runner"])
-        # 调用点用 raw_content（非 None）。
-        assert "run_candidate_self_gate(candidate_text, raw_content)" in src
+        # 第二道 self-gate 调用点用 candidate_text + raw_content（非 None）。
+        assert "run_candidate_self_gate(" in src
+        assert "candidate_text,\n        raw_content," in src
+        # step-3：第二闸真传 known/pending/lane（SC-3e），与 compose 第一闸同语义复核。
+        assert "known_concepts=known_concepts," in src
+        assert "pending_queue=pending_queue," in src
+        assert "content_lane=content_lane," in src
         # _run_quality_segments 接收非可选 raw_content: str（非 str | None）。
         assert "raw_content: str," in src
         # raw_content 源头是磁盘读真实 raw 文件。
