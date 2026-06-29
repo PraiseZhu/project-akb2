@@ -120,6 +120,31 @@ else
 fi
 echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] runner env: env_file=$ENV_STATUS openai_base=${OPENAI_BASE_URL:-<unset>} openai_model=${OPENAI_MODEL_ID:-<unset>} grader_key=$GRADER_KEY_STATUS"
 
+# --- 运行时 vault 门(fail-closed)---
+# 重启后外置盘/Syncthing 未就绪时,若不拦截,runner 会对不存在的 raw_dir 返回空队列、
+# 静默空跑(daemon 看着活着却不处理)。这里 FATAL 退出非 0,让 KeepAlive 按 ThrottleInterval
+# 重试且日志可见,而不是静默 idle。仅当 plist 显式设了 AKB2_VAULT_ROOT 时校验。
+if [ -n "${AKB2_VAULT_ROOT:-}" ]; then
+    if [ ! -d "$AKB2_VAULT_ROOT" ]; then
+        echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] FATAL: AKB2_VAULT_ROOT 不是目录: $AKB2_VAULT_ROOT (磁盘未挂载?)" >&2
+        exit 1
+    fi
+    if [ ! -d "$AKB2_VAULT_ROOT/raw" ]; then
+        echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] FATAL: vault 下缺 raw/ 目录: $AKB2_VAULT_ROOT/raw" >&2
+        exit 1
+    fi
+    if [ -d "$AKB2_VAULT_ROOT/staging" ]; then
+        if [ ! -w "$AKB2_VAULT_ROOT/staging" ]; then
+            echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] FATAL: vault staging/ 不可写: $AKB2_VAULT_ROOT/staging" >&2
+            exit 1
+        fi
+    elif [ ! -w "$AKB2_VAULT_ROOT" ]; then
+        echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] FATAL: vault 根不可写(无法建 staging/): $AKB2_VAULT_ROOT" >&2
+        exit 1
+    fi
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] vault gate: ok ($AKB2_VAULT_ROOT)"
+fi
+
 # --- 启动 runner ---
 cd "$PROJECT_ROOT"
 

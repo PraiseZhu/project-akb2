@@ -3,18 +3,15 @@
 <!--
   AKB2 主链路 quality runner — 24h 常驻串行单工 daemon
 
-  ==== 安装命令 ====
-  # 方式 1 (macOS 14+): launchctl bootstrap
-  launchctl bootstrap gui/$(id -u) /Users/praise/AI-Agent/Claude/projects/Project\ AKB2/launchd/com.akb2.main-pipeline.plist
+  ==== 安装 ====
+  ⚠️ 本文件含 __AKB2_REPO_ROOT__ / __AKB2_VAULT_ROOT__ / __AKB2_HOME__ 占位符,
+     不要直接 launchctl bootstrap/load 本模板(会加载未渲染的占位符路径)。
+     用 scripts/deploy-mac-mini.sh 渲染到 ~/Library/LaunchAgents 后加载。
 
-  # 方式 2 (旧版 macOS): launchctl load
-  launchctl load /Users/praise/AI-Agent/Claude/projects/Project\ AKB2/launchd/com.akb2.main-pipeline.plist
-
-  # 卸载
+  # 卸载(对已渲染加载的服务):
   launchctl bootout gui/$(id -u)/com.akb2.main-pipeline
-  # 或: launchctl unload /Users/praise/AI-Agent/Claude/projects/Project\ AKB2/launchd/com.akb2.main-pipeline.plist
 
-  # 查看状态
+  # 查看状态:
   launchctl list | grep com.akb2.main-pipeline
 
   ==== 三链路触发时间对照表 (CST, UTC+8) ====
@@ -36,9 +33,12 @@
   stdout/stderr 重定向到 logs/akb2-quality-runner.log
 
   ==== 注意事项 ====
-  - 本 plist 产出但不自动加载（宪法禁止 agent 自行注册触发器）
-  - 加载前确认: Python ≥ 3.11、defuddle/scrapling 已装、LLM API key 已设
+  - 路径用占位符(__AKB2_REPO_ROOT__ / __AKB2_VAULT_ROOT__ / __AKB2_HOME__),
+    由 scripts/deploy-mac-mini.sh 渲染后原子写入 ~/Library/LaunchAgents 并 bootstrap 加载
+  - runner 硬依赖: Python ≥ 3.11、LLM key env(~/.config/akb2/github-briefing.env)、
+    openai / jsonschema / pyyaml;scrapling/playwright/defuddle 仅 intake 链路用(软依赖)
   - 跑飞保护: 单实例锁 (scripts/akb2-main-pipeline.sh)，无 while True 内层无限
+  - 启动前运行时 vault 门: AKB2_VAULT_ROOT 缺/不可写即 FATAL 退出(KeepAlive 重试,不静默空跑)
 -->
 <plist version="1.0">
 <dict>
@@ -48,26 +48,29 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/praise/AI-Agent/Claude/projects/Project AKB2/scripts/akb2-main-pipeline.sh</string>
+        <string>__AKB2_REPO_ROOT__/scripts/akb2-main-pipeline.sh</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/praise/AI-Agent/Claude/projects/Project AKB2</string>
+    <string>__AKB2_REPO_ROOT__</string>
 
     <key>KeepAlive</key>
     <true/>
 
+    <!-- KeepAlive 已隐含加载即拉起;显式 true 仅为语义清晰。部署脚本不再 kickstart,
+         验收以 bootstrap 后 launchctl print 的 state/PID + 日志信号
+         (runner starting / grader_key / vault gate: ok)为准。 -->
     <key>RunAtLoad</key>
-    <false/>
+    <true/>
 
     <key>ThrottleInterval</key>
     <integer>60</integer>
 
     <key>StandardOutPath</key>
-    <string>/Users/praise/AI-Agent/Claude/projects/Project AKB2/logs/akb2-quality-runner.log</string>
+    <string>__AKB2_REPO_ROOT__/logs/akb2-quality-runner.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/praise/AI-Agent/Claude/projects/Project AKB2/logs/akb2-quality-runner.log</string>
+    <string>__AKB2_REPO_ROOT__/logs/akb2-quality-runner.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>
@@ -78,11 +81,11 @@
         <key>AKB2_MAKER_FALLBACK</key>
         <string>1</string>
         <key>PYTHONPATH</key>
-        <string>/Users/praise/AI-Agent/Claude/projects/Project AKB2/src</string>
+        <string>__AKB2_REPO_ROOT__/src</string>
         <key>PATH</key>
-        <string>/Users/praise/.pyenv/shims:/Users/praise/.pyenv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <string>__AKB2_HOME__/.pyenv/shims:__AKB2_HOME__/.pyenv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>AKB2_VAULT_ROOT</key>
-        <string>/Users/praise/Obsidian/Praise Space/AKB2.0</string>
+        <string>__AKB2_VAULT_ROOT__/Praise Space/AKB2.0</string>
     </dict>
 </dict>
 </plist>
