@@ -221,8 +221,8 @@ def _build_grader_weight_floor_note(content_lane: str = "") -> str:
         if isinstance(f, dict)
     ]
     is_concept = str(content_lane or "").strip().lower() == "concept"
-    # SC-1（p0-1）：concept 车道 prompt 诚实显示 lane threshold（6.0），不用顶层 6.5 误导；
-    # 并钉逐维 score 必出 0~1（不是 0~10），供加权分复算。
+    # G3 返工：concept 车道 prompt 诚实显示 lane threshold（6.0）；weighted 由逐维 pass
+    # 加权派生（pass=1.0/fail=0.0 × 权重，gpt-5.4 真机吐 pass 不吐逐维 0~1 score）。
     lane_threshold = lane_cfg.get("threshold") if isinstance(lane_cfg, dict) else None
     display_threshold = (
         lane_threshold
@@ -230,8 +230,8 @@ def _build_grader_weight_floor_note(content_lane: str = "") -> str:
         else spec.get("threshold")
     )
     score_note = (
-        "每个维度必须附 0~1 的 score（0=完全不达该维、1=完全达标，不是 0~10），"
-        "供加权分复算；可附 integrity_floor 逐项 pass/fail。"
+        "每个维度给出 pass/fail 判定，加权分由 pass 派生（pass=1.0、fail=0.0 × 权重，"
+        "过阈即通过）；可附 integrity_floor 逐项 pass/fail。无需逐维 0~1 score。"
         if is_concept
         else "可选：每个维度可附 score 数值；可附 integrity_floor 逐项 pass/fail。"
     )
@@ -330,20 +330,13 @@ def _build_grader_schema(content_lane: str = "") -> dict[str, Any]:
     step-3 SC-3f/A3-6：维度 enum 按 lane 动态派生（concept=7 维，procedural=10 维）。
     """
     floor_names = [f.get("name") for f in _load_rubric_spec().get("integrity_floor", [])]
-    # SC-1（p0-1）：concept 车道逐维 score 必填 + 钉 0~1 尺度（0=完全不达、1=完全达标），
-    # 强制模型产出逐维 score 供加权分复算；procedural 保持可选零回归（不改判定行为）。
-    is_concept = str(content_lane or "").strip().lower() == "concept"
+    # G3 返工（p0-1 撤销 score required）：gpt-5.4 真机不吐逐维 0~1 score，concept weighted
+    # 改由 pass 派生（compute_weighted_score）。score 全车道 optional；concept 若提供则
+    # parse 层校验 0~1（非法 fail-closed，缺 score 不 fail）。procedural 零回归。
     score_field: dict[str, Any] = {
         "type": "number",
-        "description": (
-            "该维度评分（0~1，0=完全不达该维、1=完全达标，concept 车道必填）"
-            if is_concept
-            else "该维度评分（可选，仅记录）"
-        ),
+        "description": "该维度评分（可选；concept 车道 weighted 由 pass 派生，score 非必需）",
     }
-    if is_concept:
-        score_field["minimum"] = 0
-        score_field["maximum"] = 1
     return {
         "type": "object",
         "properties": {
@@ -358,7 +351,7 @@ def _build_grader_schema(content_lane: str = "") -> dict[str, Any]:
                             "enum": _dimensions_for_lane(content_lane),
                         },
                         "pass": {"type": "boolean"},
-                        # Step.3 扩展：逐维 score（concept 车道必填 + 0~1，procedural 可选）
+                        # Step.3 扩展：逐维 score（全车道可选；concept weighted 由 pass 派生）
                         "score": score_field,
                         "defects": {
                             "type": "array",
@@ -383,11 +376,7 @@ def _build_grader_schema(content_lane: str = "") -> dict[str, Any]:
                             },
                         },
                     },
-                    "required": (
-                        ["dimension", "pass", "defects", "score"]
-                        if is_concept
-                        else ["dimension", "pass", "defects"]
-                    ),
+                    "required": ["dimension", "pass", "defects"],
                     "additionalProperties": False,
                 },
             },
@@ -511,13 +500,11 @@ def _parse_grader_output(
 
     defects: list[Defect] = []
     seen_dimensions: set[str] = set()
-    # SC-1（p0-1）：concept 车道逐维 score 必填 + 0~1（强制产出，拒缺/非数值/越界 fail-closed，
-    # 不静默当 0）；procedural 保持可选零回归。其他未知键拒。
+    # G3 返工（p0-1 撤销 score required）：score 全车道可选（concept weighted 由 pass 派生）。
+    # concept score 若提供且非法（bool/非数值/越界 <0 或 >1）→ fail-closed；缺 score 不 fail。
+    # procedural 不校验 score 范围（旧口径零回归）。
     is_concept = str(content_lane or "").strip().lower() == "concept"
-    _dim_required = (
-        {"dimension", "pass", "defects", "score"} if is_concept
-        else {"dimension", "pass", "defects"}
-    )
+    _dim_required = {"dimension", "pass", "defects"}
     _dim_allowed = _dim_required | {"score"}
     for dim in dimensions:
         if not isinstance(dim, dict):
@@ -529,9 +516,8 @@ def _parse_grader_output(
         if dim_name is None:
             return [], False
         seen_dimensions.add(dim_name)
-        # SC-1（p0-1）：concept 每维 score 必须是合法 0~1 数值
-        # （拒 bool/非数值/越界 fail-closed，杜绝静默当 0 放行）
-        if is_concept:
+        # concept score 若提供则必须合法 0~1（拒 bool/非数值/越界 fail-closed）；procedural 不校验
+        if is_concept and "score" in dim:
             score_val = dim.get("score")
             if isinstance(score_val, bool) or not isinstance(score_val, (int, float)):
                 return [], False
@@ -673,19 +659,24 @@ def _parse_grader_extensions(
     is_concept = str(content_lane or "").strip().lower() == "concept"
     dim_scores: dict[str, float] = {}
     for dim in data.get("dimensions", []) or []:
-        if isinstance(dim, dict) and "score" in dim:
-            name = _canonical_dimension_name(dim.get("dimension"), content_lane)
-            score_val = dim["score"]
-            if (
-                name is not None
-                and isinstance(score_val, (int, float))
-                and not isinstance(score_val, bool)
-            ):
-                # SC-1（p0-1）：concept 车道越界 score 视为缺 score（parse 层已拒，
-                # 此处防御性兜底 → 缺维 fail-closed 由 compute_weighted_score 兜底）
-                if is_concept and (score_val < 0 or score_val > 1):
-                    continue
-                dim_scores[name] = float(score_val)
+        if not isinstance(dim, dict):
+            continue
+        name = _canonical_dimension_name(dim.get("dimension"), content_lane)
+        if name is None:
+            continue
+        if is_concept:
+            # G3 返工：concept weighted 从逐维 pass 派生（pass=1.0/fail=0.0），不读 score
+            # 字段（gpt-5.4 真机吐 pass 不吐逐维 0~1 score）。pass 非真 → 0.0。
+            dim_scores[name] = 1.0 if dim.get("pass") is True else 0.0
+        else:
+            # procedural 旧口径：从 score 字段读（可选）
+            if "score" in dim:
+                score_val = dim["score"]
+                if (
+                    isinstance(score_val, (int, float))
+                    and not isinstance(score_val, bool)
+                ):
+                    dim_scores[name] = float(score_val)
 
     # weighted_total = Σ(score_i × weight_i)，权重取自 rubric.yaml（改 weight 即改此值）
     weighted_total: float | None = None

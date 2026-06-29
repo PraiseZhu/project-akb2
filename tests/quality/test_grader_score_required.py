@@ -1,11 +1,17 @@
-"""test_grader_score_required.py — p0-1 SC-1 concept 评分诚实化验收。
+"""test_grader_score_required.py — G3 返工 concept 评分（pass 派生 weighted）验收。
 
-锁：concept 车道逐维 score 必填 + 0~1 尺度（强制产出，拒缺/非数值/越界 fail-closed，
-不静默当 0 放行）；procedural 车道保持可选零回归。覆盖三层：
-  - schema 层（_build_grader_schema）：concept score required + minimum:0/maximum:1
-  - parse 层（_parse_grader_output）：concept 缺/越界/非数值/bool score → parse fail
-  - compute 层（compute_weighted_score）：concept 非数值/越界 score → fail-closed
-  - extensions 层（_parse_grader_extensions）：concept 越界 score 防御性跳过 → 缺维兜底
+G3 裁决（p0-1 撤销 score required）：gpt-5.4 真机吐 dimensions(含 pass) +
+interpretation_entailment，**不吐逐维 0~1 score** → concept weighted 改由逐维 pass
+派生（pass=1.0/fail=0.0 × 权重，过阈 6.0 即通过）。
+
+新契约（反转 p0-1 的"score required"）：
+  - schema：concept score **不** required、无 0~1 min/max（全车道 optional）
+  - parse：concept 缺 score **不** fail（有 pass 即可）；score 若提供且非法
+    （bool/非数值/越界 <0 或 >1）仍 fail-closed；缺整维 / pass 非 bool → fail
+  - extensions：concept dim_scores 从 pass 派生（1.0/0.0），**不读 score 字段**
+  - compute：concept Σ(weight × pass_derived_score)，缺维 fail-closed；
+    越界/非数值防御性 fail-closed（pass 派生不触发，防手工/异常输入）
+  - procedural 零回归（score 可选，旧口径）
 """
 
 from __future__ import annotations
@@ -26,8 +32,31 @@ def _concept_dims() -> list[str]:
     return list(RUBRIC_DIMENSIONS_BY_LANE["concept"])
 
 
-def _concept_resp(score_map: dict[str, float], all_pass: bool = True) -> dict:
-    """构造 concept 7 维 grader 响应（每维带指定 score）。"""
+def _concept_resp_no_score(pass_map: dict[str, bool]) -> dict:
+    """构造 concept 7 维 grader 响应（**无 score**，只有 pass/fail）——模拟 gpt-5.4 真实输出。"""
+    return {
+        "dimensions": [
+            {
+                "dimension": d,
+                "pass": pass_map[d],
+                "defects": (
+                    []
+                    if pass_map[d]
+                    else [{"location": "L", "defect": "d", "suggestion": "s"}]
+                ),
+            }
+            for d in _concept_dims()
+        ],
+        "interpretation_entailment": True,
+    }
+
+
+def _all_pass_no_score() -> dict:
+    return _concept_resp_no_score({d: True for d in _concept_dims()})
+
+
+def _concept_resp_with_score(score_map: dict[str, float], all_pass: bool = True) -> dict:
+    """构造 concept 响应（带 score）——测 score 提供且非法。"""
     return {
         "dimensions": [
             {"dimension": d, "pass": all_pass, "defects": [], "score": score_map[d]}
@@ -37,102 +66,113 @@ def _concept_resp(score_map: dict[str, float], all_pass: bool = True) -> dict:
     }
 
 
-def _uniform_scores(value: float) -> dict[str, float]:
-    return {d: value for d in _concept_dims()}
-
-
 # ---------------------------------------------------------------------------
-# schema 层：concept score required + 0~1 边界；procedural 可选无边界
+# schema 层：score 全车道 optional（concept 撤销 required + min/max）
 # ---------------------------------------------------------------------------
 
 
-class TestSchemaScoreRequired:
-    def test_concept_schema_score_required_and_bounded(self):
-        """concept schema：score 在 required + minimum:0/maximum:1（强制产出 + 钉尺度）。"""
+class TestSchemaScoreOptional:
+    def test_concept_schema_score_not_required(self):
+        """G3: concept schema score 不在 required（撤销 p0-1 score required）。"""
         schema = grader._build_grader_schema("concept")
         dim_item = schema["properties"]["dimensions"]["items"]
-        assert "score" in dim_item["required"], "concept 车道 score 应必填"
-        score_field = dim_item["properties"]["score"]
-        assert score_field.get("minimum") == 0
-        assert score_field.get("maximum") == 1
+        assert "score" not in dim_item["required"], "concept score 不应必填（G3 撤销）"
 
-    def test_procedural_schema_score_optional_unbounded(self):
-        """procedural schema：score 不在 required、无 0~1 边界（零回归）。"""
-        schema = grader._build_grader_schema("procedural")
-        dim_item = schema["properties"]["dimensions"]["items"]
-        assert "score" not in dim_item["required"], "procedural score 不应必填"
-        score_field = dim_item["properties"]["score"]
+    def test_concept_schema_score_no_min_max(self):
+        """G3: concept schema score 无 minimum/maximum（撤销 0~1 钉尺度）。"""
+        schema = grader._build_grader_schema("concept")
+        score_field = schema["properties"]["dimensions"]["items"]["properties"]["score"]
         assert "minimum" not in score_field
         assert "maximum" not in score_field
 
+    def test_procedural_schema_score_optional(self):
+        """procedural schema score 不在 required（零回归）。"""
+        schema = grader._build_grader_schema("procedural")
+        dim_item = schema["properties"]["dimensions"]["items"]
+        assert "score" not in dim_item["required"]
+
 
 # ---------------------------------------------------------------------------
-# parse 层：concept 缺/越界/非数值/bool score → parse fail-closed
+# parse 层：concept 缺 score 不 fail（pass 派生）；score 提供且非法仍 fail；
+#           缺整维 / pass 非 bool → fail
 # ---------------------------------------------------------------------------
 
 
-class TestConceptScoreParseFailClosed:
-    def test_concept_missing_score_per_dim_parse_fails(self):
-        """concept 每维缺 score → parse fail-closed（不静默当 0 过）。"""
+class TestConceptParsePassBased:
+    def test_concept_missing_score_parse_ok(self):
+        """G3: concept 缺 score（有 pass）→ parse ok（不 fail，pass 派生 weighted）。"""
+        defects, ok = grader._parse_grader_output(_all_pass_no_score(), "concept")
+        assert ok is True, "concept 缺 score（有 pass）应 parse ok"
+        assert defects == []
+
+    def test_concept_all_pass_no_score_parse_ok(self):
+        """G3: concept 全 pass 无 score → parse ok（gpt-5.4 真实输出形态）。"""
+        defects, ok = grader._parse_grader_output(_all_pass_no_score(), "concept")
+        assert ok is True
+        assert defects == []
+
+    def test_concept_missing_dim_parse_fails(self):
+        """G3: concept 缺整维（某维没出）→ parse fail-closed（seen_dimensions != 全维）。"""
+        dims = _concept_dims()
         data = {
             "dimensions": [
-                {"dimension": d, "pass": True, "defects": []} for d in _concept_dims()
+                {"dimension": d, "pass": True, "defects": []} for d in dims[:6]
+            ]
+        }  # 缺第 7 维
+        defects, ok = grader._parse_grader_output(data, "concept")
+        assert ok is False, "concept 缺整维应 parse fail"
+
+    def test_concept_pass_non_bool_parse_fails(self):
+        """G3: concept pass 非 bool → parse fail-closed。"""
+        dims = _concept_dims()
+        data = {
+            "dimensions": [
+                {"dimension": dims[0], "pass": "yes", "defects": []},
+                *[{"dimension": d, "pass": True, "defects": []} for d in dims[1:]],
             ]
         }
         defects, ok = grader._parse_grader_output(data, "concept")
-        assert ok is False, "concept 缺逐维 score 应 parse 失败"
-        assert defects == []
+        assert ok is False, "concept pass 非 bool 应 parse fail"
 
-    def test_concept_score_above_one_parse_fails(self):
-        """concept score>1（越界）→ parse fail-closed。"""
+    def test_concept_score_provided_above_one_parse_fails(self):
+        """G3: concept score 提供 且 >1 → parse fail-closed（score 若提供则校验）。"""
         dims = _concept_dims()
-        score_map = _uniform_scores(0.5)
-        score_map[dims[0]] = 1.5  # 越界
-        defects, ok = grader._parse_grader_output(_concept_resp(score_map), "concept")
-        assert ok is False, "concept score>1 应 parse 失败"
+        score_map = {d: 0.5 for d in dims}
+        score_map[dims[0]] = 1.5
+        defects, ok = grader._parse_grader_output(
+            _concept_resp_with_score(score_map), "concept"
+        )
+        assert ok is False, "concept score>1（提供）应 parse fail"
 
-    def test_concept_score_below_zero_parse_fails(self):
-        """concept score<0（越界）→ parse fail-closed。"""
+    def test_concept_score_provided_non_numeric_parse_fails(self):
+        """G3: concept score 提供 且 非数值 → parse fail-closed。"""
         dims = _concept_dims()
-        score_map = _uniform_scores(0.5)
-        score_map[dims[0]] = -0.1  # 越界
-        defects, ok = grader._parse_grader_output(_concept_resp(score_map), "concept")
-        assert ok is False, "concept score<0 应 parse 失败"
-
-    def test_concept_score_non_numeric_parse_fails(self):
-        """concept score 非数值（字符串）→ parse fail-closed。"""
-        dims = _concept_dims()
-        score_map = _uniform_scores(0.5)
+        score_map = {d: 0.5 for d in dims}
         score_map[dims[0]] = "high"  # type: ignore[assignment]
-        defects, ok = grader._parse_grader_output(_concept_resp(score_map), "concept")
-        assert ok is False, "concept 非数值 score 应 parse 失败"
+        defects, ok = grader._parse_grader_output(
+            _concept_resp_with_score(score_map), "concept"
+        )
+        assert ok is False, "concept 非数值 score（提供）应 parse fail"
 
-    def test_concept_score_bool_parse_fails(self):
-        """concept score=bool（True/False）→ parse fail-closed（bool 非 0~1 数值）。"""
+    def test_concept_score_provided_bool_parse_fails(self):
+        """G3: concept score 提供 且 bool → parse fail-closed。"""
         dims = _concept_dims()
-        score_map = _uniform_scores(0.5)
+        score_map = {d: 0.5 for d in dims}
         score_map[dims[0]] = True  # type: ignore[assignment]
-        defects, ok = grader._parse_grader_output(_concept_resp(score_map), "concept")
-        assert ok is False, "concept bool score 应 parse 失败"
-
-    def test_concept_valid_scores_parse_ok_and_collected(self):
-        """concept 全维合法 0~1 score → parse_ok + extensions 收集逐维 score。"""
-        score_map = _uniform_scores(0.8)
-        defects, ok = grader._parse_grader_output(_concept_resp(score_map), "concept")
-        assert ok is True
-        assert defects == []
-        ext = grader._parse_grader_extensions(_concept_resp(score_map), "concept")
-        assert ext["dimension_scores"] == score_map
+        defects, ok = grader._parse_grader_output(
+            _concept_resp_with_score(score_map), "concept"
+        )
+        assert ok is False, "concept bool score（提供）应 parse fail"
 
 
 # ---------------------------------------------------------------------------
-# procedural 零回归：缺 score / 越界 score 仍 parse_ok（不收紧 procedural）
+# procedural 零回归
 # ---------------------------------------------------------------------------
 
 
 class TestProceduralNoRegression:
     def test_procedural_missing_score_parse_ok(self):
-        """procedural 缺 score 仍 parse_ok（零回归，score 仅 concept 必填）。"""
+        """procedural 缺 score 仍 parse_ok（零回归）。"""
         data = {
             "dimensions": [
                 {"dimension": d, "pass": True, "defects": []} for d in RUBRIC_DIMENSIONS
@@ -155,53 +195,85 @@ class TestProceduralNoRegression:
 
 
 # ---------------------------------------------------------------------------
-# compute 层：concept 非数值/越界 score → fail-closed（不静默当 0 放行）
+# extensions 层：concept dim_scores 从 pass 派生（不读 score 字段）
 # ---------------------------------------------------------------------------
 
 
-class TestComputeConceptScoreFailClosed:
-    def test_compute_concept_score_above_one_fail_closed(self):
-        """compute_weighted_score：concept score>1 → fail-closed（score=0/passed=False）。"""
+class TestConceptExtensionsPassDerived:
+    def test_concept_all_pass_no_score_dim_scores_all_one(self):
+        """G3: concept 全 pass 无 score → dim_scores 全 1.0（pass 派生）。"""
+        ext = grader._parse_grader_extensions(_all_pass_no_score(), "concept")
+        expected = {d: 1.0 for d in _concept_dims()}
+        assert ext["dimension_scores"] == expected
+
+    def test_concept_partial_pass_dim_scores_pass_derived(self):
+        """G3: concept 部分 pass → dim_scores pass=1.0/fail=0.0（从 pass 派生，不读 score）。"""
+        dims = _concept_dims()
+        pass_map = {d: (d == dims[0]) for d in dims}  # 只 dims[0] pass
+        resp = _concept_resp_no_score(pass_map)
+        ext = grader._parse_grader_extensions(resp, "concept")
+        assert ext["dimension_scores"][dims[0]] == 1.0
+        for d in dims[1:]:
+            assert ext["dimension_scores"][d] == 0.0
+
+    def test_concept_score_ignored_when_pass_present(self):
+        """G3: concept 有 pass 时 score 字段被忽略（pass 派生优先，不读 score）。"""
+        dims = _concept_dims()
+        # 带 score=0.9 但 pass=True → dim_scores 应=1.0（pass 派生，不读 score）
+        resp = {
+            "dimensions": [
+                {"dimension": d, "pass": True, "defects": [], "score": 0.9}
+                for d in dims
+            ],
+            "interpretation_entailment": True,
+        }
+        ext = grader._parse_grader_extensions(resp, "concept")
+        assert ext["dimension_scores"] == {d: 1.0 for d in dims}
+
+
+# ---------------------------------------------------------------------------
+# compute 层：concept Σ(weight × pass_derived)；缺维 fail-closed；越界防御 fail
+# ---------------------------------------------------------------------------
+
+
+class TestComputeConceptPassDerived:
+    def test_compute_concept_all_pass_full_score(self):
+        """G3: concept 全 pass（1.0）→ weighted=10.0 ≥ 6.0 → pass。"""
+        w = _lane_weight_map(_load_rubric_spec(), "concept")
+        scores = {name: 1.0 for name in w}  # 全 pass 派生
+        r = compute_weighted_score(scores, "concept")
+        assert abs(r.score - 10.0) < 1e-6
+        assert r.threshold == 6.0
+        assert r.passed is True
+
+    def test_compute_concept_partial_pass_below_threshold(self):
+        """G3: concept 只 H3 pass（1.0）其它 fail（0.0）→ weighted=3.5 < 6.0 → reject。"""
+        w = _lane_weight_map(_load_rubric_spec(), "concept")
+        scores = {name: (1.0 if "H3" in name else 0.0) for name in w}
+        r = compute_weighted_score(scores, "concept")
+        assert abs(r.score - 3.5) < 1e-6
+        assert r.passed is False
+
+    def test_compute_concept_missing_dim_fail_closed(self):
+        """G3: concept 缺整维 → fail-closed（score=0/passed=False）。"""
+        w = _lane_weight_map(_load_rubric_spec(), "concept")
+        scores = {name: 1.0 for name in list(w)[:5]}  # 缺 2 维
+        r = compute_weighted_score(scores, "concept")
+        assert r.passed is False
+        assert r.score == 0.0
+
+    def test_compute_concept_score_above_one_defensive_fail(self):
+        """G3: compute 收越界 score（>1）→ 防御性 fail-closed（pass 派生不触发，防手工）。"""
         w = _lane_weight_map(_load_rubric_spec(), "concept")
         scores = {name: 1.5 for name in w}
         r = compute_weighted_score(scores, "concept")
         assert r.passed is False
         assert r.score == 0.0
 
-    def test_compute_concept_score_below_zero_fail_closed(self):
-        """compute_weighted_score：concept score<0 → fail-closed。"""
-        w = _lane_weight_map(_load_rubric_spec(), "concept")
-        scores = {name: -0.5 for name in w}
-        r = compute_weighted_score(scores, "concept")
-        assert r.passed is False
-        assert r.score == 0.0
-
-    def test_compute_concept_non_numeric_fail_closed(self):
-        """compute_weighted_score：concept 非数值 score → fail-closed（不静默当 0 放行）。"""
+    def test_compute_concept_non_numeric_defensive_fail(self):
+        """G3: compute 收非数值 score → 防御性 fail-closed。"""
         w = _lane_weight_map(_load_rubric_spec(), "concept")
         scores = {name: "high" for name in w}  # type: ignore[dict-item]
         r = compute_weighted_score(scores, "concept")
         assert r.passed is False
         assert r.score == 0.0
-
-    def test_compute_concept_valid_scores_aggregate(self):
-        """compute_weighted_score：concept 全维 0.8 → 总分 8.0 ≥ 6.0 → pass（复算正确）。"""
-        w = _lane_weight_map(_load_rubric_spec(), "concept")
-        scores = {name: 0.8 for name in w}
-        r = compute_weighted_score(scores, "concept")
-        assert abs(r.score - 8.0) < 1e-6
-        assert r.threshold == 6.0
-        assert r.passed is True
-
-
-# ---------------------------------------------------------------------------
-# extensions 层：concept 越界 score 防御性跳过 → 缺维 fail-closed 兜底
-# ---------------------------------------------------------------------------
-
-
-class TestExtensionsConceptOutOfBoundsSkipped:
-    def test_concept_extensions_out_of_range_skipped(self):
-        """_parse_grader_extensions：concept 越界 score 不进 dim_scores（防御性兜底）。"""
-        score_map = _uniform_scores(1.5)
-        ext = grader._parse_grader_extensions(_concept_resp(score_map), "concept")
-        assert ext["dimension_scores"] == {}, "越界 score 不应进 dim_scores"

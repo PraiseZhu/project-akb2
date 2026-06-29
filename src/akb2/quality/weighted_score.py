@@ -100,8 +100,10 @@ def compute_weighted_score(
                 f"维度 {name!r} 不在 {content_lane or 'procedural'} 车道 rubric 权重表"
                 f"（已知权重维: {sorted(weights)}）"
             )
-        # SC-1（p0-1）：concept 车道每维 score 必须是合法 0~1 数值
-        # （拒 bool/非数值/越界 fail-closed，不静默当 0 放行）；procedural 保持旧口径零回归。
+        # G3 返工：concept weighted 从逐维 pass 派生（_parse_grader_extensions 填 1.0/0.0），
+        # compute 按 Σ(weight × score) 算（score=1.0 if pass else 0.0）；缺维 fail-closed
+        # （下方）；越界/非数值防御性 fail-closed（pass 派生不触发，防手工/异常输入）。
+        # procedural 旧口径零回归。
         if isinstance(sc, bool) or not isinstance(sc, (int, float)):
             if is_concept:
                 return ScoreResult(
