@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from src.akb2.quality.grader import (
     _build_grader_prompt,
+    _build_grader_schema,
     _build_grader_weight_floor_note,
     _canonical_dimension_name,
     _dimensions_for_lane,
@@ -31,6 +32,51 @@ def _concept_system_prompt() -> str:
     msgs = _build_grader_prompt("候选页正文", _load_rubric_text(), content_lane="concept")
     return next(m["content"] for m in msgs if m["role"] == "system")
 
+
+def _is_object_schema(schema: dict) -> bool:
+    schema_type = schema.get("type")
+    return schema_type == "object" or (
+        isinstance(schema_type, list) and "object" in schema_type
+    )
+
+
+def _strict_objects(schema: dict):
+    """遍历 schema 中所有 additionalProperties:false 的 object。"""
+    if isinstance(schema, dict):
+        if _is_object_schema(schema) and schema.get("additionalProperties") is False:
+            yield schema
+        for value in schema.values():
+            yield from _strict_objects(value)
+    elif isinstance(schema, list):
+        for item in schema:
+            yield from _strict_objects(item)
+
+
+def test_grader_schema_required_covers_all_strict_object_properties():
+    """Azure strict response_format：strict object 的 required 必须覆盖全部 properties。"""
+    schema = _build_grader_schema("concept")
+    strict_objects = list(_strict_objects(schema))
+    assert strict_objects, "测试应至少覆盖顶层与嵌套 strict object"
+    for obj in strict_objects:
+        properties = set(obj.get("properties", {}))
+        required = set(obj.get("required", []))
+        assert required == properties
+
+
+def test_parser_accepts_nullable_strict_schema_optionals():
+    """schema 为 Azure strict 必填 nullable 后，parser 应把 null 当旧语义缺省处理。"""
+    dims = _dimensions_for_lane("concept")
+    data = {
+        "dimensions": [
+            {"dimension": d, "pass": True, "score": None, "defects": []} for d in dims
+        ],
+        "weighted_total": None,
+        "threshold": None,
+        "integrity_floor": None,
+        "interpretation_entailment": None,
+    }
+    _defects, ok = _parse_grader_output(data, content_lane="concept")
+    assert ok is True
 
 def test_concept_prompt_lists_all_concept_dims():
     """concept prompt 必须逐字列出全部 7 个 concept 维度名 (含 (H3)/(H2) 后缀)。"""

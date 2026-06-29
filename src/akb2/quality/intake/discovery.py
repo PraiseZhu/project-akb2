@@ -412,6 +412,10 @@ def discover_articles(
     listing_url = source.get("listing_url", "")
 
     result = DiscoverResult(source_slug=slug)
+    status = str(source.get("status", "trial") or "trial").strip().lower()
+    if status in {"down", "disabled"}:
+        result.method = "none"
+        return result
 
     # 路径 1: RSS/Atom feed
     if feed_url:

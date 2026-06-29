@@ -849,3 +849,37 @@ def test_p0_empty_author_fallback_enables_archive(tmp_path):
     raw_files = list(output_dir.glob("*.md"))
     assert len(raw_files) == 1, f"应产 1 个 raw 文件，实得 {raw_files}"
     assert "Addy Osmani" in raw_files[0].read_text(), "raw frontmatter 应含 fallback 来的 author"
+
+
+def test_down_source_skips_discovery_without_error(tmp_path):
+    """P3 回归：标记 down 的死 feed 应被干净跳过，不再产生 discovery_error。"""
+    yaml_content = textwrap.dedent(
+        """\
+        sources:
+          - slug: anthropic-engineering
+            domain: anthropic.com
+            feed_url:
+            listing_url: https://www.anthropic.com/engineering
+            rate_limit: 3600
+            status: down
+            category: core
+        """
+    )
+    sources_config = tmp_path / "sources.yaml"
+    sources_config.write_text(yaml_content, encoding="utf-8")
+
+    with patch("src.akb2.quality.intake.orchestrator.discover_articles") as discover_mock:
+        stats = run_intake(
+            sources_config=sources_config,
+            state_file=tmp_path / "s.jsonl",
+            output_dir=tmp_path / "raw",
+            dry_run=True,
+        )
+
+    discover_mock.assert_not_called()
+    assert stats == {
+        "discovered": 0,
+        "skipped": 0,
+        "archived": 0,
+        "discovery_errors": 0,
+    }
