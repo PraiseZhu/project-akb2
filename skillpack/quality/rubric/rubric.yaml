@@ -1,0 +1,143 @@
+# AKB2 内容质量量规（机器可读源）
+#
+# 本文件是循环1 质量标准的**唯一机器可读真相源**（spec FR-010：标准与判定代码分离）。
+# grader.py 从此文件读取维度集/权重/阈值/完整性地板/版本，不在 .py 写死。
+# 改本文件的 weight/threshold 即改判分，无需改判定代码（spec SC-005）。
+#
+# 配套说明文本见 10-dimensions.md（人读版，维度判据要点）。
+#
+# 模型分层（宪法 P7 Maker/Checker 异族）：生产 deepseek 提炼，gpt-5.4 复核裁决。
+# 完整性地板（integrity_floor）以 hard: true 标记「不可被加权分补偿」（宪法原则 8(a)）。
+#
+# calibration_status: initial —— 全部 concept 权重/阈值为初始结构占位，真实数值由后续
+# 满仓校准回填（spec FR-010），非终值。step-3 只读消费此表、不回写。
+
+rubric_version: "1.2.0"
+
+# 全局默认维度集（= procedural 旧 10 维，等价旧行为）。lanes 内可覆盖。
+# 这是 grader 在无 lane 信息时的默认维度集，保证旧行为零回归。
+dimensions:
+  - name: "论断锚定率"
+    weight: 1.0
+  - name: "How 密度"
+    weight: 1.0
+  - name: "How 可执行性"
+    weight: 1.0
+  - name: "证据诚实"
+    weight: 1.0
+  - name: "解读分离"
+    weight: 1.0
+  - name: "TLDR 密度"
+    weight: 1.0
+  - name: "新颖增量"
+    weight: 1.0
+  - name: "边强度匹配"
+    weight: 1.0
+  - name: "Future Questions 质量"
+    weight: 1.0
+  - name: "适用边界"
+    weight: 1.0
+
+# 全局默认完整性地板（hard=true：不进加权、不可被高分补偿）。
+integrity_floor:
+  - name: "论断锚定率(raw-anchor)"
+    hard: true
+    evaluated_by: structural
+  - name: "证据诚实"
+    hard: true
+    evaluated_by: structural
+  - name: "解读分离(F3溯源)"
+    hard: true
+    evaluated_by: [structural, grader]
+  - name: "车道核心价值"
+    hard: true
+    evaluated_by: structural
+
+# 全局默认通过阈值（加权质量分 ≥ threshold 才过；本 step 仅产出记录，不接判据切换）。
+threshold: 6.5
+
+# ---------------------------------------------------------------------------
+# 车道画像（lanes）：每车道含 dimensions + 逐维 weight + threshold + integrity_floor
+# ---------------------------------------------------------------------------
+lanes:
+  # 操作型车道：现 10 维「等价旧行为」保守占位（与全局默认一致，零回归）
+  procedural:
+    calibration_status: initial
+    threshold: 6.5
+    dimensions:
+      - name: "论断锚定率"
+        weight: 1.0
+      - name: "How 密度"
+        weight: 1.0
+      - name: "How 可执行性"
+        weight: 1.0
+      - name: "证据诚实"
+        weight: 1.0
+      - name: "解读分离"
+        weight: 1.0
+      - name: "TLDR 密度"
+        weight: 1.0
+      - name: "新颖增量"
+        weight: 1.0
+      - name: "边强度匹配"
+        weight: 1.0
+      - name: "Future Questions 质量"
+        weight: 1.0
+      - name: "适用边界"
+        weight: 1.0
+    integrity_floor:
+      - name: "论断锚定率(raw-anchor)"
+        hard: true
+        evaluated_by: structural
+      - name: "证据诚实"
+        hard: true
+        evaluated_by: structural
+      - name: "解读分离(F3溯源)"
+        hard: true
+        evaluated_by: [structural, grader]
+      - name: "车道核心价值"
+        hard: true
+        evaluated_by: structural
+
+  # 概念型车道：恰 7 个加权质量维（权重和==10），How密度/How可执行性/H1 从 dimensions 移除
+  # （absent，非零权重）。维名为 step-3 grader concept 维度集的逐字真相源（A3-6 动态派生）。
+  # 注：calibration_status=initial，权重为结构占位、待满仓校准回填（spec FR-010）。
+  concept:
+    calibration_status: initial
+    threshold: 6.0
+    dimensions:
+      - name: "概念机制清晰度(H3)"
+        weight: 3.5
+        note: "核心价值：组件命名 + 因果边讲清机制（H3≥3）"
+      - name: "实现机制说明(H2)"
+        weight: 0.5
+        note: "机制如何落地的说明（非命令密度）"
+      - name: "图谱可调用性"
+        weight: 2.0
+        note: "概念可被图谱 resolve（known/pending 命中、边强度匹配并入 A 层）"
+      - name: "适用边界"
+        weight: 1.5
+        note: "≥2 适用 + ≥1 不适用场景"
+      - name: "TLDR密度"
+        weight: 1.0
+        note: "≤3 句覆盖核心机制"
+      - name: "Future Questions质量"
+        weight: 1.0
+        note: "2-3 条具体可研究问题"
+      - name: "新颖增量"
+        weight: 0.5
+        note: "对既有 wiki 的增量"
+    integrity_floor:
+      - name: "论断锚定率(raw-anchor)"
+        hard: true
+        evaluated_by: structural
+      - name: "证据诚实"
+        hard: true
+        evaluated_by: structural
+      - name: "解读分离(F3溯源)"
+        hard: true
+        evaluated_by: [structural, grader]
+      - name: "车道核心价值"
+        hard: true
+        evaluated_by: structural
+        note: "F4：H3≥3 命名组件含因果边（消费结构字段 mechanism_components/causal_edges，不反解 H3 标签）"

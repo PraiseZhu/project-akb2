@@ -28,9 +28,8 @@ from src.akb2.video.extractor import (
     KeyFinding,
     SourceSpan,
 )
-from src.akb2.video.reasoner import ReasonedLinks, RelatedConcept, ProposedNode
+from src.akb2.video.reasoner import ProposedNode, ReasonedLinks, RelatedConcept
 from src.akb2.video.researcher import ResearchOutput
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -324,7 +323,6 @@ def test_promotion_file_exists_fail_closed(
 
 def test_cli_entry_point():
     """验证 CLI 入口 --help 可用。"""
-    import os
     import subprocess
     env = os.environ.copy()
     env["PYTHONPATH"] = "src"
@@ -344,7 +342,6 @@ def test_cli_entry_point():
 
 def test_cli_dry_run_fixture():
     """验证 python3 -m akb2.video --dry-run --fixture exit 0。"""
-    import os
     import subprocess
     env = os.environ.copy()
     env["PYTHONPATH"] = "src"
@@ -352,6 +349,7 @@ def test_cli_dry_run_fixture():
         ["python3", "-m", "akb2.video", "--dry-run", "--fixture"],
         capture_output=True, text=True, timeout=10,
         env=env,
+        check=False,
     )
     assert result.returncode == 0
     output = result.stdout + result.stderr
@@ -371,14 +369,14 @@ def test_cli_dry_run_no_durable_side_effects(temp_config):
     # 快照 dry-run 前的文件列表
     before = set(staging.glob("*")) if staging.exists() else set()
 
-    import os
     import subprocess
     env = os.environ.copy()
     env["PYTHONPATH"] = "src"
-    result = subprocess.run(
+    subprocess.run(
         ["python3", "-m", "akb2.video", "--dry-run", "--fixture"],
         capture_output=True, text=True, timeout=10,
         env=env,
+        check=False,
     )
 
     after = set(staging.glob("*")) if staging.exists() else set()
@@ -668,7 +666,6 @@ def test_needs_repair_preserves_staging_and_writes_pending(
     assert pending_path.exists(), "needs_repair 应写入 pending 文件"
     pending_lines = pending_path.read_text().strip().split("\n")
     assert len(pending_lines) >= 1
-    import json
     record = json.loads(pending_lines[-1])
     assert record["gate_decision"] == "needs_repair"
 

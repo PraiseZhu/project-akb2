@@ -1,35 +1,33 @@
 <!--
 Sync Impact Report
 ==================
-Version change: 1.0.0 → 1.1.0
-Bump rationale: MINOR — 新增 3 条原则（黄金样张质量锚定 / Maker-Checker 异族分离 / 实测价值裁决），
-实质性扩展「自动化纪律」（循环八要素卡 + agent 边界判定规则）。
-来源：2026-06-11/12 loop 工程设计会话定稿（docs/loops-design-decisions.md），本次修订覆盖
-Plan 1（主链路内容质量循环）所需的治理层决策。
+Version change: 1.1.0 → 1.2.0
+Bump rationale: MINOR — 重定义原则 8（实测价值裁决）入库判定子句 + 连带修订原则 6（黄金样张质量锚定）量规输出子句：
+由「入库一律硬 pass/fail、零分数」改为「完整性地板硬 pass/fail（不可补偿）+ 地板之上质量维度按车道感知量规加权过阈」。
+判 MINOR 非 MAJOR：原则名称与内核（调用数据裁决价值、禁排序滑坡）保留，完整性硬门不仅未删反而显式强化（新增不可补偿地板），
+仅放宽过严的「零分数」机制约束。属 borderline-MAJOR（反转一条 MUST NOT 子句），审查若需更高可见度可升 2.0.0。
+来源：2026-06-25/26 内容质量循环「内容类型分流」设计会话（concept/procedural 双车道 + 三级 how + 完整性地板/质量分双层）；
+正反样本验收（LangChain 概念正样本过、洗稿/清单水文/飘浮读后感负样本拒）。
 
-Principles (8 = 5 existing + 3 new):
-  1. 有界自动化 (Bounded Automation) — 未改
-  2. 收敛优先于重跑 (Convergence Over Restart) — 未改
-  3. Fail-Closed 质量门控 (Fail-Closed Quality Gating) — 未改
-  4. 预算显式 / 失败可见 (Explicit Budget, Visible Failure) — 未改
-  5. 工程与 vault 解耦 (Engineering–Vault Separation) — 未改
-  6. 黄金样张质量锚定 (Golden-Sample Quality Anchoring) — NEW
-  7. Maker/Checker 异族分离 (Cross-Family Maker/Checker Separation) — NEW
-  8. 实测价值裁决 (Measured-Value Verdict) — NEW
+Principles:
+  1-5, 7 — 未改
+  6. 黄金样张质量锚定 — AMENDED（量规输出子句：禁「无定位分数」→ 允许加权质量分与缺陷清单并存，但不得以分数取代缺陷清单）
+  8. 实测价值裁决 — AMENDED（入库判定子句：单层硬门 → 完整性地板 + 车道感知加权质量分双层；新增「分数仅用于过阈、不用于排序」「权重/阈值落量规文件」；Rationale 补修订说明）
 
 Sections amended:
-  - 自动化纪律 (Automation Discipline)：新增第 4 条「循环规格八要素卡」、第 5 条「agent 边界判定规则」
-  - 变更纪律 / Governance：未改
+  - Core Principles → 原则 6 量规输出子句、原则 8 入库子句 + Rationale
+  - 其余章节（自动化纪律 / 变更纪律 / Governance）— 未改
 
 Files requiring follow-up sync:
-  - ⚠ vault `AKB-2.0-CONTENT-STANDARD.md` 不变量 3「没有自动 active」修宪（五闸自动升格的前提，
-    属 vault 侧宪法，Plan 1 范围内按其自身修订程序执行；本工程 constitution 不替它修）
-  - ✅ docs/loops-design-decisions.md — 本次新原则的决策来源，一致
-  - ✅ docs/main-pipeline-golden-sample.md — 14 步清单 = 原则 6 的执行细则，一致
-  - ⚠ CLAUDE.md「治理约束」节 — 现写「5 条原则」，需更新为 8 条（本次会话内随后更新）
-  - ⚠ docs/architecture.md — 安全边界 TODO 应引用原则 5（沿袭 v1.0.0 待处理项）
+  - ⚠ skillpack/quality/rubric/10-dimensions.md — 量规须重写为车道感知（三级 how / 完整性地板 / 质量分权重 / 阈值），是原则 6+8 的执行细则；Plan 1 范围
+  - ⚠ src/akb2/quality/admission.py — 新增 content_lane 分类（concept/procedural）；Plan 1
+  - ⚠ src/akb2/quality/{distill,checks_structural,grader,repair}.py + runner.py — 按车道贯穿；Plan 1
+  - ⚠ docs/main-pipeline-golden-sample.md — 黄金样张沿用 addy-osmani（不另立概念样张）；需补车道说明 + LangChain 为概念车道验证案例 + A/B/C 负样本 fixture；Plan 1
+  - ✅ docs/loops-design-decisions.md — 分流设计与本修订一致
+  - ⚠ CLAUDE.md「治理约束」节 — 原则 6/8 摘要行需同步（Plan 1 内或本会话随后更新）
+  - n/a docs/allowed-residuals.md — 本次为正式修宪，非残差豁免，无需登记
 
-Deferred TODOs: none
+Deferred TODOs: 权重数值与阈值待 Plan 1 落地写入量规文件；本宪法只定原则不定数值
 -->
 
 # AKB2 Constitution
@@ -84,7 +82,7 @@ Rationale: 工程逻辑与知识库本体混写会让两者互相污染、难以
 主链路任何入库产出（含合成品、概念页）**MUST** 达到黄金样张质量级别；该级别 **MUST** 以机器可判形式定义（14 步清单「标准」列 + 评分量规），**MUST NOT** 以「与样张差不多」等主观表述替代。
 
 - 当前正样本：`wiki/sources/addy-osmani-loop-engineering.md` 全套 6 文件；负样本 2 个（洗稿型 / 新闻型）**MUST** 被准入段拒收——质量级别由「放进什么」与「拒掉什么」共同定义。
-- 评分量规 **MUST** 从样张反向提取并版本化；量规输出 **MUST** 是可定位的缺陷清单（供原则 2 的定点修复），**MUST NOT** 是无定位的分数。
+- 评分量规 **MUST** 从样张反向提取并版本化；量规 **MUST** 输出可定位的缺陷清单（供原则 2 的定点修复）——加权质量分 **MAY** 与缺陷清单并存作为过阈判据，但 **MUST NOT** 以单一分数取代可定位缺陷清单。
 - 新循环 / 新机制设计 **MUST** 通过「样张八要素对账」后才算设计完成（见自动化纪律第 4 条）。
 - 样张换代 **MUST** 经提案程序（更优内容晋升），换代后校准语料与量规 **MUST** 同步重验。
 
@@ -102,11 +100,14 @@ Rationale: 写作业的模型给自己打分必然偏松（黄金样张 raw §G�
 ### 实测价值裁决 (Measured-Value Verdict)
 知识的价值与机制的有效性 **MUST** 由真实使用数据裁决（调用频次、共现、命中率、转化率），**MUST NOT** 由生产方模型预测或自评。
 
-- 入库判定用硬指标 pass/fail（五闸），**MUST NOT** 引入连续分数排序作为入库依据（score 体系已废除）。
+- 入库判定 **MUST** 分两层：(a) **完整性地板**（论断锚定、证据诚实、解读可溯源、车道核心价值）**MUST** 为二值硬 pass/fail，任一不过即拒，**MUST NOT** 被其他维度加分补偿；(b) 地板之上的质量维度 **MAY** 由版本化、车道感知的量规加权合成为单一阈值的 pass/fail 判定。
+- 加权质量分 **MUST** 仅用于「是否达阈值」的一次性二值裁决，**MUST NOT** 用于候选之间排序择优（防队列稀疏时按相对排名放宽标准）；具体权重、阈值与车道定义 **MUST** 落在版本化量规文件（`skillpack/quality/rubric/`），使校准调参不触动本宪法。
 - 星级（0-3 封顶）**MUST** 由调用数据驱动：同层共现达阈才升格合成，混层只喂养不升星；合成品 30 天无人调用 **MUST** 降星归档。
 - 机制参数（共现阈值 / 量规 / 准入规则）的调整 **MUST** 以其下游实测指标变化为验收，不以「看起来更合理」为验收。
 
 Rationale: 入库时预测的价值分数是猜测；调用数据是用户真实需求的投票。该原则同样反身约束价值体系自己——升星机制若产出无人调用的「高级知识」,被修正的是机制而非继续生产。
+
+（v1.2.0 修订）原 v1.1.0「入库一律硬 pass/fail、零分数」过严——单一 How 硬门系统性误杀有价值的概念内容（满仓校准概念源 0% 通过）。故拆两层：完整性（锚定 / 诚实 / 可溯源 / 车道核心价值）仍是不可交易的硬地板，质量充分性改由车道感知加权量规按阈值裁决；「无连续分数」的真正用意是禁排序滑坡，该禁令完整保留。地板 + 阈值仍是 fail-closed（原则 3）：低于阈值即拒，不降级放行。
 
 ## 自动化纪律 (Automation Discipline)
 
@@ -142,4 +143,4 @@ Rationale: 入库时预测的价值分数是猜测；调用数据是用户真实
 - **合规审查**：涉及循环、门控、入库、预算、vault 写入的变更，其 review 与 `/gd plan` 的 `Review 对齐` **MUST** 逐条核对本 constitution 的相关原则；违反项 **MUST** 在交付前修复或在 `docs/allowed-residuals.md` 登记豁免。
 - **边界备注**：vault 侧宪法（`AKB-2.0-CONTENT-STANDARD.md`）的修订（如不变量 3「没有自动 active」→ 五闸自动升格）**MUST** 走 vault 宪法自身的修订程序，本文件不替代之；两边修订 **MUST** 互相在 Sync Impact Report 中登记。
 
-**Version**: 1.1.0 | **Ratified**: 2026-06-10 | **Last Amended**: 2026-06-12
+**Version**: 1.2.0 | **Ratified**: 2026-06-10 | **Last Amended**: 2026-06-26

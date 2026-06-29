@@ -15,7 +15,7 @@ import json
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 # 合成阶段专用模型（可由环境变量覆盖）
@@ -25,14 +25,17 @@ _SYNTHESIS_MODEL = os.environ.get("AKB2_SYNTHESIS_MODEL", "gemini-3.1-pro-previe
 # 故 4 层 parent 到 <root>（worktree 与主仓库结构一致，均适用）。
 # 历史 bug：曾用 5 层 → 多跳一级到不存在的目录 → 回退内联兜底 prompt（无短序号指令）
 # → supporting_tweet_ids 全塌 top[:5]（P0 实跑根因）。
-_PROMPT_PATH = Path(__file__).parent.parent.parent.parent / "docs" / "deepseek-synthesis-prompt-v1.md"
+_PROMPT_PATH = (
+    Path(__file__).parent.parent.parent.parent / "docs" / "deepseek-synthesis-prompt-v1.md"
+)
 
 # synthesis system message：约束分析质量，语言交由后续翻译阶段
 _SYNTHESIS_SYSTEM = (
     "You are an expert AI/ML trend analyst. "
     "Analyze the provided tweets and return a structured JSON report following the schema exactly. "
     "Focus on genuine signal: specific tools, models, metrics, and developer sentiment. "
-    "Avoid vague summaries. Every topic must be specific (e.g. 'Agent memory infrastructure' not 'AI Trends'). "
+    "Avoid vague summaries. Every topic must be specific "
+    "(e.g. 'Agent memory infrastructure' not 'AI Trends'). "
     "Do NOT fabricate events or numbers not present in the input tweets."
 )
 
@@ -88,7 +91,7 @@ def _log_raw_response(model: str, raw: str) -> None:
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
         entry = json.dumps(
-            {"ts": datetime.now(timezone.utc).isoformat(), "model": model, "raw_len": len(raw)},
+            {"ts": datetime.now(UTC).isoformat(), "model": model, "raw_len": len(raw)},
             ensure_ascii=False,
         )
         with open(log_dir / "synthesis-raw.jsonl", "a") as f:
@@ -143,7 +146,7 @@ def _fallback_synthesis(scored_input: dict, date: str | None = None) -> dict:
     # 取 score 最高的前 5 条
     top = sorted(tweets, key=lambda t: t.get("score", 0), reverse=True)[:5]
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     resolved_date = date or now.strftime("%Y-%m-%d")
 
     exec_summary = (
@@ -184,7 +187,10 @@ def _fallback_synthesis(scored_input: dict, date: str | None = None) -> dict:
                         f"{top[0].get('score', 0):.3f}."
                         if top else " No tweets available for this period."
                     )
-                    + " This is a fallback summary generated when the synthesis model is unavailable."
+                    + (
+                        " This is a fallback summary generated when the synthesis model "
+                        "is unavailable."
+                    )
                 ),
             }
         ],
@@ -203,7 +209,10 @@ def _build_indexed_tweet_listing(top: list[dict]) -> tuple[str, dict[str, str]]:
     for i, t in enumerate(top, start=1):
         idx = str(i)
         idx_to_id[idx] = str(t["id"])
-        lines.append(f"[{idx}] @{t.get('author', '?')} (score={t.get('score', 0):.2f}): {t.get('text', '')}")
+        lines.append(
+            f"[{idx}] @{t.get('author', '?')} "
+            f"(score={t.get('score', 0):.2f}): {t.get('text', '')}"
+        )
     return "\n".join(lines), idx_to_id
 
 
@@ -253,7 +262,7 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
     # P0 fix: 用短序号 [1][2]... 而非 19 位 ID，解决 DeepSeek 无法准确回显长整数 ID 的问题
     tweets_text, idx_to_id = _build_indexed_tweet_listing(top)
 
-    resolved_date = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    resolved_date = date or datetime.now(UTC).strftime("%Y-%m-%d")
     prompt_path = _PROMPT_PATH
 
     if prompt_path.exists():
@@ -268,7 +277,8 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
             f"Analyze the following AI/ML tweets from {resolved_date} "
             f"and output a JSON object conforming to social_trends_v1_1 schema.\n\n"
             f"Tweets:\n{tweets_text}\n\n"
-            "Return JSON with fields: date, generated_at, source, scoring_summary, tweets, focus_discussions."
+            "Return JSON with fields: date, generated_at, source, scoring_summary, "
+            "tweets, focus_discussions."
         )
 
     last_err: Exception | None = None
@@ -289,7 +299,8 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
 
     err_msg = f"{type(last_err).__name__}: {str(last_err)[:200]}" if last_err else "unknown"
     sys.stderr.write(
-        f"WARNING: DeepSeek API failed after 2 attempts ({err_msg}) — synthesis using local fallback. "
+        f"WARNING: DeepSeek API failed after 2 attempts ({err_msg}) — "
+        "synthesis using local fallback. "
         "SC-5-real remains PENDING.\n"
     )
     return _fallback_synthesis(scored_input, date)
@@ -344,7 +355,7 @@ def _merge_with_input(
 
     return {
         "date": model_out.get("date") or resolved_date,
-        "generated_at": model_out.get("generated_at") or datetime.now(timezone.utc).isoformat(),
+        "generated_at": model_out.get("generated_at") or datetime.now(UTC).isoformat(),
         "source": {"name": "deepseek_synthesis", "collector_version": "1.0.0"},
         "scoring_summary": {
             "total_tweets": len(all_tweets),
@@ -402,7 +413,10 @@ def _fallback_executive_summary(fds: list, date: str) -> str:
     """生成确定性执行摘要兜底（模型漏 executive_summary 时使用）。"""
     topics = [fd.get("topic", "") for fd in fds[:3] if fd.get("topic")]
     if topics:
-        return f"{date} AI/ML 领域核心讨论主题：{' · '.join(topics)}。本期趋势信号聚焦于上述方向，以下为详细分析。"
+        return (
+            f"{date} AI/ML 领域核心讨论主题：{' · '.join(topics)}。"
+            "本期趋势信号聚焦于上述方向，以下为详细分析。"
+        )
     return f"{date} AI/ML 领域社交趋势简报，基于公开时间线抓取与综合分析。"
 
 
@@ -449,7 +463,9 @@ def _cli(argv: list[str] | None = None) -> int:
     """CLI 入口：--input <scored.json> --output <synth.json>"""
     import argparse
 
-    parser = argparse.ArgumentParser(description="Synthesize scored tweets into social_trends_v1_1 payload.")
+    parser = argparse.ArgumentParser(
+        description="Synthesize scored tweets into social_trends_v1_1 payload."
+    )
     parser.add_argument("--input", required=True, help="Path to scored JSON input")
     parser.add_argument("--output", required=True, help="Path to write synthesized JSON output")
     parser.add_argument("--date", default=None, help="Override date (YYYY-MM-DD)")

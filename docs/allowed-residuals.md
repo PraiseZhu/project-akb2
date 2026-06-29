@@ -182,3 +182,22 @@ Step 8 清理 Codex 原位文件后，`baseline_snapshot` / `historical_evidence
 `sha_locked_record`（9 条）在工程生命周期内永不触碰。
 
 本轮 Step 8 不清理旧 Project AKB。`external_readonly_dependency` 前 4 条（catalog.db + search.py + db.py + main.py）作为外部只读依赖保留，仅在未来单独启动旧 AKB backend 替换/退役计划时才迁移或重指向新实现。
+
+---
+
+## rubric_version_bump（content-lane-quality step-2，2026-06-26）
+
+> 来源：`plans/gd/2026-06-26-content-lane-quality/step-2-rubric-externalize.md`（Step.1 md 加「机器可读源为 rubric.yaml」注释 + Step.5 量规版本 1.0.0→1.1.0）。
+
+step-2 量规外置正当升级 `skillpack/quality/rubric/10-dimensions.md`（版本 1.0.0→1.1.0 + 顶部加机器可读源注释），导致历史 hash 守护测试 `tests/quality/test_provenance_split.py::TestRubricHashUnchanged`（`_KNOWN_RUBRIC_HASH`，原属 reliability refactor SC-5.2「本 step 禁改 rubric」守护）的锁定值过时而 fail。
+
+| 项 | 值 |
+|----|----|
+| 失效测试 | `test_provenance_split.py::TestRubricHashUnchanged::{test_rubric_hash_matches_known_value, test_rubric_hash_stable_across_runs}` |
+| 根因 | rubric 合法版本升级（spec FR-010 标准外置 + SC-6 version_match 要求 md/spec 同步到 1.1.0） |
+| 旧 `_KNOWN_RUBRIC_HASH` | `34a...`（1.0.0 版 md） |
+| 新 md sha256 | `5f2791b9e4f3256e3c43355d9216998a53c335e9bce6fe4d03eee2891f9544c8` |
+| 处理 | `test_provenance_split.py` 不在本 step-2 packet owned_paths 内（属 step-3/主 agent 范围），故本 packet **不改该测试**；`_KNOWN_RUBRIC_HASH` 应在有权改该文件时更新为上方新值 |
+| 修复触发条件 | rubric 版本升级时同步更新 `_KNOWN_RUBRIC_HASH`（这是 rubric 演进的必要配套，非真回归——hash 守护本就该随 rubric 合法升级刷新基准） |
+
+> 说明：这是**预期的、由计划明确要求的 rubric 升级**引起的 hash 漂移，不是判分行为回归——grader 的 10 维 pass/fail 与缺陷集对同稿件不变（step-2 SC-5 验证）。仅 md 文件字节 hash 因加注释 + 版本号变化。

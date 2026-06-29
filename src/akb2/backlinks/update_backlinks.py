@@ -20,7 +20,6 @@ def parse_frontmatter(text):
     fm_text = parts[1]
     result = {}
     # Parse simple key: value and key: [list] patterns
-    current_key = None
     current_list = None
     for line in fm_text.splitlines():
         if ':' in line and not line.startswith(' ') and not line.startswith('-'):
@@ -28,17 +27,14 @@ def parse_frontmatter(text):
             key = key.strip()
             val = val.strip()
             if val == '' or val == '[]':
-                current_key = key
                 current_list = []
                 result[key] = current_list
             elif val.startswith('[') and val.endswith(']'):
                 items = [s.strip().strip('"\'') for s in val[1:-1].split(',') if s.strip()]
                 result[key] = items
-                current_key = None
                 current_list = None
             else:
                 result[key] = val.strip('"\'')
-                current_key = None
                 current_list = None
         elif line.strip().startswith('-') and current_list is not None:
             item = line.strip().lstrip('-').strip().strip('"\'')

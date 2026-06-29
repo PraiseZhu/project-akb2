@@ -64,6 +64,9 @@ staging/candidate/
 staging/pending_research.json
 staging/assembler_repair_pending.jsonl
 
+# === Promote 运行时回滚快照(AKB2_AUTO_PROMOTE 每次跑生成，非源码) ===
+snapshots/
+
 # === Review tooling outputs (ephemeral; per-run capsules + final-status mappings) ===
 results/review-route-split/
 _review_outputs/
@@ -80,3 +83,8 @@ data/star_history.sqlite
 # 输出路径含 "Praise Space" 前缀(与主简报约定一致, 见 pipeline.py OUTPUT_DIR_TEMPLATE)
 tests/fixtures/vault-stub/Praise Space/AKB2.0/AI TRENDS/GitHub/*.md
 tests/fixtures/vault-stub/Praise Space/AKB2.0/AI TRENDS/GitHub/*.json
+# SC-2b raw HTML fixtures: 已提交的测试输入(clean-checkout 可复现);默认 ignore 该目录未知文件,显式 allowlist 这 3 个
+evals/main-pipeline-quality/fixtures/raw-html/*
+!evals/main-pipeline-quality/fixtures/raw-html/crewai.html
+!evals/main-pipeline-quality/fixtures/raw-html/aider.html
+!evals/main-pipeline-quality/fixtures/raw-html/mcp.html

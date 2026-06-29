@@ -283,7 +283,7 @@ def process_candidate(
 
         # SC-2: append manifest while we still hold the lock
         manifest_entry = {
-            "ts": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            "ts": _dt.datetime.now(_dt.UTC).isoformat(),
             "slug": slug,
             "template_type": template_type,
             "from": str(md_file),

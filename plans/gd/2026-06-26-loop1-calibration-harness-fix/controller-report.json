@@ -1,0 +1,60 @@
+{
+  "schema_version": "1.1",
+  "run_mode": "live",
+  "started_at": "2026-06-26T07:00:00Z",
+  "finished_at": "2026-06-26T07:10:00Z",
+  "aggregate_path": "plans/gd/2026-06-26-loop1-calibration-harness-fix/merge-report.md",
+  "manifest_path": "plans/gd/2026-06-26-loop1-calibration-harness-fix/dispatch_map.json",
+  "primary_gate": {
+    "verdict": "APPROVED",
+    "blocking": []
+  },
+  "secondary_gate": {
+    "verdict": "APPROVED",
+    "blocking": []
+  },
+  "gate_consistent": true,
+  "dirty_detected": false,
+  "jobs": [
+    {
+      "queue_job_id": "job-t1-calibration-core",
+      "target_role": "plan",
+      "primary_target": "plans/gd/2026-06-26-loop1-calibration-harness-fix/child-proposals/t1-calibration-core-proposal.md",
+      "bridge_exit": 0,
+      "bridge_stderr_path": null,
+      "bridge_stderr_summary": "none",
+      "raw_verdict": "completed",
+      "mapped_status": "approved",
+      "aggregate_bucket": "planning"
+    },
+    {
+      "queue_job_id": "job-t2-intake-corpus",
+      "target_role": "plan",
+      "primary_target": "plans/gd/2026-06-26-loop1-calibration-harness-fix/child-proposals/t2-intake-corpus-proposal.md",
+      "bridge_exit": 0,
+      "bridge_stderr_path": null,
+      "bridge_stderr_summary": "none",
+      "raw_verdict": "completed",
+      "mapped_status": "approved",
+      "aggregate_bucket": "planning"
+    }
+  ],
+  "batch_ledgers": [
+    {
+      "path": "stage-dispatch-ledger.json",
+      "hash": "796e4e4a2c9ab24d745b444e13df3dbffc7168f7c899a2a87cf303d23bbb55c1"
+    }
+  ],
+  "suite_target_closure": [
+    {
+      "target_id": "job-t1-calibration-core",
+      "mapped_status": "approved",
+      "evidence_kind": "mapped_status_approved"
+    },
+    {
+      "target_id": "job-t2-intake-corpus",
+      "mapped_status": "approved",
+      "evidence_kind": "mapped_status_approved"
+    }
+  ]
+}

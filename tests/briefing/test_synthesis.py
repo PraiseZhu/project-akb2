@@ -123,8 +123,8 @@ def test_fallback_schema_valid():
 
 def test_merge_with_input_includes_referenced_tweets_beyond_top10():
     """_merge_with_input 应确保 supporting_tweet_ids 引用的推文出现在 tweets 输出集里。"""
-    from akb2.briefing.synthesis import _merge_with_input
     from akb2.briefing.audit import _check_standard
+    from akb2.briefing.synthesis import _merge_with_input
 
     # 11 条 scored tweets；model 引用第 11 名（idx=10）
     scored_input = {
@@ -260,6 +260,7 @@ def test_synthesize_retries_on_degraded_then_succeeds():
     """合成首次退化(summary空)→重试→第二次正常，最终返回好结果。"""
     import json as _json
     from unittest.mock import patch
+
     from akb2.briefing import synthesis as syn
 
     scored = _load_fixture()
@@ -373,7 +374,7 @@ def test_map_index_refs_accepts_real_ids_when_model_ignores_indices():
 
 def test_merge_keeps_distinct_ids_when_model_returns_real_ids():
     """P0 实跑回归：模型对各主题返回不同的真实 id → 合并后主题 ids 仍 distinct，不塌 top5。"""
-    from akb2.briefing.synthesis import _merge_with_input, _build_indexed_tweet_listing
+    from akb2.briefing.synthesis import _build_indexed_tweet_listing, _merge_with_input
 
     scored = _load_fixture()
     top = sorted(scored["tweets"], key=lambda t: t.get("score", 0), reverse=True)
@@ -395,7 +396,7 @@ def test_merge_keeps_distinct_ids_when_model_returns_real_ids():
 
 def test_patch_no_fallback_when_indices_map_to_valid_ids():
     """P0 核心：模型用短序号 → 映射为真实 id → _patch_focus_discussions 不触发 top[:5] 兜底。"""
-    from akb2.briefing.synthesis import _patch_focus_discussions, _map_index_refs_to_ids
+    from akb2.briefing.synthesis import _map_index_refs_to_ids, _patch_focus_discussions
 
     top = _make_top(8)
     idx_to_id = {str(i + 1): top[i]["id"] for i in range(len(top))}
@@ -416,16 +417,15 @@ def test_patch_no_fallback_when_indices_map_to_valid_ids():
 
 def test_synthesize_prompt_contains_indexed_listing(tmp_path):
     """synthesize() 调用 LLM 时 prompt 使用 [1] [2] 短序号而非 19 位 ID。"""
-    import akb2.briefing.synthesis as syn
     import json as _json
+
+    import akb2.briefing.synthesis as syn
 
     scored = _load_fixture()
     captured_prompts: list[str] = []
 
     def fake_call(prompt: str) -> str:
         captured_prompts.append(prompt)
-        top = sorted(scored["tweets"], key=lambda t: t.get("score", 0), reverse=True)
-        ids = [str(t["id"]) for t in top[:2]]
         return _json.dumps({
             "focus_discussions": [
                 {"topic": "智能体长记忆基础设施", "summary": "第一句。第二句。第三句。", "supporting_tweet_ids": ["1", "2"]},

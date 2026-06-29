@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0",
+  "stage": "execute",
+  "parent_run_id": "akb2-loop1-calibration-harness-fix-exec-2026-06-26",
+  "batch_id": "batch-akb2-loop1-calibration-harness-fix-exec-wave2",
+  "recorded_at": "2026-06-26T15:30:00Z",
+  "child_agent_count": 1,
+  "max_parallel": 1,
+  "child_jobs": [
+    {
+      "job_id": "akb2-calibration-harness-diagnostics-t1",
+      "result_path": "plans/gd/2026-06-26-loop1-calibration-harness-fix/results/t1-calibration-core-result.md",
+      "result_hash": "b60486e820cc4b275e0d94a7312746b789ceb098bdc63ad82e835a737e0c2f37",
+      "status": "completed"
+    }
+  ],
+  "main_agent_merge": {
+    "merge_report_path": "plans/gd/2026-06-26-loop1-calibration-harness-fix/merge-report-execute.md",
+    "merge_report_hash": "c20e1fd4adc491c356f74e663e329200777f35e7923189f3d606bd46ab4fa4c4",
+    "final_decision": "REQUIRES_CHANGES",
+    "blocking_buckets": [
+      "SC-1_end_to_end_factory_acceptance_false_admission_pkg_a"
+    ]
+  }
+}

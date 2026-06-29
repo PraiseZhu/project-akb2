@@ -13,15 +13,19 @@ import logging
 import socket
 import sys
 import time
-from pathlib import Path
 
-from src.akb2.video.config import VideoConfig
+from src.akb2.video.assembler import (
+    Assembler,
+    CandidateTargetExists,
+    GateRejected,
+    PromotionTargetNotFound,
+)
 from src.akb2.video.collector import VideoCollector
-from src.akb2.video.researcher import VideoResearcher
+from src.akb2.video.config import VideoConfig
 from src.akb2.video.extractor import Extractor
-from src.akb2.video.reasoner import ConceptStore, Reasoner
-from src.akb2.video.assembler import Assembler, CandidateTargetExists, GateRejected, PromotionTargetNotFound
 from src.akb2.video.llm_adapter import DeepSeekAdapter
+from src.akb2.video.reasoner import ConceptStore, Reasoner
+from src.akb2.video.researcher import VideoResearcher
 
 logger = logging.getLogger("akb2.video")
 
@@ -114,7 +118,11 @@ def main(argv: list[str] | None = None) -> int:
         description="AKB2 视频报告链路 — 采集 → 研究 → 提取 → 推理 → 组装 → gate dry-run",
     )
     parser.add_argument("--dry-run", action="store_true", help="跑全链路 + gate dry-run，不写文件")
-    parser.add_argument("--fixture", action="store_true", help="使用 tests/fixtures/ 跑 mock 全链路")
+    parser.add_argument(
+        "--fixture",
+        action="store_true",
+        help="使用 tests/fixtures/ 跑 mock 全链路",
+    )
     parser.add_argument("--source", type=str, help="对单个视频 URL 跑全链路")
     parser.add_argument("--verbose", "-v", action="store_true", help="详细日志")
     parser.add_argument("--skip-preflight", action="store_true", help="跳过网络就绪预检（调试用）")
@@ -218,9 +226,9 @@ def _run_single_source(config: VideoConfig, url: str, dry_run: bool) -> int:
 def _run_fixture(config: VideoConfig, dry_run: bool) -> int:
     """使用 fixture 跑 mock 全链路。"""
     try:
-        from src.akb2.video.researcher import ResearchOutput
         from src.akb2.video.extractor import ExtractedFields, KeyFinding, SourceSpan
-        from src.akb2.video.reasoner import ReasonedLinks, RelatedConcept, ProposedNode
+        from src.akb2.video.reasoner import ProposedNode, ReasonedLinks, RelatedConcept
+        from src.akb2.video.researcher import ResearchOutput
 
         # 构造 mock 数据
         video_meta = {
@@ -232,7 +240,11 @@ def _run_fixture(config: VideoConfig, dry_run: bool) -> int:
         }
 
         research_output = ResearchOutput(
-            report_markdown="# DeepSeek V4 架构分析\n\n## 执行摘要\n\nDeepSeek V4 是一个强大的模型。\n\n## 关键发现\n\n模型在 MMLU 上达到 92.5%。\n\n## 核心观点\n\n- 16 万亿参数\n- 128K 上下文窗口\n\n## 关键概念\n\nMoE, Multi-head Attention, KV Cache",
+            report_markdown=(
+                "# DeepSeek V4 架构分析\n\n## 执行摘要\n\nDeepSeek V4 是一个强大的模型。"
+                "\n\n## 关键发现\n\n模型在 MMLU 上达到 92.5%。\n\n## 核心观点\n\n- 16 万亿参数"
+                "\n- 128K 上下文窗口\n\n## 关键概念\n\nMoE, Multi-head Attention, KV Cache"
+            ),
             notebook_id="nb-test-123",
             video_meta=video_meta,
             degraded=False,

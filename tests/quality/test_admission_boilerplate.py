@@ -188,7 +188,8 @@ class TestHowTendencyLateContentWindow:
             route_llm_fn=spy_route_llm,
         )
 
-        assert len(prompts_by_call) == 2
+        # SC-1：新流程 sample 非强 procedural → 多一次 lane LLM 调用（topic/how/lane=3）。
+        assert len(prompts_by_call) == 3
         how_prompt = prompts_by_call[1]
         assert "配置模板示例" in how_prompt
         assert "workflow = \"triage -> draft -> review -> promote\"" in how_prompt

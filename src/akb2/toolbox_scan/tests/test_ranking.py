@@ -41,7 +41,10 @@ def _base_record(**overrides) -> dict:
         "extension": ".md",
         "size_bytes": 4096,
         "mtime": "2026-05-04T00:00:00Z",
-        "sha256": overrides.get("sha256", f"deadbeef{abs(hash(overrides.get('slug_candidate', 'x'))) % 100000000:08d}"),
+        "sha256": overrides.get(
+            "sha256",
+            f"deadbeef{abs(hash(overrides.get('slug_candidate', 'x'))) % 100000000:08d}",
+        ),
         "is_symlink": False,
         "has_akb_backlink": False,
         "phase_b_shadow_match": False,
@@ -74,7 +77,11 @@ def _run_cli(akb: Path, manifests: list[Path], *, pilot_limit: int = 20) -> int:
 
 
 def _read_jsonl(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
 class TestSafetyFilter(unittest.TestCase):
@@ -100,7 +107,14 @@ class TestSafetyFilter(unittest.TestCase):
             _seed_akb(akb)
             manifest = _write_manifest(
                 Path(td) / "m.jsonl",
-                [_base_record(slug_candidate="broken", scan_error="symlink_not_followed", is_symlink=True, sha256=None)],
+                [
+                    _base_record(
+                        slug_candidate="broken",
+                        scan_error="symlink_not_followed",
+                        is_symlink=True,
+                        sha256=None,
+                    )
+                ],
             )
             self.assertEqual(_run_cli(akb, [manifest]), 0)
             recs = _read_jsonl(akb / "manifests" / "toolbox-ranking" / "rank.jsonl")
@@ -167,8 +181,16 @@ class TestDedupe(unittest.TestCase):
             manifest = _write_manifest(
                 Path(td) / "m.jsonl",
                 [
-                    {**_base_record(slug_candidate="foo"), "workspace_path": shared, "detected_kind": "codex_skill"},
-                    {**_base_record(slug_candidate="foo-other"), "workspace_path": shared, "detected_kind": "claude_skill"},
+                    {
+                        **_base_record(slug_candidate="foo"),
+                        "workspace_path": shared,
+                        "detected_kind": "codex_skill",
+                    },
+                    {
+                        **_base_record(slug_candidate="foo-other"),
+                        "workspace_path": shared,
+                        "detected_kind": "claude_skill",
+                    },
                 ],
             )
             self.assertEqual(_run_cli(akb, [manifest]), 0)
@@ -228,9 +250,14 @@ class TestInvariants(unittest.TestCase):
                 _base_record(slug_candidate="h", detected_kind="claude_hook", risk_hint="medium",
                               side_effects_hint="write_local"),
                 _base_record(slug_candidate="leaky", looks_like_secret_in_header=True),
-                _base_record(slug_candidate="broken", scan_error="symlink_not_followed", is_symlink=True),
+                _base_record(
+                    slug_candidate="broken",
+                    scan_error="symlink_not_followed",
+                    is_symlink=True,
+                ),
             ]
-            # Even if input had bogus values claiming active, ranking output must override to not_active.
+            # Even if input had bogus values claiming active,
+            # ranking output must override to not_active.
             mixed[0]["not_active"] = True
             mixed[0]["automation_allowed"] = True  # bogus
             mixed[0]["gate_decision"] = "active"   # bogus
@@ -243,7 +270,11 @@ class TestInvariants(unittest.TestCase):
                 self.assertIsNone(r["gate_decision"], r)
             # Tier coverage: 4 known tiers may all appear.
             tiers = {r["tier"] for r in recs}
-            self.assertTrue(tiers.issubset({"pilot_next", "manual_review", "defer", "exclude_this_round"}))
+            self.assertTrue(
+                tiers.issubset(
+                    {"pilot_next", "manual_review", "defer", "exclude_this_round"}
+                )
+            )
 
 
 class TestDeterministicOutput(unittest.TestCase):
@@ -251,10 +282,27 @@ class TestDeterministicOutput(unittest.TestCase):
 
     def test_group_id_stable_across_runs(self):
         records = [
-            {**_base_record(slug_candidate="foo"), "workspace_path": "/abs/foo/SKILL.md", "detected_kind": "codex_skill"},
-            {**_base_record(slug_candidate="foo-other"), "workspace_path": "/abs/foo/SKILL.md", "detected_kind": "claude_skill"},
-            {**_base_record(slug_candidate="bar"), "workspace_path": "/abs/bar.sh", "detected_kind": "claude_script"},
-            {**_base_record(slug_candidate="bar"), "workspace_path": "/abs/other/bar.py", "sha256": "ffaa", "detected_kind": "claude_script"},
+            {
+                **_base_record(slug_candidate="foo"),
+                "workspace_path": "/abs/foo/SKILL.md",
+                "detected_kind": "codex_skill",
+            },
+            {
+                **_base_record(slug_candidate="foo-other"),
+                "workspace_path": "/abs/foo/SKILL.md",
+                "detected_kind": "claude_skill",
+            },
+            {
+                **_base_record(slug_candidate="bar"),
+                "workspace_path": "/abs/bar.sh",
+                "detected_kind": "claude_script",
+            },
+            {
+                **_base_record(slug_candidate="bar"),
+                "workspace_path": "/abs/other/bar.py",
+                "sha256": "ffaa",
+                "detected_kind": "claude_script",
+            },
         ]
         # Two independent runs of the same dedupe must produce identical group ids.
         first_records = json.loads(json.dumps(records))
@@ -283,7 +331,11 @@ class TestSecretAndDuplicateInteraction(unittest.TestCase):
                 Path(td) / "m.jsonl",
                 [
                     # Preferred dedupe winner (codex_skill > claude_skill priority).
-                    {**_base_record(slug_candidate="foo"), "workspace_path": shared_path, "detected_kind": "codex_skill"},
+                    {
+                        **_base_record(slug_candidate="foo"),
+                        "workspace_path": shared_path,
+                        "detected_kind": "codex_skill",
+                    },
                     # Dedupe loser AND carries the secret flag — must still go to exclude.
                     {
                         **_base_record(slug_candidate="foo-other"),
@@ -310,8 +362,18 @@ class TestSecretAndDuplicateInteraction(unittest.TestCase):
             recs_in: list[dict] = []
             for i, kind_b in enumerate(("claude_skill", "claude_skill", "claude_script")):
                 shared = f"/abs/group{i}/SKILL.md"
-                recs_in.append({**_base_record(slug_candidate=f"g{i}"), "workspace_path": shared, "detected_kind": "codex_skill"})
-                losing = {**_base_record(slug_candidate=f"g{i}-b"), "workspace_path": shared, "detected_kind": kind_b}
+                recs_in.append(
+                    {
+                        **_base_record(slug_candidate=f"g{i}"),
+                        "workspace_path": shared,
+                        "detected_kind": "codex_skill",
+                    }
+                )
+                losing = {
+                    **_base_record(slug_candidate=f"g{i}-b"),
+                    "workspace_path": shared,
+                    "detected_kind": kind_b,
+                }
                 if i == 0:
                     losing["looks_like_secret_in_header"] = True
                 if i == 1:
@@ -383,7 +445,9 @@ class TestErrorModes(unittest.TestCase):
             self.assertEqual(_run_cli(akb, [empty]), 0)
             report = (akb / "docs" / "phase-c-reports" / "rank.md").read_text(encoding="utf-8")
             self.assertIn("no_candidates", report)
-            jsonl = (akb / "manifests" / "toolbox-ranking" / "rank.jsonl").read_text(encoding="utf-8")
+            jsonl = (
+                akb / "manifests" / "toolbox-ranking" / "rank.jsonl"
+            ).read_text(encoding="utf-8")
             self.assertEqual(jsonl, "")
 
 

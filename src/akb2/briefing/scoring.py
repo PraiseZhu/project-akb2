@@ -43,17 +43,17 @@ import json
 import math
 import os
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from akb2.briefing.embeddings import cosine
-
 
 # ---------------------------------------------------------------------------
 # 常量
 # ---------------------------------------------------------------------------
 
 NOVELTY_BAND = 6  # SHA1 前缀长度（十六进制字符数）
-NOVELTY_COS_THRESHOLD = float(os.environ.get("AKB2_NOVELTY_COS_THRESHOLD", "0.85"))  # P2-2 语义判重阈值
+NOVELTY_COS_THRESHOLD = float(os.environ.get("AKB2_NOVELTY_COS_THRESHOLD", "0.85"))
+# P2-2 语义判重阈值
 SAFETY_FLOOR = 0.0  # safety 命中违禁词时的返回值
 
 AUTHORITY_WHITELIST = {
@@ -112,7 +112,7 @@ def recency(tweet: dict) -> float:
     """按 created_at 衰减：0h=1.0, 24h=0.5, 72h+=0.1。"""
     try:
         created = datetime.fromisoformat(tweet["created_at"].replace("Z", "+00:00"))
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         hours = (now - created).total_seconds() / 3600
         if hours <= 0:
             return 1.0
@@ -131,7 +131,7 @@ def _age_hours(tweet: dict):
     """推文年龄（小时）；缺失/不可解析返回 None。"""
     try:
         created = datetime.fromisoformat(tweet["created_at"].replace("Z", "+00:00"))
-        h = (datetime.now(timezone.utc) - created).total_seconds() / 3600
+        h = (datetime.now(UTC) - created).total_seconds() / 3600
         return h if h > 0 else None
     except Exception:
         return None
@@ -242,7 +242,12 @@ class ScoreEngine:
             "author_authority": author_authority(tweet),
             "topic_relevance": topic_relevance(tweet, embedding=embedding, anchor_vecs=anchor_vecs),
             "signal_density": signal_density(tweet),
-            "novelty": novelty(tweet, self._seen_hashes, embedding=embedding, seen_embeddings=self._seen_embeddings),
+            "novelty": novelty(
+                tweet,
+                self._seen_hashes,
+                embedding=embedding,
+                seen_embeddings=self._seen_embeddings,
+            ),
             "safety": safety(tweet),
         }
         score = sum(self.weights[k] * v for k, v in dims.items())

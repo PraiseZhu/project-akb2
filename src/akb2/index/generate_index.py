@@ -18,7 +18,6 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-
 SENTINEL_START = "<!-- AKB2-AUTO-GENERATED:start -->"
 SENTINEL_END = "<!-- AKB2-AUTO-GENERATED:end -->"
 _SENTINEL_BLOCK_RE = re.compile(

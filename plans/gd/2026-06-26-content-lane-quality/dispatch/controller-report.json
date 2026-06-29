@@ -1,0 +1,42 @@
+{
+  "schema_version": "1.0",
+  "run_mode": "live",
+  "started_at": "2026-06-26T15:00:00+08:00",
+  "finished_at": "2026-06-26T15:12:00+08:00",
+  "aggregate_path": "plans/gd/2026-06-26-content-lane-quality/dispatch/merge-report.md",
+  "manifest_path": "plans/gd/2026-06-26-content-lane-quality/dispatch/dispatch_map.json",
+  "primary_gate": {
+    "verdict": "APPROVED",
+    "blocking": []
+  },
+  "secondary_gate": {
+    "verdict": "APPROVED",
+    "blocking": []
+  },
+  "gate_consistent": true,
+  "dirty_detected": false,
+  "jobs": [
+    {
+      "queue_job_id": "t1-foundations",
+      "target_role": "plan",
+      "primary_target": "plans/gd/2026-06-26-content-lane-quality/dispatch/t1-foundations-proposal.md",
+      "bridge_exit": 0,
+      "bridge_stderr_path": null,
+      "bridge_stderr_summary": "none",
+      "raw_verdict": "completed",
+      "mapped_status": "approved",
+      "aggregate_bucket": "planning"
+    },
+    {
+      "queue_job_id": "t2-concept",
+      "target_role": "plan",
+      "primary_target": "plans/gd/2026-06-26-content-lane-quality/dispatch/t2-concept-proposal.md",
+      "bridge_exit": 0,
+      "bridge_stderr_path": null,
+      "bridge_stderr_summary": "none",
+      "raw_verdict": "completed",
+      "mapped_status": "approved",
+      "aggregate_bucket": "planning"
+    }
+  ]
+}

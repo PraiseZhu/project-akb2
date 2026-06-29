@@ -21,7 +21,13 @@ class WrittenPair:
     report_path: Path
 
 
-def write_output_pair(*, jsonl_text: str, report_text: str, out_path: Path, report_path: Path) -> WrittenPair:
+def write_output_pair(
+    *,
+    jsonl_text: str,
+    report_text: str,
+    out_path: Path,
+    report_path: Path,
+) -> WrittenPair:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.parent.mkdir(parents=True, exist_ok=True)
 

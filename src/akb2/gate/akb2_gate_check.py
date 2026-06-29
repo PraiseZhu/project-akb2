@@ -22,15 +22,16 @@ AKB 2.0 Phase C-3 Gate 自动检查 — L3 提议层
   - AKB-2.0-CONTENT-STANDARD.md (root)
   - docs/AKB-2.0-INTAKE-GATE.md §4 7 项硬指标 + §3 6 gate_decision
   - docs/AKB-2.0-LINT-RULES.md GATE-* / GRAPH-* / SOURCE-* 域
-  - docs/AKB-2.0-AUTOMATION-BOUNDARY.md §5.4 lock + §6.2 manifest 路径 + §6.3 11 字段最小集 + §11.6 自动索引契约
-  - docs/AKB-2.0-PAGE-TEMPLATES.md §3 frontmatter + §4.0 graph_role 默认 + §4.2 source key_findings 双轨
+  - docs/AKB-2.0-AUTOMATION-BOUNDARY.md
+    §5.4 lock + §6.2 manifest 路径 + §6.3 11 字段最小集 + §11.6 自动索引契约
+  - docs/AKB-2.0-PAGE-TEMPLATES.md
+    §3 frontmatter + §4.0 graph_role 默认 + §4.2 source key_findings 双轨
 
 详见同目录 README.md。
 """
 
 import argparse
 import datetime as _dt
-import hashlib
 import json
 import os
 import re
@@ -262,10 +263,10 @@ def guard_input_path(akb_root: Path, input_path: Path) -> None:
     """只允许扫描 staging/candidate/ 下文件。"""
     try:
         rel = input_path.resolve().relative_to(akb_root.resolve())
-    except ValueError:
+    except ValueError as err:
         raise SystemExit(
             f"input path '{input_path}' is not under akb_root '{akb_root}'"
-        )
+        ) from err
     parts = rel.parts
     if len(parts) < 2 or parts[0] != "staging" or parts[1] != "candidate":
         raise SystemExit(
@@ -492,7 +493,9 @@ def check_future_questions(fm: dict) -> tuple[bool, str]:
 
 
 def check_graph_link(fm: dict) -> tuple[bool, str]:
-    """HC-07 graph link:至少 1 个 related_* 非空 OR proposed_graph_nodes 非空(Phase B candidate readiness)。
+    """HC-07 graph link.
+
+    至少 1 个 related_* 非空 OR proposed_graph_nodes 非空(Phase B candidate readiness)。
 
     query-result 模板: derived_from 非空列表可替代 related_* (知识复利溯源链)。
     L4 时必须 ≥1 真实 related_* 非空(承接 sample-register proposed_graph_nodes 边界)。
@@ -532,7 +535,9 @@ def check_body_structure(body: str, template_type: str | None) -> tuple[bool, st
 
 
 def check_no_auto_active(fm: dict) -> tuple[bool, str]:
-    """HC-09 no-auto-active:gate_decision 必须 null / 不 active(candidate frontmatter 不预填 active)。
+    """HC-09 no-auto-active.
+
+    gate_decision 必须 null / 不 active(candidate frontmatter 不预填 active)。
 
     INTAKE-GATE 不变量 3:没有自动 active。
     """
@@ -754,7 +759,7 @@ def build_manifest_record(
         "actor": ACTOR,
         "started_at": now,
         "finished_at": now,
-        "source": f"akb_gate_check L3 proposal scan",
+        "source": "akb_gate_check L3 proposal scan",
         "reason": (
             f"L3 static gate check on {rel_candidate}; "
             "reviewer must approve L4 in separate plan"
@@ -808,7 +813,11 @@ def cmd_check(args: argparse.Namespace) -> int:
         sys.stderr.write(f"ERROR: akb-root not a dir: {akb_root}\n")
         return EXIT_ARG_ERROR
 
-    input_path = (akb_root / args.input).resolve() if not Path(args.input).is_absolute() else Path(args.input).resolve()
+    input_path = (
+        (akb_root / args.input).resolve()
+        if not Path(args.input).is_absolute()
+        else Path(args.input).resolve()
+    )
     guard_input_path(akb_root, input_path)
 
     candidates = collect_candidates(input_path)
@@ -906,7 +915,7 @@ def cmd_check(args: argparse.Namespace) -> int:
                 for d in write_diff:
                     sys.stderr.write(f"  {d}\n")
                 return EXIT_GUARD_VIOLATION
-            print(f"## manifest written")
+            print("## manifest written")
             print(f"  path: {manifest_path}")
             print(f"  records: {len(records)}")
         finally:
@@ -928,7 +937,10 @@ def main(argv: list[str] | None = None) -> int:
     chk.add_argument("--dry-run", action="store_true", default=True,
                      help="Default; print summary only")
     chk.add_argument("--write-manifest", action="store_true",
-                     help="Write manifests/ingest/<DATE>.jsonl (requires --allow-l3-manifest-write)")
+                     help=(
+                         "Write manifests/ingest/<DATE>.jsonl "
+                         "(requires --allow-l3-manifest-write)"
+                     ))
     chk.add_argument("--allow-l3-manifest-write", action="store_true",
                      help="Confirm L3 manifest write authorization (paired with --write-manifest)")
     chk.set_defaults(func=cmd_check)
