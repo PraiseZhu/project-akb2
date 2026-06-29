@@ -64,6 +64,9 @@ staging/candidate/
 staging/pending_research.json
 staging/assembler_repair_pending.jsonl
 
+# === Promote 运行时回滚快照(AKB2_AUTO_PROMOTE 每次跑生成，非源码) ===
+snapshots/
+
 # === Review tooling outputs (ephemeral; per-run capsules + final-status mappings) ===
 results/review-route-split/
 _review_outputs/
