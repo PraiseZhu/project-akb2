@@ -23,7 +23,6 @@ from src.akb2.video.llm_adapter import (
     extract_json_from_llm_response,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fake openai client — 记录 OpenAI(...) 与 chat.completions.create(...) 入参
 # ---------------------------------------------------------------------------

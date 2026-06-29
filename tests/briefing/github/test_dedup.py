@@ -1,8 +1,6 @@
 """Tests for SQLite 3-day rolling dedup."""
 
-import time
 
-import pytest
 
 from akb2.briefing.github.dedup_sqlite import DedupStore
 

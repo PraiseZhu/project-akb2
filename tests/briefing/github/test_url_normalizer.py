@@ -4,7 +4,6 @@ import pytest
 
 from akb2.briefing.github.url_normalizer import normalize
 
-
 # --- Valid URLs — must normalize correctly ---
 
 @pytest.mark.parametrize("url,expected", [

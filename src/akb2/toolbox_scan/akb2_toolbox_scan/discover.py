@@ -12,12 +12,11 @@ from __future__ import annotations
 import os
 import re
 import stat
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator
 
 from .fingerprint import FingerprintResult, HeaderSniff, fingerprint, sniff_header
-
 
 SCRIPT_EXTENSIONS = {".sh", ".bash", ".js", ".mjs", ".cjs", ".ts", ".py", ".rb"}
 PROJECT_SCRIPT_EXTENSIONS = {
@@ -291,7 +290,12 @@ def _build_record(path: Path, spec: RootSpec) -> ScanRecord | None:
     detected_kind, candidate_asset_type, discovery_reason = cls
 
     if is_symlink:
-        fp = FingerprintResult(sha256=None, size_bytes=None, mtime=None, error="symlink_not_followed")
+        fp = FingerprintResult(
+            sha256=None,
+            size_bytes=None,
+            mtime=None,
+            error="symlink_not_followed",
+        )
         sniff = HeaderSniff()
     else:
         fp = fingerprint(path)

@@ -1,7 +1,7 @@
 """Tests for intake collectors (Layer 1, 2, 3)."""
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -113,7 +113,7 @@ class TestTwitterCollector:
             with mock.patch.object(collector, "_fetch_user_posts", return_value=SAMPLE_TWEETS):
                 with mock.patch("time.sleep", return_value=None):
                     with mock.patch("akb2.briefing.github.intake.twitter_collector.datetime",
-                                    _freeze_now(datetime(2026, 6, 4, 12, 0, tzinfo=timezone.utc))):
+                                    _freeze_now(datetime(2026, 6, 4, 12, 0, tzinfo=UTC))):
                         result = collector.collect(pool_yaml)
 
         assert result.ok
@@ -167,7 +167,7 @@ class TestTwitterCollector:
             with mock.patch.object(collector, "_fetch_user_posts", return_value=SAMPLE_TWEETS):
                 with mock.patch("time.sleep", return_value=None):
                     with mock.patch("akb2.briefing.github.intake.twitter_collector.datetime",
-                                    _freeze_now(datetime(2026, 6, 4, 12, 0, tzinfo=timezone.utc))):
+                                    _freeze_now(datetime(2026, 6, 4, 12, 0, tzinfo=UTC))):
                         result = collector.collect(pool_yaml)
 
         qlib = [c for c in result.candidates if "microsoft/qlib" in c.repo_url]
@@ -238,7 +238,7 @@ class TestTwitterCollector:
         """Tweets from >7 days ago → filtered out (SC-1)."""
         from akb2.briefing.github.intake.twitter_collector import TwitterCollector
 
-        now = datetime(2026, 6, 4, 12, 0, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 6, 4, 12, 0, 0, tzinfo=UTC)
         old_tweets = [{
             "id": "1", "isRetweet": False, "created_at": "2026-05-25T10:00:00Z",
             "full_text": "https://github.com/old/repo",
@@ -261,7 +261,7 @@ class TestTwitterCollector:
         """Tweets from today → kept (SC-1)."""
         from akb2.briefing.github.intake.twitter_collector import TwitterCollector
 
-        now = datetime(2026, 6, 4, 12, 0, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 6, 4, 12, 0, 0, tzinfo=UTC)
         recent_tweets = [{
             "id": "1", "isRetweet": False, "created_at": "2026-06-04T10:00:00Z",
             "full_text": "https://github.com/new/repo",
@@ -281,9 +281,12 @@ class TestTwitterCollector:
 
     def test_recency_at_boundary(self, tmp_path):
         """Exactly at cutoff → kept; 1 sec before cutoff → dropped (SC-1 boundary)."""
-        from akb2.briefing.github.intake.twitter_collector import TwitterCollector, RECENCY_WINDOW_DAYS
+        from akb2.briefing.github.intake.twitter_collector import (
+            RECENCY_WINDOW_DAYS,
+            TwitterCollector,
+        )
 
-        now = datetime(2026, 6, 4, 12, 0, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 6, 4, 12, 0, 0, tzinfo=UTC)
         cutoff = now - timedelta(days=RECENCY_WINDOW_DAYS)
         at_cutoff = cutoff.isoformat()
         before_cutoff = (cutoff - timedelta(seconds=1)).isoformat()
@@ -378,7 +381,7 @@ class TestTwitterCollector:
         """Mixed input (old/recent/missing/bad) → recency_stats counters correct (SC-7)."""
         from akb2.briefing.github.intake.twitter_collector import TwitterCollector
 
-        now = datetime(2026, 6, 4, 12, 0, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 6, 4, 12, 0, 0, tzinfo=UTC)
         tweets = [
             # Old tweet (>7 days ago) → should be dropped
             {"id": "1", "isRetweet": False, "created_at": "2026-05-25T10:00:00Z",

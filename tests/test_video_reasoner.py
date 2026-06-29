@@ -7,19 +7,14 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
 from src.akb2.video.reasoner import (
     ALLOWED_RELATIONSHIP_TYPES,
     ConceptStore,
-    ProposedNode,
-    ReasonedLinks,
     Reasoner,
-    RelatedConcept,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

@@ -15,15 +15,12 @@ import subprocess
 from pathlib import Path
 from unittest import mock
 
-import pytest
-
 from src.akb2.video.config import (
     VideoConfig,
     _resolve_llm_api_key,
     _resolve_nlm,
     _resolve_ytdlp,
 )
-
 
 # ---------------------------------------------------------------------------
 # _resolve_ytdlp：env → which → candidates → default

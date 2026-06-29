@@ -1,8 +1,7 @@
 """无网络 intake 配置与模块加载测试。"""
-import json
-import pytest
-import yaml
 from pathlib import Path
+
+import yaml
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 CONFIG_PATH = REPO_ROOT / "config/intake_sources.yaml"

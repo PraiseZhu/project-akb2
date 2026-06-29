@@ -1,7 +1,7 @@
 """P2-2 novelty 语义去重 + P2-3 engagement velocity。"""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from akb2.briefing import scoring
 
@@ -15,7 +15,7 @@ class FakeEmbed:
 
 
 def _now_iso(hours_ago):
-    return (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).isoformat()
+    return (datetime.now(UTC) - timedelta(hours=hours_ago)).isoformat()
 
 
 def _t(text, hours_ago=1, **kw):

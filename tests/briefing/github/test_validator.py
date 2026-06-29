@@ -1,11 +1,8 @@
 """Tests for GitHub briefing schema validator — bidirectional (PASS + FAIL)."""
 
-import json
 from pathlib import Path
 
-import pytest
-
-from akb2.briefing.github.validator import validate, load_schema
+from akb2.briefing.github.validator import load_schema, validate
 
 FIXTURES = Path(__file__).resolve().parent.parent.parent / "fixtures" / "briefing" / "github"
 VALID_FIXTURE = FIXTURES / "schema-valid-sample.json"

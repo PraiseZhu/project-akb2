@@ -2,17 +2,16 @@
 
 import json
 from pathlib import Path
-from unittest import mock
 
 import pytest
 
 from akb2.briefing.github.synthesis import (
-    synthesize,
+    MAX_INPUT_TOKENS,
     _build_prompt,
     _estimate_tokens,
-    _render_repo_xml,
     _extract_json,
-    MAX_INPUT_TOKENS,
+    _render_repo_xml,
+    synthesize,
 )
 
 FIXTURES = Path(__file__).resolve().parent.parent.parent / "fixtures" / "briefing" / "github"

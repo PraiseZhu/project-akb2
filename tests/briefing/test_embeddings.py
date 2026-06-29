@@ -10,7 +10,6 @@ import pytest
 
 from akb2.briefing import embeddings as emb
 
-
 # ---------------------------------------------------------------------------
 # batch：一次调用传数组返回对应向量（顺序一致）
 # ---------------------------------------------------------------------------
@@ -101,7 +100,7 @@ def test_embed_gateway_failure_raises(tmp_path):
 
     with patch.object(emb, "_embed_api", side_effect=_boom):
         client = emb.EmbeddingClient(cache_dir=tmp_path)
-        with pytest.raises(Exception):
+        with pytest.raises(RuntimeError):
             client.embed(["anything"])
 
 
@@ -117,7 +116,7 @@ def test_embed_failure_does_not_poison_cache(tmp_path):
 
     with patch.object(emb, "_embed_api", side_effect=_api):
         client = emb.EmbeddingClient(cache_dir=tmp_path)
-        with pytest.raises(Exception):
+        with pytest.raises(RuntimeError):
             client.embed(["t"])
         state["fail"] = False
         out = client.embed(["t"])  # 重试应成功
