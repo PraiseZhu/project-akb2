@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -17,7 +16,10 @@ def _seed_akb(root: Path) -> None:
     (root / "toolbox" / "registry").mkdir(parents=True, exist_ok=True)
     (root / "toolbox" / "interfaces").mkdir(parents=True, exist_ok=True)
     (root / "toolbox" / "evals").mkdir(parents=True, exist_ok=True)
-    (root / "staging" / "candidate" / "toolbox-phase-b-2026-05-04").mkdir(parents=True, exist_ok=True)
+    (root / "staging" / "candidate" / "toolbox-phase-b-2026-05-04").mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
 
 def _seed_codex_skill(root: Path, slug: str, *, body: str = "name: x\ndescription: y\n") -> Path:
@@ -43,10 +45,21 @@ def _seed_claude_hook(root: Path, name: str) -> Path:
 
 
 def _read_jsonl(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
-def _run(akb_root: Path, *, roots: list[Path], out: str, report: str, vendor: list[Path] | None = None) -> int:
+def _run(
+    akb_root: Path,
+    *,
+    roots: list[Path],
+    out: str,
+    report: str,
+    vendor: list[Path] | None = None,
+) -> int:
     argv = ["--akb-root", str(akb_root), "--out", out, "--report", report]
     for r in roots:
         argv += ["--root", str(r)]
@@ -322,7 +335,13 @@ class TestSafetyContracts(unittest.TestCase):
         with TemporaryDirectory() as td:
             akb = Path(td) / "akb"
             _seed_akb(akb)
-            (akb / "staging" / "candidate" / "toolbox-phase-b-2026-05-04" / "cc-review").mkdir(parents=True)
+            (
+                akb
+                / "staging"
+                / "candidate"
+                / "toolbox-phase-b-2026-05-04"
+                / "cc-review"
+            ).mkdir(parents=True)
             codex = Path(td) / ".codex" / "skills"
             codex.mkdir(parents=True)
             _seed_codex_skill(codex, "cc-review")
@@ -334,7 +353,10 @@ class TestSafetyContracts(unittest.TestCase):
                 report="docs/phase-c-reports/x.md",
             )
             self.assertEqual(rc, 0)
-            recs = {r["slug_candidate"]: r for r in _read_jsonl(akb / "manifests" / "workspace-scan" / "x.jsonl")}
+            recs = {
+                r["slug_candidate"]: r
+                for r in _read_jsonl(akb / "manifests" / "workspace-scan" / "x.jsonl")
+            }
             self.assertTrue(recs["cc-review"]["phase_b_shadow_match"])
             self.assertFalse(recs["cc-other"]["phase_b_shadow_match"])
 

@@ -23,7 +23,13 @@ from .star_history import StarHistory
 from .synthesis import synthesize
 from .validator import validate
 
-_PROJECT_ROOT = Path(os.environ.get("PROJECT_ROOT", "")) if os.environ.get("PROJECT_ROOT") else Path(__file__).resolve().parents[4]  # src/akb2/briefing/github/pipeline.py → project root (parents[4]=<root>; 旧值 [5] 越到 <root> 上一级，导致 POOL_CONFIG/skip 文件落错目录)
+_PROJECT_ROOT = (
+    Path(os.environ.get("PROJECT_ROOT", ""))
+    if os.environ.get("PROJECT_ROOT")
+    else Path(__file__).resolve().parents[4]
+)
+# src/akb2/briefing/github/pipeline.py -> project root (parents[4]=<root>).
+# 旧值 [5] 越到 <root> 上一级，导致 POOL_CONFIG/skip 文件落错目录。
 POOL_CONFIG = _PROJECT_ROOT / "config" / "github_curator_pool.yaml"
 OUTPUT_DIR_TEMPLATE = "Praise Space/AKB2.0/AI TRENDS/GitHub"
 
@@ -252,7 +258,8 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
         return 0
 
     # Step 8: Render + validate + write vault
-    today_str = date.today().isoformat()  # 文件名 = 抓取日（去掉旧的 +1 偏移，对齐 social briefing）
+    today_str = date.today().isoformat()
+    # 文件名 = 抓取日（去掉旧的 +1 偏移，对齐 social briefing）
     now_iso = datetime.now(UTC).isoformat()
 
     # Inject engagement_raw before _clean_repo（必须在 clean 前，否则 engagement 字段被剥）
@@ -448,7 +455,9 @@ def _real_intake(force_layer: int | None = None) -> tuple[list, str, dict]:
 
     # 无强制：完整三层 fallback judge（decide 内部含 l1→l2→l3 链）。
     l1 = TwitterCollector().collect(POOL_CONFIG)
-    l2_runner = lambda: TrendingHTMLCollector().collect()
+    def l2_runner():
+        return TrendingHTMLCollector().collect()
+
     decision = decide(l1, l2_runner)
 
     # 即使 decide 选了 L2，也带 L1 的 recency_stats（SC-7 验收需要）

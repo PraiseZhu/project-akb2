@@ -12,11 +12,9 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Optional
 
 from src.akb2.video.llm_adapter import LLMAdapter, extract_json_from_llm_response
 
@@ -322,11 +320,6 @@ class Extractor:
 
     def _build_question_from_gap(self, text: str, gap_type: str) -> str | None:
         """从 gap 句子构建具体问题。"""
-        # 泛化问题黑名单
-        generic_patterns = [
-            r"未来趋势", r"发展方向", r"前景如何", r"会怎样",
-            r"前景", r"趋势", r"发展",
-        ]
         text_clean = text[:200]
 
         if gap_type == "condition_limit":

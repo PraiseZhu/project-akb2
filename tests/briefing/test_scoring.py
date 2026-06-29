@@ -2,10 +2,8 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-
-import pytest
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 FIXTURE_PATH = REPO_ROOT / "tests/fixtures/intake/dry-run-2026-05-27/sample.json"
@@ -17,20 +15,20 @@ FIXTURE_PATH = REPO_ROOT / "tests/fixtures/intake/dry-run-2026-05-27/sample.json
 
 def test_recency_fresh():
     from akb2.briefing.scoring import recency
-    tweet = {"created_at": datetime.now(timezone.utc).isoformat()}
+    tweet = {"created_at": datetime.now(UTC).isoformat()}
     assert recency(tweet) >= 0.9
 
 
 def test_recency_24h():
     from akb2.briefing.scoring import recency
-    t = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    t = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
     score = recency({"created_at": t})
     assert 0.4 <= score <= 0.6
 
 
 def test_recency_old():
     from akb2.briefing.scoring import recency
-    t = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
+    t = (datetime.now(UTC) - timedelta(hours=72)).isoformat()
     assert recency({"created_at": t}) <= 0.15
 
 
@@ -84,7 +82,7 @@ def test_topic_relevance_saturation():
 # ---------------------------------------------------------------------------
 
 def test_safety_banned_keyword():
-    from akb2.briefing.scoring import safety, ScoreEngine
+    from akb2.briefing.scoring import ScoreEngine, safety
     assert safety({"text": "buy this scam"}) == 0.0
     assert safety({"text": "AI research paper"}) == 1.0
     # safety=0 的推文总分应该 ≤ 0.3
@@ -94,7 +92,7 @@ def test_safety_banned_keyword():
             "id": "1",
             "text": "buy this scam",
             "author": "x",
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
         }
     )
     assert result["score"] <= 0.3
@@ -147,7 +145,7 @@ def test_score_clamped():
         "id": "1",
         "text": "AI LLM model agent reasoning GPT Claude",
         "author": "@openai",
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
         "metrics": {"likes": 50000, "retweets": 20000, "replies": 5000},
     }
     result = engine.score_tweet(tweet)
@@ -162,7 +160,7 @@ def test_dimensions_keys_complete():
         "id": "1",
         "text": "AI research update",
         "author": "@openai",
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
         "metrics": {"likes": 100, "retweets": 50, "replies": 10},
     }
     result = engine.score_tweet(tweet)
@@ -177,7 +175,7 @@ def test_weights_json_changes_score():
         "id": "1",
         "text": "AI research update",
         "author": "@sama",
-        "created_at": (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(),
+        "created_at": (datetime.now(UTC) - timedelta(hours=1)).isoformat(),
         "metrics": {"likes": 1000, "retweets": 500, "replies": 100},
     }
     default_engine = ScoreEngine()

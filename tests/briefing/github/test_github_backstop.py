@@ -1,7 +1,7 @@
 """Tests for github_briefing_backstop.sh — SC-2: github链路补跑守卫。"""
 
-import subprocess
 import os
+import subprocess
 from datetime import date
 from pathlib import Path
 

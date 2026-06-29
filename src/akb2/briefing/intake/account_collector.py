@@ -140,7 +140,9 @@ class AccountCollector:
 
         if result.returncode != 0:
             excerpt = (result.stderr or "")[:200].replace("\n", " | ")
-            sys.stderr.write(f"WARNING: @{handle} twitter-cli exit {result.returncode}: {excerpt} — skip\n")
+            sys.stderr.write(
+                f"WARNING: @{handle} twitter-cli exit {result.returncode}: {excerpt} — skip\n"
+            )
             return []
         try:
             payload = json.loads(result.stdout)
@@ -195,7 +197,8 @@ class AccountCollector:
                 f"yielded {len(aggregated)} unique tweets\n"
             )
 
-        # SC-P3c-1: reserve 补抓 — 主 tier 不足时从 reserve_tier 顺序补（zh 不补，避免英文 reserve 污染中文）
+        # SC-P3c-1: reserve 补抓。
+        # 主 tier 不足时从 reserve_tier 顺序补（zh 不补，避免英文 reserve 污染中文）。
         if allow_reserve and len(aggregated) < self.supplement_threshold:
             reserve_handles = _load_fetch_tier("reserve")
             if reserve_handles:
@@ -220,7 +223,8 @@ class AccountCollector:
                             seen.add(tid)
                             aggregated.append(t)
                 sys.stderr.write(
-                    f"INFO [account_collector]: after reserve supplement: {len(aggregated)} tweets\n"
+                    "INFO [account_collector]: after reserve supplement: "
+                    f"{len(aggregated)} tweets\n"
                 )
 
         return aggregated
@@ -292,12 +296,23 @@ class AccountCollector:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Curator account collector (per-account twitter fetch)")
+    parser = argparse.ArgumentParser(
+        description="Curator account collector (per-account twitter fetch)"
+    )
     parser.add_argument("--output", default="/tmp/account-out.json", help="Output JSON path")
-    parser.add_argument("--dry-run", action="store_true", default=False, help="Use fixture instead of twitter-cli")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Use fixture instead of twitter-cli",
+    )
     parser.add_argument("--since", default=None, help="Collect tweets since YYYY-MM-DD")
     parser.add_argument("--until", default=None, help="Collect tweets until YYYY-MM-DD")
-    parser.add_argument("--tier", default=os.environ.get("AKB2_FETCH_TIER", _DEFAULT_TIER), help="curator fetch_tier (en|zh)")
+    parser.add_argument(
+        "--tier",
+        default=os.environ.get("AKB2_FETCH_TIER", _DEFAULT_TIER),
+        help="curator fetch_tier (en|zh)",
+    )
     parser.add_argument(
         "--merge",
         action="store_true",
