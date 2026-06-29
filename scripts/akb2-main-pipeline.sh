@@ -148,10 +148,7 @@ fi
 # --- 启动 runner ---
 cd "$PROJECT_ROOT"
 
-RUNNER_ARGS=("$@")
-if [ ${#RUNNER_ARGS[@]} -eq 0 ]; then
-    # 默认: 常驻模式
-    RUNNER_ARGS=()
-fi
-
-exec "$PYTHON_BIN" -m src.akb2.quality.runner "${RUNNER_ARGS[@]}"
+# macOS /bin/bash 3.2 下 set -u + "${arr[@]}" 空数组展开会报 unbound variable;
+# launchd 不传参 → 数组恒空 → exec 行必挂在 python 启动前。直接用 "$@":
+# 空参数在 bash 3.2 set -u 下恒安全(无参=常驻模式,有参透传)。
+exec "$PYTHON_BIN" -m src.akb2.quality.runner "$@"
