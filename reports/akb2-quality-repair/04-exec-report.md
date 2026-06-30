@@ -124,6 +124,12 @@ worker env 缺 `DEEPSEEK_API_KEY`（distill/grader 不可用），无法跑实�
 
 → lead 拿到 LLM key 跑实际 calibration 时，SC-5 测量基建（deduped_funnel/failure_class/repair_acceptance/分层/needs_adjudication/procedural 硬 fail）已验证就绪，只需替换合成结果为真实 pipeline 结果。
 
+### WP-5 真机验收 checklist（lead 接手）
+
+- [ ] 重跑 `python3 -m akb2.quality.calibration`（proposal, AUTO_PROMOTE=0），`mechanism_present=true` 子集 `repair_acceptance.positive_pass_rate ≥ 0.60`，`negative_reject_rate==1.0`，分层 live/fixture/concept/procedural，procedural 0 通过=硬 fail，holdout 不退化。
+- [ ] **idx5 真机验收（D7/P2-E）**: 旧候选（pre-fix fallback 注入假步骤 max_repair_rounds/ledger.append/queue_item schema）→ 真 GPT-5.4 grader 判 `interpretation_entailment=false`（poisoned trace）；新候选（post-fix D8 concept fallback how_steps=[]+params={}）→ 不含假步骤且不再因 D7 被拒（`interpretation_entailment=true`）。本测试侧已验 poison 源在场+修复后无假步骤（`TestD7Idx5PoisonedTraceFixture`），entailment 真值需真 GPT-5.4 验收。
+- [ ] SC-7: ≥3 真实通过候选（覆盖 concept+procedural），完整过 4 地板+五闸且 grader 非 degraded，附 candidate 路径 + grader JSON。
+
 ## 4. corpus idx11 裁定（双审 rev-b 已确认）
 
 - **index 11 (orchestration-tax)**: 双审 rev-b 读原文确认 `mechanism_present=true` / `review_status=confirmed`——原文含命名机制组件（agent producers + human review 瓶颈 + queue/context-switching + 非瓶颈吞吐边），非 trade-off 散文。已入 `mechanism_present=true` 分母（mp_true=18）。原 `needs_adjudication` 已裁定，无待裁定条目。

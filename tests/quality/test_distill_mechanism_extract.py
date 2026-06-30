@@ -16,6 +16,8 @@ _build_frontmatter（确定性代码，无 LLM）；gate _graph_readiness 只读
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from src.akb2.quality.distill import (
     _build_frontmatter,
     _validate_extract_output,
@@ -262,6 +264,87 @@ def _frontmatter_data(concepts: list[str]) -> dict:
     }
 
 
+def _write_gate_candidate(
+    vault: Path, name: str, related_concepts: list[str], graph_row: str
+) -> Path:
+    """构造真实 gate CLI 候选文件（结构完整，变 related_concepts + 图谱行）。
+
+    基于 test_promote_gates.gates_vault_root 通过基线候选，只变 related_concepts
+    测图谱闸（HC-07）对悬空/已 resolve 的真实判定（不 mock _run_gate_check）。
+    """
+    (vault / "staging" / "candidate" / "b").mkdir(parents=True, exist_ok=True)
+    (vault / "wiki" / "sources").mkdir(parents=True, exist_ok=True)
+    cand = vault / "staging" / "candidate" / "b" / f"{name}.md"
+    related_fm = ", ".join(related_concepts)
+    graph_section = (
+        "## 图谱关系\n\n| 目标 | 关系 | 强度 | 证据 |\n|------|------|------|------|\n"
+        f"{graph_row}\n" if graph_row else "## 图谱关系\n\n（无图谱边）\n"
+    )
+    cand.write_text(f"""---
+page_status: candidate
+source_type: blog
+template_type: source
+source_refs: [raw/{name}--raw.md]
+future_questions:
+  - Q1: Test one?
+  - Q2: Test two?
+related_concepts: [{related_fm}]
+gate_decision: null
+slug: {name}
+title: {name} Article
+source_url: https://example.com/{name}
+date: 2026-06-13
+evidence_provenance: source_grounded
+graph_role: leaf
+graph_status: healthy
+key_findings:
+  - finding one
+  - finding two
+  - finding three
+---
+
+## TLDR
+
+Test article for five-gate validation.
+
+## 关键发现
+
+Finding one. Finding two. Finding three.
+
+## 入选理由
+
+Test inclusion.
+
+## 证据地图
+
+| 证据 | 来源 | 强度 |
+|------|------|------|
+| Test | [raw] | strong |
+
+## 核心论点
+
+Core argument.
+
+## 论证与解释
+
+Detailed explanation.
+
+## 适用边界
+
+Test scenarios.
+
+{graph_section}
+## Future Questions
+
+Q1: Test one?
+Q2: Test two?
+
+## 维护记录
+
+| 2026-06-13 | Initial | gate: null |""")
+    return cand
+
+
 class TestFrontmatterResolveAndRealLink:
     """frontmatter related_* 同源 resolve，悬空不产 real_link（round-2 P1）。"""
 
@@ -333,73 +416,48 @@ class TestFrontmatterResolveAndRealLink:
         assert "related_concepts" in fm
         assert isinstance(fm["related_concepts"], list)
 
-    def test_evaluate_five_gates_empty_related_fails_gate3(self, tmp_path):
-        """P1-B 真实五闸: 悬空 frontmatter（known=[] 提供但空 → related=[]）→ Gate-3 fail, 不产 active。"""
-        from unittest.mock import patch
+    def test_evaluate_five_gates_real_cli_dangling_rejected(self, tmp_path):
+        """P1-B 真实 CLI（不 mock）: 悬空 candidate(related=[]) → 真实 gate CLI →
+        proposed=needs_repair + graph_readiness=none, evaluate_five_gates 拒绝 + 不产 active。
 
-        from src.akb2.gate.akb2_gate_check import _graph_readiness
-        from src.akb2.quality import promote
+        真实拦截行为: 悬空候选被五闸拒（失败在真实 Gate-1 HC-07 无图谱链接，
+        非伪造的 Gate-3）。证明 P1-B 的真实安全性。
+        """
+        from src.akb2.quality.promote import _run_gate_check, evaluate_five_gates
 
-        fm = _build_frontmatter(
-            "raw/fake--raw--2026-06-29.md",
-            _frontmatter_data(["totally-unknown-concept"]),
-            content_lane="concept",
-            known_concepts=[],  # P1-B: 提供但空 → related=[]
+        vault = tmp_path / "vault"
+        cand = _write_gate_candidate(vault, "dangling", related_concepts=[], graph_row="")
+        # 真实 gate CLI（无 mock）
+        gate_ok, detail, parsed = _run_gate_check(cand, vault)
+        assert parsed.get("graph_readiness") == "none", (
+            f"悬空(related=[])应 graph_readiness=none: {detail}"
         )
-        assert fm["related_concepts"] == []
-        graph = _graph_readiness(fm)
-        assert graph == "none"
-        gate_parsed = {
-            "decision_confidence": "high",
-            "graph_readiness": graph,
-            "hard_checks": {},
-        }
-        cand = tmp_path / "candidate.md"
-        with patch(
-            "src.akb2.quality.promote._run_gate_check",
-            return_value=(True, "", gate_parsed),
-        ):
-            all_passed, failed_gate, _reason = promote.evaluate_five_gates(
-                cand, tmp_path
-            )
-        assert all_passed is False, "悬空 frontmatter（related=[]）不应过五闸"
-        assert "Gate-3" in failed_gate, f"应 fail 在 Gate-3: {failed_gate}"
-
-    def test_evaluate_five_gates_resolved_related_passes_gate3(self, tmp_path):
-        """P1-B 真实五闸: 已 resolve related（known 含目标 → related 非空）→ Gate-3 过 + 全闸过。"""
-        from unittest.mock import patch
-
-        from src.akb2.gate.akb2_gate_check import _graph_readiness
-        from src.akb2.quality import promote
-
-        fm = _build_frontmatter(
-            "raw/fake--raw--2026-06-29.md",
-            _frontmatter_data(["loop-engineering"]),
-            content_lane="concept",
-            known_concepts=["loop-engineering"],
+        assert parsed.get("proposed_gate_decision") != "active", (
+            f"悬空 candidate 不应 proposed=active: {detail}"
         )
-        assert "[[loop-engineering]]" in fm["related_concepts"]
-        graph = _graph_readiness(fm)
-        assert graph == "real_link"
-        gate_parsed = {
-            "decision_confidence": "high",
-            "graph_readiness": graph,
-            "hard_checks": {},
-        }
-        cand = tmp_path / "candidate.md"
-        with patch(
-            "src.akb2.quality.promote._run_gate_check",
-            return_value=(True, "", gate_parsed),
-        ), patch(
-            "src.akb2.quality.promote._run_lint_check", return_value=(True, "")
-        ), patch(
-            "src.akb2.quality.promote._read_grader_result", return_value=(True, "")
-        ):
-            all_passed, failed_gate, reason = promote.evaluate_five_gates(
-                cand, tmp_path
-            )
-        assert all_passed is True, (
-            f"已 resolve related 应过五闸（可产 active）: {failed_gate} {reason}"
+        # evaluate_five_gates 真实拒绝 + 不产 active
+        all_passed, _failed_gate, _reason = evaluate_five_gates(cand, vault, None)
+        assert all_passed is False, "悬空 candidate 应被五闸真实拒绝"
+        active_path = vault / "wiki" / "sources" / "dangling.md"
+        assert not active_path.exists(), "悬空 candidate 不应产 active 写入"
+
+    def test_evaluate_five_gates_real_cli_resolved_passes_graph_gate(self, tmp_path):
+        """P1-B 真实 CLI（不 mock）: 已 resolve candidate(related=[concept]) →
+        graph_readiness=real_link → 过图谱闸（不因悬空 fail；到达后续闸）。
+
+        对照: 同结构候选只把 related_concepts 从 [] 换成 [concept] → graph_readiness
+        翻转为 real_link，证明悬空/已 resolve 的真实区分。
+        """
+        from src.akb2.quality.promote import _run_gate_check
+
+        vault = tmp_path / "vault"
+        cand = _write_gate_candidate(
+            vault, "resolved", related_concepts=["concept-test"],
+            graph_row="| concept-test | supports | medium | Test |",
+        )
+        gate_ok, detail, parsed = _run_gate_check(cand, vault)
+        assert parsed.get("graph_readiness") == "real_link", (
+            f"已 resolve(related=[concept])应 graph_readiness=real_link: {detail}"
         )
 
 
