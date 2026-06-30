@@ -1679,19 +1679,14 @@ def _validate_extract_output(data: dict[str, Any], content_lane: str = "") -> No
     # 足量可执行候选步骤 / 足量命名机制组件。
     how_steps = data.get("how_steps", []) or []
     if _is_concept_lane(content_lane):
-        mechanism_components = data.get("mechanism_components", []) or []
-        named_components = [
-            c
-            for c in mechanism_components
-            if isinstance(c, dict) and str(c.get("name", "")).strip()
-        ]
-        if len(named_components) < CONCEPT_MIN_MECHANISM_COMPONENTS:
-            raise ValueError(
-                f"concept 车道 mechanism_components 命名组件 {len(named_components)} "
-                f"< {CONCEPT_MIN_MECHANISM_COMPONENTS}"
-                f"（概念型知识须 ≥{CONCEPT_MIN_MECHANISM_COMPONENTS} 个命名机制组件，"
-                "F4 结构真相源）"
-            )
+        # WP-3.2: F4 connectivity 前移——复用 integrity_floor._core_value_f4_failed
+        # （去重唯一≥3 + 每命名组件在 causal_edges 有出/入边指向另一命名组件），
+        # 失败在 distill extract 即暴露（lazy import 避免循环依赖）。
+        from src.akb2.quality.integrity_floor import _core_value_f4_failed
+
+        f4_failed, f4_reason = _core_value_f4_failed(data, content_lane)
+        if f4_failed:
+            raise ValueError(f"concept F4 extract 即判失败: {f4_reason}")
     else:
         executable_steps = sum(
             1
@@ -1753,6 +1748,49 @@ def _validate_extract_output(data: dict[str, Any], content_lane: str = "") -> No
                 )
 
 
+# WP-3/D8: concept deterministic fallback 扫 raw 找真实命名机制组件（编号 H2/H3/H4 标题），
+# 不再硬编码注入 loop-engineering 组件（造假机制）。≥3 真实组件才用，否则 fail-closed。
+_REAL_COMPONENT_HEADING_RE = re.compile(r"(?m)^#{2,4}\s+\d+[\.\)]\s+([^\n(]+)")
+
+
+def _scan_real_mechanism_components(raw_content: str) -> list[dict[str, str]]:
+    """扫 raw 找真实命名机制组件（编号 H2/H3/H4 标题，如 ``### 1. Captain``）。
+
+    返回 ``[{name, role}]``（去重，保序）。name 取标题文本。这些是 raw 真实存在的命名
+    组件，非硬编码模板——concept fallback 用它们满足 F4 ≥3 组件门，避免造假机制（D8）。
+    """
+    matches = _REAL_COMPONENT_HEADING_RE.findall(raw_content or "")
+    components: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for m in matches:
+        name = m.strip().rstrip(".").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        components.append({"name": name, "role": "raw 命名机制组件"})
+    return components
+
+
+def _build_sequential_causal_edges(
+    components: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    """从真实组件按 raw 出现顺序构建因果边（保守结构推断，非造假）。
+
+    ``comp[i] → comp[i+1]`` 顺序连边，满足 F4「每命名组件有出/入边指向另一命名组件」。
+    顺序是 raw 的确定性映射，非凭空编造因果关系。
+    """
+    edges: list[dict[str, str]] = []
+    for i in range(len(components) - 1):
+        edges.append(
+            {
+                "from": components[i]["name"],
+                "to": components[i + 1]["name"],
+                "relation": "precedes_in_sequence",
+            }
+        )
+    return edges
+
+
 def build_deterministic_extract_result(
     raw_content: str,
     raw_path: str = "",
@@ -1765,7 +1803,8 @@ def build_deterministic_extract_result(
     proposal handling.
 
     content_lane（SC-3a）：传给 _build_deterministic_extract_data + _validate_extract_output。
-    concept 车道额外注入 mechanism_components/causal_edges（满足 F4 结构真相源 ≥3 组件门），
+    concept 车道：扫 raw 找真实命名机制组件（≥3）+ 顺序因果边，不硬编码 loop 组件（D8），
+    不注入假 AKB 操作化步骤（D7 poisoned trace）；<3 真实组件 → fail-closed abort。
     procedural 行为不变（零回归）。
     """
     try:
@@ -1917,6 +1956,12 @@ def _build_deterministic_extract_data(
         }
         for step in how_steps
     ]
+    # WP-3/D7: concept 车道不注入假 AKB 操作化步骤（queue_item schema / ledger.append /
+    # max_repair_rounds / grader assert）——idx5 poisoned trace 源头（grader 判未从 cited
+    # anchor 推出）。concept F4 判 mechanism_components，how_steps 留空避免造假；
+    # procedural 保留（零回归）。
+    if _is_concept_lane(content_lane):
+        how_steps = []
     params = {
         "max_repair_rounds": "3",
         "distill_timeout_seconds": "60",
@@ -1924,6 +1969,8 @@ def _build_deterministic_extract_data(
         "max_parallel_items": "1",
         "fallback_allowed": "false",
     }
+    if _is_concept_lane(content_lane):
+        params = {}
     concepts = ["loop-engineering", "quality-gate", "agent-workflow"]
     argumentation = [
         {
@@ -1968,24 +2015,21 @@ def _build_deterministic_extract_data(
             "evidence_kind": "interpretation",
         },
     ]
-    # step-3 SC-3a/A3-5：concept 车道注入命名机制组件 + 因果边（F4 结构真相源 ≥3 组件门）。
-    # 这些是 deterministic fallback 对来源 loop 结构的保守命名映射（与 how_steps 同源、
-    # 锚定 raw），不向 raw 注入编造；procedural 不注入（空数组，零回归）。
+    # WP-3/D8: concept 车道扫 raw 找真实命名机制组件（编号 H2/H3/H4 标题），≥3 才用 +
+    # 顺序因果边（F4 连通）；<3 → raise 让 build_deterministic_extract_result 返
+    # success=False → runner fail-closed abort（concept no-mechanism 不被 fallback 救活，
+    # 不再硬编码 loop-engineering 组件造假机制）。procedural 不注入（空数组，零回归）。
     mechanism_components: list[dict[str, str]] = []
     causal_edges: list[dict[str, str]] = []
     if _is_concept_lane(content_lane):
-        mechanism_components = [
-            {"name": "trigger", "role": "启动 loop 的调度/事件/手动入口"},
-            {"name": "work_selector", "role": "读账本选下一个待处理工作单元"},
-            {"name": "quality_gate", "role": "校验输出达标、不达标进修复闭环"},
-            {"name": "ledger", "role": "记录每段生命周期事件、支撑崩溃恢复"},
-        ]
-        causal_edges = [
-            {"from": "trigger", "to": "work_selector", "relation": "activates"},
-            {"from": "work_selector", "to": "quality_gate", "relation": "feeds"},
-            {"from": "quality_gate", "to": "ledger", "relation": "writes_result_to"},
-            {"from": "ledger", "to": "work_selector", "relation": "informs_recovery_of"},
-        ]
+        real_components = _scan_real_mechanism_components(raw_content)
+        if len(real_components) < CONCEPT_MIN_MECHANISM_COMPONENTS:
+            raise ValueError(
+                f"concept deterministic fallback: raw 仅 {len(real_components)} 命名机制组件 "
+                f"< {CONCEPT_MIN_MECHANISM_COMPONENTS}，无法从 raw 证明机制，fail-closed"
+            )
+        mechanism_components = real_components
+        causal_edges = _build_sequential_causal_edges(real_components)
     return {
         "claims": claims,
         "how_steps": how_steps,
@@ -2144,7 +2188,15 @@ def compose_candidate(
     candidate_path = os.path.join(output_dir, candidate_filename)
 
     # 构建 frontmatter（确定性代码写死，防范已知坑 1-3）
-    frontmatter = _build_frontmatter(raw_path, extract_result.data, content_lane=content_lane)
+    # WP-3.4: 透传 known_concepts/pending_queue 给 _build_frontmatter，使 frontmatter
+    # related_* 与 body graph 同源 resolve——不写悬空 [[...]] 伪装 real_link（round-2 P1）。
+    frontmatter = _build_frontmatter(
+        raw_path,
+        extract_result.data,
+        content_lane=content_lane,
+        known_concepts=known_concepts,
+        pending_queue=pending_queue,
+    )
 
     # raw_content 同源读取：must_cover 扫描与 self-gate A3 锚点校验共用同一份原文，
     # 避免截断/不一致导致 must_cover 账本与锚点校验脱节。
@@ -2307,6 +2359,8 @@ def _build_frontmatter(
     raw_path: str,
     extract_data: dict[str, Any],
     content_lane: str = "",
+    known_concepts: list[str] | None = None,
+    pending_queue: list[str] | None = None,
 ) -> dict[str, Any]:
     """构建 frontmatter（确定性代码）。
 
@@ -2315,6 +2369,11 @@ def _build_frontmatter(
 
     content_lane（step-1）：concept/procedural 车道写入 candidate frontmatter 的
     content_lane 键，使车道随候选页持久化、供 grader/repair/promote 全链可见。
+
+    WP-3.4（round-2 P1）：known_concepts/pending_queue 提供时，frontmatter related_*
+    只写可 resolve 到 known/pending 的概念为 ``[[wikilink]]``——不写悬空 ``[[...]]``
+    伪装 real_link（Gate-3 据此判 graph_readiness）。二者均 None（legacy/测试）时保留
+    旧 _infer_concepts fallback 行为（零回归）。
 
     已知坑:
         1. gate_decision 写死 null（不许预填 active，防 HC-09 拦）
@@ -2329,16 +2388,32 @@ def _build_frontmatter(
     concepts = extract_data.get("referenced_concepts", [])
     raw_fm = _read_raw_frontmatter(raw_path)
 
-    # 确保 related_concepts ≥2，并统一 [[wikilink]] 格式（GRAPH-LINKING §3.8.1）
+    # WP-3.4: frontmatter related_* 与 body graph 同源 resolve。
+    # known/pending 提供时（即使空集）只写可 resolve 的概念为 [[wikilink]]，不可 resolve
+    # 的不写（不伪装 real_link，gate _graph_readiness 仅查 related_* 非空）；可 resolve
+    # 不足时 _infer_concepts 也只保留可 resolve 的。二者均 None（legacy/测试）时保留旧行为。
+    has_resolver = known_concepts is not None or pending_queue is not None
+    resolvable_set = set(known_concepts or []) | set(pending_queue or [])
     related = list(concepts) if concepts else []
-    if len(related) < RELATED_CONCEPTS_MIN:
-        fallback_concepts = _infer_concepts(claims)
-        for fc in fallback_concepts:
-            if fc not in related:
-                related.append(fc)
-            if len(related) >= RELATED_CONCEPTS_MIN:
-                break
-    related_links = [c if str(c).startswith("[[") else f"[[{c}]]" for c in related]
+    if has_resolver:
+        related = [c for c in related if str(c) in resolvable_set]
+        if len(related) < RELATED_CONCEPTS_MIN:
+            for fc in _infer_concepts(claims):
+                if fc in resolvable_set and fc not in related:
+                    related.append(fc)
+                if len(related) >= RELATED_CONCEPTS_MIN:
+                    break
+        related_links = [c if str(c).startswith("[[") else f"[[{c}]]" for c in related]
+    else:
+        # legacy: 无 known/pending 时保留旧行为（_infer_concepts fallback + [[...]]）
+        if len(related) < RELATED_CONCEPTS_MIN:
+            fallback_concepts = _infer_concepts(claims)
+            for fc in fallback_concepts:
+                if fc not in related:
+                    related.append(fc)
+                if len(related) >= RELATED_CONCEPTS_MIN:
+                    break
+        related_links = [c if str(c).startswith("[[") else f"[[{c}]]" for c in related]
 
     # future_questions 2-3 条
     questions = _generate_questions(claims, extract_data.get("how_steps", []))
