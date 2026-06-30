@@ -80,11 +80,17 @@ def _clean_repo(repo: dict) -> dict:
 
 
 def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
-    """Run the full GitHub briefing pipeline. Returns 0 on success (including skip)."""
+    """Run the full GitHub briefing pipeline.
+
+    Returns 0 ONLY when the day's briefing .md is actually written to the vault
+    (delivered). Any skip / failure path returns non-zero (SC-4 fail-visible) —
+    exit code must reflect real delivery, never "0/missing product" 假成功.
+    Diagnostic briefing-skipped.json / briefing-failed.json 仍写出供 backstop 诊断。
+    """
     vault_root = os.environ.get("VAULT_ROOT", "")
     if not vault_root or not vault_root.startswith("/"):
         _write_skipped("vault_root_missing_or_relative", 0, "skip")
-        return 0
+        return 1
 
     vault = Path(vault_root)
 
@@ -104,7 +110,7 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
         )
         _emit_sc7_metrics(_make_zero_sc7_metrics())
         _write_skipped("no_candidates_after_intake", len(candidates), fallback_layer)
-        return 0
+        return 1
 
     # Step 2-3: Aggregate by repo_url（mention_count 在此正确累加：collector 现按
     # per-handle 去重，跨博主同 repo 会保留多条 candidate）。
@@ -155,7 +161,7 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
                        diag={"before_novelty": pre_novelty_count,
                              "novelty_dropped": pre_novelty_count - len(aggregated),
                              "after_novelty": len(aggregated)})
-        return 0
+        return 1
 
     # Build tier_map from pool config
     tier_map = _load_tier_map()
@@ -206,7 +212,7 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
             "enrich calls failed (rate-limit/network)",
             enrich_attempted, fallback_layer,
         )
-        return 0
+        return 1
 
     # Step 5: Filter by mention threshold.
     # mention 共识过滤只对 twitter 源(layer1)有意义；layer2(trending)/layer3(manual)
@@ -245,7 +251,7 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
     if len(top10) < _MIN_REPOS_FOR_BRIEFING:
         _emit_sc7_metrics(_sc7_metrics)
         _write_skipped("too_few_after_filter", len(top10), fallback_layer)
-        return 0
+        return 1
 
     # Step 7: Synthesize
     try:
@@ -255,7 +261,7 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
     except Exception as e:
         _emit_sc7_metrics(_sc7_metrics)
         _write_failed(f"synthesis_failed: {e}", fallback_layer=fallback_layer)
-        return 0
+        return 1
 
     # Step 8: Render + validate + write vault
     today_str = date.today().isoformat()
@@ -293,12 +299,12 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
             f"schema_validation_failed: {errors}",
             len(top10_with_summaries), fallback_layer,
         )
-        return 0
+        return 1
 
     if len(briefing["top_repos"]) < _MIN_REPOS_FOR_BRIEFING:
         _emit_sc7_metrics(_sc7_metrics)
         _write_skipped("top_repos_below_min", len(briefing["top_repos"]), fallback_layer)
-        return 0
+        return 1
 
     # Write vault
     with _StageTimer("write_vault"):
@@ -308,7 +314,7 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
                 vault.mkdir(parents=True, exist_ok=True)
             else:
                 _write_failed(f"vault_not_ready: {vault}", fallback_layer=fallback_layer)
-                return 0
+                return 1
         out_dir.mkdir(parents=True, exist_ok=True)
         base_name = f"{today_str} GitHub Briefing"
         md_path = out_dir / f"{base_name}.md"
@@ -329,6 +335,11 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
         _novelty.close()
 
     _emit_sc7_metrics(_sc7_metrics)
+    # SC-4: CLI 层最终交付断言 — 写盘后复查当日 md 真实存在，否则 fail-visible
+    if not md_path.exists():
+        _write_failed(f"vault_write_verified_missing: {md_path}",
+                      fallback_layer=fallback_layer)
+        return 1
     _ts_print(f"briefing: WROTE {md_path}")
     return 0
 

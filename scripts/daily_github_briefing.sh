@@ -31,7 +31,7 @@ if [ -z "${VAULT_ROOT:-}" ] || [[ "$VAULT_ROOT" != /* ]]; then
 {"status": "skipped", "reason": "vault_root_missing_or_relative", "generated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 EOF
     echo "briefing: SKIPPED (vault_root_missing_or_relative)"
-    exit 0
+    exit 1
 fi
 
 PYTHON_BIN="$(bash "$SCRIPT_DIR/find-python311.sh")"
