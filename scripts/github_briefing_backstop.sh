@@ -74,14 +74,35 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   exit 0
 fi
 
+# SC-5: 补跑复用主管线环境 — source 同一 env（GITHUB_PAT/AI_GATEWAY_API_KEY/VAULT_ROOT），
+# 与 launchd_wrapper.sh 一致；否则补跑无凭证 → enrich 全失败 → 假成功 exit 0。
+GITHUB_ENV_FILE="${AKB2_GITHUB_ENV_FILE:-$HOME/.config/akb2/github-briefing.env}"
+if [[ -f "$GITHUB_ENV_FILE" ]]; then
+    # shellcheck source=/dev/null
+    set +e; source "$GITHUB_ENV_FILE"; set -e
+else
+    log "warn — env file $GITHUB_ENV_FILE 缺失，补跑可能因无凭证失败 ($DATE_TODAY)"
+fi
+
+# 补跑入口（测试可经 AKB2_GITHUB_RERUN_SCRIPT 注入 stub）
+RERUN_SCRIPT="${AKB2_GITHUB_RERUN_SCRIPT:-$SCRIPT_DIR/daily_github_briefing.sh}"
+export GITHUB_FILE  # 供 rerun/stub 复查落点
+
 log "run — 今日 GitHub briefing 缺失，开始补跑 ($DATE_TODAY)"
 set +e
-bash "$SCRIPT_DIR/daily_github_briefing.sh" --vault-root "$VAULT_ROOT"
+bash "$RERUN_SCRIPT" --vault-root "$VAULT_ROOT"
 rc=$?
 set -e
 
-case "$rc" in
-  0) log "recovered — 补跑成功 (exit 0, $DATE_TODAY)" ;;
-  *) log "FAILED — 补跑 exit $rc，当日 GitHub briefing 无产出 ($DATE_TODAY)" ;;
-esac
-exit "$rc"
+# SC-5: recovered 必须复查文件 — rc==0 但当日文件未写出 = 假成功 → 仍 fail-visible
+if [[ "$rc" -eq 0 && -f "$GITHUB_FILE" ]]; then
+    log "recovered — 补跑成功且文件已落盘 (exit 0, $DATE_TODAY)"
+    exit 0
+fi
+file_state="missing"
+[[ -f "$GITHUB_FILE" ]] && file_state="present"
+log "FAILED — 补跑未交付 (rc=$rc, file=$file_state, $DATE_TODAY)"
+if [[ "$rc" -ne 0 ]]; then
+    exit "$rc"
+fi
+exit 1
