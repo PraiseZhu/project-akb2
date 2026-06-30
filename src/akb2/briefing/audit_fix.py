@@ -37,7 +37,9 @@ def _generate_zh_point(text_zh: str, model: str | None = None) -> str:
     text_zh = (text_zh or "").strip()
     if not text_zh:
         return ""
-    used_model = model or os.environ.get("AKB2_TRANSLATE_MODEL", "gemini-3.1-pro-preview")
+    # 复用 translate 的模型选择（SC-3：7×24 管线禁用 -preview 模型）。
+    from akb2.briefing.translate import _TRANSLATE_MODEL
+    used_model = model or os.environ.get("AKB2_TRANSLATE_MODEL", _TRANSLATE_MODEL)
     try:
         messages = [
             {

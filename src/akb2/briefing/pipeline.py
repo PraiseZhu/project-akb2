@@ -70,6 +70,41 @@ def _stage_log(stage: str, event: str, elapsed: float | None = None) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Constitution 原则 7：7×24 管线禁用 -preview 模型（SC-3）
+# ---------------------------------------------------------------------------
+
+def _assert_no_preview_translate_models() -> None:
+    """AKB2_TRANSLATE_MODEL / AKB2_TRANSLATE_FALLBACK_MODELS 含 preview → fail fast。
+
+    7×24 管线不得使用 -preview 模型（不稳定、JSON 解析易失败靠兜底续命）。
+    显式配置了 preview 模型属部署错误，立即 exit 1 而非静默降级。
+    """
+    from akb2.briefing.translate import _TRANSLATE_FALLBACK_MODELS, _TRANSLATE_MODEL
+
+    offenders: list[str] = []
+    main_model = os.environ.get("AKB2_TRANSLATE_MODEL", _TRANSLATE_MODEL)
+    if "preview" in main_model:
+        offenders.append(f"AKB2_TRANSLATE_MODEL={main_model}")
+
+    fb_env = os.environ.get("AKB2_TRANSLATE_FALLBACK_MODELS")
+    if fb_env:
+        fb_models = [m.strip() for m in fb_env.split(",") if m.strip()]
+    else:
+        fb_models = _TRANSLATE_FALLBACK_MODELS
+    for m in fb_models:
+        if "preview" in m:
+            offenders.append(f"AKB2_TRANSLATE_FALLBACK_MODELS contains {m}")
+
+    if offenders:
+        sys.stderr.write(
+            "preview model is forbidden for 7x24 pipeline: "
+            + "; ".join(offenders)
+            + "\n"
+        )
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
 # 产出层日期兜底（SC-7）
 # ---------------------------------------------------------------------------
 
@@ -557,6 +592,9 @@ def main(argv: list[str] | None = None) -> int:
     vault_root = Path(args.vault_root).resolve()
     dry_run_intake = args.dry_run_intake
     window_days = int(os.environ.get("AKB2_INTAKE_WINDOW_DAYS", str(_INTAKE_WINDOW_DAYS_DEFAULT)))
+
+    # SC-3 / Constitution 原则 7：7×24 管线禁用 -preview 模型 — 任何昂贵阶段前 fail fast。
+    _assert_no_preview_translate_models()
 
     # Fail-closed: check vault_root before running any expensive stages.
     if not vault_root.is_dir():

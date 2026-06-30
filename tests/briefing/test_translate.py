@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
+import pytest
+
 FIXTURE_SYNTH = {
     "date": "2026-05-30",
     "executive_summary": "Today AI agents showed strong growth with new memory tools.",
@@ -440,22 +442,21 @@ def test_core_excerpt_uses_selected_core_segment():
 # ---------------------------------------------------------------------------
 
 def test_translate_model_chain_and_timeout():
-    """SC-P2b-1: 翻译主力=gemini，备用链=[deepseek, glm, anthropic/claude]（跨网关），默认 timeout=300（可经 AKB2_TRANSLATE_TIMEOUT 覆盖）。
+    """SC-P2b-1 + SC-3: 翻译主力=deepseek（非 preview，constitution 原则 7），
+    备用链=[glm, anthropic/claude]（跨网关），默认 timeout=300（可经 AKB2_TRANSLATE_TIMEOUT 覆盖）。
 
-    根因实测：翻译慢是模型每次调用的固定开销（~30s 思考期+TTFT），不是 prompt/接口问题。
-    gemini 固定开销最低，但真实批量延迟 45-59s 且随网关负载波动；原 120s 在晨间网关变慢时
-    无余量（合成同模型有 300s 故能扛住）。故默认对齐合成的 300s，并接 AKB2_TRANSLATE_TIMEOUT
-    env 使 plist 可覆盖。瞬时变慢由 300s 余量 + 8:00 补跑 agent 双层兜底。
+    7×24 管线禁用 -preview 模型；默认主力取稳定 deepseek，备用按不同厂商排 glm→claude。
     """
     import inspect
 
     from akb2.briefing import translate as tr
 
-    assert tr._TRANSLATE_MODEL == "gemini-3.1-pro-preview", \
-        f"翻译主力应为 gemini，实际 {tr._TRANSLATE_MODEL}"
+    assert tr._TRANSLATE_MODEL == "deepseek/deepseek-v4-pro", \
+        f"翻译主力应为 deepseek（非 preview），实际 {tr._TRANSLATE_MODEL}"
+    assert "preview" not in tr._TRANSLATE_MODEL, "7x24 管线禁用 preview 模型"
     assert tr._TRANSLATE_FALLBACK_MODELS == [
-        "deepseek/deepseek-v4-pro", "z-ai/glm-5.1", "anthropic/claude-sonnet-4-6"
-    ], f"备用链应为 [deepseek, glm, anthropic/claude]，实际 {tr._TRANSLATE_FALLBACK_MODELS}"
+        "z-ai/glm-5.1", "anthropic/claude-sonnet-4-6"
+    ], f"备用链应为 [glm, anthropic/claude]，实际 {tr._TRANSLATE_FALLBACK_MODELS}"
 
     sig = inspect.signature(tr.translate_briefing)
     assert sig.parameters["timeout"].default == 300, \
@@ -463,7 +464,7 @@ def test_translate_model_chain_and_timeout():
 
 
 def test_translate_falls_through_chain_to_second_fallback():
-    """主(gemini)+备1(deepseek) 都失败 → 用备2(glm)；按链顺序尝试，最终翻译生效。"""
+    """主(deepseek)+备1(glm) 都失败 → 用备2(claude)；按链顺序尝试，最终翻译生效。"""
     from akb2.briefing.translate import translate_briefing
 
     synth = {
@@ -480,20 +481,20 @@ def test_translate_falls_through_chain_to_second_fallback():
 
     def fake(messages, model, **kw):
         calls.append(model)
-        if model in ("gemini-3.1-pro-preview", "deepseek/deepseek-v4-pro"):
+        if model in ("deepseek/deepseek-v4-pro", "z-ai/glm-5.1"):
             raise TimeoutError("read timed out")
         return good
 
     with patch("akb2.briefing.synthesis._call_llm", side_effect=fake):
         result = translate_briefing(synth)
 
-    assert calls == ["gemini-3.1-pro-preview", "deepseek/deepseek-v4-pro", "z-ai/glm-5.1"], \
-        f"应按 [gemini, deepseek, glm] 顺序尝试，实际: {calls}"
+    assert calls == ["deepseek/deepseek-v4-pro", "z-ai/glm-5.1", "anthropic/claude-sonnet-4-6"], \
+        f"应按 [deepseek, glm, claude] 顺序尝试，实际: {calls}"
     assert result["focus_discussions"][0]["topic"] == "智能体话题", "备2 成功后翻译应生效"
 
 
 def test_translate_all_models_fail_returns_original():
-    """四档全失败 → 返回原始 synth 不抛异常，且确实尝试了全部 4 个模型（1 主力 + 3 备用）。"""
+    """三档全失败 → 返回原始 synth 不抛异常，且确实尝试了全部 3 个模型（1 主力 + 2 备用）。"""
     from akb2.briefing.translate import translate_briefing
 
     synth = {
@@ -510,8 +511,55 @@ def test_translate_all_models_fail_returns_original():
     with patch("akb2.briefing.synthesis._call_llm", side_effect=always_fail):
         result = translate_briefing(synth)
 
-    assert len(calls) == 4, f"应尝试全部 4 个模型（1 主力 + 3 备用），实际 {calls}"
+    assert len(calls) == 3, f"应尝试全部 3 个模型（1 主力 + 2 备用），实际 {calls}"
     assert result["executive_summary"] == "Summary.", "全失败应返回原始 synth"
+
+
+# ---------------------------------------------------------------------------
+# SC-3: 7×24 管线禁用 preview 模型 — 默认无 preview + 显式 preview 时 fail fast
+# ---------------------------------------------------------------------------
+
+def test_default_translate_model_has_no_preview():
+    """SC-3: 默认翻译主力与备用链均不含 preview（constitution 原则 7）。"""
+    from akb2.briefing import translate as tr
+
+    assert "preview" not in tr._TRANSLATE_MODEL
+    assert all("preview" not in m for m in tr._TRANSLATE_FALLBACK_MODELS)
+
+
+def test_preview_translate_model_fails_fast(monkeypatch, capsys):
+    """SC-3 验收3: AKB2_TRANSLATE_MODEL 含 preview → fail fast + stderr 含 forbidden。"""
+    from akb2.briefing import pipeline
+
+    monkeypatch.setenv("AKB2_TRANSLATE_MODEL", "gemini-3.1-pro-preview")
+    with pytest.raises(SystemExit) as exc:
+        pipeline._assert_no_preview_translate_models()
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "preview model is forbidden for 7x24 pipeline" in err
+
+
+def test_preview_fallback_model_fails_fast(monkeypatch, capsys):
+    """SC-3: AKB2_TRANSLATE_FALLBACK_MODELS 含 preview → 同样 fail fast。"""
+    from akb2.briefing import pipeline
+
+    monkeypatch.setenv(
+        "AKB2_TRANSLATE_FALLBACK_MODELS",
+        "z-ai/glm-5.1,some-vendor/preview-model",
+    )
+    with pytest.raises(SystemExit) as exc:
+        pipeline._assert_no_preview_translate_models()
+    assert exc.value.code == 1
+    assert "forbidden" in capsys.readouterr().err
+
+
+def test_no_preview_env_passes(monkeypatch):
+    """SC-3: 不设 preview 变量时不触发 fail fast（默认 deepseek 通过，不抛 SystemExit）。"""
+    from akb2.briefing import pipeline
+
+    monkeypatch.delenv("AKB2_TRANSLATE_MODEL", raising=False)
+    monkeypatch.delenv("AKB2_TRANSLATE_FALLBACK_MODELS", raising=False)
+    pipeline._assert_no_preview_translate_models()  # 不抛异常即通过
 
 
 def test_translate_topic_retranslated_if_english():
