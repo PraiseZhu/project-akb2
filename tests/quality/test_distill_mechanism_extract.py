@@ -283,7 +283,11 @@ class TestFrontmatterResolveAndRealLink:
         )
 
     def test_dangling_no_real_link(self):
-        """referenced 全不可 resolve（known 非空但不含目标）→ related_concepts=[] → 不产 real_link。"""
+        """P1-B: referenced 全不可 resolve（known=[] 提供但空）→ related_concepts=[] → 不产 real_link。
+
+        撤销 c54f327 削弱（known 从 ["some-other-concept"] 改回 []）——P1-B 区分 None vs []，
+        known=[]（提供但空）→ resolver 过滤分支生效 → _resolve_graph_node 全 False → related=[]。
+        """
         from src.akb2.gate.akb2_gate_check import _graph_readiness
 
         data = _frontmatter_data(["totally-unknown-concept"])
@@ -291,8 +295,7 @@ class TestFrontmatterResolveAndRealLink:
             "raw/fake--raw--2026-06-29.md",
             data,
             content_lane="concept",
-            # known 非空但不含 totally-unknown-concept → 过滤分支生效，全滤除
-            known_concepts=["some-other-concept"],
+            known_concepts=[],  # P1-B: 提供但空 → 过滤生效，全滤除
         )
         assert fm["related_concepts"] == [], "悬空概念应全滤除，related_concepts=[]"
         # gate _graph_readiness 仅查 related_* 非空 → 空则不产 real_link
@@ -329,3 +332,72 @@ class TestFrontmatterResolveAndRealLink:
         # 关键是不走 resolve 过滤分支（不 raise、返回正常 frontmatter）
         assert "related_concepts" in fm
         assert isinstance(fm["related_concepts"], list)
+
+    def test_evaluate_five_gates_empty_related_fails_gate3(self, tmp_path):
+        """P1-B 真实五闸: 悬空 frontmatter（known=[] 提供但空 → related=[]）→ Gate-3 fail, 不产 active。"""
+        from unittest.mock import patch
+
+        from src.akb2.gate.akb2_gate_check import _graph_readiness
+        from src.akb2.quality import promote
+
+        fm = _build_frontmatter(
+            "raw/fake--raw--2026-06-29.md",
+            _frontmatter_data(["totally-unknown-concept"]),
+            content_lane="concept",
+            known_concepts=[],  # P1-B: 提供但空 → related=[]
+        )
+        assert fm["related_concepts"] == []
+        graph = _graph_readiness(fm)
+        assert graph == "none"
+        gate_parsed = {
+            "decision_confidence": "high",
+            "graph_readiness": graph,
+            "hard_checks": {},
+        }
+        cand = tmp_path / "candidate.md"
+        with patch(
+            "src.akb2.quality.promote._run_gate_check",
+            return_value=(True, "", gate_parsed),
+        ):
+            all_passed, failed_gate, _reason = promote.evaluate_five_gates(
+                cand, tmp_path
+            )
+        assert all_passed is False, "悬空 frontmatter（related=[]）不应过五闸"
+        assert "Gate-3" in failed_gate, f"应 fail 在 Gate-3: {failed_gate}"
+
+    def test_evaluate_five_gates_resolved_related_passes_gate3(self, tmp_path):
+        """P1-B 真实五闸: 已 resolve related（known 含目标 → related 非空）→ Gate-3 过 + 全闸过。"""
+        from unittest.mock import patch
+
+        from src.akb2.gate.akb2_gate_check import _graph_readiness
+        from src.akb2.quality import promote
+
+        fm = _build_frontmatter(
+            "raw/fake--raw--2026-06-29.md",
+            _frontmatter_data(["loop-engineering"]),
+            content_lane="concept",
+            known_concepts=["loop-engineering"],
+        )
+        assert "[[loop-engineering]]" in fm["related_concepts"]
+        graph = _graph_readiness(fm)
+        assert graph == "real_link"
+        gate_parsed = {
+            "decision_confidence": "high",
+            "graph_readiness": graph,
+            "hard_checks": {},
+        }
+        cand = tmp_path / "candidate.md"
+        with patch(
+            "src.akb2.quality.promote._run_gate_check",
+            return_value=(True, "", gate_parsed),
+        ), patch(
+            "src.akb2.quality.promote._run_lint_check", return_value=(True, "")
+        ), patch(
+            "src.akb2.quality.promote._read_grader_result", return_value=(True, "")
+        ):
+            all_passed, failed_gate, reason = promote.evaluate_five_gates(
+                cand, tmp_path
+            )
+        assert all_passed is True, (
+            f"已 resolve related 应过五闸（可产 active）: {failed_gate} {reason}"
+        )

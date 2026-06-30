@@ -2455,26 +2455,31 @@ def _build_frontmatter(
     concepts = extract_data.get("referenced_concepts", [])
     raw_fm = _read_raw_frontmatter(raw_path)
 
-    # WP-3.4: frontmatter related_* 与 body graph 同源 resolve。
-    # known/pending 非空时只写可 resolve 的概念为 [[wikilink]]，不可 resolve 的不写
-    # （不伪装 real_link，gate _graph_readiness 仅查 related_* 非空→不写悬空即不产 false
-    # real_link）；可 resolve 不足时 _infer_concepts 也只保留可 resolve 的。known/pending
-    # 为空或 None（vault 未挂载/无法验证）时保留 legacy 行为（_infer_concepts fallback，
-    # 零回归，避免 test env 空 vault 清零 related 触发 A2 related≥2 失败）。
-    has_resolver = bool(known_concepts) or bool(pending_queue)
-    resolvable_set = set(known_concepts or []) | set(pending_queue or [])
+    # WP-3.4 + P1-B + P2-C: frontmatter related_* 与 body graph 同源 resolve。
+    # P1-B: 区分 None（未提供）vs []（提供但空）——任一非 None 就按 resolver 过滤
+    # （空集 → related=[] / 不产悬空 real_link，gate _graph_readiness 仅查 related_* 非空）；
+    # 二者均 None → legacy（_infer_concepts fallback，零回归）。
+    # P2-C: 复用 checks_structural._resolve_graph_node（前缀归一化 concept-X↔X /
+    # pending 共指同源），与 body graph 同一 resolve 逻辑。
+    resolver_provided = (known_concepts is not None) or (pending_queue is not None)
     related = list(concepts) if concepts else []
-    if has_resolver:
-        related = [c for c in related if str(c) in resolvable_set]
+    if resolver_provided:
+        from src.akb2.quality.checks_structural import _resolve_graph_node
+
+        related = [
+            c for c in related if _resolve_graph_node(str(c), known_concepts, pending_queue)
+        ]
         if len(related) < RELATED_CONCEPTS_MIN:
             for fc in _infer_concepts(claims):
-                if fc in resolvable_set and fc not in related:
+                if fc not in related and _resolve_graph_node(
+                    fc, known_concepts, pending_queue
+                ):
                     related.append(fc)
                 if len(related) >= RELATED_CONCEPTS_MIN:
                     break
         related_links = [c if str(c).startswith("[[") else f"[[{c}]]" for c in related]
     else:
-        # legacy: 无 known/pending 时保留旧行为（_infer_concepts fallback + [[...]]）
+        # legacy: 二者均 None（未提供 resolver）→ _infer_concepts fallback + [[...]]
         if len(related) < RELATED_CONCEPTS_MIN:
             fallback_concepts = _infer_concepts(claims)
             for fc in fallback_concepts:
