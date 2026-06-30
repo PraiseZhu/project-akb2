@@ -16,15 +16,16 @@ import json
 import os
 import sys
 
-# 翻译阶段模型链（实测：gemini 每次调用固定开销最低 ~24s，deepseek/glm ~42-47s，
-# 质量三家持平；故主力 gemini，备用按不同厂商排 deepseek→glm，规避单厂商故障。
-# 均可由环境变量覆盖。）
-_TRANSLATE_MODEL = os.environ.get("AKB2_TRANSLATE_MODEL", "gemini-3.1-pro-preview")
+# 翻译阶段模型链。
+# Constitution 原则 7：7×24 管线禁用 -preview 模型。故默认主力取稳定 deepseek
+# （固定开销 ~42-47s，三家质量持平）；备用按不同厂商排 glm→claude，规避单厂商故障。
+# 均可由环境变量覆盖；pipeline 入口会校验含 preview 即 fail fast。
+_TRANSLATE_MODEL = os.environ.get("AKB2_TRANSLATE_MODEL", "deepseek/deepseek-v4-pro")
 _TRANSLATE_FALLBACK_MODELS = [
     m.strip()
     for m in os.environ.get(
         "AKB2_TRANSLATE_FALLBACK_MODELS",
-        "deepseek/deepseek-v4-pro,z-ai/glm-5.1,anthropic/claude-sonnet-4-6",
+        "z-ai/glm-5.1,anthropic/claude-sonnet-4-6",
     ).split(",")
     if m.strip()
 ]
@@ -359,7 +360,7 @@ def _translate_snippet(text_en: str, timeout: int = 60) -> str:
         ]
         return _call_llm(
             messages,
-            model=os.environ.get("AKB2_TRANSLATE_MODEL", "gemini-3.1-pro-preview"),
+            model=_TRANSLATE_MODEL,
             json_mode=False,
             timeout=timeout,
         ).strip()

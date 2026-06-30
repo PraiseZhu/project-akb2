@@ -29,6 +29,8 @@ class SyncState(TypedDict, total=False):
     target: str  # "dm" | "group"
     state_path: str
     dry_run: bool
+    strict: bool  # SC-7: strict 模式下期望简报缺失 → fail-visible
+    expected: list  # SC-7: 期望齐全的 kind 列表（["ai_trends","github"]）
     briefings: list  # list[Briefing]
     errors: list  # list[str]：解析/发送失败（非空 → exit 1 + 告警）
     log: list  # list[str]：每份简报一行结果（sent/skip-*/fail）

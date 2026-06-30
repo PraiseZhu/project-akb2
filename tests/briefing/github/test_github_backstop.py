@@ -107,3 +107,74 @@ class TestGithubBackstop:
         assert "<integer>7</integer>" in content   # Hour = 7
         assert "<integer>30</integer>" in content  # Minute = 30
         assert "github_briefing_backstop.sh" in content
+
+    # ── SC-5: 补跑环境对齐 + recovered 须复查文件 ───────────────────────────
+
+    def _stub(self, tmp_path, body: str) -> str:
+        stub = tmp_path / "stub_rerun.sh"
+        stub.write_text(f"#!/usr/bin/env bash\n{body}\n", encoding="utf-8")
+        stub.chmod(0o755)
+        return str(stub)
+
+    def test_recovered_requires_file(self, tmp_path):
+        """SC-5: stub 返 0 但不写文件 → backstop 非0 且日志不含 recovered（假成功纠正）。"""
+        vault = tmp_path / "vault"
+        (vault / "Praise Space/AKB2.0/AI TRENDS/GitHub").mkdir(parents=True)
+        stub = self._stub(tmp_path, "exit 0")
+        result = _run_backstop(
+            str(vault),
+            env_overrides={
+                "AKB2_GITHUB_RERUN_SCRIPT": stub,
+                "AKB2_GITHUB_ENV_FILE": "/dev/null",
+            },
+        )
+        assert result.returncode != 0, "rc==0 但无文件必须 fail-visible 非0"
+        assert "recovered" not in result.stderr, "无文件不应记 recovered"
+        assert "FAILED" in result.stderr
+
+    def test_missing_output_fails_visible(self, tmp_path):
+        """SC-5: stub 返非0 → backstop 非0 且日志不含 recovered。"""
+        vault = tmp_path / "vault"
+        (vault / "Praise Space/AKB2.0/AI TRENDS/GitHub").mkdir(parents=True)
+        stub = self._stub(tmp_path, "exit 2")
+        result = _run_backstop(
+            str(vault),
+            env_overrides={
+                "AKB2_GITHUB_RERUN_SCRIPT": stub,
+                "AKB2_GITHUB_ENV_FILE": "/dev/null",
+            },
+        )
+        assert result.returncode != 0
+        assert "recovered" not in result.stderr
+        assert "FAILED" in result.stderr
+
+    def test_sources_env_before_rerun(self, tmp_path):
+        """SC-5: 补跑前 source env — stub 仅在 env marker 存在时写文件 → recovered exit 0。
+
+        断言绑定可观测行为：env 被.source 后 marker 注入子进程，stub 据此落盘文件，
+        backstop 复查文件存在才记 recovered；env 未 source 时 stub 不写文件 → FAIL。
+        """
+        vault = tmp_path / "vault"
+        (vault / "Praise Space/AKB2.0/AI TRENDS/GitHub").mkdir(parents=True)
+
+        env_file = tmp_path / "fake.env"
+        env_file.write_text("export AKB2_TEST_ENV_MARKER=loaded\n", encoding="utf-8")
+
+        stub_body = (
+            'if [[ "${AKB2_TEST_ENV_MARKER:-}" == "loaded" ]]; then\n'
+            '  mkdir -p "$(dirname "$GITHUB_FILE")"\n'
+            '  echo "# briefing" > "$GITHUB_FILE"\n'
+            "fi\n"
+            "exit 0"
+        )
+        stub = self._stub(tmp_path, stub_body)
+
+        result = _run_backstop(
+            str(vault),
+            env_overrides={
+                "AKB2_GITHUB_RERUN_SCRIPT": stub,
+                "AKB2_GITHUB_ENV_FILE": str(env_file),
+            },
+        )
+        assert result.returncode == 0, f"env 已 source + 文件落盘应 recovered: {result.stderr}"
+        assert "recovered" in result.stderr

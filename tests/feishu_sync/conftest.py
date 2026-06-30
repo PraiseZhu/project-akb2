@@ -82,3 +82,9 @@ def feishu_env(monkeypatch):
     monkeypatch.setenv("FEISHU_APP_SECRET", "dummy_value")
     monkeypatch.setenv("FEISHU_PUSH_CHAT_ID", "oc_group_dummy")
     monkeypatch.setenv("FEISHU_DM_OPEN_ID", "ou_me_dummy")
+
+
+@pytest.fixture(autouse=True)
+def _feishu_fast_intervals(monkeypatch):
+    """SC-6: 测试中关闭最小发送间隔，避免退避节流拖慢测试。"""
+    monkeypatch.setenv("AKB2_FEISHU_MIN_SEND_INTERVAL", "0")

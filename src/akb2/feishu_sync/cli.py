@@ -40,6 +40,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="只发现/渲染，不触发飞书发送，不写幂等状态",
     )
+    parser.add_argument(
+        "--non-strict",
+        action="store_true",
+        help="不强制期望简报齐全（开发/历史日期用；生产默认 strict）",
+    )
+    parser.add_argument(
+        "--allow-missing",
+        action="store_true",
+        help="同 --non-strict 别名",
+    )
     args = parser.parse_args(argv)
 
     vault_root = Path(args.vault_root).expanduser().resolve()
@@ -57,6 +67,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
+    # SC-7: 生产默认 strict + expected=[ai_trends, github]；--non-strict/--allow-missing 放宽
+    from .discover import DEFAULT_EXPECTED
+    strict = not (args.non_strict or args.allow_missing)
+    expected = list(DEFAULT_EXPECTED) if strict else []
+
     try:
         return run_sync(
             date=date,
@@ -64,6 +79,8 @@ def main(argv: list[str] | None = None) -> int:
             target=args.target,
             state_path=state_path,
             dry_run=args.dry_run,
+            expected=expected,
+            strict=strict,
         )
     except Exception as exc:  # noqa: BLE001 — 顶层兜底，未捕获异常也要告警 + exit 1
         notify.alert_failure(f"{date} 未捕获异常: {exc}")

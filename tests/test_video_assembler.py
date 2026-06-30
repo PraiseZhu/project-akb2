@@ -540,6 +540,33 @@ def test_run_pipeline_research_failure_short_circuits(temp_config):
     assert results[0]["stage"] == "research"
 
 
+def test_run_pipeline_all_research_failed_is_visible(temp_config):
+    """SC-1: 采集非空但研究 0 产出（双路全挂）→ 必须返回 failed 记录，_report_results==1。
+
+    断言绑定可观测行为：上游 2 条视频 → researcher 返 [] → run_pipeline 结果含
+    research failed 状态，且 _report_results 据此 exit 1（fail-visible），不静默 exit 0。
+    """
+    from src.akb2.video.__main__ import _report_results
+
+    assembler = Assembler(temp_config)
+    collector = mock.Mock()
+    collector.collect.return_value = [{"id": "v1"}, {"id": "v2"}]
+    researcher = mock.Mock()
+    researcher.run.return_value = []  # 全失败：0 产出
+
+    results = assembler.run_pipeline(
+        collector, researcher, mock.Mock(), mock.Mock(), dry_run=True
+    )
+
+    assert len(results) == 1
+    assert results[0]["status"] == "failed"
+    assert results[0]["stage"] == "research"
+    assert "all_research_failed" in results[0]["error"]
+    assert results[0]["video_count"] == 2
+    # fail-closed：全研究失败必须 exit 1，不是 exit 0
+    assert _report_results(results) == 1
+
+
 def test_run_pipeline_per_video_gate_rejected_isolated(temp_config, sample_research_output):
     """单视频 gate 拒绝 → 该视频 failed，不抛出整链路。"""
     assembler = Assembler(temp_config)

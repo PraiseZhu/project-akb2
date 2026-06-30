@@ -126,3 +126,94 @@ def test_dry_run_does_not_send_or_write_state(monkeypatch, tmp_path, vault, feis
     assert rc == 0
     assert sent == []
     assert not sp.exists()
+
+
+# ---------------------------------------------------------------------------
+# SC-6: 9499 退避重试耗尽 → fail-visible（exit1 + 幂等回滚 + 告警含 9499/retry exhausted）
+# ---------------------------------------------------------------------------
+
+
+def test_rate_limit_retry_exhausted_is_fail_visible(monkeypatch, tmp_path, vault, feishu_env):
+    """SC-6: send 抛 FeishuSendError(9499, exhausted) → exit1 + 幂等回滚 + 告警含 9499/retry exhausted。
+
+    模拟底层退避重试耗尽后抛错（agent 层不再重试，直接 fail-visible）。
+    """
+    from akb2.feishu_sync.feishu.send import FeishuSendError
+
+    _redirect_logs(monkeypatch, tmp_path)
+    write_github(vault, "2026-06-03")
+    sp = tmp_path / "state.json"
+
+    alerts: list[str] = []
+    monkeypatch.setattr(agent.notify, "alert_failure", lambda msg: alerts.append(msg))
+
+    def rate_limited(cid, card):
+        raise FeishuSendError(
+            9499, "rate-limit retry exhausted (too many request)",
+            retryable=True, exhausted=True,
+        )
+
+    monkeypatch.setattr(agent, "send_card", rate_limited)
+
+    rc = agent.run_sync(
+        date="2026-06-03", vault_root=vault, target="group", state_path=sp,
+    )
+
+    assert rc == 1, "重试耗尽必须 fail-visible exit 1"
+    # 幂等回滚：预留状态已撤销，重跑可重试
+    assert not idempotency.already_sent(sp, "2026-06-03", "github", "group")
+    # 告警含 9499 与 retry exhausted
+    assert alerts, "应触发告警"
+    assert "9499" in alerts[0], f"告警应含 9499: {alerts[0]}"
+    assert "retry exhausted" in alerts[0], f"告警应含 retry exhausted: {alerts[0]}"
+
+
+# ---------------------------------------------------------------------------
+# SC-7: strict 模式期望简报齐全 — 缺失 fail-visible（dry-run 不访问飞书/不写 state）
+# ---------------------------------------------------------------------------
+
+
+def test_partial_expected_sources_fail_visible_dry_run(monkeypatch, tmp_path, vault, feishu_env):
+    """SC-7: dry-run + strict，仅 ai_trends（github 缺失）→ exit1 + 日志含 github 缺失+期望路径，
+    不访问飞书、不写 state。"""
+    _redirect_logs(monkeypatch, tmp_path)
+    write_ai_trends(vault, "2026-06-03")  # 仅 ai_trends，github 缺失
+    sent: list = []
+    monkeypatch.setattr(agent, "send_card_dm", lambda oid, card: sent.append(card))
+    monkeypatch.setattr(agent, "send_card", lambda cid, card: sent.append(card))
+    sp = tmp_path / "state.json"
+
+    rc = agent.run_sync(
+        date="2026-06-03", vault_root=vault, target="group", state_path=sp,
+        dry_run=True, expected=["ai_trends", "github"], strict=True,
+    )
+
+    assert rc == 1, "strict 下 github 缺失必须 fail-visible exit 1"
+    assert sent == [], "dry-run 不应访问飞书"
+    assert not sp.exists(), "dry-run 不应写 state"
+    log_text = (tmp_path / "logs" / "feishu-sync.log").read_text(encoding="utf-8")
+    assert "github 缺失" in log_text
+    assert "GitHub Briefing.md" in log_text  # 含期望路径
+
+
+def test_strict_both_present_dry_run_ok(monkeypatch, tmp_path, vault, feishu_env):
+    """SC-7: dry-run + strict，两份齐全 → exit0 + 输出含两份 dry-run。"""
+    _redirect_logs(monkeypatch, tmp_path)
+    write_ai_trends(vault, "2026-06-03")
+    write_github(vault, "2026-06-03")
+    sent: list = []
+    monkeypatch.setattr(agent, "send_card_dm", lambda oid, card: sent.append(card))
+    monkeypatch.setattr(agent, "send_card", lambda cid, card: sent.append(card))
+    sp = tmp_path / "state.json"
+
+    rc = agent.run_sync(
+        date="2026-06-03", vault_root=vault, target="group", state_path=sp,
+        dry_run=True, expected=["ai_trends", "github"], strict=True,
+    )
+
+    assert rc == 0
+    assert sent == []
+    assert not sp.exists()
+    log_text = (tmp_path / "logs" / "feishu-sync.log").read_text(encoding="utf-8")
+    assert "ai_trends dry-run → group" in log_text
+    assert "github dry-run → group" in log_text

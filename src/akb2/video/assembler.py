@@ -486,6 +486,22 @@ class Assembler:
             logger.error(f"研究失败: {e}")
             return [{"status": "failed", "stage": "research", "error": str(e)}]
 
+        # SC-1 fail-visible：上游采集非空但研究阶段 0 产出（NLM 主路 + 字幕降级双路全挂）
+        # 不能静默返回空列表 → 否则 _report_results([]) 算 failed=0 → exit 0，掩盖全量失败。
+        # 仅 no_new_videos（采集空）可 exit 0；all_research_failed 必须 exit≠0。
+        if not research_outputs:
+            err = (
+                f"all_research_failed: 0/{len(video_results)} outputs "
+                "(NLM + transcript fallback both failed)"
+            )
+            logger.error(err)
+            return [{
+                "status": "failed",
+                "stage": "research",
+                "error": err,
+                "video_count": len(video_results),
+            }]
+
         # 3-5. 逐个视频处理
         for output in research_outputs:
             video_meta = output.video_meta

@@ -544,7 +544,7 @@ class TestSC3PartialOutput:
         assert 6 <= len(data["top_repos"]) <= 10
 
     def test_below_min_repos_still_skips(self, tmp_path, monkeypatch):
-        """5 repos (< MIN=6) → still skip."""
+        """5 repos (< MIN=6) → skip, SC-4 fail-visible: 未交付 → exit≠0（不再 exit 0 假成功）。"""
         from datetime import UTC, datetime
         from unittest.mock import patch
 
@@ -569,4 +569,104 @@ class TestSC3PartialOutput:
         ):
             rc = run_pipeline(mock=False)
 
-        assert rc == 0  # exit 0 but via skip path
+        assert rc != 0  # SC-4: skip 路径未交付 → fail-visible 非 0
+
+
+# ── SC-4: github 未交付 fail-visible ───────────────────────────────────────
+
+
+class TestSC4FailVisible:
+    """SC-4: 所有"当日未写出 briefing 文件"的分支 exit≠0；保留诊断 JSON。
+
+    锁死 constitution 原则 4/12：exit code 必须反映真实交付，禁止 0/missing 假成功。
+    """
+
+    def test_enrich_degraded_returns_nonzero_and_no_file(self, tmp_path, monkeypatch, capsys):
+        """enrich 全 enrich_ok=False → run_pipeline 非0 + vault 无当日文件 + stdout 含 enrich_degraded。"""
+        from datetime import UTC, date, datetime
+        from unittest.mock import patch
+
+        from akb2.briefing.github.intake import Candidate
+        from akb2.briefing.github.pipeline import run_pipeline
+
+        now = datetime.now(UTC).isoformat()
+        l2_cands = [Candidate(f"https://github.com/trending/repo{i}", "@github_trending", None, now, None)
+                    for i in range(7)]  # 7 ≥ MIN=6 → 过 too_few，进 enrich
+
+        vault = tmp_path / "vault"
+        out_dir = vault / "Praise Space/AKB2.0/AI TRENDS/GitHub"
+        out_dir.mkdir(parents=True)
+        monkeypatch.setenv("AKB2_NOVELTY_DB", str(tmp_path / "novelty.sqlite"))
+        monkeypatch.setenv("VAULT_ROOT", str(vault))
+
+        def enrich_all_fail(url):
+            return {"repo_url": url, "enrich_ok": False}
+
+        with (
+            patch("akb2.briefing.github.pipeline._real_intake",
+                  return_value=(l2_cands, "layer2", {})),
+            patch("akb2.briefing.github.pipeline.enrich", side_effect=enrich_all_fail),
+        ):
+            rc = run_pipeline(mock=False)
+
+        assert rc != 0, "enrich 全失败必须 fail-visible (非0)"
+        today = date.today().isoformat()
+        assert not (out_dir / f"{today} GitHub Briefing.md").exists(), "不应写出当日文件"
+        captured = capsys.readouterr()
+        assert "enrich_degraded" in captured.out, f"stdout 应含 enrich_degraded: {captured.out}"
+
+    def test_no_delivery_skip_returns_nonzero(self, tmp_path, monkeypatch):
+        """候选不足 skip → 非0（未交付 = fail-visible，不再 exit 0 假成功）。"""
+        from datetime import UTC, datetime
+        from unittest.mock import patch
+
+        from akb2.briefing.github.intake import Candidate
+        from akb2.briefing.github.pipeline import run_pipeline
+
+        now = datetime.now(UTC).isoformat()
+        l2_cands = [Candidate(f"https://github.com/trending/repo{i}", "@github_trending", None, now, None)
+                    for i in range(3)]  # 3 < MIN=6 → too_few_aggregated_repos
+
+        vault = tmp_path / "vault"
+        (vault / "Praise Space/AKB2.0/AI TRENDS/GitHub").mkdir(parents=True)
+        monkeypatch.setenv("AKB2_NOVELTY_DB", str(tmp_path / "novelty.sqlite"))
+        monkeypatch.setenv("VAULT_ROOT", str(vault))
+
+        with (
+            patch("akb2.briefing.github.pipeline._real_intake",
+                  return_value=(l2_cands, "layer2", {})),
+            patch("akb2.briefing.github.pipeline.enrich", side_effect=_mock_enrich),
+        ):
+            rc = run_pipeline(mock=False)
+
+        assert rc != 0, "候选不足 skip 必须 fail-visible 非 0"
+
+    def test_failed_exit_on_synthesis_failure(self, tmp_path, monkeypatch):
+        """synthesize 抛异常 → _write_failed(synthesis_failed) → 非0（hard failure 可见）。"""
+        from datetime import UTC, datetime
+        from unittest.mock import patch
+
+        from akb2.briefing.github.intake import Candidate
+        from akb2.briefing.github.pipeline import run_pipeline
+
+        now = datetime.now(UTC).isoformat()
+        l2_cands = [Candidate(f"https://github.com/trending/repo{i}", "@github_trending", None, now, None)
+                    for i in range(7)]
+
+        vault = tmp_path / "vault"
+        (vault / "Praise Space/AKB2.0/AI TRENDS/GitHub").mkdir(parents=True)
+        monkeypatch.setenv("AKB2_NOVELTY_DB", str(tmp_path / "novelty.sqlite"))
+        monkeypatch.setenv("VAULT_ROOT", str(vault))
+
+        def synth_boom(repos):
+            raise RuntimeError("synthesis boom")
+
+        with (
+            patch("akb2.briefing.github.pipeline._real_intake",
+                  return_value=(l2_cands, "layer2", {})),
+            patch("akb2.briefing.github.pipeline.enrich", side_effect=_mock_enrich),
+            patch("akb2.briefing.github.pipeline.synthesize", side_effect=synth_boom),
+        ):
+            rc = run_pipeline(mock=False)
+
+        assert rc != 0, "synthesis 失败必须 fail-visible 非 0"
