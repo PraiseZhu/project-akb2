@@ -20,13 +20,13 @@
 #
 # 重标前/后分母迁移表 (WP-0):
 #   重标前: 18 正样本 / 2 负样本 (factory_acceptance 分母)
-#   重标后: 17 mechanism_present=true 正样本 / 1 needs_adjudication(orchestration-tax,
-#           保持 expected=ingest 不计入 mechanism_present=true 分母) / 2 负样本(no_mechanism)
+#   重标后: 18 mechanism_present=true 正样本 / 2 负样本(no_mechanism)
 #   迁移: 无正样本因 mechanism_present=false 移入 reject (当前 corpus 经 v2 策展，
 #         无 openai 政策散文类无机制正样本); 2 条负样本补标 mechanism_present=false,
 #         reject_reason=no_mechanism (原本就以 plagiarism/news 拒, 现统一归因 no_mechanism)
-#   needs_adjudication: index=11 (orchestration-tax) — notes 描述为 trade-off 分析,
-#         未读全文无法确认 ≥3 命名组件+因果边, 等 lead+2 reviewer 确认
+#   idx11 orchestration-tax: 双审 rev-b 读原文确认 mechanism_present=true (agent producers +
+#         human review 瓶颈 + queue/context-switching + 非瓶颈吞吐边) → review_status=confirmed,
+#         入 mp_true 分母 (原 needs_adjudication 已裁定)
 #
 # 领域配比 (18 正样本, 替换后守恒):
 #   AI Agent: 4
@@ -277,14 +277,14 @@ entries:
     replaced_reason: "原 github.com/langchain-ai/langgraph/blob/main/docs/docs/how-tos/multi-agent-network.md [429 rate-limited]; 替换为 addyosmani 编排主题文"
     # aligned: addyosmani.com == main_sources addy-osmani domain ✓
     audit:
-      mechanism_present: null  # uncertain — 等 lead + 2 reviewer 确认
+      mechanism_present: true  # 双审 rev-b 读原文确认: agent producers + human review 瓶颈 + queue/context-switching + 非瓶颈吞吐边
       original_expected: ingest
-      mechanism_present_reason: "notes 描述为 trade-off 分析, 偏分析而非机制规格; 未读全文无法确认 ≥3 命名组件+因果边"
+      mechanism_present_reason: "原文含命名机制组件(agent producers / human review 瓶颈 / queue / context-switching / 非瓶颈吞吐边), 非 trade-off 散文"
       evidence_anchors_or_url_lines:
         - "notes: 多 agent 协调开销与 trade-off 分析"
-      review_status: needs_adjudication
-      reviewers: ["glm5.2-worker"]
-      adjudication_note: "保持 expected=ingest 不移 reject; 等 lead+reviewer 读取全文确认 mechanism_present(true→入 mp_true 分母 / false→移 reject+no_mechanism)"
+        - "rev-b 读原文: agent producers + human review 瓶颈 + queue/context-switching + 非瓶颈吞吐边"
+      review_status: confirmed
+      reviewers: ["glm5.2-worker", "gpt5.5-rev-b"]
 
   - url: "https://docs.crewai.com/concepts/crews"
     domain: "Multi-Agent Orchestration"
