@@ -104,7 +104,9 @@ class TestPlagiarismNegativeSample:
         )
 
         assert result.passed is False, "洗稿型内容应被拒收"
-        assert len(result.checks) == 3
+        # WP-2: concept 候选追加 mechanism_signal 门（黄金样张有机制 → mech pass，
+        # 洗稿仍由 novelty 拒）。concept 候选共 4 条判定。
+        assert len(result.checks) == 4
 
         # 主题相关性应 pass
         assert result.checks[0].passed is True

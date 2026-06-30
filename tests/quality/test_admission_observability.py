@@ -120,7 +120,13 @@ def test_admission_pass_path_exposes_lane_reason(tmp_path: Path) -> None:
     ledger = str(tmp_path / "ledger.jsonl")
     result = run_admission(
         raw_path="raw/concept--raw--2026-06-26.md",
-        raw_content="# Loop Engineering\n\nConcept article on agent loop architecture.",
+        # WP-2: concept 候选须有机制信号过 mechanism_signal 门（3 命名组件 → 确定性 pass）
+        raw_content=(
+            "# Loop Engineering\n\n"
+            "### 1. Trigger\nThe loop starts on a schedule or event.\n\n"
+            "### 2. Work Selector\nPicks the next work item from the ledger.\n\n"
+            "### 3. Executor\nRuns the work and produces a result.\n"
+        ),
         ledger_path=ledger,
         route_llm_fn=_mock,
     )

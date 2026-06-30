@@ -33,7 +33,8 @@ class TestPositiveAdmission:
 
         assert result.passed is True, f"正样本应通过准入: {result.reason}"
         assert result.reason == "", "通过时 reason 应为空字符串"
-        assert len(result.checks) == 3, "应有 3 条判定"
+        # WP-2: concept 候选追加 mechanism_signal 门（黄金样张 5 编号步+code → 确定性 pass）
+        assert len(result.checks) == 4, "concept 候选应有 4 条判定（含 mechanism_signal）"
 
     def test_positive_sample_checks_have_required_fields(
         self, sample_raw_content, sample_raw_path, tmp_ledger_path, admission_pass_responses

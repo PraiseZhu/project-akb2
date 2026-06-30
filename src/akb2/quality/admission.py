@@ -210,6 +210,13 @@ def run_admission(
     # 堵后门：lane 放松后新闻可能被判 concept → how_tendency 豁免 → 溜过准入（W5/w7 实证）。
     lane_rejected = content_lane == LANE_REJECT
 
+    # 5. 机制信号准入门（WP-2/D2）：仅 concept 候选，确定性为主 + LLM 窄仲裁。
+    # 无机制散文（openai 政策/新闻/纯观点）在 admission 即拒（no_mechanism_signal），
+    # 不下传 distill 硬填模板（D8 maker fallback 造假机制源头）。procedural 不受此门
+    # （F4 H1 判）；lane_failed/reject 时已拒收，不跑。
+    if content_lane == LANE_CONCEPT and not lane_failed and not lane_rejected:
+        checks.append(_check_mechanism_signal(body, route_llm_fn))
+
     # how_tendency 路由化（spec FR-003）：concept 车道下其 fail 不使 passed=False。
     # 纯概念内容（无命令）天然 how_tendency=fail，旧逻辑会误拒——本改动让 how_tendency
     # 在 concept 车道仅作路由信号、不计入 all_passed。procedural 车道 how fail 仍拒收。
@@ -225,9 +232,13 @@ def run_admission(
 
     reason = ""
     if not all_passed:
-        failed = [
-            c.name for c in checks if not _check_counts_for_admission(c)
-        ]
+        # WP-2：mechanism_signal 失败映射 no_mechanism_signal（runner 据此设 error_class）
+        failed: list[str] = []
+        for c in checks:
+            if not _check_counts_for_admission(c):
+                failed.append(
+                    "no_mechanism_signal" if c.name == "mechanism_signal" else c.name
+                )
         if lane_rejected:
             failed.append(f"non_knowledge({lane_reason})")
         elif lane_failed:
@@ -623,6 +634,125 @@ def _has_strong_procedural_signal(body: str) -> bool:
     if len(_NUMBERED_WITH_CMD_RE.findall(body)) >= STRONG_PROCEDURAL_CMD_MIN:
         return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# 机制信号准入门（WP-2 / D2）—— 仅 concept 候选，确定性为主 + LLM 窄仲裁
+# ---------------------------------------------------------------------------
+
+# concept 候选在 admission 段预筛「机制存在性」：无机制散文（openai 政策 / 新闻 /
+# 纯观点）在 admission 即拒（error_class=no_mechanism_signal），不下传 distill 硬填
+# 模板组件（D8 maker fallback 造假机制的源头）。procedural 不受此门（F4 H1 判）。
+MECHANISM_COMPONENT_MIN: int = 3
+
+# 命名组件候选：编号 H2/H3/H4 标题（### 1. Captain / ## 2. Executor Pool / ### Step 1）
+_MECHANISM_COMPONENT_RE = re.compile(r"(?m)^#{2,4}\s+\d+[\.\)]\s+\S+")
+# 因果连接词（机制组件间的因果关系）
+_CAUSAL_CONNECTOR_RE = re.compile(
+    r"(?i)\b(?:leads?\s+to|triggers?|causes?|because\s+of|therefore|"
+    r"results?\s+in|implies|produces?|enables?|prevents?|propagates?)\b"
+)
+# 编号步骤行（≥3 构成 how 信号，concept 机制也常编号列点）
+_NUMBERED_STEP_RE = re.compile(r"(?m)^\s*\d+\.\s+\S")
+
+
+def _scan_mechanism_signals(body: str) -> dict[str, int]:
+    """确定性扫描机制信号强度（命名组件 / 因果连接词 / 编号步 / code / source_operation）。
+
+    纯代码无 LLM：供 ``_check_mechanism_signal`` 确定性短路用。
+    """
+    components = len(_MECHANISM_COMPONENT_RE.findall(body))
+    causal = len(_CAUSAL_CONNECTOR_RE.findall(body))
+    numbered_steps = len(_NUMBERED_STEP_RE.findall(body))
+    code_blocks = body.count("```") // 2
+    try:
+        from src.akb2.quality.source_ops_scanners import operations
+
+        src_ops = len(operations.scan(body))
+    except Exception:
+        src_ops = 0
+    return {
+        "components": components,
+        "causal": causal,
+        "numbered_steps": numbered_steps,
+        "code_blocks": code_blocks,
+        "source_operations": src_ops,
+    }
+
+
+def _check_mechanism_signal(body: str, route_llm_fn: Any) -> AdmissionCheck:
+    """WP-2/D2：concept 候选机制信号准入门（确定性为主 + LLM 窄仲裁）。
+
+    - 确定性 **强信号 PASS**：≥3 命名组件候选 / (≥1 组件 + ≥1 因果边) / (≥3 编号步 + code)
+    - 确定性 **强反信号 FAIL**：全信号 = 0（纯散文，无组件/因果/编号/code/ops）
+      → ``no_mechanism_signal``，**LLM 不得绕过**（确定性反信号优先）。
+    - 模糊（部分信号未达强信号）→ LLM 窄仲裁；LLM 不可用 → fail-closed 拒收。
+
+    返回 AdmissionCheck(name="mechanism_signal")；失败时 reason 以
+    ``no_mechanism_signal`` 开头，runner 据此映射 error_class。
+    """
+    signals = _scan_mechanism_signals(body)
+    comp = signals["components"]
+    causal = signals["causal"]
+    steps = signals["numbered_steps"]
+    code = signals["code_blocks"]
+    src_ops = signals["source_operations"]
+
+    # 确定性 PASS：强机制信号
+    if comp >= MECHANISM_COMPONENT_MIN:
+        return AdmissionCheck(
+            name="mechanism_signal", passed=True,
+            reason=f"确定性机制信号: {comp} 命名组件候选",
+        )
+    if comp >= 1 and causal >= 1:
+        return AdmissionCheck(
+            name="mechanism_signal", passed=True,
+            reason=f"确定性机制信号: {comp} 组件 + {causal} 因果边",
+        )
+    if steps >= MECHANISM_COMPONENT_MIN and code >= 1:
+        return AdmissionCheck(
+            name="mechanism_signal", passed=True,
+            reason=f"确定性机制信号: {steps} 编号步 + code 块",
+        )
+
+    # 确定性 FAIL：全无信号（纯散文）—— LLM 不可绕过此强反信号
+    total = comp + causal + steps + code + src_ops
+    if total == 0:
+        return AdmissionCheck(
+            name="mechanism_signal", passed=False,
+            reason="no_mechanism_signal: 无命名组件/因果边/编号步/code/source_operation",
+        )
+
+    # 模糊（部分信号未达强信号）→ LLM 窄仲裁
+    from src.akb2.quality.llm_router import RouterConfigError
+
+    content_snippet = body[:MAX_ADMISSION_CONTENT_CHARS]
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你判断内容是否阐述了一个可复用的「机制」（≥3 命名组件 + 因果关系），"
+                "而非纯政策/新闻/观点散文。机制组件 = 命名架构部件/流程阶段/算法步骤/协议层。"
+                "输出 JSON: {\"pass\": true/false, \"reason\": \"...\"}。reason 最多 150 字符。"
+            ),
+        },
+        {"role": "user", "content": f"内容:\n{content_snippet}"},
+    ]
+    try:
+        response = route_llm_fn(
+            ADMISSION_MODEL, messages, response_schema=_ADMISSION_CHECK_SCHEMA,
+        )
+    except (RouterConfigError, RuntimeError) as exc:
+        # 信号识别不可用 → fail-closed 拒收
+        return AdmissionCheck(
+            name="mechanism_signal", passed=False,
+            reason=f"no_mechanism_signal: 机制信号识别不可用 fail-closed: {exc}",
+        )
+    result = _validate_and_normalize(response.content, "mechanism_signal")
+    return AdmissionCheck(
+        name="mechanism_signal", passed=result["pass"], reason=result["reason"],
+    )
+
 
 
 def _classify_content_lane(
