@@ -242,10 +242,10 @@ def validate_source_ledger(
     config_path: str | Path,
     max_age_hours: int = DEFAULT_SOURCE_LEDGER_MAX_AGE_HOURS,
 ) -> dict[str, Any]:
-    """Validate 76-source ledger for deployment preflight."""
+    """Validate 82-source ledger for deployment preflight."""
     rows = _read_jsonl(Path(ledger_path))
-    if len(rows) != 76:
-        raise SmokeValidationError(f"source ledger rows != 76: {len(rows)}")
+    if len(rows) != 82:
+        raise SmokeValidationError(f"source ledger rows != 82: {len(rows)}")
 
     run_ids = {row.get("run_id") for row in rows}
     if len(run_ids) != 1 or None in run_ids or "" in run_ids:
