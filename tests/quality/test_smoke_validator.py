@@ -239,7 +239,7 @@ def _write_source_config(path: Path) -> None:
 def _source_rows() -> list[dict]:
     now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     rows = []
-    for i in range(76):
+    for i in range(82):
         rows.append(
             {
                 "slug": f"s{i}",
@@ -703,9 +703,9 @@ def test_validate_source_ledger_gate(tmp_path: Path) -> None:
 
     result = validate_source_ledger(ledger, config)
 
-    assert result["rows"] == 76
-    assert result["reachable"] == 76
-    assert result["rich_count"] == 76
+    assert result["rows"] == 82
+    assert result["reachable"] == 82
+    assert result["rich_count"] == 82
 
 
 def test_validate_source_ledger_rejects_generic_failed_error(tmp_path: Path) -> None:

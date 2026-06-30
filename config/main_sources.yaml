@@ -1,6 +1,7 @@
-# AKB2 主源清单 — 76 源配置
+# AKB2 主源清单 — 82 源配置
 #
 # 来源: docs/loops-design-decisions.md §11 (23 核心 + 29 补充 + 24 源头权威扩充)
+#       + awesome-evals seeds.json 扩充 6 (interconnects/arxiv-agent-eval/latent-space/leehanchung/openai-news/hf-papers)
 # 状态: 全部 trial，逐源验证后按循环 4 状态机流转
 #
 # Schema:
@@ -709,3 +710,62 @@ sources:
     status: trial
     category: authority
     notes: "Theo / T3 — TS 工具链 / 前端工程"
+
+  # =========================================================================
+  # awesome-evals 扩充 (6) — 源自 reference/projects/awesome-evals/.scanner/seeds.json
+  # 高对齐 AI-Agent / eval 主题,补现有源前端偏重的缺口
+  # =========================================================================
+
+  - slug: interconnects
+    domain: interconnects.ai
+    feed_url: https://www.interconnects.ai/feed
+    listing_url: https://www.interconnects.ai/
+    rate_limit: 3600
+    status: trial
+    category: authority
+    notes: "Nathan Lambert — RLHF/RL/eval 评论;awesome-evals seeds.json authors"
+
+  - slug: arxiv-agent-eval
+    domain: arxiv.org
+    feed_url: "http://export.arxiv.org/api/query?search_query=all:(agent+evaluation+OR+LLM-as-judge+OR+RL+environment)&sortBy=submittedDate&sortOrder=descending"
+    listing_url:
+    rate_limit: 3600
+    status: trial
+    category: authority
+    notes: "arxiv API query feed — agent evaluation/LLM-as-judge/RL environment 持续论文流;awesome-evals seeds.json benchmarks-tools"
+
+  - slug: latent-space
+    domain: latent.space
+    feed_url: https://api.substack.com/feed/podcast/1084089.rss
+    listing_url: https://www.latent.space/podcast
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Latent Space — AI 工程播客;awesome-evals seeds.json podcasts"
+
+  - slug: leehanchung
+    domain: leehanchung.github.io
+    feed_url:
+    listing_url: https://leehanchung.github.io/blogs/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Han-Chung Lee — eval 工程;feedless,seeds.json 标 recall_critical(不可静默跳过);awesome-evals seeds.json authors"
+
+  - slug: openai-news
+    domain: openai.com
+    feed_url:
+    listing_url: https://openai.com/news/
+    rate_limit: 3600
+    status: trial
+    category: core
+    notes: "OpenAI 官方 news;feedless SPA,seeds.json 标 recall_critical;与现有 openai-blog(/blog)同域不同栏;awesome-evals seeds.json company-blogs"
+
+  - slug: hf-papers
+    domain: huggingface.co
+    feed_url:
+    listing_url: https://huggingface.co/papers
+    rate_limit: 3600
+    status: trial
+    category: authority
+    notes: "HuggingFace Papers 每日论文聚合;feedless;与现有 huggingface-blog(/blog)同域不同栏;awesome-evals seeds.json aggregators"
