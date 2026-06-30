@@ -401,3 +401,61 @@ class TestFrontmatterResolveAndRealLink:
         assert all_passed is True, (
             f"已 resolve related 应过五闸（可产 active）: {failed_gate} {reason}"
         )
+
+
+# ---------------------------------------------------------------------------
+# P2-E: D7 idx5 poisoned trace 回归 fixture（langchain prompt-caching 形态）
+# ---------------------------------------------------------------------------
+
+
+class TestD7Idx5PoisonedTraceFixture:
+    """P2-E: D7 idx5 poisoned trace 回归 fixture。
+
+    旧候选（pre-fix deterministic fallback）注入假 AKB 操作化步骤 → grader 判
+    interpretation_entailment=False（未从 cited anchor 推出，poisoned trace）。
+    新候选（post-fix D8: concept fallback how_steps=[]）无假步骤。
+    entailment 真值由 WP-5 端到端 LLM 验收（worker env 无 DEEPSEEK_API_KEY，不跑真 GPT-5.4）。
+    """
+
+    _IDX5_FAKE_MARKERS = (
+        "max_repair_rounds", "ledger.append", "queue_item", "grader_model",
+    )
+
+    def test_old_candidate_fake_steps_poison_source(self):
+        """旧候选含假 AKB 操作步骤（poison 源）→ entailment=False 根因。
+
+        旧 deterministic fallback 硬编码 how_steps 注入 max_repair_rounds=3 / ledger.append /
+        queue_item schema（raw 未支持），grader 判 interpretation_entailment=False。
+        注: entailment=False 真值由 WP-5 端到端 LLM 验收；本测试验 poison 源（假步骤）在场。
+        """
+        # 旧 fallback 硬编码的 how_steps 字面量（D8 修复前的形态，distill.py 旧版）
+        old_how_steps_text = (
+            "Define the work item schema queue_item={source_url,raw_anchor,content_hash}\n"
+            "Write a ledger start event ledger.append({event:'distill_extract'})\n"
+            "Stop after bounded repair max_repair_rounds=3; assert remaining_defects == 0\n"
+            "assert grader_model == 'gpt-5.4' and fallback_used is False\n"
+        )
+        for marker in self._IDX5_FAKE_MARKERS:
+            assert marker in old_how_steps_text, (
+                f"旧候选应含假步骤 {marker}（entailment=False 的 poison 源）"
+            )
+
+    def test_new_candidate_idx5_no_fake_steps(self):
+        """新候选（post-fix D8）idx5 形态（prompt-caching concept）→ 无假 AKB 操作步骤。
+
+        修复后 concept fallback how_steps=[]+params={}，不注入 max_repair_rounds/ledger/
+        queue_item → entailment 不再被假步骤毒化（真值由 WP-5 LLM 验收）。
+        """
+        raw = (
+            "# Prompt Caching Article\n\n"
+            "### 1. KV Cache\nThe KV Cache feeds the Breakpoint.\n\n"
+            "### 2. Breakpoint\nThe Breakpoint triggers the Hit Rate.\n\n"
+            "### 3. Hit Rate\nThe Hit Rate writes to the KV Cache.\n"
+        )
+        result = build_deterministic_extract_result(raw, content_lane="concept")
+        assert result.success is True
+        assert result.data.get("how_steps") == []
+        assert result.data.get("params") == {}
+        for marker in self._IDX5_FAKE_MARKERS:
+            assert marker not in str(result.data.get("how_steps", []))
+            assert marker not in str(result.data.get("params", {}))
