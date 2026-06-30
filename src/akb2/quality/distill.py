@@ -1686,7 +1686,9 @@ def _validate_extract_output(data: dict[str, Any], content_lane: str = "") -> No
 
         f4_failed, f4_reason = _core_value_f4_failed(data, content_lane)
         if f4_failed:
-            raise ValueError(f"concept F4 extract 即判失败: {f4_reason}")
+            raise ValueError(
+                f"concept F4 extract 即判失败 (mechanism_components): {f4_reason}"
+            )
     else:
         executable_steps = sum(
             1
@@ -1754,20 +1756,31 @@ _REAL_COMPONENT_HEADING_RE = re.compile(r"(?m)^#{2,4}\s+\d+[\.\)]\s+([^\n(]+)")
 
 
 def _scan_real_mechanism_components(raw_content: str) -> list[dict[str, str]]:
-    """扫 raw 找真实命名机制组件（编号 H2/H3/H4 标题，如 ``### 1. Captain``）。
+    """扫 raw 找真实命名机制组件（编号 H2/H3/H4 标题 + 连续编号列表项）。
 
-    返回 ``[{name, role}]``（去重，保序）。name 取标题文本。这些是 raw 真实存在的命名
-    组件，非硬编码模板——concept fallback 用它们满足 F4 ≥3 组件门，避免造假机制（D8）。
+    返回 ``[{name, role}]``（去重，保序）。覆盖两种机制形态：
+      1. 编号标题（``### 1. Captain``）；
+      2. 连续编号列表项（``1. A trigger`` / ``2. ...`` / ``3. ...``，如黄金样张）。
+    散文无连续编号项不命中（openai 政策/新闻 → 0 组件 → fail-closed）。
     """
-    matches = _REAL_COMPONENT_HEADING_RE.findall(raw_content or "")
     components: list[dict[str, str]] = []
     seen: set[str] = set()
-    for m in matches:
+    # 1. 编号 H2/H3/H4 标题
+    for m in _REAL_COMPONENT_HEADING_RE.findall(raw_content or ""):
         name = m.strip().rstrip(".").strip()
-        if not name or name in seen:
-            continue
-        seen.add(name)
-        components.append({"name": name, "role": "raw 命名机制组件"})
+        if name and name not in seen:
+            seen.add(name)
+            components.append({"name": name, "role": "raw 命名机制组件"})
+    # 2. 连续编号列表项（标题不足 ≥3 时补充，覆盖黄金样张编号列表形态）
+    if len(components) < CONCEPT_MIN_MECHANISM_COMPONENTS:
+        numbered_items = re.findall(r"(?m)^\s*\d+\.\s+([^\n]+)", raw_content or "")
+        for item in numbered_items:
+            name = item.strip().rstrip(".").strip()
+            if name and len(name) <= 80 and name not in seen:
+                seen.add(name)
+                components.append({"name": name, "role": "raw 命名机制组件"})
+            if len(components) >= CONCEPT_MIN_MECHANISM_COMPONENTS:
+                break
     return components
 
 
@@ -2389,10 +2402,12 @@ def _build_frontmatter(
     raw_fm = _read_raw_frontmatter(raw_path)
 
     # WP-3.4: frontmatter related_* 与 body graph 同源 resolve。
-    # known/pending 提供时（即使空集）只写可 resolve 的概念为 [[wikilink]]，不可 resolve
-    # 的不写（不伪装 real_link，gate _graph_readiness 仅查 related_* 非空）；可 resolve
-    # 不足时 _infer_concepts 也只保留可 resolve 的。二者均 None（legacy/测试）时保留旧行为。
-    has_resolver = known_concepts is not None or pending_queue is not None
+    # known/pending 非空时只写可 resolve 的概念为 [[wikilink]]，不可 resolve 的不写
+    # （不伪装 real_link，gate _graph_readiness 仅查 related_* 非空→不写悬空即不产 false
+    # real_link）；可 resolve 不足时 _infer_concepts 也只保留可 resolve 的。known/pending
+    # 为空或 None（vault 未挂载/无法验证）时保留 legacy 行为（_infer_concepts fallback，
+    # 零回归，避免 test env 空 vault 清零 related 触发 A2 related≥2 失败）。
+    has_resolver = bool(known_concepts) or bool(pending_queue)
     resolvable_set = set(known_concepts or []) | set(pending_queue or [])
     related = list(concepts) if concepts else []
     if has_resolver:

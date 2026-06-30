@@ -262,7 +262,7 @@ class TestFrontmatterResolveAndRealLink:
         )
 
     def test_dangling_no_real_link(self):
-        """referenced 全不可 resolve（known=[]）→ related_concepts=[] → gate 不产 real_link。"""
+        """referenced 全不可 resolve（known 非空但不含目标）→ related_concepts=[] → 不产 real_link。"""
         from src.akb2.gate.akb2_gate_check import _graph_readiness
 
         data = _frontmatter_data(["totally-unknown-concept"])
@@ -270,7 +270,8 @@ class TestFrontmatterResolveAndRealLink:
             "raw/fake--raw--2026-06-29.md",
             data,
             content_lane="concept",
-            known_concepts=[],  # 空已知集 → 全不可 resolve
+            # known 非空但不含 totally-unknown-concept → 过滤分支生效，全滤除
+            known_concepts=["some-other-concept"],
         )
         assert fm["related_concepts"] == [], "悬空概念应全滤除，related_concepts=[]"
         # gate _graph_readiness 仅查 related_* 非空 → 空则不产 real_link

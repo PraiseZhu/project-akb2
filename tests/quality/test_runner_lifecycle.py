@@ -468,6 +468,18 @@ class TestRunnerLifelineSegments:
             "src.akb2.quality.runner._run_admission_segment",
             return_value=(True, "", []),
         ), mock.patch(
+            "src.akb2.quality.runner._load_vault_concept_index",
+            return_value={
+                "status": "ok",
+                # WP-3.4: 含 maker fallback 硬编码 referenced_concepts，使 related 可 resolve
+                # （frontmatter 同源 resolve 过滤后仍 ≥2，过 A2；不依赖真实 vault 挂载状态）
+                "known_concepts": ["loop-engineering", "quality-gate", "agent-workflow"],
+                "pending_queue": [],
+                "wiki_references": [],
+                "source_paths": [],
+                "counts": {"known_concepts": 3, "pending_queue": 0, "wiki_references": 0},
+            },
+        ), mock.patch(
             "src.akb2.quality.runner._run_extract_claims_worker",
             return_value=ExtractResult(
                 success=False,
