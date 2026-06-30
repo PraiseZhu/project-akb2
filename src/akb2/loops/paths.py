@@ -76,16 +76,38 @@ def _env_akb2_root() -> Path | None:
     return None
 
 
+def _path_exists(p: Path) -> bool:
+    """路径是否存在（抽成函数便于测试注入卷挂载状态）。"""
+    return p.exists()
+
+
 def _existing_machine_default() -> Path | None:
-    """本机常见 vault 根。存在才启用，避免跨设备共享配置写错盘。"""
-    candidates = [
-        Path("/Volumes/AKB2/Obsidian").joinpath(*_AKB2_RELATIVE_PARTS),
-        Path.home().joinpath("Obsidian", *_AKB2_RELATIVE_PARTS),
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate.resolve()
+    """本机 vault 根：仅认外接卷 /Volumes/AKB2，存在才启用。
+
+    不再回退 ~/Obsidian —— 该路径历史上软链到 iCloud 老库，卷未挂载 + 未设 env 时
+    会静默把产物写进 iCloud/启动盘（违反 fail-closed + 根 CLAUDE.md「不要把 AKB2
+    链路指回 iCloud vault」契约）。宁可解析失败也不写错盘。
+    """
+    candidate = Path("/Volumes/AKB2/Obsidian").joinpath(*_AKB2_RELATIVE_PARTS)
+    if _path_exists(candidate):
+        return candidate.resolve()
     return None
+
+
+def _assert_volume_mounted(resolved: Path) -> None:
+    """fail-closed：vault.toml 兜底路径若指向未挂载的 /Volumes 卷，拒绝解析。
+
+    否则后续 mkdir(parents=True) 会在启动盘建一个同名影子目录，既污染数据、
+    又遮蔽真实挂载点。卷未挂载时应显式报错，而非静默写错盘。
+    """
+    parts = resolved.parts
+    if len(parts) >= 3 and parts[1] == "Volumes":
+        vol_root = Path("/", parts[1], parts[2])
+        if not _path_exists(vol_root):
+            raise RuntimeError(
+                f"vault.toml akb2_root={resolved} 指向未挂载的卷 {vol_root}；"
+                "拒绝写错盘（fail-closed）。请挂载该卷或设置 VAULT_ROOT/AKB2_ROOT。"
+            )
 
 
 def _ensure_config() -> Path:
@@ -111,7 +133,9 @@ def _ensure_config() -> Path:
         elif default_root is not None:
             _akb2_root_cache = default_root
         elif raw_akb2_root:
-            _akb2_root_cache = _normalise_akb2_root(raw_akb2_root)
+            resolved = _normalise_akb2_root(raw_akb2_root)
+            _assert_volume_mounted(resolved)
+            _akb2_root_cache = resolved
         else:
             raise RuntimeError(
                 "config/vault.toml: [vault] akb2_root 未设置，无法解析路径"

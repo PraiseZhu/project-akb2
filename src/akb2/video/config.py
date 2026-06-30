@@ -85,7 +85,11 @@ def _resolve_akb2_root() -> Path:
             return Path(vault_root).expanduser().joinpath(
                 "Praise Space", "AKB2.0"
             ).resolve()
-        return Path.home().joinpath("Obsidian", "Praise Space", "AKB2.0").resolve()
+        # fail-closed：不再静默回退 ~/Obsidian（历史 iCloud 软链），拒绝写错盘。
+        raise RuntimeError(
+            "无法解析 AKB2_ROOT：未设 VAULT_ROOT/AKB2_ROOT 且 /Volumes/AKB2 未挂载。"
+            "拒绝回退到 ~/Obsidian（iCloud 老库）；请挂载 AKB2 卷或设置 VAULT_ROOT。"
+        ) from None
 
 
 @dataclass

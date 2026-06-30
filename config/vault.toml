@@ -6,7 +6,9 @@
 
 [vault]
 # Obsidian vault 内 AKB2.0 子库根
-akb2_root = "${HOME}/Obsidian/Praise Space/AKB2.0"
+# 契约（见根 CLAUDE.md）：必须是外接卷 /Volumes/AKB2 上的绝对路径。
+# 禁止用 ${HOME}/Obsidian —— 该路径历史上软链到 iCloud 老库，会把产物写错盘。
+akb2_root = "/Volumes/AKB2/Obsidian/Praise Space/AKB2.0"
 
 [vault.layers]
 # 三层 + 支撑区，路径相对 vault.akb2_root
