@@ -492,8 +492,11 @@ def _compose_raw_content(
     fm_block = "\n".join(lines)
 
     # 注入锚点 + 锚点目录（镜像 raw_archiver.archive_raw :360-384）
+    # WP-1: 注入锚点前先剥 chrome（与 intake extract 同 helper，两链同源；
+    # extract_result.content 在 extract.py 已剥过，此处 idempotent 再剥保两链一致）
+    clean_content, _chrome_diag = strip_chrome_blocks(extract_result.content)
     anchored_content, toc_entries, hit_counts = _inject_anchors(
-        extract_result.content, ANCHOR_DEFINITIONS
+        clean_content, ANCHOR_DEFINITIONS
     )
     # 断言必需锚点（fail-closed 契约；实际裁决由下游 distill self-gate 执行）
     _assert_anchors(hit_counts, REQUIRED_ANCHORS)
@@ -516,8 +519,9 @@ def _inject_anchors_into_raw(raw_md: str) -> str:
     self-gate 裁决（镜像 _compose_raw_content / archive_raw 语义）。
     """
     if not raw_md.startswith("---"):
-        # 无 frontmatter — 直接注入
-        anchored, toc, hit_counts = _inject_anchors(raw_md, ANCHOR_DEFINITIONS)
+        # 无 frontmatter — 直接注入（WP-1: 先剥 chrome）
+        body, _ = strip_chrome_blocks(raw_md)
+        anchored, toc, hit_counts = _inject_anchors(body, ANCHOR_DEFINITIONS)
         _assert_anchors(hit_counts, REQUIRED_ANCHORS)
         toc_block = "## 锚点目录\n\n" + "\n".join(toc) + "\n"
         return f"{toc_block}\n\n{anchored}\n"
@@ -525,14 +529,16 @@ def _inject_anchors_into_raw(raw_md: str) -> str:
     # 定位 frontmatter 闭合（第二个 --- 行）
     second_delim = raw_md.find("\n---", 3)
     if second_delim < 0:
-        # 无闭合 — 当作无 frontmatter
-        anchored, toc, hit_counts = _inject_anchors(raw_md, ANCHOR_DEFINITIONS)
+        # 无闭合 — 当作无 frontmatter（WP-1: 先剥 chrome）
+        body, _ = strip_chrome_blocks(raw_md)
+        anchored, toc, hit_counts = _inject_anchors(body, ANCHOR_DEFINITIONS)
         _assert_anchors(hit_counts, REQUIRED_ANCHORS)
         toc_block = "## 锚点目录\n\n" + "\n".join(toc) + "\n"
         return f"{toc_block}\n\n{anchored}\n"
 
     fm_block = raw_md[: second_delim + 4]  # 含闭合 ---（无 trailing newline）
     body = raw_md[second_delim + 4 :].lstrip("\n")
+    body, _ = strip_chrome_blocks(body)  # WP-1: 注入锚点前剥 chrome
 
     anchored, toc, hit_counts = _inject_anchors(body, ANCHOR_DEFINITIONS)
     _assert_anchors(hit_counts, REQUIRED_ANCHORS)
