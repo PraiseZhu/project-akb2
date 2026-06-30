@@ -1750,57 +1750,109 @@ def _validate_extract_output(data: dict[str, Any], content_lane: str = "") -> No
                 )
 
 
-# WP-3/D8: concept deterministic fallback 扫 raw 找真实命名机制组件（编号 H2/H3/H4 标题），
-# 不再硬编码注入 loop-engineering 组件（造假机制）。≥3 真实组件才用，否则 fail-closed。
+# WP-3/D8 (P1-A 收窄): concept deterministic fallback 扫 raw 找真实命名机制组件。
+# 编号 H2/H3 标题（### 1. Captain）信任（显式结构）；编号列表项（1. X）须含
+# 可识别机制实体名（组件/阶段/模块/角色/trigger/selector 等）才纳——防政策承诺
+# 编号列表（"1. Establish safety standards..."）被当机制组件救活。
 _REAL_COMPONENT_HEADING_RE = re.compile(r"(?m)^#{2,4}\s+\d+[\.\)]\s+([^\n(]+)")
+_NUMBERED_ITEM_RE = re.compile(r"(?m)^\s*\d+\.\s+([^\n]+)")
+# 机制实体名关键词（noun，非动词承诺）：组件/阶段/模块/子系统/角色/机制 + 常见机制角色
+_MECHANISM_ENTITY_KEYWORDS = (
+    "component", "step", "stage", "module", "subsystem", "role", "mechanism",
+    "trigger", "selector", "executor", "gate", "ledger", "coordinator", "captain",
+    "worker", "queue", "pipeline", "layer", "service", "handler", "controller",
+    "agent", "runtime", "cache", "scheduler", "producer", "consumer", "broker",
+    "组件", "阶段", "模块", "子系统", "角色", "机制", "触发", "选择", "执行",
+    "门", "账本", "协调", "队列", "管线", "层", "服务", "控制器", "代理",
+    "运行时", "缓存", "调度", "生产者", "消费者",
+)
+
+
+def _item_has_mechanism_entity(item_text: str) -> bool:
+    """编号列表项是否含可识别机制实体名（区别于政策承诺动词列表）。"""
+    lower = item_text.lower()
+    return any(kw in lower for kw in _MECHANISM_ENTITY_KEYWORDS)
 
 
 def _scan_real_mechanism_components(raw_content: str) -> list[dict[str, str]]:
-    """扫 raw 找真实命名机制组件（编号 H2/H3/H4 标题 + 连续编号列表项）。
+    """扫 raw 找真实命名机制组件（编号标题 + 含实体名的编号列表项）。
 
-    返回 ``[{name, role}]``（去重，保序）。覆盖两种机制形态：
-      1. 编号标题（``### 1. Captain``）；
-      2. 连续编号列表项（``1. A trigger`` / ``2. ...`` / ``3. ...``，如黄金样张）。
-    散文无连续编号项不命中（openai 政策/新闻 → 0 组件 → fail-closed）。
+    返回 ``[{name, role}]``（去重，保序）。
+      1. 编号 H2/H3/H4 标题（``### 1. Captain``）——显式结构，信任；
+      2. 编号列表项（``1. A trigger``）——须含机制实体名（P1-A），过滤政策承诺
+         （"1. Establish safety standards" 无实体名 → 不纳）。
+    散文/政策承诺无实体名编号项 → 0 组件 → fail-closed。
     """
     components: list[dict[str, str]] = []
     seen: set[str] = set()
-    # 1. 编号 H2/H3/H4 标题
+    # 1. 编号 H2/H3/H4 标题（显式结构，信任）
     for m in _REAL_COMPONENT_HEADING_RE.findall(raw_content or ""):
         name = m.strip().rstrip(".").strip()
         if name and name not in seen:
             seen.add(name)
             components.append({"name": name, "role": "raw 命名机制组件"})
-    # 2. 连续编号列表项（标题不足 ≥3 时补充，覆盖黄金样张编号列表形态）
+    # 2. 编号列表项——须含机制实体名（P1-A：防政策承诺编号列表被当组件）
     if len(components) < CONCEPT_MIN_MECHANISM_COMPONENTS:
-        numbered_items = re.findall(r"(?m)^\s*\d+\.\s+([^\n]+)", raw_content or "")
-        for item in numbered_items:
+        for item in _NUMBERED_ITEM_RE.findall(raw_content or ""):
             name = item.strip().rstrip(".").strip()
-            if name and len(name) <= 80 and name not in seen:
-                seen.add(name)
-                components.append({"name": name, "role": "raw 命名机制组件"})
+            if (
+                not name
+                or len(name) > 80
+                or name in seen
+                or not _item_has_mechanism_entity(name)
+            ):
+                continue
+            seen.add(name)
+            components.append({"name": name, "role": "raw 命名机制组件"})
             if len(components) >= CONCEPT_MIN_MECHANISM_COMPONENTS:
                 break
     return components
 
 
-def _build_sequential_causal_edges(
-    components: list[dict[str, str]],
-) -> list[dict[str, str]]:
-    """从真实组件按 raw 出现顺序构建因果边（保守结构推断，非造假）。
+# P1-A: 真实因果/依赖/触发语言连接词（禁排版顺序边替代因果边）
+_CAUSAL_CONNECTOR_RE = re.compile(
+    r"(?i)\b(?:leads?\s+to|triggers?|feeds?|enables?|activates?|depends?\s+on|"
+    r"before|after|causes?|results?\s+in|produces?|dispatches?\s+to|invokes?|"
+    r"schedules?|writes?\s+to|updates?|calls?|sends?\s+to|passes?\s+to|"
+    r"→|consumes?|notifies)\b"
+)
 
-    ``comp[i] → comp[i+1]`` 顺序连边，满足 F4「每命名组件有出/入边指向另一命名组件」。
-    顺序是 raw 的确定性映射，非凭空编造因果关系。
+
+def _build_real_causal_edges(
+    components: list[dict[str, str]], raw_content: str
+) -> list[dict[str, str]]:
+    """从 raw 真实因果/依赖/触发语言建边（P1-A：禁排版顺序边替代因果边）。
+
+    扫含因果连接词的句，若 ≥2 组件名共现 → 按句中出现顺序建边。
+    无真实因果语言 → 返空边（F4 连通性 fail → fallback fail-closed，不造假边）。
     """
+    if not components or not raw_content:
+        return []
+    # 组件名归一化（去首冠词，小写）→ 原名映射
+    comp_norm: list[tuple[str, str]] = []  # (norm, orig)
+    for c in components:
+        name = c["name"]
+        norm = re.sub(r"^(?:A|An|The)\s+", "", name.strip(), flags=re.I).lower().strip()
+        if norm:
+            comp_norm.append((norm, name))
     edges: list[dict[str, str]] = []
-    for i in range(len(components) - 1):
-        edges.append(
-            {
-                "from": components[i]["name"],
-                "to": components[i + 1]["name"],
-                "relation": "precedes_in_sequence",
-            }
-        )
+    seen: set[tuple[str, str]] = set()
+    # 按句扫（句号/换行/问号/叹号分隔）
+    for sent in re.split(r"[。\n.!?]", raw_content):
+        if not _CAUSAL_CONNECTOR_RE.search(sent):
+            continue
+        sent_lower = sent.lower()
+        found_orig: list[str] = []
+        for norm, orig in comp_norm:
+            if norm in sent_lower and orig not in found_orig:
+                found_orig.append(orig)
+        # ≥2 组件共现于含因果连接词的句 → 按出现顺序建边
+        for i in range(len(found_orig)):
+            for j in range(i + 1, len(found_orig)):
+                a, b = found_orig[i], found_orig[j]
+                if (a, b) not in seen:
+                    seen.add((a, b))
+                    edges.append({"from": a, "to": b, "relation": "raw_causal"})
     return edges
 
 
@@ -2042,7 +2094,9 @@ def _build_deterministic_extract_data(
                 f"< {CONCEPT_MIN_MECHANISM_COMPONENTS}，无法从 raw 证明机制，fail-closed"
             )
         mechanism_components = real_components
-        causal_edges = _build_sequential_causal_edges(real_components)
+        # P1-A: 真实因果/依赖/触发语言才建边（禁排版顺序边）；无真实因果 → 空边
+        # → F4 连通性 fail → fallback fail-closed（不造假边救活）
+        causal_edges = _build_real_causal_edges(real_components, raw_content)
     return {
         "claims": claims,
         "how_steps": how_steps,

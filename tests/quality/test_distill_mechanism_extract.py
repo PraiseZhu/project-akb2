@@ -133,14 +133,35 @@ class TestConceptFallbackNoFakeMechanism:
         assert result.success is False, "无机制 raw 不应被 fallback 救活（fail-closed）"
         assert "fail-closed" in result.error or "机制" in result.error
 
+    def test_policy_commitment_numbered_list_not_saved(self):
+        """P1-A: 政策承诺编号列表（动词,无机制实体名）→ 不被 fallback 救活。
+
+        "1. Establish shared safety standards / 2. Coordinate incident reporting /
+        3. Build public trust" —— 编号项是动词承诺, 无机制实体名（trigger/组件/角色等）
+        → scanner 不纳 → <3 组件 → fail-closed（区别于"1. A trigger"实体名编号列表）。
+        """
+        raw = (
+            "# Safety Standards Commitment\n\n"
+            "We commit to the following principles:\n"
+            "1. Establish shared safety standards across the industry\n"
+            "2. Coordinate incident reporting between organizations\n"
+            "3. Build public trust through transparency\n"
+            "4. Promote accountability and responsible deployment\n"
+        )
+        result = build_deterministic_extract_result(raw, content_lane="concept")
+        assert result.success is False, (
+            "政策承诺编号列表（动词,无机制实体名）不应被 fallback 救活"
+        )
+        assert "fail-closed" in result.error or "机制" in result.error
+
     def test_mechanism_raw_uses_real_components(self):
-        """raw 有 ≥3 编号组件 → fallback 用真实组件（非硬编码 loop trigger/ledger）。"""
+        """raw 有 ≥3 编号组件 + 真实因果语言 → fallback 用真实组件（非硬编码 loop）。"""
         raw = (
             "# Captain Architecture\n\n"
-            "### 1. Captain\nThe coordinator holds the goal.\n\n"
-            "### 2. Executor Pool\nExecutors register capabilities.\n\n"
-            "### 3. Task Graph\nA DAG of sub-tasks with dependencies.\n\n"
-            "### 4. Lifecycle\nSpawn on demand and terminate after.\n"
+            "### 1. Captain\nThe Captain dispatches to the Executor Pool.\n\n"
+            "### 2. Executor Pool\nThe Executor Pool feeds the Task Graph.\n\n"
+            "### 3. Task Graph\nThe Task Graph writes to the Lifecycle.\n\n"
+            "### 4. Lifecycle\nThe Lifecycle notifies the Captain.\n"
         )
         result = build_deterministic_extract_result(raw, content_lane="concept")
         assert result.success is True, f"有机制 raw 应过 fallback: {result.error}"
@@ -179,9 +200,9 @@ class TestPoisonedTraceNoFakeSteps:
         """concept fallback how_steps 为空（不注假 AKB 操作）。"""
         raw = (
             "# Concept Article\n\n"
-            "### 1. Alpha\nThe first component.\n\n"
-            "### 2. Beta\nThe second component.\n\n"
-            "### 3. Gamma\nThe third component.\n"
+            "### 1. Alpha\nThe Alpha feeds the Beta.\n\n"
+            "### 2. Beta\nThe Beta triggers the Gamma.\n\n"
+            "### 3. Gamma\nThe Gamma writes to the Alpha.\n"
         )
         result = build_deterministic_extract_result(raw, content_lane="concept")
         assert result.success is True
@@ -192,9 +213,9 @@ class TestPoisonedTraceNoFakeSteps:
         """concept fallback data 不含 schema/ledger/max_repair_rounds 假步骤字面量（idx5 形态）。"""
         raw = (
             "# Prompt Caching Article\n\n"
-            "### 1. KV Cache\nThe key-value cache.\n\n"
-            "### 2. Breakpoint\nCache breakpoints.\n\n"
-            "### 3. Hit Rate\nCache hit rates.\n"
+            "### 1. KV Cache\nThe KV Cache feeds the Breakpoint.\n\n"
+            "### 2. Breakpoint\nThe Breakpoint triggers the Hit Rate.\n\n"
+            "### 3. Hit Rate\nThe Hit Rate writes to the KV Cache.\n"
         )
         result = build_deterministic_extract_result(raw, content_lane="concept")
         assert result.success is True

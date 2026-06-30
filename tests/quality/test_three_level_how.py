@@ -192,16 +192,19 @@ class TestConceptLaneExtractLLMPath:
 class TestConceptLaneDeterministicPath:
     """concept 车道 deterministic fallback 路径（maker LLM 不可用时）。"""
 
-    def test_concept_deterministic_extract_succeeds(self, sample_raw_content):
-        """build_deterministic_extract_result(content_lane='concept') → success。"""
+    def test_concept_deterministic_extract_fails_on_implicit_causal(self, sample_raw_content):
+        """P1-A: 黄金样张组件是编号列表(实体名 trigger/selector/...)但无显式因果语言
+        → fallback 不造假边 → F4 连通性 fail → fail-closed(保守; LLM extract 在生产
+        处理黄金样张, fallback 仅给 LLM 失败的显式机制内容)。"""
         result = build_deterministic_extract_result(
             sample_raw_content, "raw/concept-sample.md", content_lane="concept"
         )
-        assert result.success is True, result.error
-        assert (
-            len(result.data["mechanism_components"]) >= CONCEPT_MIN_MECHANISM_COMPONENTS
+        assert result.success is False, (
+            "黄金样张无显式因果语言, fallback 应 fail-closed 不造假边"
         )
-        assert len(result.data["causal_edges"]) >= 1
+        assert "F4" in (result.error or "") or "因果边" in (result.error or ""), (
+            f"应 F4 连通性 fail: {result.error}"
+        )
 
     def test_procedural_deterministic_still_succeeds(self, sample_raw_content):
         """procedural deterministic（默认 lane）仍 success（零回归），无机制组件。"""
