@@ -30,6 +30,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -37,6 +38,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from src.akb2.quality.chrome_strip import ANCHOR_DECL_RE, strip_chrome_blocks
 from src.akb2.quality.intake.extract import (
     MIN_CONTENT_LENGTH,
     REQUIRED_METADATA_FIELDS,
@@ -114,6 +116,29 @@ def _init_report(total_samples: int, negative_count: int) -> dict[str, Any]:
         "amendment_status": amendment,
         "per_segment_failures": {},
         "rounds_distribution": {},
+        # WP-0/D6: 去重 funnel（按 chrome-stripped body content hash，排除
+        # frontmatter/TOC/锚点行/volatile fetched_at）+ 全链 failure_class taxonomy
+        # + 独立 repair_acceptance（与 factory_acceptance 解耦，SC-5 修复门）
+        "deduped_funnel": {
+            "total_entries": 0,
+            "unique_bodies": 0,
+            "duplicate_count": 0,
+            "duplicate_groups": [],
+        },
+        "repair_acceptance": {
+            "positive_pass_rate": 0.0,  # mechanism_present=true 子集，SC-5 目标 ≥0.60
+            "mechanism_present_true_total": 0,
+            "mechanism_present_true_passed": 0,
+            "negative_reject_rate": 0.0,  # 含 no_mechanism 负样本，目标 ==1.0
+            "negative_total": 0,
+            "negative_rejected": 0,
+            "layers": {},
+            "procedural_zero_pass_hard_fail": False,
+            "needs_adjudication_count": 0,
+            "needs_adjudication_indices": [],
+            "repair_acceptance_gate": False,
+            "AUTO_PROMOTE": os.environ.get("AKB2_AUTO_PROMOTE", "0"),
+        },
         "entries": [],
     }
 
@@ -185,6 +210,12 @@ def _process_corpus_entry(
         "extract_error": None,
         "missing_metadata": [],       # ["title", "author", "published", "url"] 子集
         "source": None,               # fixture | live
+        # WP-0: corpus 审计块透传（mechanism_present 驱动 repair_acceptance，SC-5）
+        # + 去重 hash（chrome-stripped body，排除 fm/TOC/anchor/fetched_at，D6）
+        "mechanism_present": (entry.get("audit") or {}).get("mechanism_present"),
+        "reject_reason": (entry.get("audit") or {}).get("reject_reason"),
+        "review_status": (entry.get("audit") or {}).get("review_status", "confirmed"),
+        "raw_content_sha256": None,
     }
 
     if replaced_reason:
@@ -275,6 +306,11 @@ def _process_corpus_entry(
 
         # path 4: live 抽取成功 → compose raw with 9-field frontmatter (SC-6)
         raw_content = _compose_raw_content(extract_result, ctx)
+
+    # WP-0/D6: raw_content_sha256 = chrome-stripped body hash（去重 funnel key）。
+    # hash 输入排除 frontmatter / TOC / 锚点声明行 / volatile fetched_at / chrome，
+    # 故同正文不同 fetched_at 必去重为 1（不复用 runner._compute_raw_hash 的路径 hash）。
+    result["raw_content_sha256"] = _compute_raw_content_sha256(raw_content)
 
     # --- 运行七段管道 ---
     pipeline_result = _run_pipeline_segments(
@@ -544,6 +580,107 @@ def _classify_failure_class(
     return "extraction_failure"
 
 
+def _extract_body_for_hash(raw_content: str) -> str:
+    """提取去重用 body 文本：去 frontmatter / 锚点目录 / 锚点声明行 / chrome。
+
+    hash 输入明确排除（WP-0/D6 round-2 P2）：
+      - frontmatter（含 volatile ``fetched_at``）；
+      - 锚点目录块（``## 锚点目录`` + ``- §X: ...`` 条目）；
+      - 锚点声明行（raw_archiver 注入的 ``§A_CONTENT_START`` 等）；
+      - 站点导航 chrome（经 strip_chrome_blocks 剥离）。
+    故同一正文不同 fetched_at / 不同 chrome 残留 → 同 hash（dedup 为 1）。
+    """
+    if not raw_content:
+        return ""
+    text = raw_content
+    # 1. 去 frontmatter（首尾 --- 之间，含 volatile fetched_at）
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            text = text[end + 4:].lstrip("\n")
+    # 2. 逐行过滤锚点目录标题 / TOC 条目 / 锚点声明行
+    kept: list[str] = []
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped == "## 锚点目录":
+            continue
+        if stripped.startswith("- §") and ":" in stripped:
+            continue
+        if ANCHOR_DECL_RE.match(line):
+            continue
+        kept.append(line)
+    body = "\n".join(kept)
+    # 3. 去 chrome（与 intake extract 共用同一 helper，WP-1 两链同源）
+    clean, _ = strip_chrome_blocks(body)
+    return clean.strip()
+
+
+def _compute_raw_content_sha256(raw_content: str | None) -> str | None:
+    """计算 raw_content 的 chrome-stripped body sha256（去重 funnel key）。
+
+    返回 None 表示无 raw_content（早退路径：fixture 缺失 / live 抽取失败 /
+    ImportError），该 entry 不计入 deduped_funnel.total（缺 hash 不参与去重统计）。
+    """
+    if not raw_content:
+        return None
+    body = _extract_body_for_hash(raw_content)
+    if not body:
+        return None
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _classify_failure_class_chain(result: dict[str, Any]) -> str:
+    """全链 failure_class taxonomy（WP-0/D6）。
+
+    pass → 哨兵 ``"none"``；否则按 failed_node / error_class / final_status 映射，
+    覆盖 admission / distill_extract / distill_compose / integrity_floor /
+    repair_loop / grader / promote 全段（不只 intake_raw 的三分类）。
+
+    intake_raw 段已由 ``_classify_failure_class`` 设具体值（dead_link /
+    metadata_failure / extraction_failure），此处保留不覆盖。
+    """
+    if result.get("passed"):
+        return "none"
+    # 负样本未被正确拒收（passed=False 且 expected=reject）
+    if result.get("expected") == "reject":
+        return "negative_not_rejected"
+    # intake_raw 段已有具体 failure_class → 保留
+    existing = result.get("failure_class")
+    if existing and existing != "none":
+        return existing
+    failed_node = str(result.get("failed_node") or "")
+    error_class = str(result.get("error_class") or "")
+    final_status = str(result.get("final_status") or "")
+    # 具体段优先（按 failed_node / error_class 精确映射，先于 final_status 兜底，
+    # 避免 integrity_floor/distill 等的 final_status=rejected 被误归 admission）
+    if "poisoned_trace_entailment" in error_class:
+        return "poisoned_trace_entailment"
+    if "distill_no_converge" in error_class:
+        return "repair_no_converge"
+    if "integrity_floor" in failed_node or "integrity_floor" in error_class:
+        return "integrity_floor_failed"
+    if failed_node == "distill_extract":
+        return "distill_extract_failed"
+    if failed_node == "distill_compose":
+        return "distill_compose_failed"
+    if failed_node == "grader" or error_class.startswith("grader_"):
+        if "fallback_not_allowed" in error_class or "all_down" in error_class:
+            return "grader_unavailable"
+        return "grader_failed"
+    if failed_node == "promote":
+        return "promote_failed"
+    if failed_node == "admission":
+        return "admission_reject"
+    # final_status 兜底（failed_node 缺失时，rejected 多为 admission 段拒收）
+    if final_status == "rejected":
+        return "admission_reject"
+    if final_status == "fetch_failed":
+        return "extraction_failure"
+    if final_status == "error":
+        return "module_import_error"
+    return "unknown"
+
+
 def _compute_missing_metadata(extract_result: ExtractResult) -> list[str]:
     """返回缺失的必需元数据字段列表（title/author/published/url）。
 
@@ -764,7 +901,109 @@ def _compute_statistics(report: dict[str, Any]) -> dict[str, Any]:
         rounds_dist[key] = rounds_dist.get(key, 0) + 1
     report["rounds_distribution"] = rounds_dist
 
+    # WP-0/D6: 全链 failure_class taxonomy — 每 entry failure_class 非 null
+    # （pass → "none"；intake_raw 保留三分类；pipeline 失败按 failed_node 映射）
+    for e in entries:
+        e["failure_class"] = _classify_failure_class_chain(e)
+
+    # WP-0/D6: 去重 funnel — 按 chrome-stripped body hash 聚类（同正文不同 fetched_at → 1）
+    hash_groups: dict[str, list[int]] = {}
+    for e in entries:
+        h = e.get("raw_content_sha256")
+        if h:
+            hash_groups.setdefault(h, []).append(e.get("index"))
+    total_with_hash = sum(len(v) for v in hash_groups.values())
+    unique_bodies = len(hash_groups)
+    dup_groups = [
+        {"hash": h[:16], "indices": v, "count": len(v)}
+        for h, v in hash_groups.items()
+        if len(v) > 1
+    ]
+    report["deduped_funnel"] = {
+        "total_entries": total_with_hash,
+        "unique_bodies": unique_bodies,
+        "duplicate_count": total_with_hash - unique_bodies,
+        "duplicate_groups": dup_groups,
+    }
+
+    # WP-0/SC-5: repair_acceptance — mechanism_present=true 子集修复门
+    # （与 factory_acceptance 解耦；procedural 0 通过 = 硬 fail）
+    report["repair_acceptance"] = _compute_repair_acceptance(entries)
+
     return report
+
+
+def _compute_repair_acceptance(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """SC-5 修复门：mechanism_present=true 子集通过率 + 分层 + procedural 硬 fail。
+
+    与 factory_acceptance 解耦（factory_acceptance / CLI exit 不动）：
+      - positive_pass_rate: mechanism_present=true 且 expected=ingest 子集通过率，
+        SC-5 concept 起步线 ≥0.60；
+      - negative_reject_rate: 负样本（含 no_mechanism）拒收率，目标 ==1.0；
+      - layers: live/fixture/concept/procedural 分层通过率（concept/procedural
+        取运行时 content_lane；空 lane 不计入 concept/procedural 层）；
+      - procedural_zero_pass_hard_fail: procedural 子集 >0 且 0 通过 → True（SC-5 硬 fail）；
+      - needs_adjudication: 双审不一致条目，不计入 mechanism_present=true 分母（不移 reject）。
+    """
+    def _layer(subset: list[dict[str, Any]]) -> dict[str, Any]:
+        passed = sum(1 for e in subset if e.get("passed"))
+        total = len(subset)
+        return {
+            "passed": passed,
+            "total": total,
+            "pass_rate": (passed / total) if total else 0.0,
+        }
+
+    mp_true = [
+        e for e in entries
+        if e.get("mechanism_present") is True and e.get("expected") == "ingest"
+    ]
+    mp_layer = _layer(mp_true)
+    live_layer = _layer([e for e in mp_true if e.get("source") == "live"])
+    fixture_layer = _layer([e for e in mp_true if e.get("source") == "fixture"])
+    concept_layer = _layer([
+        e for e in mp_true
+        if str(e.get("content_lane", "")).lower() == "concept"
+    ])
+    procedural_layer = _layer([
+        e for e in mp_true
+        if str(e.get("content_lane", "")).lower() == "procedural"
+    ])
+
+    neg = [e for e in entries if e.get("expected") == "reject"]
+    neg_rejected = sum(1 for e in neg if e.get("passed"))
+    neg_reject_rate = (neg_rejected / len(neg)) if neg else 0.0
+
+    needs_adj = [
+        e for e in entries if e.get("review_status") == "needs_adjudication"
+    ]
+    procedural_hard_fail = (
+        procedural_layer["total"] > 0 and procedural_layer["passed"] == 0
+    )
+    gate = (
+        mp_layer["pass_rate"] >= 0.60
+        and neg_reject_rate == 1.0
+        and not procedural_hard_fail
+    )
+    return {
+        "positive_pass_rate": mp_layer["pass_rate"],
+        "mechanism_present_true_total": mp_layer["total"],
+        "mechanism_present_true_passed": mp_layer["passed"],
+        "negative_reject_rate": neg_reject_rate,
+        "negative_total": len(neg),
+        "negative_rejected": neg_rejected,
+        "layers": {
+            "live": live_layer,
+            "fixture": fixture_layer,
+            "concept": concept_layer,
+            "procedural": procedural_layer,
+        },
+        "procedural_zero_pass_hard_fail": procedural_hard_fail,
+        "needs_adjudication_count": len(needs_adj),
+        "needs_adjudication_indices": [e.get("index") for e in needs_adj],
+        "repair_acceptance_gate": gate,
+        "AUTO_PROMOTE": os.environ.get("AKB2_AUTO_PROMOTE", "0"),
+    }
 
 
 def run_calibration(

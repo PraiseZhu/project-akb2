@@ -2,7 +2,7 @@
 #
 # 用途: 出厂验收 (SC-6.4) 与负样本回归 (SC-6.3) 的唯一数据源
 # 规模: 20 条 (18 正样本按领域配比 + 2 负样本)
-# 格式: 每条含 url / 领域 / expected: ingest|reject
+# 格式: 每条含 url / 领域 / expected: ingest|reject / audit(机制审计块)
 #
 # v2 变更 (2026-06-26, t2b-preflight-corpus):
 #   - 12 条死链替换为稳定 canonical URL (replaced_reason 标注)
@@ -11,6 +11,22 @@
 #   - crewai/aider/MCP 保持 live (B3-6) + 真实 feed_* + off_corpus_rationale
 #   - fixture_only_domains: [] (无全 fixture 领域; 所有 9 领域均有 ≥1 live 正样本)
 #   - live 正样本 aligned_count=6 (addy-osmani×4 + lilian-weng×1 + simon-willison×1), 满足 SC-7 ≥2 真实命中
+#
+# WP-0 审计块变更 (2026-06-30, quality-repair-v3):
+#   - 每条加 audit 块: {mechanism_present, reject_reason?, original_expected,
+#     mechanism_present_reason, evidence_anchors_or_url_lines, review_status, reviewers}
+#   - mechanism_present=false → expected: reject + reject_reason: no_mechanism
+#   - 双审不一致 → review_status: needs_adjudication, 不移 reject (保持 expected: ingest)
+#
+# 重标前/后分母迁移表 (WP-0):
+#   重标前: 18 正样本 / 2 负样本 (factory_acceptance 分母)
+#   重标后: 17 mechanism_present=true 正样本 / 1 needs_adjudication(orchestration-tax,
+#           保持 expected=ingest 不计入 mechanism_present=true 分母) / 2 负样本(no_mechanism)
+#   迁移: 无正样本因 mechanism_present=false 移入 reject (当前 corpus 经 v2 策展，
+#         无 openai 政策散文类无机制正样本); 2 条负样本补标 mechanism_present=false,
+#         reject_reason=no_mechanism (原本就以 plagiarism/news 拒, 现统一归因 no_mechanism)
+#   needs_adjudication: index=11 (orchestration-tax) — notes 描述为 trade-off 分析,
+#         未读全文无法确认 ≥3 命名组件+因果边, 等 lead+2 reviewer 确认
 #
 # 领域配比 (18 正样本, 替换后守恒):
 #   AI Agent: 4
@@ -41,6 +57,14 @@ entries:
     source_publisher: "Addy Osmani's Blog"
     source_slug: "addy-osmani"
     # aligned: addyosmani.com == main_sources addy-osmani domain ✓
+    audit:
+      mechanism_present: true
+      original_expected: ingest
+      mechanism_present_reason: "agent 生命周期管理机制(长时运行的状态/恢复/预算组件)"
+      evidence_anchors_or_url_lines:
+        - "notes: agent 生命周期管理与长时运行挑战"
+      review_status: confirmed
+      reviewers: ["glm5.2-worker"]
 
   - url: "fixture:ag2-captain-agent-concept"
     domain: "AI Agent"
@@ -48,6 +72,15 @@ entries:
     notes: "AG2 Captain Agent 参考架构, 含多 agent 任务分发与 sub-agent 生命周期管理。概念正样本 fixture"
     fixture_kind: "concept_positive"
     # 原 docs.ag2.ai/use-cases/reference-agents/captain-agent [404 soft_404] → fixture
+    audit:
+      mechanism_present: true
+      original_expected: ingest
+      mechanism_present_reason: "4 命名组件(Captain/Executor Pool/Task Graph/Sub-Agent Lifecycle)+Delegation Protocol typed schema+因果边"
+      evidence_anchors_or_url_lines:
+        - "Architectural Components: 1. Captain, 2. Executor Pool, 3. Task Graph and Checkpointing, 4. Sub-Agent Lifecycle"
+        - "Delegation Protocol: DispatchMessage/ResultMessage (task_id/executor_capability/scoped_context/constraints)"
+      review_status: confirmed
+      reviewers: ["glm5.2-worker"]
 
   - url: "https://code.claude.com/docs/en/hooks"
     domain: "AI Agent"
@@ -60,6 +93,14 @@ entries:
     source_slug: "anthropic-engineering"
     replaced_reason: "原 github.com/anthropics/claude-code/blob/main/docs/hooks.md [404]; docs 迁移至 code.claude.com"
     off_corpus_rationale: "code.claude.com 不在 main_sources; proxy_slug=anthropic-engineering (Anthropic 官方, Claude Code 母站)"
+    audit:
+      mechanism_present: true
+      original_expected: ingest
+      mechanism_present_reason: "命名 hook 类型(PreToolUse/PostToolUse/Notification)+配置示例(how/config)"
+      evidence_anchors_or_url_lines:
+        - "notes: PreToolUse/PostToolUse/Notification 等 hook 类型与配置示例"
+      review_status: confirmed
+      reviewers: ["glm5.2-worker"]
 
   - url: "https://www.langchain.com/blog/the-agent-development-lifecycle"
     domain: "AI Agent"
@@ -72,6 +113,14 @@ entries:
     source_slug: "langchain-blog"
     replaced_reason: "原 blog.langchain.dev/why-you-should-move-from-building-agents-to-building-agent-systems/ [404 soft_404]; blog 迁移至 langchain.com"
     off_corpus_rationale: "langchain.com ≠ main_sources domain blog.langchain.dev; proxy_slug=langchain-blog (同博客, 域名迁移)"
+    audit:
+      mechanism_present: true
+      original_expected: ingest
+      mechanism_present_reason: "build/test/deploy/monitor 四阶段生命周期机制(命名阶段+因果)"
+      evidence_anchors_or_url_lines:
+        - "notes: build/test/deploy/monitor 四阶段"
+      review_status: confirmed
+      reviewers: ["glm5.2-worker"]
 
   # =========================================================================
   # Loop Engineering (3 条)
@@ -82,6 +131,14 @@ entries:
     notes: "Addy Osmani Loop Engineering 原文, 黄金样张源。fixture 快照 (2479 词)"
     fixture_kind: "golden_sample"
     # 原 addyo.substack.com/p/loop-engineering [200] → fixture (确定性质量锚)
+    audit:
+      mechanism_present: true
+      original_expected: ingest
+      mechanism_present_reason: "loop 五组件(trigger/work-selector/executor/quality-gate/ledger)+收敛判断(黄金样张)"
+      evidence_anchors_or_url_lines:
+        - "notes: 黄金样张源, loop 五组件与收敛判断"
+      review_status: confirmed
+      reviewers: ["glm5.2-worker"]
 
   - url: "https://addyosmani.com/blog/loop-engineering/"
     domain: "Loop Engineering"
@@ -94,6 +151,14 @@ entries:
     source_slug: "addy-osmani"
     replaced_reason: "原 addyo.substack.com/p/loop-engineering 转为 fixture; 此条为 addyosmani.com 同源 live 版"
     # aligned: addyosmani.com == main_sources addy-osmani domain ✓
+    audit:
+      mechanism_present: true
+      original_expected: ingest
+      mechanism_present_reason: "loop 五组件+收敛判断(同 golden 同源)"
+      evidence_anchors_or_url_lines:
+        - "notes: loop 五组件与收敛判断"
+      review_status: confirmed
+      reviewers: ["glm5.2-worker"]
 
   - url: "https://simonwillison.net/2026/Jun/22/porting-moebius/"
     domain: "Loop Engineering"
@@ -106,6 +171,14 @@ entries:
     source_slug: "simon-willison"
     replaced_reason: "continue.dev Next.js SSR defuddle 抽取失败, 替换为 defuddle 可抽的静态页 (simonwillison.net Django SSR)"
     # aligned: simonwillison.net == main_sources simon-willison domain ✓
+    audit:
+      mechanism_present: true
+      original_expected: ingest
+      mechanism_present_reason: "agentic coding loop+工具调用收敛(how/procedural)"
+      evidence_anchors_or_url_lines:
+        - "notes: agentic coding 循环与工具调用收敛"
+      review_status: confirmed
+      reviewers: ["glm5.2-worker"]
 
   # =========================================================================
   # Context Engineering (2 条)
@@ -121,6 +194,14 @@ entries:
     source_slug: "anthropic-engineering"
     replaced_reason: "原 github.com/anthropics/claude-code/blob/main/docs/memory.md [404]; docs 迁移至 code.claude.com"
     off_corpus_rationale: "code.claude.com 不在 main_sources; proxy_slug=anthropic-engineering (Anthropic 官方, Claude Code 母站)"
+    audit:
+      mechanism_present: true
+      original_expected: ingest
+      mechanism_present_reason: "三层架构(CLAUDE.md/MEMORY.md/自动记忆)命名组件"
+      evidence_anchors_or_url_lines:
+        - "notes: CLAUDE.md / MEMORY.md / 自动记忆三层架构"
+      review_status: confirmed
+      reviewers: ["glm5.2-worker"]
 
   - url: "https://lilianweng.github.io/posts/2025-05-01-thinking/"
     domain: "Context Engineering"
@@ -133,6 +214,14 @@ entries:
     source_slug: "lilian-weng"
     replaced_reason: "原 addyo.substack.com/p/context-engineering [404]; 替换为 lilianweng 上下文/推理主题文"
     # aligned: lilianweng.github.io == main_sources lilian-weng domain ✓
+    audit:
+      mechanism_present: true
+      original_expected: ingest
+      mechanism_present_reason: "命名推理机制(chain-of-thought/self-consistency)"
+      evidence_anchors_or_url_lines:
+        - "notes: chain-of-thought 与 self-consistency"
+      review_status: confirmed
+      reviewers: ["glm5.2-worker"]
 
   # =========================================================================
   # Harness Engineering (2 条)
@@ -143,6 +232,15 @@ entries:
     notes: "Vercel AI SDK agent harness 实现, 含 tool use / streaming / multi-step 模式。无源页 fixture (原 repo 404)"
     fixture_kind: "no_source_page"
     # 原 github.com/vercel/ai-sdk-agent [404] → fixture (repo 不存在, 无稳定替代)
+    audit:
+      mechanism_present: true
+      original_expected: ingest
+      mechanism_present_reason: "tool registration schema+5-step invocation flow+multi-step loop+maxSteps budget+convergence detection(how/procedural)"
+      evidence_anchors_or_url_lines:
+        - "Tool Invocation Flow: 1-5 steps (extract/validate/execute/feed back/decide)"
+        - "Multi-Step Loop: 1-5 structure; maxSteps hard budget; Convergence Detection"
+      review_status: confirmed
+      reviewers: ["glm5.2-worker"]
 
   - url: "https://addyosmani.com/blog/agent-harness-engineering/"
     domain: "Harness Engineering"
@@ -155,6 +253,14 @@ entries:
     source_slug: "addy-osmani"
     replaced_reason: "原 github.com/continuedev/continue/blob/main/core/README.md [404]; 替换为 addyosmani harness engineering 文"
     # aligned: addyosmani.com == main_sources addy-osmani domain ✓
+    audit:
+      mechanism_present: true
+      original_expected: ingest
+      mechanism_present_reason: "agent loop 五组件(触发/选择/执行/门控/账本)"
+      evidence_anchors_or_url_lines:
+        - "notes: agent loop 的触发/选择/执行/门控/账本五组件"
+      review_status: confirmed
+      reviewers: ["glm5.2-worker"]
 
   # =========================================================================
   # Multi-Agent Orchestration (2 条)
@@ -170,6 +276,15 @@ entries:
     source_slug: "addy-osmani"
     replaced_reason: "原 github.com/langchain-ai/langgraph/blob/main/docs/docs/how-tos/multi-agent-network.md [429 rate-limited]; 替换为 addyosmani 编排主题文"
     # aligned: addyosmani.com == main_sources addy-osmani domain ✓
+    audit:
+      mechanism_present: null  # uncertain — 等 lead + 2 reviewer 确认
+      original_expected: ingest
+      mechanism_present_reason: "notes 描述为 trade-off 分析, 偏分析而非机制规格; 未读全文无法确认 ≥3 命名组件+因果边"
+      evidence_anchors_or_url_lines:
+        - "notes: 多 agent 协调开销与 trade-off 分析"
+      review_status: needs_adjudication
+      reviewers: ["glm5.2-worker"]
+      adjudication_note: "保持 expected=ingest 不移 reject; 等 lead+reviewer 读取全文确认 mechanism_present(true→入 mp_true 分母 / false→移 reject+no_mechanism)"
 
   - url: "https://docs.crewai.com/concepts/crews"
     domain: "Multi-Agent Orchestration"
@@ -182,6 +297,14 @@ entries:
     source_slug: "langchain-blog"
     off_corpus_rationale: "crewai.com 不在 main_sources; proxy_slug=langchain-blog (LangGraph/LangChain 为多 agent 编排权威)"
     # B3-6: crewai 保持 live + 真实 feed_* + off_corpus_rationale
+    audit:
+      mechanism_present: true
+      original_expected: ingest
+      mechanism_present_reason: "role-based agent 协作+sequential/hierarchical 流程(命名流程机制)"
+      evidence_anchors_or_url_lines:
+        - "notes: role-based agent 协作与 sequential/hierarchical 流程"
+      review_status: confirmed
+      reviewers: ["glm5.2-worker"]
 
   # =========================================================================
   # AI Coding Workflow (2 条)
@@ -197,6 +320,14 @@ entries:
     source_slug: "anthropic-engineering"
     replaced_reason: "原 github.com/anthropics/claude-code/blob/main/docs/sub-agents.md [404]; docs 迁移至 code.claude.com"
     off_corpus_rationale: "code.claude.com 不在 main_sources; proxy_slug=anthropic-engineering (Anthropic 官方, Claude Code 母站)"
+    audit:
+      mechanism_present: true
+      original_expected: ingest
+      mechanism_present_reason: "task 分发/隔离/并行控制模式(命名机制)"
+      evidence_anchors_or_url_lines:
+        - "notes: task 分发/隔离/并行控制模式"
+      review_status: confirmed
+      reviewers: ["glm5.2-worker"]
 
   - url: "https://aider.chat/docs/repomap.html"
     domain: "AI Coding Workflow"
@@ -209,6 +340,14 @@ entries:
     source_slug: "swyx"
     off_corpus_rationale: "aider.chat 不在 main_sources; proxy_slug=swyx (AI 工程/开发者体验主题权威)"
     # B3-6: aider 保持 live + 真实 feed_* + off_corpus_rationale
+    audit:
+      mechanism_present: true
+      original_expected: ingest
+      mechanism_present_reason: "repository map 生成机制+token 高效上下文构建(how/procedural)"
+      evidence_anchors_or_url_lines:
+        - "notes: repository map 生成与 token 高效上下文构建"
+      review_status: confirmed
+      reviewers: ["glm5.2-worker"]
 
   # =========================================================================
   # Design System & Tokens (1 条)
@@ -223,6 +362,14 @@ entries:
     source_publisher: "Material Design"
     source_slug: "figma-blog"
     off_corpus_rationale: "m3.material.io 不在 main_sources; proxy_slug=figma-blog (设计系统/设计工具权威)"
+    audit:
+      mechanism_present: true
+      original_expected: ingest
+      mechanism_present_reason: "primitive/semantic/component 三层令牌架构(命名组件+层级因果)"
+      evidence_anchors_or_url_lines:
+        - "notes: primitive/semantic/component 三层令牌架构"
+      review_status: confirmed
+      reviewers: ["glm5.2-worker"]
 
   # =========================================================================
   # Knowledge Engineering (1 条)
@@ -238,6 +385,14 @@ entries:
     source_slug: "anthropic-engineering"
     replaced_reason: "原 github.com/anthropics/claude-code/blob/main/docs/skills.md [429 rate-limited]; docs 迁移至 code.claude.com"
     off_corpus_rationale: "code.claude.com 不在 main_sources; proxy_slug=anthropic-engineering (Anthropic 官方, Claude Code 母站)"
+    audit:
+      mechanism_present: true
+      original_expected: ingest
+      mechanism_present_reason: "skill 打包/触发/注入三段知识工程模式(命名机制)"
+      evidence_anchors_or_url_lines:
+        - "notes: skill 打包/触发/注入的知识工程模式"
+      review_status: confirmed
+      reviewers: ["glm5.2-worker"]
 
   # =========================================================================
   # Protocol Design (1 条)
@@ -253,6 +408,14 @@ entries:
     source_slug: "simon-willison"
     off_corpus_rationale: "modelcontextprotocol.io 不在 main_sources; proxy_slug=simon-willison (MCP/AI 工具链主题权威)"
     # B3-6: MCP 保持 live + 真实 feed_* + off_corpus_rationale
+    audit:
+      mechanism_present: true
+      original_expected: ingest
+      mechanism_present_reason: "client-server 交互模型+transport 层设计(命名组件+协议机制)"
+      evidence_anchors_or_url_lines:
+        - "notes: client-server 交互模型与 transport 层设计"
+      review_status: confirmed
+      reviewers: ["glm5.2-worker"]
 
   # =========================================================================
   # 负样本 (2 条)
@@ -263,9 +426,29 @@ entries:
     notes: "负样本-洗稿型: 观点堆砌无 anchor 可执行知识。fixture 快照。预期准入段新颖度判定 fail"
     fixture_kind: "negative_plagiarism"
     # 原 x.com/zyndai/status/2064344562110263722 → fixture (洗稿型负样本快照)
+    audit:
+      mechanism_present: false
+      reject_reason: no_mechanism
+      original_expected: reject
+      mechanism_present_reason: "纯观点堆砌, 无 ≥3 命名组件/无因果边/无 how-step/无 config/无 source_operation/无 anchor"
+      evidence_anchors_or_url_lines:
+        - "fixture 全文: 'AI agents are really amazing...' 观点句, 无机制"
+        - "无 how-step/无 config/无 anchor"
+      review_status: confirmed
+      reviewers: ["glm5.2-worker"]
 
   - url: "fixture:google-io-2026-news"
     domain: "AI Agent"
     expected: reject
     notes: "负样本-新闻型: 谷歌 I/O 视频简报, 纯新闻播报无 How 内容。预期准入段 How 倾向判定 fail"
     fixture_kind: "negative_news"
+    audit:
+      mechanism_present: false
+      reject_reason: no_mechanism
+      original_expected: reject
+      mechanism_present_reason: "纯新闻播报, 自述无 executable steps/code/how-to; 无命名机制组件"
+      evidence_anchors_or_url_lines:
+        - "fixture 自述: 'no executable steps, code examples, or concrete how-to knowledge'"
+        - "全文为产品发布新闻, 无机制"
+      review_status: confirmed
+      reviewers: ["glm5.2-worker"]
