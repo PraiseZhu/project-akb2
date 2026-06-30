@@ -166,3 +166,54 @@ def test_rate_limit_retry_exhausted_is_fail_visible(monkeypatch, tmp_path, vault
     assert alerts, "应触发告警"
     assert "9499" in alerts[0], f"告警应含 9499: {alerts[0]}"
     assert "retry exhausted" in alerts[0], f"告警应含 retry exhausted: {alerts[0]}"
+
+
+# ---------------------------------------------------------------------------
+# SC-7: strict 模式期望简报齐全 — 缺失 fail-visible（dry-run 不访问飞书/不写 state）
+# ---------------------------------------------------------------------------
+
+
+def test_partial_expected_sources_fail_visible_dry_run(monkeypatch, tmp_path, vault, feishu_env):
+    """SC-7: dry-run + strict，仅 ai_trends（github 缺失）→ exit1 + 日志含 github 缺失+期望路径，
+    不访问飞书、不写 state。"""
+    _redirect_logs(monkeypatch, tmp_path)
+    write_ai_trends(vault, "2026-06-03")  # 仅 ai_trends，github 缺失
+    sent: list = []
+    monkeypatch.setattr(agent, "send_card_dm", lambda oid, card: sent.append(card))
+    monkeypatch.setattr(agent, "send_card", lambda cid, card: sent.append(card))
+    sp = tmp_path / "state.json"
+
+    rc = agent.run_sync(
+        date="2026-06-03", vault_root=vault, target="group", state_path=sp,
+        dry_run=True, expected=["ai_trends", "github"], strict=True,
+    )
+
+    assert rc == 1, "strict 下 github 缺失必须 fail-visible exit 1"
+    assert sent == [], "dry-run 不应访问飞书"
+    assert not sp.exists(), "dry-run 不应写 state"
+    log_text = (tmp_path / "logs" / "feishu-sync.log").read_text(encoding="utf-8")
+    assert "github 缺失" in log_text
+    assert "GitHub Briefing.md" in log_text  # 含期望路径
+
+
+def test_strict_both_present_dry_run_ok(monkeypatch, tmp_path, vault, feishu_env):
+    """SC-7: dry-run + strict，两份齐全 → exit0 + 输出含两份 dry-run。"""
+    _redirect_logs(monkeypatch, tmp_path)
+    write_ai_trends(vault, "2026-06-03")
+    write_github(vault, "2026-06-03")
+    sent: list = []
+    monkeypatch.setattr(agent, "send_card_dm", lambda oid, card: sent.append(card))
+    monkeypatch.setattr(agent, "send_card", lambda cid, card: sent.append(card))
+    sp = tmp_path / "state.json"
+
+    rc = agent.run_sync(
+        date="2026-06-03", vault_root=vault, target="group", state_path=sp,
+        dry_run=True, expected=["ai_trends", "github"], strict=True,
+    )
+
+    assert rc == 0
+    assert sent == []
+    assert not sp.exists()
+    log_text = (tmp_path / "logs" / "feishu-sync.log").read_text(encoding="utf-8")
+    assert "ai_trends dry-run → group" in log_text
+    assert "github dry-run → group" in log_text

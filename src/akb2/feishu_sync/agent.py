@@ -18,8 +18,18 @@ from .state import SyncState
 
 def discover_node(state: SyncState) -> dict:
     vault = Path(state["vault_root"])
-    briefings, errors = discover_mod.discover(vault, state["date"])
-    return {"briefings": briefings, "errors": errors, "log": []}
+    expected = state.get("expected")
+    briefings, errors, missing_expected = discover_mod.discover(
+        vault, state["date"], expected=expected
+    )
+    log = list(state.get("log", []))
+    # SC-7: strict 模式下期望简报缺失 → 明确错误（含期望路径）+ 记日志，不静默跳过
+    if state.get("strict") and missing_expected:
+        for kind, path in missing_expected:
+            msg = f"{kind} 缺失（期望路径: {path}）"
+            errors.append(msg)
+            log.append(msg)
+    return {"briefings": briefings, "errors": errors, "log": log}
 
 
 def gate_node(state: SyncState) -> dict:
@@ -108,8 +118,14 @@ def run_sync(
     target: str,
     state_path: Path,
     dry_run: bool = False,
+    expected: list[str] | None = None,
+    strict: bool = False,
 ) -> int:
-    """运行同步，返回退出码（0=成功/静默无内容，1=有失败）。"""
+    """运行同步，返回退出码（0=成功/静默无内容，1=有失败）。
+
+    SC-7: strict=True 时 expected 中期望简报缺失 → fail-visible（exit 1）。
+    dry_run 时不触达飞书告警通道（不访问飞书、不写 state）。
+    """
     agent = build_agent()
     init: SyncState = {
         "date": date,
@@ -117,6 +133,8 @@ def run_sync(
         "target": target,
         "state_path": str(state_path),
         "dry_run": dry_run,
+        "strict": strict,
+        "expected": expected or [],
         "briefings": [],
         "errors": [],
         "log": [],
@@ -136,8 +154,11 @@ def run_sync(
         notify.log_line(f"今日无可发布简报，静默退出 ({date}/{target})")
 
     if errors:
-        notify.alert_failure(
-            f"{date} 简报同步 {len(errors)} 项失败: " + "; ".join(errors)
-        )
+        msg = f"{date} 简报同步 {len(errors)} 项失败: " + "; ".join(errors)
+        if dry_run:
+            # SC-7: dry-run 不触达飞书告警通道（不访问飞书）
+            notify.log_line(f"FAILED — {msg}")
+        else:
+            notify.alert_failure(msg)
         return 1
     return 0
