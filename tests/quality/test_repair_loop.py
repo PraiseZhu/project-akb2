@@ -641,16 +641,21 @@ Therefore the reliable AI agent loop is: clone the evaluation harness, isolate
         )
 
         assert not result["converged"]
-        assert any(d.dimension == "SG-how-density" for d in result["final_defects"])
+        # WP-4: patch 引入新 SG-how-density（命令剥离后 ### 操作步骤 为空）→ 单调护栏
+        # 回退该轮（新 identity + 未严格下降）。final_defects 回到原解读分离，
+        # how_density 不持久化；但命令过滤器仍运行（trace 记录剥离）。
         assert not any(d.dimension == "SG-command-recheck" for d in result["final_defects"])
-        assert "`git diff --stat`" not in result["final_text"]
+        assert "`git diff --stat`" not in result["final_text"]  # 回退到原稿，无编造命令
         trace = json.loads(Path(result["trace_paths"][0]).read_text(encoding="utf-8"))
+        # 命令过滤器仍运行（trace 记录剥离 3 个编造命令）
         assert trace["command_filter"]["new_count"] == 3
         assert trace["command_filter"]["stripped_commands"] == [
             "git diff --stat",
             "grep -R TODO .",
             "npx made-up-cli audit",
         ]
+        # WP-4: 单调护栏回退该轮（非单调：新 SG-how-density identity 不在 prev）
+        assert trace["status"] == "rolled_back_no_monotonic_decrease"
 
 
 # ---------------------------------------------------------------------------
@@ -659,10 +664,14 @@ Therefore the reliable AI agent loop is: clone the evaluation harness, isolate
 
 
 class TestRepairLoopNoConverge:
-    def test_max_rounds_exhausted_fail_closed(
+    def test_idle_early_stop_fail_closed(
         self, candidate_with_defects, temp_failures_path
     ):
-        """3 轮修复后仍有缺陷 → fail-closed, 签名落盘。"""
+        """WP-4: 每轮返回原样（无改进=空转）→ 连续空转早停 fail-closed（非耗尽 3 轮）。
+
+        旧 test_max_rounds_exhausted 期望耗尽 3 轮；WP-4 单调护栏+早停让 idle 场景
+        在 consecutive_idle>=REPAIR_IDLE_EARLY_STOP 时早停（rounds<MAX_REPAIR_ROUNDS）。
+        """
 
         # 每轮修复都返回同样的有缺陷的文本（模拟始终修不好）
         def mock_always_broken(model_family, messages, response_schema=None):
@@ -722,17 +731,25 @@ class TestRepairLoopNoConverge:
             mock_route_llm=mock_always_broken,
         )
 
-        assert not result["converged"], "Should fail-closed after max rounds"
-        assert result["rounds"] == MAX_REPAIR_ROUNDS
+        assert not result["converged"], "Should fail-closed"
+        # WP-4: 连续空转早停（rounds < MAX_REPAIR_ROUNDS，不耗尽）
+        assert result["rounds"] <= MAX_REPAIR_ROUNDS
+        assert result["rounds"] < MAX_REPAIR_ROUNDS, (
+            "idle 场景应早停，不耗尽 MAX_REPAIR_ROUNDS"
+        )
         assert result["signature_written"]
         assert result["failure_signature"] is not None
-        assert "distill_no_converge" in result["failure_signature"]
+        assert "repair_idle_early_stop" in result["failure_signature"], (
+            f"应早停签名: {result['failure_signature']}"
+        )
+        # WP-4: 空转不计有效预算
+        assert result["effective_rounds"] == 0, "全空转场景 effective_rounds 应为 0"
 
         # 验证签名文件已写入
         failures_path = Path(temp_failures_path)
         assert failures_path.exists(), "Failures file should exist"
         content = failures_path.read_text()
-        assert "distill_no_converge" in content
+        assert "repair_idle_early_stop" in content
 
     def test_signature_follows_schema(self, temp_failures_path):
         """不收敛签名符合 failure-signature.schema.json。"""
@@ -1942,3 +1959,130 @@ class TestRepairWorkerProcessGroupKill:
         assert pidfile.exists(), "worker 应先启动 sleep 30 孙进程并写 pidfile"
         child_pid = int(pidfile.read_text(encoding="utf-8"))
         assert _wait_pid_gone(child_pid), f"sleep 30 孙进程仍存在: pid={child_pid}"
+
+
+# ---------------------------------------------------------------------------
+# WP-4: repair 收敛护栏（identity 单调 + 必备节保护 + 空转早停 + attempts 硬上限）
+# ---------------------------------------------------------------------------
+
+
+class TestRepairConvergenceGuardrail:
+    """WP-4/D5: 震荡回归 / patch 空转 / 吞节 三独立缺陷的护栏测试。"""
+
+    def test_required_h3_deletion_rolled_back(
+        self, candidate_with_defects, temp_failures_path
+    ):
+        """WP-4.3: patch 吞掉 ### 操作步骤 H3 → 独立必备节 guard 回退该轮（D5-3）。
+
+        _verify_unchanged_sections 豁免命名 H2 整 span（含内部 H3），漏检 H3 被删；
+        独立 _required_h3_deleted guard 检测到 → 回退该轮，不更新 current_text。
+        """
+        # patch 重写 论证与解释 但删了 ### 操作步骤 H3
+        def mock_llm(model_family, messages, response_schema=None, **kwargs):
+            if model_family == "deepseek-v4-pro":
+                return LLMResponse(
+                    content={
+                        "论证与解释": (
+                            "## 论证与解释\n\nRewritten content without the 操作步骤 subsection."
+                        )
+                    },
+                    model_used="deepseek-v4-pro",
+                    calls_used=1,
+                )
+            return LLMResponse(content={}, model_used=model_family)
+
+        result = run_repair_loop(
+            candidate_text=candidate_with_defects,
+            a_defects=[],
+            b_defects=[
+                Defect(
+                    dimension="解读分离",
+                    location="论证与解释",
+                    defect="操作步骤需重写",
+                    suggestion="保留操作步骤 H3",
+                )
+            ],
+            failures_path=temp_failures_path,
+            mock_route_llm=mock_llm,
+            raw_text=candidate_with_defects,
+        )
+        # H3 guard 回退（### 操作步骤 被吞）
+        trace = json.loads(Path(result["trace_paths"][0]).read_text(encoding="utf-8"))
+        assert trace["status"] == "rolled_back_required_h3_deleted"
+        assert "### 操作步骤" in trace["rolled_back_h3"]
+        # final_text 仍含 ### 操作步骤（回退到原稿，未接受吞节 patch）
+        assert "### 操作步骤" in result["final_text"]
+
+    def test_attempts_hard_ceiling_non_idle(
+        self, candidate_with_defects, temp_failures_path, monkeypatch
+    ):
+        """WP-4.2: 严格单调下降（非空转）不早停，耗尽 MAX_REPAIR_ROUNDS → distill_no_converge。
+
+        每轮 grader 返回严格子集+更少缺陷（3→2→1）→ 有效轮计入；第 3 轮同数（1==1）
+        → 回退但 consecutive_idle=1 < 阈值 → 不早停，耗尽 3 轮 → distill_no_converge。
+        """
+        from src.akb2.quality import checks_structural
+
+        # A 层总过（mock），让循环走 B grader 路径测单调+天花板
+        monkeypatch.setattr(
+            checks_structural, "run_candidate_self_gate", lambda *a, **kw: []
+        )
+
+        call_count = [0]
+
+        def mock_grader(model_family, messages, response_schema=None, **kwargs):
+            if model_family == "deepseek-v4-pro":
+                return LLMResponse(content={}, model_used="deepseek-v4-pro", calls_used=1)
+            if model_family == "gpt-5.4":
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    locs = [("TLDR", "TLDR 无锚点"), ("核心论点", "无锚点")]  # d1,d2 (2)
+                else:
+                    locs = [("TLDR", "TLDR 无锚点")]  # d1 (1); round 3 同数→回退
+                return LLMResponse(
+                    content={
+                        "dimensions": [
+                            {
+                                "dimension": "论断锚定率",
+                                "pass": False,
+                                "defects": [
+                                    {"location": loc, "defect": dep, "suggestion": "添加锚点"}
+                                    for loc, dep in locs
+                                ],
+                            }
+                        ]
+                        + [
+                            {"dimension": dim, "pass": True, "defects": []}
+                            for dim in [
+                                "How 密度", "How 可执行性", "证据诚实", "解读分离",
+                                "TLDR 密度", "新颖增量", "边强度匹配",
+                                "Future Questions 质量", "适用边界",
+                            ]
+                        ]
+                    },
+                    model_used="gpt-5.4",
+                    calls_used=1,
+                )
+            return LLMResponse(content={}, model_used=model_family)
+
+        d1 = Defect("论断锚定率", "TLDR", "TLDR 无锚点", "添加锚点")
+        d2 = Defect("论断锚定率", "核心论点", "无锚点", "添加锚点")
+        d3 = Defect("论断锚定率", "关键发现", "无锚点", "添加锚点")
+        result = run_repair_loop(
+            candidate_text=candidate_with_defects,
+            a_defects=[],
+            b_defects=[d1, d2, d3],
+            failures_path=temp_failures_path,
+            mock_route_llm=mock_grader,
+            raw_text=candidate_with_defects,
+        )
+        assert not result["converged"]
+        # 非空转（严格下降）不早停，耗尽 MAX_REPAIR_ROUNDS
+        assert result["rounds"] == MAX_REPAIR_ROUNDS, (
+            f"非空转应耗尽 3 轮不早停, got rounds={result['rounds']}"
+        )
+        assert "distill_no_converge" in result["failure_signature"]
+        # 严格下降轮计入有效预算（round 1+2 接受，round 3 回退）
+        assert result["effective_rounds"] >= 2, (
+            f"严格下降轮应计入 effective_rounds, got {result['effective_rounds']}"
+        )

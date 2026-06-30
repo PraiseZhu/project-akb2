@@ -1456,6 +1456,40 @@ def _kill_process_group(proc: subprocess.Popen[Any], grace_s: float) -> None:
 # ---------------------------------------------------------------------------
 
 
+# WP-4: repair 收敛护栏常量（D5 震荡/空转/吞节）
+# 连续空转（持平/非单调/吞节回退）≥ 阈值 → fail-visible 早停，不让 wall-clock 空耗。
+REPAIR_IDLE_EARLY_STOP: int = 2
+# 必备 H3（lane 需要）：命名 H2 内的 H3 被重写吞掉时独立 guard 拒收（D5-3）。
+# _verify_unchanged_sections 豁免命名 H2 整 span（含内部 H3），故需独立检测。
+REQUIRED_H3_MARKERS: tuple[str, ...] = ("### 操作步骤",)
+
+
+def _defect_identity(defects: list[Defect]) -> set[str]:
+    """缺陷 identity 集合（dimension+location+defect 归一化签名）。
+
+    WP-4.1 单调护栏：新轮 defect identity 必须是上轮的**子集**（无新增 identity），
+    且总数严格下降；否则回退该轮（防震荡回归，D5-1）。
+    """
+    identity: set[str] = set()
+    for d in defects or []:
+        dim = str(getattr(d, "dimension", "") or "").strip()
+        loc = _normalize_loc(str(getattr(d, "location", "") or ""))
+        defect = str(getattr(d, "defect", "") or "").strip()[:80]
+        identity.add(f"{dim}|{loc}|{defect}")
+    return identity
+
+
+def _required_h3_deleted(prev_text: str, new_text: str) -> list[str]:
+    """检测必备 H3（``### 操作步骤`` 等）被重写吞掉（D5-3）。
+
+    返回 prev 有而 new 没有的必备 H3 标记列表（空 = 无吞节）。
+    仅检测删除（prev 有 new 无），不要求候选页绝对具备——零回归于从未有该 H3 的候选。
+    """
+    if not prev_text or not new_text:
+        return []
+    return [m for m in REQUIRED_H3_MARKERS if m in prev_text and m not in new_text]
+
+
 def run_repair_loop(
     candidate_text: str,
     a_defects: list[Defect],
@@ -1523,6 +1557,10 @@ def run_repair_loop(
     current_text = candidate_text
     current_defects = list(all_defects)
     final_grader_meta: dict[str, Any] = {}
+    # WP-4: 有效轮计数（仅严格单调下降+无新增 identity 才计入）+ 连续空转计数（早停用）。
+    # attempts 硬上限仍是 MAX_REPAIR_ROUNDS（for 循环）；effective_rounds 独立计数空转不计。
+    effective_rounds = 0
+    consecutive_idle = 0
 
     for round_num in range(1, MAX_REPAIR_ROUNDS + 1):
         before_hash = _compute_text_hash(current_text)
@@ -1724,6 +1762,32 @@ def run_repair_loop(
             )
             continue
 
+        # WP-4.3: 必备节 guard —— 命名 H2 内 H3（### 操作步骤）被重写吞掉 → 回退该轮。
+        # _verify_unchanged_sections 豁免命名 H2 整 span（含内部 H3），故独立 guard（D5-3）。
+        deleted_h3 = _required_h3_deleted(current_text, repaired_text)
+        if deleted_h3:
+            trace_payload["status"] = "rolled_back_required_h3_deleted"
+            trace_payload["rolled_back_h3"] = deleted_h3
+            trace_payload["after_text_hash"] = _compute_text_hash(current_text)
+            trace_paths.append(
+                _write_repair_trace(trace_root, round_num, trace_payload, current_defects)
+            )
+            consecutive_idle += 1
+            if consecutive_idle >= REPAIR_IDLE_EARLY_STOP:
+                return _fail_closed(
+                    failures_path, current_text, current_defects, round_num,
+                    "repair_idle_early_stop",
+                    trace_paths=trace_paths, final_grader_meta=final_grader_meta,
+                    effective_rounds=effective_rounds,
+                )
+            continue
+
+        # WP-4.1: 捕获本轮接受前状态，供单调护栏比较（防震荡回归，D5-1）
+        prev_text = current_text
+        prev_defects = list(current_defects)
+        prev_identity = _defect_identity(prev_defects)
+        prev_count = len(prev_defects)
+
         # 更新当前文本
         current_text = repaired_text
 
@@ -1738,8 +1802,32 @@ def run_repair_loop(
         trace_payload["a_defects_after"] = _defects_to_summary(new_a_defects)
 
         if new_a_defects:
-            # A 层仍有缺陷，进入下一轮
+            # WP-4.1: 单调护栏 —— 新 identity 必须是 prev 子集 + 总数严格下降，否则回退
+            new_identity = _defect_identity(new_a_defects)
+            new_ids = new_identity - prev_identity
+            if new_ids or len(new_a_defects) >= prev_count:
+                # 非单调（新增 identity 或未严格下降）→ 回退该轮，不更新 current_text
+                current_text = prev_text
+                current_defects = prev_defects
+                trace_payload["status"] = "rolled_back_no_monotonic_decrease"
+                trace_payload["new_defect_identities"] = sorted(new_ids)[:5]
+                trace_payload["after_text_hash"] = _compute_text_hash(current_text)
+                trace_paths.append(
+                    _write_repair_trace(trace_root, round_num, trace_payload, current_defects)
+                )
+                consecutive_idle += 1
+                if consecutive_idle >= REPAIR_IDLE_EARLY_STOP:
+                    return _fail_closed(
+                        failures_path, current_text, current_defects, round_num,
+                        "repair_idle_early_stop",
+                        trace_paths=trace_paths, final_grader_meta=final_grader_meta,
+                        effective_rounds=effective_rounds,
+                    )
+                continue
+            # 单调接受：有效轮 +1，重置空转
             current_defects = new_a_defects
+            effective_rounds += 1
+            consecutive_idle = 0
             trace_payload["status"] = "a_defects_remaining"
             trace_payload["after_text_hash"] = _compute_text_hash(current_text)
             trace_paths.append(
@@ -1797,6 +1885,7 @@ def run_repair_loop(
 
         if not current_defects:
             # 收敛: 无缺陷
+            effective_rounds += 1
             trace_payload["status"] = "converged"
             trace_payload["after_text_hash"] = _compute_text_hash(current_text)
             trace_paths.append(
@@ -1805,6 +1894,7 @@ def run_repair_loop(
             return {
                 "converged": True,
                 "rounds": round_num,
+                "effective_rounds": effective_rounds,
                 "final_text": current_text,
                 "final_defects": [],
                 "signature_written": False,
@@ -1812,13 +1902,36 @@ def run_repair_loop(
                 "trace_paths": trace_paths,
                 "final_grader_meta": final_grader_meta,
             }
+        # WP-4.1: B 缺陷单调护栏 —— 同 A 路径
+        new_identity = _defect_identity(current_defects)
+        new_ids = new_identity - prev_identity
+        if new_ids or len(current_defects) >= prev_count:
+            current_text = prev_text
+            current_defects = prev_defects
+            trace_payload["status"] = "rolled_back_no_monotonic_decrease"
+            trace_payload["new_defect_identities"] = sorted(new_ids)[:5]
+            trace_payload["after_text_hash"] = _compute_text_hash(current_text)
+            trace_paths.append(
+                _write_repair_trace(trace_root, round_num, trace_payload, current_defects)
+            )
+            consecutive_idle += 1
+            if consecutive_idle >= REPAIR_IDLE_EARLY_STOP:
+                return _fail_closed(
+                    failures_path, current_text, current_defects, round_num,
+                    "repair_idle_early_stop",
+                    trace_paths=trace_paths, final_grader_meta=final_grader_meta,
+                    effective_rounds=effective_rounds,
+                )
+            continue
+        effective_rounds += 1
+        consecutive_idle = 0
         trace_payload["status"] = "b_defects_remaining"
         trace_payload["after_text_hash"] = _compute_text_hash(current_text)
         trace_paths.append(
             _write_repair_trace(trace_root, round_num, trace_payload, current_defects)
         )
 
-    # 3 轮耗尽后仍有缺陷 → fail-closed
+    # 3 轮耗尽后仍有缺陷 → fail-closed（attempts 硬上限 = MAX_REPAIR_ROUNDS）
     return _fail_closed(
         failures_path,
         current_text,
@@ -1827,6 +1940,7 @@ def run_repair_loop(
         "distill_no_converge",
         trace_paths=trace_paths,
         final_grader_meta=final_grader_meta,
+        effective_rounds=effective_rounds,
     )
 
 
@@ -1838,6 +1952,7 @@ def _fail_closed(
     error_class: str,
     trace_paths: list[str] | None = None,
     final_grader_meta: dict[str, Any] | None = None,
+    effective_rounds: int = 0,
 ) -> dict[str, Any]:
     """不收敛出口: 落故障签名 + 返回 fail-closed 结果。
 
@@ -1845,8 +1960,10 @@ def _fail_closed(
         failures_path: failures.jsonl 路径
         final_text: 最终稿件文本
         remaining_defects: 剩余缺陷
-        rounds: 已用轮数
-        error_class: 故障分类（distill_no_converge 或 grader_all_down）
+        rounds: 已用 attempts 轮数（硬上限 MAX_REPAIR_ROUNDS）
+        error_class: 故障分类（distill_no_converge / grader_all_down /
+            repair_idle_early_stop 等）
+        effective_rounds: 实际有效轮数（空转不计，WP-4.2）
 
     Returns:
         dict: 含 converged=False 和签名信息
@@ -1861,6 +1978,7 @@ def _fail_closed(
     return {
         "converged": False,
         "rounds": rounds,
+        "effective_rounds": effective_rounds,
         "final_text": final_text,
         "final_defects": remaining_defects,
         "signature_written": True,
