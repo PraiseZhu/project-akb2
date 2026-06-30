@@ -15,8 +15,11 @@ import subprocess
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 from src.akb2.video.config import (
     VideoConfig,
+    _resolve_akb2_root,
     _resolve_llm_api_key,
     _resolve_nlm,
     _resolve_ytdlp,
@@ -157,3 +160,36 @@ def test_config_defaults_constructible():
     assert config.pending_filename == "pending_research.json"
     assert config.nlm_profile == "default"
     assert isinstance(config.video_sources_path, Path)
+
+
+# ---------------------------------------------------------------------------
+# _resolve_akb2_root：fail-closed，不回退 ~/Obsidian（iCloud 老库陷阱）
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_akb2_root_env_vault_root(monkeypatch, tmp_path):
+    """get_akb2_root 不可用但有 VAULT_ROOT → 用 env 派生 AKB2.0 子根。"""
+    def boom():
+        raise RuntimeError("volume unmounted")
+
+    monkeypatch.setattr("src.akb2.loops.paths.get_akb2_root", boom)
+    monkeypatch.delenv("AKB2_ROOT", raising=False)
+    monkeypatch.delenv("AKB2_VAULT_ROOT", raising=False)
+    monkeypatch.setenv("VAULT_ROOT", str(tmp_path / "Obsidian"))
+    assert _resolve_akb2_root() == (tmp_path / "Obsidian" / "Praise Space" / "AKB2.0").resolve()
+
+
+def test_resolve_akb2_root_fail_closed_no_env(monkeypatch):
+    """get_akb2_root 不可用 + 无任何 env → fail-closed RuntimeError，绝不回退 ~/Obsidian。
+
+    锁死 iCloud 陷阱回归：宁可抛错也不静默把视频产物写进 ~/Obsidian（历史 iCloud 软链）。
+    """
+    def boom():
+        raise RuntimeError("volume unmounted")
+
+    monkeypatch.setattr("src.akb2.loops.paths.get_akb2_root", boom)
+    monkeypatch.delenv("AKB2_ROOT", raising=False)
+    monkeypatch.delenv("AKB2_VAULT_ROOT", raising=False)
+    monkeypatch.delenv("VAULT_ROOT", raising=False)
+    with pytest.raises(RuntimeError, match="iCloud"):
+        _resolve_akb2_root()
