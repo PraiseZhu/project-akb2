@@ -2086,3 +2086,51 @@ class TestRepairConvergenceGuardrail:
         assert result["effective_rounds"] >= 2, (
             f"严格下降轮应计入 effective_rounds, got {result['effective_rounds']}"
         )
+
+    def test_changed_sections_discard_counts_idle_early_stop(
+        self, candidate_with_defects, temp_failures_path, monkeypatch
+    ):
+        """P2-D: changed_sections discard（违规改未点名节）计入 consecutive_idle,
+        连续 ≥REPAIR_IDLE_EARLY_STOP → 早停 fail-closed（不让 wall-clock 空耗）。"""
+        from src.akb2.quality import repair
+        from src.akb2.quality.checks_structural import Defect
+        from src.akb2.quality.llm_router import LLMResponse
+
+        # mock _verify_unchanged_sections 总返回非空（每轮违规改未点名节 → discard）
+        monkeypatch.setattr(
+            repair,
+            "_verify_unchanged_sections",
+            lambda *a, **kw: ["some_unnamed_section"],
+        )
+
+        def mock_llm(model_family, messages, response_schema=None, **kwargs):
+            if model_family == "deepseek-v4-pro":
+                return LLMResponse(
+                    content={"论证与解释": "## 论证与解释\n\nRewritten content."},
+                    model_used="deepseek-v4-pro",
+                    calls_used=1,
+                )
+            return LLMResponse(content={}, model_used=model_family)
+
+        result = run_repair_loop(
+            candidate_text=candidate_with_defects,
+            a_defects=[],
+            b_defects=[
+                Defect(
+                    dimension="解读分离",
+                    location="论证与解释",
+                    defect="需重写",
+                    suggestion="重写",
+                )
+            ],
+            failures_path=temp_failures_path,
+            mock_route_llm=mock_llm,
+            raw_text=candidate_with_defects,
+        )
+        assert not result["converged"]
+        # changed_sections discard 计入 idle → 连续 2 次 → 早停
+        assert "repair_idle_early_stop" in (result.get("failure_signature") or ""), (
+            f"changed_sections 连续 discard 应早停: {result.get('failure_signature')}"
+        )
+        # 无有效轮（每轮都 discard，未单调下降）
+        assert result["effective_rounds"] == 0

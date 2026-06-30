@@ -1658,6 +1658,7 @@ def run_repair_loop(
                 current_defects = grader_result.defects
                 trace_payload["b_defects_after"] = _defects_to_summary(current_defects)
                 if not current_defects:
+                    effective_rounds += 1
                     trace_payload["status"] = "converged_after_deterministic"
                     trace_payload["after_text_hash"] = _compute_text_hash(current_text)
                     trace_paths.append(
@@ -1666,6 +1667,7 @@ def run_repair_loop(
                     return {
                         "converged": True,
                         "rounds": round_num,
+                        "effective_rounds": effective_rounds,
                         "final_text": current_text,
                         "final_defects": [],
                         "signature_written": False,
@@ -1753,13 +1755,21 @@ def run_repair_loop(
         changed_sections = _verify_unchanged_sections(current_text, repaired_text, named_sections)
         trace_payload["changed_sections"] = changed_sections
         if changed_sections:
-            # 违规: 丢弃本轮重写，不更新 current_text
-            # 但仍继续下一轮（可能修复指令不同）
+            # 违规: 丢弃本轮重写，不更新 current_text（空转——非单调改进）
+            # P2-D: 计入 consecutive_idle + 早停检查（不让 wall-clock 空耗）
             trace_payload["status"] = "discarded_changed_sections"
             trace_payload["after_text_hash"] = _compute_text_hash(current_text)
             trace_paths.append(
                 _write_repair_trace(trace_root, round_num, trace_payload, current_defects)
             )
+            consecutive_idle += 1
+            if consecutive_idle >= REPAIR_IDLE_EARLY_STOP:
+                return _fail_closed(
+                    failures_path, current_text, current_defects, round_num,
+                    "repair_idle_early_stop",
+                    trace_paths=trace_paths, final_grader_meta=final_grader_meta,
+                    effective_rounds=effective_rounds,
+                )
             continue
 
         # WP-4.3: 必备节 guard —— 命名 H2 内 H3（### 操作步骤）被重写吞掉 → 回退该轮。
