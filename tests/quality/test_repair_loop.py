@@ -2134,3 +2134,63 @@ class TestRepairConvergenceGuardrail:
         )
         # 无有效轮（每轮都 discard，未单调下降）
         assert result["effective_rounds"] == 0
+
+
+# ---------------------------------------------------------------------------
+# §0.2/D3 + A4：defect schema 分类 + hard_fail 早停
+# ---------------------------------------------------------------------------
+
+
+class TestD3DefectSchemaAndA4:
+    """§0.2/D3：_classify_defect_schema 结构化分类；§0.2/A4：hard_fail 全缺陷早停。"""
+
+    def test_classify_repairable_defect(self):
+        """确定性可修缺陷（如适用边界）→ repairable。"""
+        from src.akb2.quality.repair import _classify_defect_schema
+        d = Defect(dimension="A8-applicability-boundary", location="适用边界",
+                   defect="缺少不适用场景", suggestion="添加不适用场景")
+        schema = _classify_defect_schema(d)
+        assert schema["repairability"] == "repairable"
+        assert schema["retry_budget"] == "3"
+        assert schema["final_fallback"] == "repair_or_fail_closed"
+
+    def test_classify_hard_fail_no_mechanism(self):
+        """no_mechanism_signal → hard_fail（不进 repair）。"""
+        from src.akb2.quality.repair import _classify_defect_schema
+        d = Defect(dimension="mechanism_signal", location="正文",
+                   defect="no_mechanism_signal: 无命名组件", suggestion="添加机制组件")
+        schema = _classify_defect_schema(d)
+        assert schema["repairability"] == "hard_fail"
+        assert schema["retry_budget"] == "0"
+        assert schema["final_fallback"] == "fail_closed"
+
+    def test_classify_hard_fail_integrity_floor(self):
+        """integrity_floor / 0 eligible → hard_fail。"""
+        from src.akb2.quality.repair import _classify_defect_schema
+        d = Defect(dimension="A4-graph-edges", location="因果边",
+                   defect="integrity_floor: 0 eligible edge", suggestion="补 eligible edge")
+        schema = _classify_defect_schema(d)
+        assert schema["repairability"] == "hard_fail"
+
+    def test_a4_hard_fail_early_stop(self):
+        """§0.2/A4：ALL 剩余缺陷 hard_fail → fail-closed 早停（不烧 LLM 轮）。"""
+        from src.akb2.quality.repair import Defect, run_repair_loop
+
+        hard_defects = [
+            Defect(dimension="mechanism_signal", location="正文",
+                   defect="no_mechanism_signal: 无命名组件", suggestion="添加机制组件"),
+        ]
+        result = run_repair_loop(
+            candidate_text="---\nstatus: candidate\n---\n\n## TLDR\ntest [raw §A]\n",
+            a_defects=hard_defects,
+            b_defects=[],
+            raw_text="raw content",
+            golden_sample_text="",
+            failures_path="/tmp/_failures.jsonl",
+            mock_route_llm=None,
+        )
+        assert result["converged"] is False, "hard_fail 应 fail-closed"
+        # A4 早停：不调 LLM（rounds 小，不烧满 MAX_REPAIR_ROUNDS）
+        assert "a4" in str(result.get("error_class", "")) or "a4" in str(result.get("failure_signature", "")), (
+            f"应 a4 早停: {result.get('error_class')} / {result.get('failure_signature')}"
+        )

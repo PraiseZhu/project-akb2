@@ -964,6 +964,46 @@ def _is_deterministic_repair_defect(defect: Defect) -> bool:
     )
 
 
+def _classify_defect_schema(defect: Defect) -> dict[str, str]:
+    """§0.2/D3：结构化 defect schema（统一 repair 路由，防各写一套字符串判断）。
+
+    {defect_type, repairability(hard_fail|repairable), source_node, required_evidence,
+    retry_budget, final_fallback}。repairability 由 _is_deterministic_repair_defect 决定；
+    hard_fail（claim_anchor/evidence_honesty/traceability/F4 0 eligible/no_mechanism/编造/
+    entailment false）不进可通过 repair。
+    """
+    repairable = _is_deterministic_repair_defect(defect)
+    # §0.2/D3 底线白名单：硬 fail 不进 repair（claim_anchor/evidence_honesty/
+    # traceability/F4 0 eligible/no_mechanism/编造/entailment false）。
+    # 注：SG-provenance-ratio 虽与 evidence_honesty 相关，但 _is_deterministic_repair_defect
+    # 允许 rebalance，故归 repairable（不在此 hard_fail 列表）。
+    hard_fail_dims = {"SG-raw-anchor"}  # claim_anchor 底线
+    hard_fail_keywords = (
+        "no_mechanism_signal", "integrity_floor", "0 eligible",
+        "interpretation_entailment", "编造",
+    )
+    defect_text = f"{defect.dimension} {defect.defect} {defect.location}".lower()
+    is_hard_fail = (
+        defect.dimension in hard_fail_dims
+        or any(kw.lower() in defect_text for kw in hard_fail_keywords)
+    )
+    if is_hard_fail:
+        repairable = False
+    return {
+        "defect_type": defect.dimension,
+        "repairability": (
+            "hard_fail" if is_hard_fail
+            else ("repairable" if repairable else "semantic_not_patchable")
+        ),
+        "source_node": defect.location,
+        "required_evidence": (
+            "raw/extract 已支撑" if repairable else "raw 不支撑（不可凭空造）"
+        ),
+        "retry_budget": str(MAX_REPAIR_ROUNDS) if repairable else "0",
+        "final_fallback": "fail_closed" if not repairable else "repair_or_fail_closed",
+    }
+
+
 # 根因③(2026-06-20 修):全角→半角等价标点的显式 allow-list(放行口径)。
 # 只含句/逗号/冒号/分号/感叹/问号/圆括号——这些是安全格式噪声;结构性字符
 # (｜ ［ ］ ① 数字 # -)严禁放入,旧实现全量 NFKC 把它们也归一了(越过禁止边界)。
@@ -1695,6 +1735,29 @@ def run_repair_loop(
                         named_sections.add(title)
                         break
             trace_payload["named_sections"] = sorted(named_sections)
+
+        # §0.2/A4：hard_fail 底线缺陷早停——claim_anchor/evidence_honesty/traceability/
+        # F4 0 eligible/no_mechanism/编造/entailment false 等 LLM 不可 patch 的硬底线缺陷
+        # 不喂 LLM 空转 MAX_REPAIR_ROUNDS 轮，fail-closed 早停（省时优化，仍 fail-closed
+        # 不放水）。保守口径：仅当 ALL 剩余缺陷都是 hard_fail 才早停；混合缺陷仍走 LLM。
+        if current_defects and all(
+            _classify_defect_schema(d)["repairability"] == "hard_fail"
+            for d in current_defects
+        ):
+            trace_payload["status"] = "a4_hard_fail_early_stop"
+            trace_payload["after_text_hash"] = _compute_text_hash(current_text)
+            trace_paths.append(
+                _write_repair_trace(trace_root, round_num, trace_payload, current_defects)
+            )
+            return _fail_closed(
+                failures_path,
+                current_text,
+                current_defects,
+                round_num,
+                "a4_hard_fail_early_stop",
+                trace_paths=trace_paths,
+                final_grader_meta=final_grader_meta,
+            )
 
         # 构建修复指令(根因③:喂黄金样张作标杆)
         instruction_text = _build_repair_instruction(current_defects)
