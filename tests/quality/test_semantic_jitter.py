@@ -1,12 +1,16 @@
-"""Step-7: 语义型 How 抖动兜底测试。
+"""§0.2/A1：语义型 How 抖动兜底测试。
 
 覆盖：
 - SC-7.1: how_params segment 产 SEMANTIC_RETAKE_MAX 次取交集（具名常量=2）
 - SC-7.2: 交集为空/连续不一致达阈值 → fail-closed（有界，不无限重试）
 - SC-7.3: must_cover kind 仍三类；DISTILL_MODEL_FAMILY / PRIMARY_GRADER_MODEL 未变
-- 回归护栏: 默认开（不设 env）时 extract_claims 产 3 次 LLM 调用（claims + 2 次 how_params 取交集）；显式 =0 才关闭
+- A1 默认关护栏: 默认不设 env 时 retake 关闭——单次 how_params（claims + how_params = 2 次
+  调用）；仅当显式 AKB2_DISTILL_SEMANTIC_RETAKE=1 才开启 retake 取交集（3 次调用）
+- M2 字段透传: retake=1 时 _intersect_how_steps 透传首样本 mechanism_components/causal_edges
 
 retake 仅作用于 LLM 自由文本 how_steps（语义 segment），不碰 must_cover 代码直出。
+A1 默认关理由：retake 交集以 command 对齐，对 concept 的 mechanism_components/causal_edges
+语义不适用（会丢非共享组件/边）；稳定性改靠 M1 raw-grounded fallback + §4 两阶段抽取。
 """
 
 from __future__ import annotations
@@ -105,14 +109,15 @@ class TestSemanticRetakeConstant:
             raise SemanticJitterError("test")
 
 
-class TestSemanticRetakeDefaultOn:
-    """生产策略护栏：默认不设 env 时 retake 开启（SC-11 retake 默认开）。
+class TestSemanticRetakeDefaultOff:
+    """A1 生产策略护栏：默认不设 env 时 retake 关闭（单次 how_params）。
 
-    Finding 3：retake 必须默认开——单次抽取不够稳，取交集才是 fail-closed 的依据。
-    仅当显式 AKB2_DISTILL_SEMANTIC_RETAKE=0 才关闭。
+    §0.2/A1：retake 取交集以 command 对齐，对 concept 的 mechanism_components/causal_edges
+    语义不适用——会丢非共享组件/边，概念机制抽取不能丢这些。故默认关，稳定性改靠
+    M1 raw-grounded fallback + §4 两阶段抽取。仅当显式 AKB2_DISTILL_SEMANTIC_RETAKE=1 才开。
     """
 
-    def test_default_on_produces_retake(
+    def test_default_off_produces_single_call(
         self, monkeypatch, sample_raw_content, extract_success_response
     ):
         monkeypatch.delenv("AKB2_DISTILL_SEMANTIC_RETAKE", raising=False)
@@ -128,16 +133,15 @@ class TestSemanticRetakeDefaultOn:
         result = extract_claims(sample_raw_content, route_llm_fn=tracking)
 
         assert result.success is True
-        # 默认开：claims(1) + how_params 取交集(SEMANTIC_RETAKE_MAX=2) = 3 次调用。
-        # mock 对每次返回同一份合法响应，两份 how_params 交集非空 → 成功。
-        assert calls == ["claims", "how_steps", "how_steps"]
-        assert len(calls) == 1 + SEMANTIC_RETAKE_MAX
+        # A1 默认关：claims(1) + how_params(1) = 2 次调用（无 retake 第 3 次）。
+        assert calls == ["claims", "how_steps"]
+        assert len(calls) == 2
 
-    def test_explicit_zero_disables_retake(
+    def test_explicit_one_enables_retake(
         self, monkeypatch, sample_raw_content, extract_success_response
     ):
-        """显式 AKB2_DISTILL_SEMANTIC_RETAKE=0 关闭 retake，回退到单次 how_params。"""
-        monkeypatch.setenv("AKB2_DISTILL_SEMANTIC_RETAKE", "0")
+        """显式 AKB2_DISTILL_SEMANTIC_RETAKE=1 开启 retake，how_params 取交集（3 次调用）。"""
+        monkeypatch.setenv("AKB2_DISTILL_SEMANTIC_RETAKE", "1")
         from tests.quality.conftest import make_mock_route_llm
 
         calls = []
@@ -150,9 +154,10 @@ class TestSemanticRetakeDefaultOn:
         result = extract_claims(sample_raw_content, route_llm_fn=tracking)
 
         assert result.success is True
-        # 显式关闭：仅 claims + how_params 两次调用，无 retake 第 3 次。
-        assert calls == ["claims", "how_steps"]
-        assert len(calls) == 2
+        # 显式开启：claims(1) + how_params 取交集(SEMANTIC_RETAKE_MAX=2) = 3 次调用。
+        # mock 对每次返回同一份合法响应，两份 how_params 交集非空 → 成功。
+        assert calls == ["claims", "how_steps", "how_steps"]
+        assert len(calls) == 1 + SEMANTIC_RETAKE_MAX
 
 
 class TestSemanticRetakeIntersection:
@@ -315,6 +320,101 @@ class TestSemanticRetakeFailClosed:
         result = _intersect_how_steps(samples)
         assert result["how_steps"] == []
         assert result["param_entries"]  # 取首次
+
+
+class TestSemanticRetakeMechanismFieldPreservation:
+    """§0.2/D2/M2：retake=1 时 _intersect_how_steps 透传首样本 mechanism_components/causal_edges。
+
+    旧 bug：_intersect_how_steps 只返回 how_steps/param_entries，丢 mechanism_components/
+    causal_edges → retake=1 的 concept 抽取丢机制结构真相源。M2 修复：透传首样本
+    （含 D2 新字段 component_id/aliases/evidence_anchor/evidence_sentence/edge_kind/evidence）。
+    交集只对 how_steps（command 对齐）有意义，组件/边不交（语义不适用），取首样本。
+    """
+
+    def test_intersect_preserves_first_sample_mechanism_fields(self):
+        """两样本共享 how_steps command 但组件/边不同 → 透传首样本的组件/边。"""
+        from src.akb2.quality.distill import _intersect_how_steps
+
+        shared_commands = ["tools/list", "tools/call", "resources/read"]
+        sample_a = _how_params_response(shared_commands).content
+        sample_a["mechanism_components"] = [
+            {"name": "Captain", "role": "dispatch"},
+            {"name": "Executor Pool", "role": "run"},
+            {"name": "Task Graph", "role": "track"},
+        ]
+        sample_a["causal_edges"] = [
+            {"from": "Captain", "to": "Executor Pool", "relation": "dispatches"},
+            {"from": "Executor Pool", "to": "Task Graph", "relation": "feeds"},
+        ]
+        sample_b = _how_params_response(shared_commands).content
+        sample_b["mechanism_components"] = [
+            {"name": "Other", "role": "x"},
+        ]
+        sample_b["causal_edges"] = []
+
+        result = _intersect_how_steps([sample_a, sample_b])
+
+        # how_steps 交集保留（共享 command）
+        assert len(result["how_steps"]) == len(shared_commands)
+        # M2：mechanism_components/causal_edges 透传首样本（不丢，不交）
+        assert result["mechanism_components"] == sample_a["mechanism_components"]
+        assert result["causal_edges"] == sample_a["causal_edges"]
+        # 首样本组件名在场，第二样本的 "Other" 不混入
+        names = [c["name"] for c in result["mechanism_components"]]
+        assert "Captain" in names
+        assert "Other" not in names
+
+    def test_intersect_preserves_d2_new_fields(self):
+        """D2 新字段（component_id/aliases/evidence_anchor/evidence_sentence/edge_kind/
+        evidence）随首样本透传，不被 _intersect_how_steps 丢。"""
+        from src.akb2.quality.distill import _intersect_how_steps
+
+        sample_a = _how_params_response(["cmd-a", "cmd-b", "cmd-c"]).content
+        sample_a["mechanism_components"] = [
+            {
+                "component_id": "captain",
+                "name": "Captain",
+                "aliases": ["dispatcher"],
+                "role": "dispatch",
+                "evidence_anchor": "§A",
+                "evidence_sentence": "The Captain dispatches to the Executor Pool",
+            },
+        ]
+        sample_a["causal_edges"] = [
+            {
+                "from": "Captain",
+                "to": "Executor Pool",
+                "relation": "dispatches",
+                "edge_kind": "source_causal",
+                "evidence": "The Captain dispatches to the Executor Pool",
+                "evidence_anchor": "§A",
+            },
+        ]
+        sample_b = _how_params_response(["cmd-a", "cmd-b", "cmd-c"]).content
+        sample_b["mechanism_components"] = []
+        sample_b["causal_edges"] = []
+
+        result = _intersect_how_steps([sample_a, sample_b])
+
+        comp = result["mechanism_components"][0]
+        assert comp["component_id"] == "captain"
+        assert comp["aliases"] == ["dispatcher"]
+        assert comp["evidence_anchor"] == "§A"
+        assert comp["evidence_sentence"].startswith("The Captain")
+        edge = result["causal_edges"][0]
+        assert edge["edge_kind"] == "source_causal"
+        assert edge["evidence_anchor"] == "§A"
+        assert "dispatches" in edge["evidence"]
+
+    def test_intersect_empty_samples_returns_empty_mechanism_fields(self):
+        """无样本 → mechanism_components/causal_edges 也归一为空数组（不 KeyError）。"""
+        from src.akb2.quality.distill import _intersect_how_steps
+
+        result = _intersect_how_steps([])
+        assert result["how_steps"] == []
+        assert result["mechanism_components"] == []
+        assert result["causal_edges"] == []
+        assert result["param_entries"] == []
 
 
 class TestBoundaryGuardrails:

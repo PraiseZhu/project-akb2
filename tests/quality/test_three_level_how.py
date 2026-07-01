@@ -147,7 +147,7 @@ def _make_segment_route(claims_seg: dict, how_seg: dict):
     return route
 
 
-# 关闭语义 retake 隔离本测试（retake 默认开，会多取交集；本测试聚焦 lane-aware 校验）
+# 关闭语义 retake 隔离本测试（retake 默认关；本测试聚焦 lane-aware 校验，显式 setenv 0 防御）
 @pytest.fixture(autouse=True)
 def _disable_semantic_retake(monkeypatch):
     monkeypatch.setenv("AKB2_DISTILL_SEMANTIC_RETAKE", "0")

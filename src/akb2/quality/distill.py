@@ -588,11 +588,15 @@ def extract_claims(
         and os.environ.get("AKB2_DISTILL_DEEPSEEK_JSON_MODE", "0") == "1"
         and not beta_tool_enabled
     )
-    # Step-7: 语义型 How 抖动兜底开关。how_params segment 多取取交集（router 无关，
-    # 注入 mock 亦可触发，便于测试）；默认开（生产路径单次抽取不够稳，retake 取交集
-    # 才是 fail-closed 语义的依据）。仅当显式 AKB2_DISTILL_SEMANTIC_RETAKE=0 才关闭。
+    # §0.2/A1：语义型 How 抖动兜底开关。默认关（"0"）——单次抽取 + _extract_segment_once
+    # 的 schema 校验为主路径。retake 取交集以 command/instruction 语义 key 对齐，对
+    # procedural how_steps 合理，但对 concept 的 mechanism_components/causal_edges 语义
+    # 字段无意义（交集不交组件，M2 仅透传首样本，非真交集）——会丢非共享的机制组件/边，
+    # 概念机制抽取不能丢这些。故默认关；稳定性改靠 M1 raw-grounded fallback + §4 两阶段
+    # 结构化抽取补，不押注 retake 单点。仅当显式 AKB2_DISTILL_SEMANTIC_RETAKE=1 才开启
+    # （retake 仍是可配实验路径，M2 修了透传 mechanism_components/causal_edges，不靠默认规避）。
     # 仅作用于 LLM 自由文本 how_steps，不碰 must_cover 代码直出。
-    semantic_retake_enabled = os.environ.get("AKB2_DISTILL_SEMANTIC_RETAKE", "1") != "0"
+    semantic_retake_enabled = os.environ.get("AKB2_DISTILL_SEMANTIC_RETAKE", "0") == "1"
 
     content_snippet = raw_content[:MAX_EXTRACT_CHARS]  # 截断保护（具名常量，旧阈值截掉半数正文）
 
@@ -1397,9 +1401,16 @@ def _intersect_how_steps(samples: list[dict[str, Any]]) -> dict[str, Any]:
 
     取首次出现的 step（instruction/command/anchor/provenance/provenance_split），
     保留首次 param_entries。仅单次出现的 step 舍弃；交集为空由调用方 fail-closed。
+    mechanism_components/causal_edges 不参与 command 交集（语义不适用），透传首样本
+    （§0.2/D2/M2：concept 机制结构真相源不能因 how_steps 交集丢失）。
     """
     if not samples:
-        return {"how_steps": [], "param_entries": []}
+        return {
+            "how_steps": [],
+            "param_entries": [],
+            "mechanism_components": [],
+            "causal_edges": [],
+        }
     first = samples[0]
     by_key: dict[tuple[str, str], dict[str, Any]] = {}
     step_keys: list[tuple[dict[str, Any], list[tuple[str, str]]]] = []
@@ -1429,9 +1440,15 @@ def _intersect_how_steps(samples: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         seen_keys.update(shared)
         intersected_steps.append(step)
+    # §0.2/D2/M2：retake 交集只对 how_steps（command/instruction 语义 key）有意义；
+    # mechanism_components/causal_edges 是 concept 机制结构真相源，不能因 how_steps
+    # 交集被丢——透传首样本（retake 是实验路径，不靠默认关规避丢字段 bug）。
+    # 含 D2 新字段（component_id/aliases/evidence_anchor/evidence_sentence/edge_kind/evidence）。
     return {
         "how_steps": intersected_steps,
         "param_entries": first.get("param_entries", []),
+        "mechanism_components": first.get("mechanism_components", []),
+        "causal_edges": first.get("causal_edges", []),
     }
 
 

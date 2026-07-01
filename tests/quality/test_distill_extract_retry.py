@@ -141,7 +141,7 @@ class TestExtractRetry:
         """claims 缺少 anchor 字段走重试并失败。
 
         本用例聚焦 claims 校验重试路径，关闭语义 retake 以隔离该特性
-        （retake 默认开由 test_semantic_jitter 专门覆盖）。
+        （retake 默认关由 test_semantic_jitter 专门覆盖；此处显式 setenv 0 防御）。
         """
         monkeypatch.setenv("AKB2_DISTILL_SEMANTIC_RETAKE", "0")
         from tests.quality.conftest import make_mock_route_llm
@@ -194,9 +194,9 @@ class TestExtractRetry:
         result = extract_claims(sample_raw_content, route_llm_fn=tracking_mock)
 
         assert result.success is True
-        # retake 默认开：1 claims + 2 how_params（SEMANTIC_RETAKE_MAX 取交集）= 3 次调用。
-        # mock 对每次调用返回同一份合法响应，两份 how_params 交集非空 → 成功。
-        assert len(calls) == 3
+        # §0.2/A1：retake 默认关——claims(1) + how_params(1) = 2 次调用（无 retake 第 3 次）。
+        # 显式 AKB2_DISTILL_SEMANTIC_RETAKE=1 才开启 retake 取交集（3 次），由 test_semantic_jitter 覆盖。
+        assert len(calls) == 2
         assert {c["response_schema"]["required"][0] for c in calls} == {
             "claims",
             "how_steps",
@@ -315,7 +315,7 @@ class TestExtractRetry:
             )
 
         monkeypatch.setenv("AKB2_DISTILL_DEEPSEEK_BETA_TOOL", "1")
-        # 聚焦 beta_tool 路由，关闭语义 retake 隔离该特性（retake 默认开由 test_semantic_jitter 覆盖）。
+        # 聚焦 beta_tool 路由，关闭语义 retake 隔离该特性（retake 默认关，由 test_semantic_jitter 覆盖）。
         monkeypatch.setenv("AKB2_DISTILL_SEMANTIC_RETAKE", "0")
         monkeypatch.setattr(
             "src.akb2.quality.llm_router.route_deepseek_beta_tool",
