@@ -9,7 +9,7 @@
 
 ## 0. 总览：完成 vs 延期
 
-**第三轮（P2）新增 step 4b + 9b + 7，全部完成。§5 步 1-9 全部实现，仅 step 10 真机 e2e 留 lead 阶段4。**
+**第四轮（R3 双审 finding 修复）：F1-F4 全修复。§5 步 1-9 + 双审 finding 全部实现。**
 
 | §5 步 | 内容 | 状态 | commit |
 |-------|------|------|--------|
@@ -26,10 +26,37 @@
 | 8 | §4 两阶段结构化抽取 + fixture 绑定测试 | ✅ 完成 | ed96349 |
 | 9a | D5 calibration gate 0.30 + CLI `--acceptance-mode` | ✅ 完成 | db47711 |
 | 9b | D4 promote 三分类 + D12 repair_quality_funnel counters | ✅ 完成 | 6e19c12 |
+| R3-fix | F1-F4 双审 finding 修复（anchor 真实性 + hard_fail 混合 + hidden 真算 + final_status 矛盾） | ✅ 完成 | ad15b40 |
 | 10 | 自测 + mini e2e | ✅ mini e2e fixture 级 done；full 真机 e2e 留 lead 阶段4 | — |
 | lint | ruff E501 修 | ✅ | 4a74f35 |
 
-**完成 14 个核心 commit**：§5 步 1-9 + §0.2 D1-D12 全部实现（D10 G1/D11 lane/D12 counters 含）。仅 step 10 full 真机 e2e（需 DEEPSEEK/NLM key）留 lead 阶段4。
+**完成 15 个核心 commit**：§5 步 1-9 + R3 双审 F1-F4 全修复。仅 step 10 真机 e2e 留 lead 阶段4。
+
+## R3 双审 finding 修复（commit ad15b40）
+
+### F1（最高）— eligible edge "既太松又太脆"
+- **太松修**：evidence_anchor 必须是真实 raw anchor（∈ grounded claims 的 §X 集）。
+  integrity_floor eligible 判定加 `_trusted_raw_anchors` 校验；fallback `_build_real_causal_edges`
+  不再合成 §raw，用 `_raw_anchor_positions`+`_nearest_preceding_anchor` 映射 evidence sentence
+  到真实 raw §-anchor；SG 校验 eligible edge evidence_anchor 须在 body 有对应 `[raw §X]`。
+- **太脆修**：concept primary success 但 0 eligible edge → `needs_causal_edge_retake` 信号；
+  runner 用 `_build_real_causal_edges` 从 raw 补抽带真实 anchor 的 source_causal 边，重评 floor；
+  仍 0 → fail-closed（不放松 F4）。
+- **mini e2e 硬证据**：golden/ag2 真实 anchor → eligible + F4 pass；伪 §Z/合成 §raw → F4 fail + needs_retake。
+
+### F2 — D3 hard_fail 混合缺陷放水
+- `_classify_defect_schema` 扩 hard_fail taxonomy（claim_anchor/evidence_honesty/traceability/
+  poisoned_trace/entailment false 等显式维度+关键词）；A4 `all(==hard_fail)` → `any(==hard_fail)`
+  （任一 hard_fail 剩余即 fail-closed，不进 repair，hard_fail 不写入 repair instruction）。
+
+### F3 — D12 hidden_mechanism_edges_count 假实现
+- runner `_compute_mechanism_rendering` 真算（section_rendered/rendered_edge_count/
+  extract_source_causal_edge_count/hidden）；pipeline_result + calibration entry 透传；
+  `_compute_repair_quality_funnel` 用 `mechanism_rendering.hidden` 真算（旧永远 0）。
+
+### F4 — D4 final_status 矛盾
+- runner final_status 从 promotion_outcome 派生（active→promoted / proposal success→proposal_passed /
+  blocked→promotion_blocked）；旧 blocked 仍写 proposal_passed 矛盾修正。
 
 ## 1. 改动清单（按文件）
 
