@@ -449,15 +449,29 @@ def _load_vault_concept_index(
         source_slugs = [p.stem for p in (wiki_dir / "sources").glob("*.md")]
         known_concepts = sorted(set(concept_slugs) | set(source_slugs))
         wiki_pages = sorted(wiki_dir.rglob("*.md"))
-        wiki_references: list[str] = []
+        # §0.2/D10/G1：wiki_references 改结构化 {path,slug,title,tldr,source_url,taxonomy}
+        # 供 _select_novelty_neighbors 按 slug/url/title/topic top-k 选近邻（修 idx6/idx10
+        # 全库前 5 条无关引用导致 novelty 误拒）。
+        wiki_references: list[dict[str, str]] = []
         source_paths: list[str] = []
         for page in wiki_pages:
             if exclude_slug and page.stem == exclude_slug:
                 continue  # 排除当前处理源自身，防自比对误判
             tldr = _read_page_tldr(page)
-            if tldr:
-                wiki_references.append(tldr)
-                source_paths.append(str(page))
+            if not tldr:
+                continue
+            meta = _read_wiki_page_meta(page)
+            wiki_references.append(
+                {
+                    "path": str(page),
+                    "slug": page.stem,
+                    "title": meta.get("title", "") or page.stem,
+                    "tldr": tldr,
+                    "source_url": meta.get("source_url", ""),
+                    "taxonomy": "concept" if "concepts" in page.parts else "source",
+                }
+            )
+            source_paths.append(str(page))
             if len(wiki_references) >= VAULT_WIKI_REFERENCES_MAX:
                 break
 
@@ -493,6 +507,34 @@ def _load_vault_concept_index(
         "pending_queue": pending_queue,
         "source_paths": source_paths,
     }
+
+
+def _read_wiki_page_meta(page: Path) -> dict[str, str]:
+    """§0.2/D10/G1：读 wiki 页 frontmatter 的 title/source_url（结构化 wiki_references）。
+
+    确定性纯文本提取，无 LLM。取不到返回空字符串。
+    """
+    meta: dict[str, str] = {}
+    try:
+        text = page.read_text(encoding="utf-8")
+    except OSError:
+        return meta
+    if not text.lstrip().startswith("---"):
+        return meta
+    end = text.find("\n---", 3)
+    if end == -1:
+        return meta
+    fm = text[3:end]
+    for key in ("title", "source_url", "canonical_title"):
+        m = re.search(rf"^({key})\s*:\s*(.+?)\s*$", fm, re.M)
+        if m:
+            val = m.group(2).strip().strip("\"'")
+            if val and key not in meta:
+                meta[key] = val
+    # canonical_title fallback for title
+    if "title" not in meta and "canonical_title" in meta:
+        meta["title"] = meta["canonical_title"]
+    return meta
 
 
 def _read_page_tldr(page: Path) -> str:

@@ -149,6 +149,10 @@ class AdmissionResult:
     # P1 语义审计的逐篇可读 trace（spec FR-008 / 宪法 P4 失败可见）。仅观测字段，
     # 不参与判定（lane 判定仍由 content_lane/lane_failed/lane_rejected 驱动）。
     lane_reason: str = ""
+    # §0.2/D11：lane reject 二次确认标记——how_tendency PASS + strong mechanism 时
+    # 降级 reject → concept（不直接拒），原 lane_reason 记此。仅观测，不参与判定。
+    lane_reject_recheck: bool = False
+    original_lane_reason: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +213,33 @@ def run_admission(
     # P0-c：非知识内容（新闻/营销/会议recap/纯观点）显式拒收门——不依赖 how_tendency。
     # 堵后门：lane 放松后新闻可能被判 concept → how_tendency 豁免 → 溜过准入（W5/w7 实证）。
     lane_rejected = content_lane == LANE_REJECT
+    lane_reject_recheck = False
+    original_lane_reason = ""
+
+    # §0.2/D11：lane reject 二次确认——how_tendency PASS + strong mechanism（strong
+    # signal≥1 或 strong_component≥3）时不直接拒，降级 reject → concept（继续走机制
+    # 信号门，由 mechanism_signal 决定，不放观点稿）。weak-only 不覆盖 reject（保持拒）。
+    # 修 idx6 how_tendency PASS 但 lane=reject 抖动误拒。
+    if lane_rejected:
+        original_lane_reason = lane_reason
+        mech_signals = _scan_mechanism_signals(body)
+        strong_signal = (
+            mech_signals["causal"] >= 1
+            or mech_signals["code_blocks"] >= 1
+            or mech_signals["source_operations"] >= 1
+        )
+        strong_component = mech_signals["components"] >= MECHANISM_COMPONENT_MIN
+        if how_check.passed and (strong_signal or strong_component):
+            lane_reject_recheck = True
+            content_lane = LANE_CONCEPT
+            lane_rejected = False
+            lane_reason = (
+                f"lane_reject_recheck: how_tendency PASS + strong mechanism"
+                f"（components={mech_signals['components']}, causal={mech_signals['causal']}, "
+                f"code={mech_signals['code_blocks']}, src_ops={mech_signals['source_operations']}）"
+                f" → 降级 concept（原 reject: {original_lane_reason}）"
+            )
+        # weak-only: 不覆盖 reject，保持 lane_rejected=True（LLM 窄仲裁或 fail-closed）
 
     # 5. 机制信号准入门（WP-2/D2）：仅 concept 候选，确定性为主 + LLM 窄仲裁。
     # 无机制散文（openai 政策/新闻/纯观点）在 admission 即拒（no_mechanism_signal），
@@ -263,6 +294,9 @@ def run_admission(
         # lane_reason 全路径透出（pass/reject/fail 均可见，不止 reject），
         # 供 runner 落 ledger 做 P1 语义审计逐篇可读 trace。仅观测，不参与判定。
         lane_reason=lane_reason,
+        # §0.2/D11：lane reject 二次确认观测字段（ledger/calibration 透出）
+        lane_reject_recheck=lane_reject_recheck,
+        original_lane_reason=original_lane_reason,
     )
 
 
@@ -507,17 +541,133 @@ def _check_how_tendency(
     )
 
 
-def _check_novelty(
-    raw_content: str,
-    wiki_references: list[str] | None,
-    route_llm_fn: Any,
-) -> AdmissionCheck:
-    """新颖度判定：对既有 wiki 增量。
+def _normalize_wiki_references(
+    wiki_references: list[str] | list[dict] | None,
+) -> list[dict[str, str]]:
+    """§0.2/D10/G1：wiki_references 归一为结构化 list[dict]。
 
-    无既有 wiki 引用时默认 pass（首个入库内容）。
-    有引用时轻量 LLM 判定是否提供增量信息。
+    兼容旧 list[str]（TLDR 字符串 → {tldr: ref, slug/path: ""}）与新 list[dict]。
     """
     if not wiki_references:
+        return []
+    out: list[dict[str, str]] = []
+    for ref in wiki_references:
+        if isinstance(ref, dict):
+            out.append(
+                {
+                    "path": str(ref.get("path", "")),
+                    "slug": str(ref.get("slug", "")),
+                    "title": str(ref.get("title", "")),
+                    "tldr": str(ref.get("tldr", "")),
+                    "source_url": str(ref.get("source_url", "")),
+                    "taxonomy": str(ref.get("taxonomy", "")),
+                }
+            )
+        elif isinstance(ref, str):
+            out.append(
+                {"path": "", "slug": "", "title": "", "tldr": ref,
+                 "source_url": "", "taxonomy": ""}
+            )
+    return out
+
+
+def _raw_novelty_meta(raw_content: str) -> dict[str, str]:
+    """§0.2/D10/G1：从 raw frontmatter + 首个 H1 提取 slug/url/title 供 exact 匹配。"""
+    meta: dict[str, str] = {"slug": "", "source_url": "", "title": ""}
+    if not raw_content:
+        return meta
+    # frontmatter
+    if raw_content.lstrip().startswith("---"):
+        end = raw_content.find("\n---", 3)
+        if end != -1:
+            fm = raw_content[3:end]
+            for key in ("source_slug", "source_url", "source_title"):
+                m = re.search(rf"^({key})\s*:\s*(.+?)\s*$", fm, re.M)
+                if m:
+                    val = m.group(2).strip().strip("\"'")
+                    if key == "source_slug":
+                        meta["slug"] = val
+                    elif key == "source_url":
+                        meta["source_url"] = val
+                    elif key == "source_title":
+                        meta["title"] = val
+    # 首个 H1 作 title fallback
+    if not meta["title"]:
+        m = re.search(r"(?m)^#\s+(.+?)\s*$", raw_content)
+        if m:
+            meta["title"] = m.group(1).strip()
+    return meta
+
+
+def _tokenize_for_overlap(text: str) -> set[str]:
+    """轻量分词（小写 + 去标点 + 停用词），供 lexical/topic top-k 近邻选择。"""
+    if not text:
+        return set()
+    lower = re.sub(r"[^\w\s一-鿿]", " ", text.lower())
+    stop = {
+        "the", "a", "an", "to", "of", "and", "in", "for", "is", "are", "with",
+        "on", "by", "or", "as", "at", "it", "this", "that", "from", "be",
+    }
+    return {w for w in lower.split() if w and w not in stop and len(w) > 1}
+
+
+def _select_novelty_neighbors(
+    raw_content: str,
+    references: list[dict[str, str]],
+    k: int = 3,
+) -> tuple[list[dict[str, str]], str]:
+    """§0.2/D10/G1：选主题相关 top-k 近邻（修 idx6/idx10 全库前 5 条无关引用误拒）。
+
+    先 exact slug/source_url/near-title，再 lexical/topic top-k（tldr+title token overlap）。
+    无近邻 → 返回 ([], "no_relevant_baseline")。
+    命中 exact slug/url → "duplicate_same_claim" 候选（LLM 判重复 vs 新增）。
+    其余近邻 → "unrelated_baseline"（相关但不同源，LLM 判增量）。
+    """
+    if not references:
+        return [], "no_relevant_baseline"
+    raw_meta = _raw_novelty_meta(raw_content)
+    raw_tokens = _tokenize_for_overlap(
+        raw_content[:MAX_NOVELTY_CONTENT_CHARS] + " " + raw_meta.get("title", "")
+    )
+    # 1. exact slug / source_url 匹配（duplicate_same_claim 候选）
+    exact: list[dict[str, str]] = []
+    for ref in references:
+        rs = ref.get("slug", "")
+        ru = ref.get("source_url", "")
+        if (rs and rs == raw_meta["slug"]) or (ru and ru and ru == raw_meta["source_url"]):
+            ref = {**ref, "_match_type": "duplicate_same_claim"}
+            exact.append(ref)
+    if exact:
+        return exact[:k], "duplicate_same_claim"
+    # 2. near-title + lexical/topic top-k（token overlap）
+    scored: list[tuple[int, dict[str, str]]] = []
+    for ref in references:
+        ref_text = (ref.get("title", "") + " " + ref.get("tldr", "")).strip()
+        ref_tokens = _tokenize_for_overlap(ref_text)
+        overlap = len(raw_tokens & ref_tokens)
+        if overlap > 0:
+            scored.append((overlap, ref))
+    if not scored:
+        return [], "no_relevant_baseline"
+    scored.sort(key=lambda x: x[0], reverse=True)
+    neighbors = [{**r, "_match_type": "unrelated_baseline"} for _, r in scored[:k]]
+    return neighbors, "unrelated_baseline"
+
+
+def _check_novelty(
+    raw_content: str,
+    wiki_references: list[str] | list[dict] | None,
+    route_llm_fn: Any,
+) -> AdmissionCheck:
+    """§0.2/D10/G1：新颖度判定——top-k 近邻选择 + LLM 判增量。
+
+    无既有 wiki 引用 → 默认 pass。有引用时 _select_novelty_neighbors 选相关 top-k
+    （exact slug/url → duplicate_same_claim；lexical overlap → unrelated_baseline；
+    无近邻 → no_relevant_baseline，默认 pass 低置信）。reason 记比较对象 path/slug +
+    判定类型。洗稿（duplicate_same_claim）仍拒。
+    """
+    references = _normalize_wiki_references(wiki_references)
+    if not references:
         return AdmissionCheck(
             name="novelty",
             passed=True,
@@ -526,8 +676,21 @@ def _check_novelty(
 
     from src.akb2.quality.llm_router import RouterConfigError
 
-    refs_str = "\n---\n".join(ref[:800] for ref in wiki_references[:5])
+    neighbors, match_type = _select_novelty_neighbors(raw_content, references)
+    if not neighbors:
+        return AdmissionCheck(
+            name="novelty",
+            passed=True,
+            reason="no_relevant_baseline: 无相关既有 wiki 近邻，默认增量通过（低置信）",
+        )
+
+    refs_str = "\n---\n".join(
+        f"[{n.get('slug') or n.get('path')}] {n.get('tldr', '')[:600]}" for n in neighbors
+    )
     content_snippet = raw_content[:MAX_NOVELTY_CONTENT_CHARS]
+    compare_targets = ", ".join(
+        n.get("slug") or n.get("path") or "?" for n in neighbors
+    )
 
     messages = [
         {
@@ -543,7 +706,7 @@ def _check_novelty(
         {
             "role": "user",
             "content": (
-                f"既有知识摘要:\n{refs_str}\n\n"
+                f"既有知识摘要（比较近邻）:\n{refs_str}\n\n"
                 f"新内容:\n{content_snippet}"
             ),
         },
@@ -559,14 +722,15 @@ def _check_novelty(
         return AdmissionCheck(
             name="novelty",
             passed=False,
-            reason=f"判定调用失败: {exc}",
+            reason=f"判定调用失败（比较 {compare_targets}, {match_type}）: {exc}",
         )
 
     result = _validate_and_normalize(response.content, "novelty")
+    reason = f"[{match_type}, compare={compare_targets}] {result['reason']}"
     return AdmissionCheck(
         name="novelty",
         passed=result["pass"],
-        reason=result["reason"],
+        reason=reason,
     )
 
 

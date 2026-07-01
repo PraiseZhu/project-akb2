@@ -389,3 +389,188 @@ Final opinion.
         assert mech.reason.startswith("no_mechanism_signal"), (
             "纯散文（无标题）仍应 deterministic fail"
         )
+
+
+# ---------------------------------------------------------------------------
+# §0.2/D10/G1：novelty top-k 结构化近邻选择
+# ---------------------------------------------------------------------------
+
+
+class TestG1NoveltyTopK:
+    """§0.2/D10/G1：novelty 选 top-k 相关近邻（修 idx6/idx10 全库前 5 条无关误拒）。"""
+
+    def test_select_neighbors_exact_slug_duplicate(self):
+        """raw slug == ref slug → duplicate_same_claim（exact 匹配）。"""
+        from src.akb2.quality.admission import _select_novelty_neighbors
+
+        raw = "---\nsource_slug: captain\nsource_url: https://x/c\n---\n\n# Captain\ncontent"
+        refs = [
+            {"slug": "other", "title": "Other", "tldr": "unrelated content about cats", "path": "p1", "source_url": ""},
+            {"slug": "captain", "title": "Captain", "tldr": "captain architecture", "path": "p2", "source_url": "https://x/c"},
+        ]
+        neighbors, match_type = _select_novelty_neighbors(raw, refs)
+        assert match_type == "duplicate_same_claim"
+        assert len(neighbors) >= 1
+        assert neighbors[0]["slug"] == "captain"
+
+    def test_select_neighbors_no_relevant_baseline(self):
+        """无相关近邻（token 无重叠）→ no_relevant_baseline。"""
+        from src.akb2.quality.admission import _select_novelty_neighbors
+
+        raw = "---\nsource_slug: unique\n---\n\n# Unique Topic\nzzz qqq xxx"
+        refs = [
+            {"slug": "a", "title": "Cats", "tldr": "all about cats and dogs", "path": "p1", "source_url": ""},
+            {"slug": "b", "title": "Cooking", "tldr": "recipes for pasta", "path": "p2", "source_url": ""},
+        ]
+        neighbors, match_type = _select_novelty_neighbors(raw, refs)
+        assert match_type == "no_relevant_baseline"
+        assert neighbors == []
+
+    def test_select_neighbors_lexical_unrelated_baseline(self):
+        """token 重叠但非 exact slug → unrelated_baseline（top-k 按 overlap 排序）。"""
+        from src.akb2.quality.admission import _select_novelty_neighbors
+
+        raw = "---\nsource_slug: new\n---\n\n# Captain Architecture\nThe captain dispatches executors"
+        refs = [
+            {"slug": "old-captain", "title": "Captain Architecture Old", "tldr": "captain dispatches executors pool", "path": "p1", "source_url": ""},
+        ]
+        neighbors, match_type = _select_novelty_neighbors(raw, refs)
+        assert match_type == "unrelated_baseline"
+        assert len(neighbors) >= 1
+        assert neighbors[0]["slug"] == "old-captain"
+
+    def test_novelty_no_relevant_baseline_passes_low_confidence(self):
+        """无相关近邻 → pass（no_relevant_baseline，低置信）。"""
+        from src.akb2.quality.admission import _check_novelty
+
+        raw = "---\nsource_slug: u\n---\n\n# Unique\nzzz qqq"
+        refs = [{"slug": "a", "title": "Cats", "tldr": "cats dogs", "path": "p", "source_url": ""}]
+        check = _check_novelty(raw, refs, route_llm_fn=lambda *a, **kw: (_ for _ in ()).throw(AssertionError("不应调 LLM")))
+        assert check.passed is True
+        assert "no_relevant_baseline" in check.reason
+
+    def test_novelty_duplicate_passes_llm_judgment(self):
+        """duplicate_same_claim 近邻 → 调 LLM 判增量，reason 记 compare slug + type。"""
+        from src.akb2.quality.admission import _check_novelty
+        from src.akb2.quality.llm_router import LLMResponse
+
+        raw = "---\nsource_slug: captain\nsource_url: https://x/c\n---\n\n# Captain\nnew angle"
+        refs = [{"slug": "captain", "title": "Captain", "tldr": "captain architecture", "path": "p", "source_url": "https://x/c"}]
+
+        def mock(model_family, messages, response_schema=None, **kw):
+            return LLMResponse(content={"pass": True, "reason": "新视角"}, model_used="m")
+
+        check = _check_novelty(raw, refs, route_llm_fn=mock)
+        assert check.passed is True
+        assert "duplicate_same_claim" in check.reason
+        assert "captain" in check.reason  # compare target slug
+
+
+# ---------------------------------------------------------------------------
+# §0.2/D11：lane reject 二次确认（how PASS + strong mechanism → 降级 concept）
+# ---------------------------------------------------------------------------
+
+
+class TestD11LaneRejectRecheck:
+    """§0.2/D11：lane reject 二次确认——how PASS + strong mechanism 不直接拒。
+
+    - strong mechanism + how PASS + lane reject → 降级 concept（lane_reject_recheck=True）
+    - weak-only + lane reject → 仍拒（不覆盖）
+    - 新闻营销负样本（lane reject, 无机制）→ 仍拒
+    """
+
+    _STRONG_MECHANISM_RAW = """---
+artifact_type: raw
+source_slug: strong-mech
+source_url: https://example.com/strong
+---
+
+# Strong Mechanism Article
+
+### 1. Captain
+The Captain dispatches to the Executor Pool.
+
+### 2. Executor Pool
+The Executor Pool feeds the Task Graph.
+
+### 3. Task Graph
+The Task Graph writes to the Lifecycle.
+"""
+
+    _WEAK_ONLY_RAW = """---
+artifact_type: raw
+source_slug: weak-opinion
+source_url: https://example.com/weak
+---
+
+# Opinion Piece
+
+## Introduction
+Some opinion prose without mechanism.
+
+## Analysis
+More opinion prose.
+
+## Conclusion
+Final opinion.
+"""
+
+    def _mock_lane_reject_how_pass(self):
+        """mock: lane classify 返回 reject, how_tendency 返回 pass, 其余 pass。"""
+        def _mock(model_family, messages, response_schema=None, **kwargs):
+            sys_prompt = messages[0]["content"] if messages else ""
+            if "主要意图" in sys_prompt or "概念型" in sys_prompt or "操作型" in sys_prompt:
+                return LLMResponse(
+                    content={"content_lane": "reject", "reason": "mock: 非知识内容"},
+                    model_used="deepseek-v4-pro",
+                )
+            return LLMResponse(
+                content={"pass": True, "reason": "mock pass"},
+                model_used="deepseek-v4-pro",
+            )
+        return _mock
+
+    def test_strong_mechanism_how_pass_lane_reject_downgrades_to_concept(self, tmp_path):
+        """how PASS + strong mechanism（编号组件≥3 + 因果）+ lane reject → 降级 concept。"""
+        result = run_admission(
+            raw_path="raw/strong-mech--raw--2026-06-29.md",
+            raw_content=self._STRONG_MECHANISM_RAW,
+            ledger_path=str(tmp_path / "ledger.jsonl"),
+            route_llm_fn=self._mock_lane_reject_how_pass(),
+        )
+        assert result.lane_reject_recheck is True, "应触发二次确认"
+        assert result.original_lane_reason, "应记原 lane_reason"
+        # 降级 concept（不直接拒；机制信号门 deterministic pass 因编号组件≥3）
+        assert result.content_lane == LANE_CONCEPT, "应降级 concept"
+
+    def test_weak_only_how_pass_lane_reject_still_rejected(self, tmp_path):
+        """weak-only（普通 H2/H3, 无 strong signal/component）+ lane reject → 仍拒。"""
+        result = run_admission(
+            raw_path="raw/weak-opinion--raw--2026-06-29.md",
+            raw_content=self._WEAK_ONLY_RAW,
+            ledger_path=str(tmp_path / "ledger.jsonl"),
+            route_llm_fn=self._mock_lane_reject_how_pass(),
+        )
+        assert result.lane_reject_recheck is False, "weak-only 不应触发二次确认"
+        assert result.passed is False, "weak-only + lane reject 应仍拒"
+        assert result.content_lane == ""  # reject 不下传 lane
+
+    def test_news_no_mechanism_lane_reject_still_rejected(self, tmp_path):
+        """新闻负样本（无机制信号）+ lane reject → 仍拒（D11 不放观点稿）。"""
+        news = """---
+artifact_type: raw
+source_slug: news
+source_url: https://example.com/news
+---
+
+# Google I/O Recap
+Google announced new products. The keynote included updates.
+"""
+        result = run_admission(
+            raw_path="raw/news--raw--2026-06-29.md",
+            raw_content=news,
+            ledger_path=str(tmp_path / "ledger.jsonl"),
+            route_llm_fn=self._mock_lane_reject_how_pass(),
+        )
+        assert result.lane_reject_recheck is False
+        assert result.passed is False, "新闻负样本应仍拒"
