@@ -1,10 +1,11 @@
 """test_distill_mechanism_extract.py — WP-3 distill 提炼内核测试 (SC-3)。
 
 覆盖:
-    - F4 extract 即判（WP-3.2）：concept <3 组件/孤立/重复名 → distill extract 即 raise；
+    - §0.2/A2 F4 不前移到 extract：concept <3 组件/孤立/重复名 → extract 不 raise
+      （F4 deferred to integrity_floor，由 test_integrity_floor TestCoreValueF4 覆盖）；
       3 唯一+连边 → 过
     - D8 concept fallback 不造假机制（WP-3.1）：无 ≥3 命名组件 raw → fail-closed；
-      有 ≥3 → 用真实组件（非硬编码 loop 组件）
+      有 ≥3 → 用真实组件（非硬编码 loop 组件）；0 真实因果边 → fallback maker 级 fail-closed
     - D7 poisoned trace（WP-3.1/3.6）：concept fallback how_steps=[]，不生成
       schema/ledger/max_repair_rounds 假步骤（idx5 形态）
     - WP-3.4 frontmatter 同源 resolve：known/pending 提供时 related_concepts 只写
@@ -66,46 +67,39 @@ def _base_concept_data(
 
 
 class TestF4ExtractValidation:
-    """F4 connectivity 前移到 distill extract（去重唯一≥3 + 每组件连边）。"""
+    """§0.2/A2：F4 不在 distill extract 前移——extract 不判 F4，deferred to integrity_floor。
 
-    def test_f4_less_than_three_components_raises(self):
-        """concept <3 命名组件 → distill extract 即 raise（不待下游 floor）。"""
+    旧 WP-3.2 把 _core_value_f4_failed 前移到 _validate_extract_output，与 runner floor
+    （runner.py:651-653）+ 质量段 early-return（runner.py:988-1017）双跑同一 F4，且 floor
+    在 A层/grader 之前 early-return，F4 计边发生在正文/A层/grader 不存在时——顺序矛盾
+    （§0.2 D1）。A2 删前移：F4 唯一裁决点回 integrity_floor（test_integrity_floor.py
+    TestCoreValueF4 已覆盖 <3/孤立/重复名/0边 各 fail）。本类只验 extract 不再早判 F4。
+    """
+
+    def test_f4_less_than_three_components_does_not_raise_at_extract(self):
+        """concept <3 命名组件 → extract 不 raise（F4 deferred to floor，由 floor fail）。"""
         data = _base_concept_data([{"name": "A"}], [])
-        try:
-            _validate_extract_output(data, content_lane="concept")
-        except ValueError as exc:
-            assert "F4" in str(exc), f"应 F4 失败: {exc}"
-            return
-        raise AssertionError("concept <3 组件应在 extract 即判 raise")
+        _validate_extract_output(data, content_lane="concept")  # 不 raise 即过 extract
+        # F4 fail 由 integrity_floor 兜底（见 test_integrity_floor TestCoreValueF4）
 
-    def test_f4_isolated_components_raise(self):
-        """3 组件但无因果边（孤立）→ F4 连通性失败 raise。"""
+    def test_f4_isolated_components_do_not_raise_at_extract(self):
+        """3 组件但无因果边（孤立）→ extract 不 raise（F4 连通性 deferred to floor）。"""
         data = _base_concept_data(
             [{"name": "A"}, {"name": "B"}, {"name": "C"}],
             [],  # 无边 → 全孤立
         )
-        try:
-            _validate_extract_output(data, content_lane="concept")
-        except ValueError as exc:
-            assert "F4" in str(exc)
-            return
-        raise AssertionError("孤立组件应 F4 raise")
+        _validate_extract_output(data, content_lane="concept")  # 不 raise 即过 extract
 
-    def test_f4_duplicate_names_dedup_raise(self):
-        """重复组件名 [A,A,B] 去重后 <3 → F4 raise（防重复名伪装 3 组件）。"""
+    def test_f4_duplicate_names_do_not_raise_at_extract(self):
+        """重复组件名 [A,A,B] → extract 不 raise（去重判 uniqueness deferred to floor）。"""
         data = _base_concept_data(
             [{"name": "A"}, {"name": "A"}, {"name": "B"}],
             [{"from": "A", "to": "B", "relation": "r"}],
         )
-        try:
-            _validate_extract_output(data, content_lane="concept")
-        except ValueError as exc:
-            assert "F4" in str(exc)
-            return
-        raise AssertionError("重复名去重 <3 应 F4 raise")
+        _validate_extract_output(data, content_lane="concept")  # 不 raise 即过 extract
 
     def test_f4_three_unique_connected_passes(self):
-        """3 唯一组件 + 连边 → F4 过（_validate_extract_output 不 raise）。"""
+        """3 唯一组件 + 连边 → extract 过（floor 也过；双向一致）。"""
         data = _base_concept_data(
             [{"name": "A"}, {"name": "B"}, {"name": "C"}],
             [
@@ -114,6 +108,31 @@ class TestF4ExtractValidation:
             ],
         )
         _validate_extract_output(data, content_lane="concept")  # 不 raise 即过
+
+    def test_f4_floor_still_rejects_zero_edges_and_isolated(self):
+        """A2 不放底线：extract 不判 F4，但 floor 仍判 0 边/孤立 fail。
+
+        防护：确保删前移不等于放弃 F4——floor（integrity_floor._core_value_f4_failed）
+        仍是唯一裁决点，0 eligible edge / 孤立组件仍 fail-closed。
+        """
+        from src.akb2.quality.integrity_floor import (
+            FLOOR_CORE_VALUE_F4,
+            evaluate_integrity_floor,
+        )
+
+        # 0 边 → floor F4 fail
+        d_zero_edges = _base_concept_data(
+            [{"name": "A"}, {"name": "B"}, {"name": "C"}], []
+        )
+        r_zero = evaluate_integrity_floor(d_zero_edges, "concept")
+        assert FLOOR_CORE_VALUE_F4 in r_zero.failed_floors, "0 边仍应 floor F4 fail"
+        # 孤立组件 → floor F4 fail
+        d_isolated = _base_concept_data(
+            [{"name": "A"}, {"name": "B"}, {"name": "C"}],
+            [{"from": "A", "to": "B", "relation": "r"}],  # C 无边
+        )
+        r_iso = evaluate_integrity_floor(d_isolated, "concept")
+        assert FLOOR_CORE_VALUE_F4 in r_iso.failed_floors, "孤立组件仍应 floor F4 fail"
 
 
 # ---------------------------------------------------------------------------

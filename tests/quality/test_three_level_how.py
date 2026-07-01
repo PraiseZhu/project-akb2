@@ -177,16 +177,31 @@ class TestConceptLaneExtractLLMPath:
         assert levels <= {"H1", "H2", "H3"}
         assert "H2" in levels or "H3" in levels
 
-    def test_concept_too_few_mechanism_components_fails(self, sample_raw_content):
-        """concept 但 mechanism_components<3 → extract fail（改判门生效，不被绕过）。"""
+    def test_concept_too_few_mechanism_components_defers_to_floor(self, sample_raw_content):
+        """§0.2/A2：concept mechanism_components<3 → extract 不再早判 F4（deferred to floor）。
+
+        旧 WP-3.2 把 F4 前移到 _validate_extract_output，<3 组件 extract 即 raise。A2 删前移
+        （与 runner floor 双跑 + 顺序矛盾，见 §0.2 D1）。现在 extract 过，<3 组件由
+        integrity_floor F4 兜底（test_integrity_floor TestCoreValueF4 已覆盖）。
+        """
         thin_how = _concept_how_params_segment()
         thin_how["mechanism_components"] = thin_how["mechanism_components"][:2]
         route = _make_segment_route(_claims_segment(), thin_how)
         result = extract_claims(
             sample_raw_content, route_llm_fn=route, content_lane="concept"
         )
-        assert result.success is False
-        assert "mechanism_components" in (result.error or "")
+        # A2：extract 不再因 <3 组件 raise（F4 deferred to floor）
+        assert result.success is True, (
+            f"extract 应过（F4 deferred to floor）: {result.error}"
+        )
+        # floor 兜底：<3 组件 → F4 fail
+        from src.akb2.quality.integrity_floor import (
+            FLOOR_CORE_VALUE_F4,
+            evaluate_integrity_floor,
+        )
+
+        r = evaluate_integrity_floor(result.data, "concept")
+        assert FLOOR_CORE_VALUE_F4 in r.failed_floors, "<3 组件应 floor F4 fail"
 
 
 class TestConceptLaneDeterministicPath:

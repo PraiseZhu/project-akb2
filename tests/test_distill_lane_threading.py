@@ -84,9 +84,11 @@ class TestExtractFuncsAcceptLane:
         )
 
     def test_validate_extract_output_lane_behavior_unchanged(self) -> None:
-        """_validate_extract_output 接 content_lane 但行为不变（H1≥3 门对所有 lane 维持旧判）。
+        """_validate_extract_output 接 content_lane；§0.2/A2 后 concept 不再 extract 判 F4。
 
-        本 step 不改判定：concept lane 与默认对同一非法数据应抛同样的 ValueError。
+        本 step 不改 claims 空校验：concept lane 与默认对同一非法数据（claims 空）应抛
+        同样的 ValueError。F4（mechanism≥3/连边）已 A2 删前移，deferred to integrity_floor
+        （见 test_integrity_floor TestCoreValueF4）。
         """
         bad_data: dict = {"claims": []}  # claims 为空 → 必抛 ValueError
         with pytest.raises(ValueError):

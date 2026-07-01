@@ -1689,24 +1689,18 @@ def _validate_extract_output(data: dict[str, Any], content_lane: str = "") -> No
     # 3.6 how_steps 可执行数量校验（lane-aware，SC-3a/A3-1）：
     # - procedural（默认/兼容）：保留 ≥3 条 executable=true 且 command 非空的 extract 门
     #   （零回归）——否则真实 extract 可合法通过但成稿缺 How 可执行性（rubric How 密度）。
-    # - concept：改判 len(mechanism_components)≥3（允许 H1==0、不卡 executable）——概念型
-    #   知识的核心价值是命名机制组件+因果边（F4 结构真相源），不是命令密度。
+    # - concept：§0.2/A2 删 F4 前移——extract 不再判 F4（≥3 组件/连边），F4 唯一裁决点
+    #   回 integrity_floor（runner.py floor 段）。旧 _validate_extract_output 内调
+    #   _core_value_f4_failed 与 runner floor（runner.py:651-653）+ 质量段 early-return
+    #   （runner.py:988-1017）双跑同一 F4，且 floor 在 A层/grader 之前 early-return，
+    #   F4 计边发生在正文/A层/grader 不存在时——顺序矛盾（§0.2 D1）。concept 允许
+    #   H1==0、不卡 executable；机制完整性由 floor F4 兜底（D1 改 eligible edge 口径）。
     # 注：本校验作用于 extract 输出（maker 提案层），命令是否最终渲染进候选页由
-    # _build_body 的 emission-前回查 raw 护栏裁决（治本2）；此处只保证 maker 提出了
-    # 足量可执行候选步骤 / 足量命名机制组件。
+    # _build_body 的 emission-前回查 raw 护栏裁决（治本2）；此处只保证 procedural maker
+    # 提出了足量可执行候选步骤。concept 的机制组件/边由 LLM/§4 两阶段抽取产，
+    # 不足量时由 floor F4 fail-closed（不在此处早判）。
     how_steps = data.get("how_steps", []) or []
-    if _is_concept_lane(content_lane):
-        # WP-3.2: F4 connectivity 前移——复用 integrity_floor._core_value_f4_failed
-        # （去重唯一≥3 + 每命名组件在 causal_edges 有出/入边指向另一命名组件），
-        # 失败在 distill extract 即暴露（lazy import 避免循环依赖）。
-        from src.akb2.quality.integrity_floor import _core_value_f4_failed
-
-        f4_failed, f4_reason = _core_value_f4_failed(data, content_lane)
-        if f4_failed:
-            raise ValueError(
-                f"concept F4 extract 即判失败 (mechanism_components): {f4_reason}"
-            )
-    else:
+    if not _is_concept_lane(content_lane):
         executable_steps = sum(
             1
             for s in how_steps
@@ -2101,6 +2095,8 @@ def _build_deterministic_extract_data(
     # 顺序因果边（F4 连通）；<3 → raise 让 build_deterministic_extract_result 返
     # success=False → runner fail-closed abort（concept no-mechanism 不被 fallback 救活，
     # 不再硬编码 loop-engineering 组件造假机制）。procedural 不注入（空数组，零回归）。
+    # §0.2/A2：F4 不再前移到 _validate_extract_output，fallback 的 0-边 fail-closed 改由
+    # 此处 maker 级检查承载（M1 step-3 再细化为 eligible-edge + fallback_quality_basis）。
     mechanism_components: list[dict[str, str]] = []
     causal_edges: list[dict[str, str]] = []
     if _is_concept_lane(content_lane):
@@ -2112,8 +2108,13 @@ def _build_deterministic_extract_data(
             )
         mechanism_components = real_components
         # P1-A: 真实因果/依赖/触发语言才建边（禁排版顺序边）；无真实因果 → 空边
-        # → F4 连通性 fail → fallback fail-closed（不造假边救活）
+        # → 0 因果边 fail-closed（不造假边救活；F4 连通性由 floor 兜底，此处 maker 级先拦）
         causal_edges = _build_real_causal_edges(real_components, raw_content)
+        if not causal_edges:
+            raise ValueError(
+                f"concept deterministic fallback: raw 有 {len(real_components)} 命名机制组件"
+                f"但 0 真实因果边（无因果/依赖/触发语言），无法证明机制连通，fail-closed"
+            )
     return {
         "claims": claims,
         "how_steps": how_steps,
