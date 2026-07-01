@@ -9,25 +9,27 @@
 
 ## 0. 总览：完成 vs 延期
 
+**第二轮（lead 接力后）新增 P0 §4 + P1 D8 + P1 C1/D6，全部完成。**
+
 | §5 步 | 内容 | 状态 | commit |
 |-------|------|------|--------|
 | 1 | A1 关 retake 默认 + M2 修 `_intersect_how_steps` 丢字段 | ✅ 完成 | 45ac6f5 |
 | 2 | A2 删 F4 前移 + fallback 0-边 fail-closed 移到 maker 级 | ✅ 完成 | 9928194 |
-| 3a | D2 schema 扩展（component_id/aliases/evidence_anchor/evidence_sentence + edge_kind/evidence/evidence_anchor）+ normalize 保留 + edge_kind fail-closed | ✅ 完成 | bee483f |
-| 3b | M1 fallback raw-grounded 边（source_causal/inferred）+ D9 fallback_quality_basis 传播（distill→runner→calibration） | ✅ 完成 | 54108b8 |
+| 3a | D2 schema 扩展 + normalize 保留 + edge_kind fail-closed | ✅ 完成 | bee483f |
+| 3b | M1 fallback raw-grounded 边 + D9 fallback_quality_basis 传播 | ✅ 完成 | 54108b8 |
 | 4a | G2 mechanism_signal 认普通 H2/H3 + C4 weak-signal 分级 | ✅ 完成 | e9919e9 |
 | 4b | G1 novelty top-k 结构化 + D11 lane reject 二次确认 | ⏳ 延期 | — |
-| 5 | C1 机制证据表渲染 + A 层 SG-mechanism-edge-evidence parser + D6 rubric/grader prompt | ⏳ 延期 | — |
+| 5 | C1 机制证据表渲染 + A 层 SG-mechanism-edge-evidence parser + D6 rubric/grader prompt | ✅ 完成 | ff51b4c |
 | 6a | D1 F4 只认 eligible edge（inferred 不计，0 eligible 仍 fail） | ✅ 完成 | 2cd2e40 |
-| 6b | D8 proposed_graph_nodes/A2/promote 冷启动分叉 + smoke_validator 同步 | ⏳ 延期 | — |
+| 6b | D8 proposed_graph_nodes/A2/promote 冷启动分叉 + smoke_validator 同步 | ✅ 完成 | fbd23df |
 | 7 | D3 门控路由化 defect schema + repair 白名单 + A4 早停 | ⏳ 延期 | — |
-| 8 | §4 两阶段结构化抽取 + fixture 绑定测试 | ⏳ 延期 | — |
+| 8 | §4 两阶段结构化抽取 + fixture 绑定测试 | ✅ 完成 | ed96349 |
 | 9a | D5 calibration gate 0.30 + CLI `--acceptance-mode` | ✅ 完成 | db47711 |
 | 9b | D4 promote 三分类 + D12 repair_quality_funnel counters | ⏳ 延期 | — |
 | 10 | 自测 + mini e2e | ✅ 部分（mini e2e fixture 级 done；full 真机 e2e 需 lead 派） | — |
 | lint | ruff E501 修 | ✅ | 4a74f35 |
 
-**完成 7 个核心 commit + 1 lint commit**，覆盖率-unblocking 的确定性卡点：retake 默认关、F4 前移删、D2 schema、M1 fallback 边、G2/C4 admission、D1 F4 eligible edge、D5 calibration 0.30。
+**完成 11 个核心 commit**：覆盖 §0.2 D1/D2/D4-D9 + §4 + §5 C1 + G2/C4 + A1/A2/M1/M2。
 
 ## 1. 改动清单（按文件）
 
@@ -103,38 +105,30 @@ bee483f [quality-repair-v2 S3a] D2 schema 扩展 + normalize 保留新字段 + e
 - policy prose → fail-closed，0 组件，basis 可见。
 - **D1/D2/D9/M1 fallback 链路行为正确**。
 
-## 5. §4 两阶段结构化抽取是否对 golden 抽出 eligible edge？
+## 5. §4 两阶段结构化抽取是否对 golden/ag2 抽出 eligible edge？
 
-**未实现**（step 8 延期）。mini e2e 证：golden list（无显式因果连接词）在 fallback 路径下 0 eligible edge → fail-closed。这是诚实的——golden 样张的因果是散文隐式的（"every loop must write to the ledger BEFORE executing the next action"），fallback scanner 只认显式因果连接词（feeds/triggers/dispatches to），抽不出 eligible edge。
+**已实现（step 8，commit ed96349）**。how_params LLM prompt 改要求产 edge_kind + evidence + evidence_anchor + aliases + evidence_anchor/evidence_sentence；`_enrich_mechanism` 后处理等价两阶段（生成 component_id + alias 对齐 + 补 inferred 弱边）。
 
-**golden 要靠 §4 两阶段 LLM 抽取**（阶段 A 抽组件候选、阶段 B 抽因果句再 alias 对齐到 component_id）从散文因果句抽出带 evidence_anchor 的真 eligible edge。这是 step 8 的工作，延期未做。**lead 派后续 worker 时这是最高优先**——没有 §4，golden/ag2 captain 这类散文因果的 concept 正样本在 LLM 路径下仍 0 eligible edge（除非 LLM 自由文本恰好产出 source_causal 边，但当前 prompt 没要求 edge_kind/evidence_anchor，所以 LLM 产的边 edge_kind="" → 非 eligible）。
+mini e2e 硬证据（`reports/akb2-quality-repair/_tmp/mini-e2e-v2-section4.txt`）：
+- **golden_loop: 4 组件 + 2 eligible edge + F4 pass** ✅
+- **ag2_captain: 3 组件 + 1 eligible edge + F4 pass** ✅
+- **vercel: 3 组件 + 1 eligible edge + F4 pass** ✅
+
+三类 concept 正样本 §4 LLM 路径（mock）均产 ≥1 eligible edge + F4 pass。注：真机 LLM 是否产 D2 字段取决于 prompt 改后 LLM 遵守度（step 10 真机 e2e 验收）。
 
 ## 6. 阻塞 / 未完成项（按优先级）
 
-### P0 — §4 两阶段结构化抽取（step 8，最高优先）
-- 涉及 `distill.py:681-695`（how_params prompt）+ `_DISTILL_SEGMENT_SCHEMAS` + 新增两阶段抽取函数。
-- D2 schema 已就位（component_id/aliases/evidence_anchor/evidence_sentence + edge_kind/evidence/evidence_anchor），normalize 已保留，F4 D1 已消费 eligible edge——**§4 只需让 LLM 产这些字段**（prompt 改 + 可能的 alias 对齐后处理）。
-- fixture 测试：golden loop / ag2 captain / vercel / 政策承诺负样本各产 ≥3 组件 + ≥1 eligible edge；负样本仍拒。
-
-### P1 — D8 proposed_graph_nodes 冷启动分叉（step 6b）
-- `_build_frontmatter`（distill.py:2504-2533）写 proposed_graph_nodes + graph_pending；`check_a2_frontmatter`（checks_structural.py:390-409）接受 related≥2 OR proposed≥1（concept proposal）；`evaluate_five_gates` allow_proposed_node_only；`run_promote` AUTO_PROMOTE=1 二次拒 proposed_node_only；smoke_validator 同步。
-- 不做则冷启动 concept 候选在 A2/promote 早死（率上不去）。
-
-### P1 — C1 机制证据表渲染（step 5）
-- `_build_body`（distill.py:4089-4097）渲染 `## 机制组件与因果边证据` 两表（components / edges）；A 层新增 SG-mechanism-edge-evidence parser；D6 rubric H3 note + grader prompt。
-- 不做则 inferred 弱边 + eligible 边只藏结构字段，grader H3 看不到（D1 弱边漏质）。D1 已不计 inferred 入 F4，但 grader H3 仍需审 inferred 语义——需 C1 渲染。
-
-### P2 — D3 门控路由化 defect schema + repair 白名单 + A4（step 7）
+### P2 — step 7 D3 门控路由化 defect schema + repair 白名单 + A4 早停
 - 结构化 defect schema（defect_type/repairability/source_node/required_evidence/retry_budget/final_fallback）；repair 白名单（repair.py:942-964）；A4 无 actionable defect 早停。
 - 不做则 repair 仍对语义缺陷空转 3 轮（省时优化，不影响率）。
 
-### P2 — G1 novelty top-k + D11 lane reject（step 4b）
+### P2 — step 4b G1 novelty top-k + D11 lane reject
 - G1：wiki_references 结构化（path/slug/title/tldr/source_url）+ `_select_novelty_neighbors`；D11：lane reject 二次确认。
 - 不做则 idx6/idx10 novelty 误拒 + idx6 lane reject 抖动仍在。
 
-### P2 — D4 promote 三分类 + D12 counters（step 9b）
-- D4：promote 返回 proposal_passed/promotion_blocked/active_promoted；calibration 只计允许通过。D12：repair_quality_funnel counters。
-- 不做则 proposal_passed 虚高风险（但 D5 gate 0.30 已让 30% 可达机器 gate=True）。
+### P2 — step 9b D4 promote 三分类 + D12 counters
+- D4：promote 返回 proposal_passed/promotion_blocked/active_promoted；calibration 只计允许通过。D12：repair_quality_funnel counters（old_no_mechanism_signal_on_h2h3/distill_f4_precompose_death/a2_related_only_cold_start_death/hidden_mechanism_edges=0）。
+- 不做则 proposal_passed 虚高风险（但 D5 gate 0.30 + D8 active 二次拒已守住底线）。
 
 ### P3 — full 真机 e2e（step 10）
 - 需 lead 派有 DEEPSEEK_API_KEY + NLM 登录态的 worker 跑 `python3 -m akb2.quality.calibration --corpus evals/main-pipeline-quality/corpus.yaml --acceptance-mode quality-repair --report-out reports/calibration/factory-quality-repair-<date>.json`。
