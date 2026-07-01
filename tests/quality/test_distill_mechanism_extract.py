@@ -21,6 +21,8 @@ from pathlib import Path
 
 from src.akb2.quality.distill import (
     _build_frontmatter,
+    _normalize_causal_edges,
+    _normalize_mechanism_components,
     _validate_extract_output,
     build_deterministic_extract_result,
 )
@@ -59,6 +61,151 @@ def _base_concept_data(
         "applicability_boundary": "applicability boundary with enough chars to pass min",
         "graph_edges": [],
     }
+
+
+# ---------------------------------------------------------------------------
+# §0.2/D2：schema 扩展 + normalize 保留新字段 + edge_kind fail-closed
+# ---------------------------------------------------------------------------
+
+
+class TestD2SchemaNormalize:
+    """§0.2/D2：mechanism_components/causal_edges 扩字段 + normalize 保留 + 校验。
+
+    F4 D1 eligible edge 依赖 evidence_anchor；§4 两阶段抽取产稳定 component_id + evidence。
+    normalize 必须保留这些字段（不丢），未知 edge_kind fail-closed（不静默丢弃）。
+    """
+
+    def test_normalize_mechanism_components_preserves_d2_fields(self):
+        """component_id/aliases/evidence_anchor/evidence_sentence 透传 normalize。"""
+        raw = [
+            {
+                "component_id": "captain",
+                "name": "Captain",
+                "aliases": ["dispatcher", "coordinator"],
+                "role": "dispatch",
+                "evidence_anchor": "§A",
+                "evidence_sentence": "The Captain dispatches to the Executor Pool",
+            }
+        ]
+        out = _normalize_mechanism_components(raw)
+        assert len(out) == 1
+        c = out[0]
+        assert c["component_id"] == "captain"
+        assert c["name"] == "Captain"
+        assert c["aliases"] == ["dispatcher", "coordinator"]
+        assert c["role"] == "dispatch"
+        assert c["evidence_anchor"] == "§A"
+        assert c["evidence_sentence"].startswith("The Captain")
+
+    def test_normalize_mechanism_components_aliases_coercion(self):
+        """aliases 字符串 → 逗号分隔 list；非 list/str → 空数组；默认空。"""
+        out = _normalize_mechanism_components(
+            [
+                {"name": "A", "aliases": "x, y, z"},
+                {"name": "B", "aliases": None},
+                {"name": "C"},
+            ]
+        )
+        assert out[0]["aliases"] == ["x", "y", "z"]
+        assert out[1]["aliases"] == []
+        assert out[2]["aliases"] == []
+
+    def test_normalize_mechanism_components_defaults_empty(self):
+        """无 D2 字段时 component_id/evidence_* 默认 ""，aliases 默认 []。"""
+        out = _normalize_mechanism_components([{"name": "A", "role": "r"}])
+        c = out[0]
+        assert c["component_id"] == ""
+        assert c["evidence_anchor"] == ""
+        assert c["evidence_sentence"] == ""
+        assert c["aliases"] == []
+        assert c["name"] == "A"
+        assert c["role"] == "r"
+
+    def test_normalize_causal_edges_preserves_d2_fields(self):
+        """edge_kind/evidence/evidence_anchor 透传 normalize。"""
+        raw = [
+            {
+                "from": "Captain",
+                "to": "Executor Pool",
+                "relation": "dispatches",
+                "edge_kind": "source_causal",
+                "evidence": "The Captain dispatches to the Executor Pool",
+                "evidence_anchor": "§A",
+            }
+        ]
+        out = _normalize_causal_edges(raw)
+        assert len(out) == 1
+        e = out[0]
+        assert e["edge_kind"] == "source_causal"
+        assert e["evidence"].startswith("The Captain")
+        assert e["evidence_anchor"] == "§A"
+        assert e["relation"] == "dispatches"
+
+    def test_normalize_causal_edges_unknown_edge_kind_fail_closed(self):
+        """未知 edge_kind → raise ValueError（fail-closed，不静默丢弃）。"""
+        import pytest
+
+        raw = [
+            {
+                "from": "A",
+                "to": "B",
+                "relation": "r",
+                "edge_kind": "bogus_kind",
+            }
+        ]
+        with pytest.raises(ValueError, match="未知 edge_kind"):
+            _normalize_causal_edges(raw)
+
+    def test_normalize_causal_edges_valid_edge_kinds(self):
+        """三种合法 edge_kind 都接受；空 edge_kind 接受（LLM 未产时）。"""
+        for kind in ("source_causal", "llm_evidence", "inferred_from_structure", ""):
+            out = _normalize_causal_edges(
+                [{"from": "A", "to": "B", "relation": "r", "edge_kind": kind}]
+            )
+            assert out[0]["edge_kind"] == kind
+
+    def test_normalize_causal_edges_defaults_empty(self):
+        """无 D2 字段时 edge_kind/evidence/evidence_anchor 默认 ""。"""
+        out = _normalize_causal_edges([{"from": "A", "to": "B", "relation": "r"}])
+        e = out[0]
+        assert e["edge_kind"] == ""
+        assert e["evidence"] == ""
+        assert e["evidence_anchor"] == ""
+
+    def test_d2_fields_pass_extract_schema(self):
+        """带 D2 字段的 mechanism_components/causal_edges 过 _validate_extract_output
+        （_EXTRACT_SCHEMA + _HOW_PARAMS_SCHEMA 都已扩 properties）。"""
+        data = _base_concept_data(
+            [
+                {
+                    "component_id": "a",
+                    "name": "A",
+                    "aliases": ["aa"],
+                    "role": "r",
+                    "evidence_anchor": "§A",
+                    "evidence_sentence": "A does x",
+                },
+                {"name": "B", "role": "r"},
+                {"name": "C", "role": "r"},
+            ],
+            [
+                {
+                    "from": "A",
+                    "to": "B",
+                    "relation": "r",
+                    "edge_kind": "source_causal",
+                    "evidence": "A feeds B",
+                    "evidence_anchor": "§A",
+                },
+                {
+                    "from": "B",
+                    "to": "C",
+                    "relation": "r",
+                    "edge_kind": "inferred_from_structure",
+                },
+            ],
+        )
+        _validate_extract_output(data, content_lane="concept")  # 不 raise 即过
 
 
 # ---------------------------------------------------------------------------

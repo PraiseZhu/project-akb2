@@ -662,6 +662,16 @@ class TestStrictSegmentSchemas:
             walk(schema)
 
     def test_all_segment_object_required_fields_cover_properties(self):
+        # §0.2/D2 例外：mechanism_components/causal_edges 的扩展字段是合法可选——
+        # component_id/aliases/evidence_anchor/evidence_sentence（组件）与
+        # edge_kind/evidence/evidence_anchor（边）允许空默认（inferred 边无 evidence_anchor、
+        # 组件无 aliases 等）。F4 D1 只在 eligible edge 判定时要求 evidence_anchor 非空，
+        # 不在 schema 层强制全必填（否则 inferred 边/无别名组件被误拒）。
+        d2_optional = {
+            "component_id", "aliases", "evidence_anchor", "evidence_sentence",
+            "edge_kind", "evidence",
+        }
+
         def walk(node):
             if isinstance(node, dict):
                 if node.get("type") == "object":
@@ -669,7 +679,7 @@ class TestStrictSegmentSchemas:
                     required = node.get("required", [])
                     if properties:
                         assert isinstance(required, list), node
-                        missing = set(properties) - set(required) - {"traces_to"}
+                        missing = set(properties) - set(required) - {"traces_to"} - d2_optional
                         assert not missing, f"strict object missing required fields: {missing}"
                 for value in node.values():
                     walk(value)

@@ -199,19 +199,25 @@ _EXTRACT_SCHEMA: dict[str, Any] = {
         # step-3 SC-3a/A3-5：命名机制组件 + 因果边（concept F4 结构真相源）。
         # 顶层 minItems=0 非 required——procedural 零回归（不产），concept 由
         # _validate_extract_output 按 lane 硬卡 ≥3；F4 只读这两字段不反解 H3 标签。
+        # §0.2/D2：扩 component_id/aliases/evidence_anchor/evidence_sentence（同 _HOW_PARAMS_SCHEMA）。
         "mechanism_components": {
             "type": "array",
             "items": {
                 "type": "object",
                 "properties": {
+                    "component_id": {"type": "string"},
                     "name": {"type": "string", "minLength": 1},
+                    "aliases": {"type": "array", "items": {"type": "string"}},
                     "role": {"type": "string"},
+                    "evidence_anchor": {"type": "string"},
+                    "evidence_sentence": {"type": "string"},
                 },
                 "required": ["name"],
                 "additionalProperties": False,
             },
             "minItems": 0,
         },
+        # §0.2/D2：扩 edge_kind/evidence/evidence_anchor（同 _HOW_PARAMS_SCHEMA）。
         "causal_edges": {
             "type": "array",
             "items": {
@@ -220,6 +226,9 @@ _EXTRACT_SCHEMA: dict[str, Any] = {
                     "from": {"type": "string", "minLength": 1},
                     "to": {"type": "string", "minLength": 1},
                     "relation": {"type": "string"},
+                    "edge_kind": {"type": "string"},
+                    "evidence": {"type": "string"},
+                    "evidence_anchor": {"type": "string"},
                 },
                 "required": ["from", "to"],
                 "additionalProperties": False,
@@ -367,13 +376,19 @@ _HOW_PARAMS_SCHEMA: dict[str, Any] = {
         # step-3 SC-3a/A3-5：命名机制组件数组（concept F4 的结构真相源）。
         # 顶层 required + minItems=0——procedural 不产组件时为空数组（零回归），concept
         # 由 _validate_extract_output 按 lane 硬卡 ≥3。组件 role normalize 必填（默认 ""）。
+        # §0.2/D2：扩 component_id/aliases/evidence_anchor/evidence_sentence（§4 两阶段抽取
+        # 产稳定 component_id + evidence 锚定；F4 D1 eligible edge 依赖 evidence_anchor）。
         "mechanism_components": {
             "type": "array",
             "items": {
                 "type": "object",
                 "properties": {
+                    "component_id": {"type": "string"},
                     "name": {"type": "string", "minLength": 1},
+                    "aliases": {"type": "array", "items": {"type": "string"}},
                     "role": {"type": "string"},
+                    "evidence_anchor": {"type": "string"},
+                    "evidence_sentence": {"type": "string"},
                 },
                 "required": ["name", "role"],
                 "additionalProperties": False,
@@ -382,6 +397,11 @@ _HOW_PARAMS_SCHEMA: dict[str, Any] = {
         },
         # step-3 SC-3a/A3-5：因果边数组，from/to 必须指向 mechanism_components 的 name。
         # F4 只读此结构字段判机制完整性，不从自然语言反解 H3 标签。relation normalize 必填。
+        # §0.2/D2：扩 edge_kind/evidence/evidence_anchor。edge_kind 枚举
+        # source_causal|llm_evidence|inferred_from_structure 由 _normalize_causal_edges 校验
+        # （未知 fail-closed）；不用 schema enum 以免空 edge_kind（LLM 未产时）被误拒。
+        # F4 D1 只认 source_causal/llm_evidence 带 evidence_anchor 的 eligible edge；
+        # inferred_from_structure 不计 F4，只渲染进正文表 + 交 grader H3。
         "causal_edges": {
             "type": "array",
             "items": {
@@ -390,6 +410,9 @@ _HOW_PARAMS_SCHEMA: dict[str, Any] = {
                     "from": {"type": "string", "minLength": 1},
                     "to": {"type": "string", "minLength": 1},
                     "relation": {"type": "string"},
+                    "edge_kind": {"type": "string"},
+                    "evidence": {"type": "string"},
+                    "evidence_anchor": {"type": "string"},
                 },
                 "required": ["from", "to", "relation"],
                 "additionalProperties": False,
@@ -1032,46 +1055,97 @@ def _normalize_how_level(raw_how_level: str, command: str, executable: bool) -> 
     return "H2"
 
 
-def _normalize_mechanism_components(raw: Any) -> list[dict[str, str]]:
+_VALID_EDGE_KINDS = ("source_causal", "llm_evidence", "inferred_from_structure")
+
+
+def _normalize_mechanism_components(raw: Any) -> list[dict[str, Any]]:
     """归一命名机制组件数组（concept F4 结构真相源）。
 
-    每项 → {name, role}（role 默认 ""，满足 strict schema required）。无名字的项丢弃。
-    procedural 不产此字段 → 返回空数组（零回归）。
+    §0.2/D2：每项 → {component_id, name, aliases, role, evidence_anchor, evidence_sentence}。
+    name 必填（无名字丢弃）；role 默认 ""；component_id/evidence_anchor/evidence_sentence
+    默认 ""（§4 两阶段抽取 normalize 生成稳定 component_id，此处保留 LLM/fallback 产的）；
+    aliases 归一为 list[str]。procedural 不产此字段 → 返回空数组（零回归）。
     """
     if not isinstance(raw, list):
         return []
-    components: list[dict[str, str]] = []
+    components: list[dict[str, Any]] = []
     for item in raw:
         if isinstance(item, dict):
             name = str(item.get("name") or item.get("component") or "").strip()
             role = str(item.get("role") or "").strip()
+            component_id = str(item.get("component_id") or "").strip()
+            evidence_anchor = str(item.get("evidence_anchor") or "").strip()
+            evidence_sentence = str(item.get("evidence_sentence") or "").strip()
+            aliases_raw = item.get("aliases")
+            if isinstance(aliases_raw, str):
+                aliases = [a.strip() for a in aliases_raw.split(",") if a.strip()]
+            elif isinstance(aliases_raw, list):
+                aliases = [str(a).strip() for a in aliases_raw if str(a).strip()]
+            else:
+                aliases = []
         elif isinstance(item, str):
             name = item.strip()
-            role = ""
+            role, component_id, evidence_anchor, evidence_sentence, aliases = (
+                "",
+                "",
+                "",
+                "",
+                [],
+            )
         else:
             continue
         if name:
-            components.append({"name": name, "role": role})
+            components.append(
+                {
+                    "component_id": component_id,
+                    "name": name,
+                    "aliases": aliases,
+                    "role": role,
+                    "evidence_anchor": evidence_anchor,
+                    "evidence_sentence": evidence_sentence,
+                }
+            )
     return components
 
 
-def _normalize_causal_edges(raw: Any) -> list[dict[str, str]]:
+def _normalize_causal_edges(raw: Any) -> list[dict[str, Any]]:
     """归一因果边数组（from→to 指向命名组件）。
 
-    每项 → {from, to, relation}（relation 默认 ""，满足 strict schema required）。
-    缺 from/to 的项丢弃。procedural 不产 → 返回空数组（零回归）。
+    §0.2/D2：每项 → {from, to, relation, edge_kind, evidence, evidence_anchor}。
+    relation 默认 ""；edge_kind 默认 ""（F4 D1 只认 source_causal/llm_evidence 带
+    evidence_anchor 的 eligible edge；inferred_from_structure 不计 F4）。未知 edge_kind
+    fail-closed（raise ValueError，不静默丢弃）。缺 from/to 的项丢弃。procedural 不产
+    → 返回空数组（零回归）。
     """
     if not isinstance(raw, list):
         return []
-    edges: list[dict[str, str]] = []
+    edges: list[dict[str, Any]] = []
     for item in raw:
         if not isinstance(item, dict):
             continue
         src = str(item.get("from") or item.get("source") or "").strip()
         dst = str(item.get("to") or item.get("target") or "").strip()
         relation = str(item.get("relation") or item.get("relation_type") or "").strip()
+        edge_kind = str(item.get("edge_kind") or "").strip()
+        evidence = str(item.get("evidence") or "").strip()
+        evidence_anchor = str(item.get("evidence_anchor") or "").strip()
+        if edge_kind and edge_kind not in _VALID_EDGE_KINDS:
+            raise ValueError(
+                f"causal_edges 未知 edge_kind {edge_kind!r}，"
+                f"合法值 {list(_VALID_EDGE_KINDS)}（fail-closed）"
+            )
         if src and dst:
-            edges.append({"from": src, "to": dst, "relation": relation})
+            edges.append(
+                {
+                    "from": src,
+                    "to": dst,
+                    "relation": relation,
+                    "edge_kind": edge_kind,
+                    "evidence": evidence,
+                    "evidence_anchor": evidence_anchor,
+                }
+            )
+    return edges
     return edges
 
 
