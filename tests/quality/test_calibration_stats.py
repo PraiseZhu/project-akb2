@@ -578,3 +578,33 @@ class TestD12RepairQualityFunnel:
         funnel = report["repair_quality_funnel"]
         assert 0.0 <= funnel["top_failure_class_share"] <= 1.0
         assert isinstance(funnel["failure_class_distribution"], dict)
+
+    def test_f3_hidden_mechanism_edges_detected_when_edge_not_rendered(self):
+        """§0.2/F3：extract 有 eligible edge 但正文未渲染机制表 → hidden_mechanism_edges>0。"""
+        e = self._mech_entry(passed=True)
+        e["mechanism_rendering"] = {
+            "mechanism_section_rendered": False,  # 正文缺机制表
+            "rendered_edge_count": 0,
+            "extract_source_causal_edge_count": 2,  # extract 有 2 条 eligible edge
+            "hidden": True,
+        }
+        report: dict[str, Any] = {"entries": [e]}
+        _compute_statistics(report)
+        funnel = report["repair_quality_funnel"]
+        assert funnel["hidden_mechanism_edges_count"] == 1, (
+            "extract 有 edge 但正文未渲染 → hidden>0（F3 真算，非永远 0）"
+        )
+
+    def test_f3_hidden_zero_when_edge_rendered(self):
+        """§0.2/F3：extract 有 edge 且正文渲染了机制表 → hidden=0。"""
+        e = self._mech_entry(passed=True)
+        e["mechanism_rendering"] = {
+            "mechanism_section_rendered": True,
+            "rendered_edge_count": 2,
+            "extract_source_causal_edge_count": 2,
+            "hidden": False,
+        }
+        report: dict[str, Any] = {"entries": [e]}
+        _compute_statistics(report)
+        funnel = report["repair_quality_funnel"]
+        assert funnel["hidden_mechanism_edges_count"] == 0

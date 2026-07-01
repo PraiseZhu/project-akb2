@@ -973,14 +973,21 @@ def _classify_defect_schema(defect: Defect) -> dict[str, str]:
     entailment false）不进可通过 repair。
     """
     repairable = _is_deterministic_repair_defect(defect)
-    # §0.2/D3 底线白名单：硬 fail 不进 repair（claim_anchor/evidence_honesty/
-    # traceability/F4 0 eligible/no_mechanism/编造/entailment false）。
+    # §0.2/D3 + §0.2/F2 底线白名单：硬 fail 不进 repair（任一 hard_fail 剩余即 fail-closed）。
+    # claim_anchor_rate / evidence_honesty / traceability / poisoned_trace / entailment false /
+    # F4 0 eligible / no_mechanism / 编造 均不可 patch（raw 不支撑，不可凭空造）。
     # 注：SG-provenance-ratio 虽与 evidence_honesty 相关，但 _is_deterministic_repair_defect
     # 允许 rebalance，故归 repairable（不在此 hard_fail 列表）。
-    hard_fail_dims = {"SG-raw-anchor"}  # claim_anchor 底线
+    hard_fail_dims = {
+        "SG-raw-anchor",  # claim_anchor_rate 底线
+        "SG-evidence-honesty",  # evidence_honesty 底线
+        "SG-interpretation-traceability",  # traceability 底线
+        "interpretation_entailment",  # entailment false 硬门
+    }
     hard_fail_keywords = (
         "no_mechanism_signal", "integrity_floor", "0 eligible",
-        "interpretation_entailment", "编造",
+        "interpretation_entailment", "poisoned_trace", "poisoned-trace",
+        "编造", "claim_anchor", "evidence_honesty", "traceability",
     )
     defect_text = f"{defect.dimension} {defect.defect} {defect.location}".lower()
     is_hard_fail = (
@@ -1736,16 +1743,22 @@ def run_repair_loop(
                         break
             trace_payload["named_sections"] = sorted(named_sections)
 
-        # §0.2/A4：hard_fail 底线缺陷早停——claim_anchor/evidence_honesty/traceability/
-        # F4 0 eligible/no_mechanism/编造/entailment false 等 LLM 不可 patch 的硬底线缺陷
-        # 不喂 LLM 空转 MAX_REPAIR_ROUNDS 轮，fail-closed 早停（省时优化，仍 fail-closed
-        # 不放水）。保守口径：仅当 ALL 剩余缺陷都是 hard_fail 才早停；混合缺陷仍走 LLM。
-        if current_defects and all(
+        # §0.2/A4 + §0.2/F2：任一 hard_fail 剩余即 fail-closed，不进 repair。
+        # hard_fail（claim_anchor/evidence_honesty/traceability/poisoned_trace/entailment false/
+        # F4 0 eligible/no_mechanism/编造）不可 LLM patch（raw 不支撑，不可凭空造）。
+        # 旧 all(==hard_fail) 口径放水：混合缺陷会把 hard_fail 写进 repair prompt → 改 any。
+        # 仍 fail-closed 不放水（A4 不算救率功劳，省时优化）。
+        if current_defects and any(
             _classify_defect_schema(d)["repairability"] == "hard_fail"
             for d in current_defects
         ):
             trace_payload["status"] = "a4_hard_fail_early_stop"
             trace_payload["after_text_hash"] = _compute_text_hash(current_text)
+            trace_payload["hard_fail_defects"] = [
+                {"dimension": d.dimension, "defect": d.defect}
+                for d in current_defects
+                if _classify_defect_schema(d)["repairability"] == "hard_fail"
+            ]
             trace_paths.append(
                 _write_repair_trace(trace_root, round_num, trace_payload, current_defects)
             )

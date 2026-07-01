@@ -1978,20 +1978,46 @@ _CAUSAL_CONNECTOR_RE = re.compile(
 )
 
 
+_RAW_ANCHOR_LINE_RE = re.compile(r"(?m)^#\s*(§[A-Z0-9_]+)")
+
+
+def _raw_anchor_positions(raw_content: str) -> list[tuple[str, int]]:
+    """§0.2/F1：raw 内 §-anchor 的 (anchor, 字符位置) 有序列表（供 evidence_anchor 映射）。
+
+    fallback 不得合成 ``§raw``——evidence_anchor 必须映射到真实 raw anchor block，
+    否则不计 eligible edge（破坏 traceability）。
+    """
+    if not raw_content:
+        return []
+    return [(m.group(1), m.start()) for m in _RAW_ANCHOR_LINE_RE.finditer(raw_content)]
+
+
+def _nearest_preceding_anchor(
+    sent_pos: int, anchor_positions: list[tuple[str, int]]
+) -> str:
+    """§0.2/F1：句子位置 → 最近的在其之前（含同位）的 §-anchor（无则空串）。"""
+    result = ""
+    for anchor, pos in anchor_positions:
+        if pos <= sent_pos:
+            result = anchor
+        else:
+            break
+    return result
+
+
 def _build_real_causal_edges(
     components: list[dict[str, str]], raw_content: str
 ) -> list[dict[str, Any]]:
-    """§0.2/D2/M1：从 raw 真实因果语言建 eligible 边 + 相邻组件结构推断弱边。
+    """§0.2/D2/M1 + §0.2/F1：从 raw 真实因果语言建 eligible 边 + 相邻组件结构推断弱边。
 
     - 真因果/依赖/触发语言句 + ≥2 组件共现 → edge_kind="source_causal"（带 evidence
-      句 + evidence_anchor，计入 F4 eligible edge，§0.2 D1）
+      句 + evidence_anchor **映射到真实 raw §-anchor**，计入 F4 eligible edge）
     - 同编号段相邻组件 → edge_kind="inferred_from_structure"（无 evidence，不计 F4，
       只渲染进正文表 + 交 grader H3 审语义；§0.2 D1 弱边不救 F4）
-    无真实因果 → 0 eligible edge（inferred 弱边仍可能存在但不计入 F4）→ fallback
-    fail-closed（不造假边救活；F4 由 floor 兜底，此处 maker 级先拦）。
+    无真实因果 / 因果句不在 §-anchor block 下 → 0 eligible edge → fallback fail-closed。
 
-    evidence_anchor 用合成 "§raw"（fallback 路径无逐句 §-anchor 映射；LLM/§4 两阶段
-    抽取产真实 §-anchor）。非空 → F4 eligible；grader H3/A 层可判其弱。
+    §0.2/F1：**不得合成 ``§raw``**——evidence_anchor 必须映射 evidence sentence 到真实
+    raw anchor block（§A/§B），映射不到 → 不产 eligible edge（不造假 anchor 破坏 traceability）。
     """
     if not components or not raw_content:
         return []
@@ -2002,9 +2028,11 @@ def _build_real_causal_edges(
         norm = re.sub(r"^(?:A|An|The)\s+", "", name.strip(), flags=re.I).lower().strip()
         if norm:
             comp_norm.append((norm, name))
+    anchor_positions = _raw_anchor_positions(raw_content)
     edges: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
-    # 1. source_causal edges：含因果连接词的句 + ≥2 组件共现 → eligible edge
+    search_pos = 0
+    # 1. source_causal edges：含因果连接词的句 + ≥2 组件共现 + 真实 §-anchor → eligible edge
     for sent in re.split(r"[。\n.!?]", raw_content):
         if not _CAUSAL_CONNECTOR_RE.search(sent):
             continue
@@ -2013,6 +2041,17 @@ def _build_real_causal_edges(
         for norm, orig in comp_norm:
             if norm in sent_lower and orig not in found_orig:
                 found_orig.append(orig)
+        if len(found_orig) < 2:
+            continue
+        # §0.2/F1：映射 evidence sentence 到真实 raw §-anchor（不合成 §raw）
+        sent_pos = raw_content.find(sent, search_pos)
+        if sent_pos >= 0:
+            search_pos = sent_pos + 1
+        pos_for_anchor = sent_pos if sent_pos >= 0 else len(raw_content)
+        anchor = _nearest_preceding_anchor(pos_for_anchor, anchor_positions)
+        if not anchor:
+            # 因果句不在任何 §-anchor block 下 → 不产 eligible edge（不造假 anchor）
+            continue
         # ≥2 组件共现于含因果连接词的句 → 按出现顺序建边
         for i in range(len(found_orig)):
             for j in range(i + 1, len(found_orig)):
@@ -2026,7 +2065,7 @@ def _build_real_causal_edges(
                             "relation": "raw_causal",
                             "edge_kind": "source_causal",
                             "evidence": sent.strip()[:200],
-                            "evidence_anchor": "§raw",
+                            "evidence_anchor": anchor,
                         }
                     )
     # 2. inferred_from_structure edges：相邻组件顺序推断（不计 F4，供 grader H3）

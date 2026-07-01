@@ -2194,3 +2194,68 @@ class TestD3DefectSchemaAndA4:
         assert "a4" in str(result.get("error_class", "")) or "a4" in str(result.get("failure_signature", "")), (
             f"应 a4 早停: {result.get('error_class')} / {result.get('failure_signature')}"
         )
+
+    def test_f2_mixed_hard_fail_and_repairable_fail_closed_no_llm(self):
+        """§0.2/F2：hard_fail + repairable 混合 → 任一 hard_fail 即 fail-closed，不调 LLM。
+
+        旧 all(==hard_fail) 口径放水：混合缺陷把 hard_fail 写进 repair prompt。
+        改 any(==hard_fail) → 混合也早停，hard_fail 不写入 repair instruction。
+        """
+        from src.akb2.quality.repair import Defect, run_repair_loop
+
+        mixed_defects = [
+            # hard_fail（no_mechanism）
+            Defect(dimension="mechanism_signal", location="正文",
+                   defect="no_mechanism_signal: 无命名组件", suggestion="添加机制组件"),
+            # repairable（适用边界）
+            Defect(dimension="A8-applicability-boundary", location="适用边界",
+                   defect="缺少不适用场景", suggestion="添加不适用场景"),
+        ]
+        llm_called = []
+
+        def mock_route(messages, *a, **kw):
+            llm_called.append(True)
+            return type("R", (), {"content": {}})()
+
+        result = run_repair_loop(
+            candidate_text="---\nstatus: candidate\n---\n\n## TLDR\ntest [raw §A]\n",
+            a_defects=mixed_defects,
+            b_defects=[],
+            raw_text="raw content",
+            golden_sample_text="",
+            failures_path="/tmp/_failures.jsonl",
+            mock_route_llm=mock_route,
+        )
+        assert result["converged"] is False, "混合 hard_fail 应 fail-closed"
+        assert not llm_called, "混合 hard_fail 不应调 LLM（hard_fail 不写 repair instruction）"
+        assert "a4" in str(result.get("error_class", "")) or "a4" in str(result.get("failure_signature", ""))
+
+    def test_f2_repairable_only_no_hard_fail_goes_to_llm(self):
+        """§0.2/F2：仅 repairable（无 hard_fail）→ 不早停，走 LLM 修复路径。"""
+        from src.akb2.quality.repair import Defect, run_repair_loop
+
+        repairable_defects = [
+            Defect(dimension="A8-applicability-boundary", location="适用边界",
+                   defect="缺少不适用场景", suggestion="添加不适用场景"),
+        ]
+        llm_called = []
+
+        class _Resp:
+            content = {}
+
+        def mock_route(messages, *a, **kw):
+            llm_called.append(True)
+            return _Resp()
+
+        result = run_repair_loop(
+            candidate_text="---\nstatus: candidate\n---\n\n## TLDR\ntest [raw §A]\n\n## 适用边界\nx\n",
+            a_defects=repairable_defects,
+            b_defects=[],
+            raw_text="raw content",
+            golden_sample_text="",
+            failures_path="/tmp/_failures.jsonl",
+            mock_route_llm=mock_route,
+        )
+        # 无 hard_fail → 不 A4 早停 → 走 LLM（mock 返空 patch → 不收敛 → fail-closed）
+        assert llm_called, "仅 repairable 应走 LLM 修复路径（不 A4 早停）"
+        assert result["converged"] is False, "mock 返空 patch → 不收敛 → fail-closed"

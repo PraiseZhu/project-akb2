@@ -1134,13 +1134,30 @@ def _check_sg_mechanism_edge_evidence(
                         suggestion="source_causal/llm_evidence 边须带原文 evidence 句",
                     )
                 )
-            if not (e.get("evidence_anchor") or "").strip():
+            anchor = (e.get("evidence_anchor") or "").strip()
+            if not anchor:
                 defects.append(
                     Defect(
                         dimension="SG-mechanism-edge-evidence",
                         location=f"正文.机制组件与因果边证据.edges[{idx}]",
                         defect=f"eligible 边 {kind} 缺 evidence_anchor",
                         suggestion="source_causal/llm_evidence 边须带 §X evidence_anchor",
+                    )
+                )
+            elif f"[raw {anchor}]" not in body:
+                # §0.2/F1：evidence_anchor 必须是真实 raw anchor——body 须有对应 [raw §X]
+                # （防伪 §Z / 合成 §raw 把伪边计入 eligible，破坏 traceability）
+                defects.append(
+                    Defect(
+                        dimension="SG-mechanism-edge-evidence",
+                        location=f"正文.机制组件与因果边证据.edges[{idx}]",
+                        defect=(
+                            f"eligible 边 evidence_anchor {anchor} 无对应 [raw {anchor}]"
+                            " 锚点（伪/合成 anchor 不计 eligible）"
+                        ),
+                        suggestion=(
+                            "evidence_anchor 须指向真实 raw §-anchor（body 有 [raw §X]）"
+                        ),
                     )
                 )
         # 端点须在 components

@@ -83,7 +83,7 @@ class TestM1FallbackEdgesAndBasis:
     """
 
     _CAPTAIN_RAW = (
-        "# Captain Architecture\n\n"
+        "# \u00a7A Captain Architecture\n\n"
         "### 1. Captain\nThe Captain dispatches to the Executor Pool.\n\n"
         "### 2. Executor Pool\nThe Executor Pool feeds the Task Graph.\n\n"
         "### 3. Task Graph\nThe Task Graph writes to the Lifecycle.\n\n"
@@ -443,7 +443,7 @@ class TestConceptFallbackNoFakeMechanism:
     def test_mechanism_raw_uses_real_components(self):
         """raw 有 ≥3 编号组件 + 真实因果语言 → fallback 用真实组件（非硬编码 loop）。"""
         raw = (
-            "# Captain Architecture\n\n"
+            "# \u00a7A Captain Architecture\n\n"
             "### 1. Captain\nThe Captain dispatches to the Executor Pool.\n\n"
             "### 2. Executor Pool\nThe Executor Pool feeds the Task Graph.\n\n"
             "### 3. Task Graph\nThe Task Graph writes to the Lifecycle.\n\n"
@@ -485,7 +485,7 @@ class TestPoisonedTraceNoFakeSteps:
     def test_concept_fallback_how_steps_empty(self):
         """concept fallback how_steps 为空（不注假 AKB 操作）。"""
         raw = (
-            "# Concept Article\n\n"
+            "# \u00a7A Concept Article\n\n"
             "### 1. Alpha\nThe Alpha feeds the Beta.\n\n"
             "### 2. Beta\nThe Beta triggers the Gamma.\n\n"
             "### 3. Gamma\nThe Gamma writes to the Alpha.\n"
@@ -498,7 +498,7 @@ class TestPoisonedTraceNoFakeSteps:
     def test_no_fake_akb_operation_literals(self):
         """concept fallback data 不含 schema/ledger/max_repair_rounds 假步骤字面量（idx5 形态）。"""
         raw = (
-            "# Prompt Caching Article\n\n"
+            "# \u00a7A Prompt Caching Article\n\n"
             "### 1. KV Cache\nThe KV Cache feeds the Breakpoint.\n\n"
             "### 2. Breakpoint\nThe Breakpoint triggers the Hit Rate.\n\n"
             "### 3. Hit Rate\nThe Hit Rate writes to the KV Cache.\n"
@@ -831,7 +831,7 @@ class TestD7Idx5PoisonedTraceFixture:
         queue_item → entailment 不再被假步骤毒化（真值由 WP-5 LLM 验收）。
         """
         raw = (
-            "# Prompt Caching Article\n\n"
+            "# \u00a7A Prompt Caching Article\n\n"
             "### 1. KV Cache\nThe KV Cache feeds the Breakpoint.\n\n"
             "### 2. Breakpoint\nThe Breakpoint triggers the Hit Rate.\n\n"
             "### 3. Hit Rate\nThe Hit Rate writes to the KV Cache.\n"

@@ -848,7 +848,10 @@ class TestRunnerLifelineSegments:
 
         assert result["converged"] is True
         assert result["promotion_mode"] == "proposal"
-        assert result["final_status"] == "promoted"
+        # §0.2/F4：proposal mode（AUTO_PROMOTE=0, promoted=True）→ final_status=proposal_passed
+        # （旧 buggy 写 "promoted"，F4 修正为 proposal_passed，避免与 active 混淆）
+        assert result["final_status"] == "proposal_passed"
+        assert result["promotion_outcome"] == "proposal_passed"
 
     def test_grade_llm_logs_final_zero_after_repair(self, tmp_path: Path) -> None:
         """repair 收敛后 grade_llm.defect_count 表示最终缺陷数，初始缺陷另存。"""
@@ -1646,3 +1649,37 @@ class TestRegradeSampleRejectsDegradedGrader:
             results = _regrade_sample([sample])
 
         assert results == [False], "有缺陷的非 degraded 结果必须判 fail"
+
+    def test_f4_promote_failure_returns_promotion_blocked_not_proposal_passed(self, tmp_path: Path) -> None:
+        """§0.2/F4：promote failure（gates fail）→ final_status=promotion_blocked（不返 proposal_passed）。
+
+        旧 buggy：blocked 时 final_status 仍写 proposal_passed（矛盾）。F4 修正。
+        """
+        from src.akb2.quality.runner import _run_pipeline_segments
+
+        raw_dir = tmp_path / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        f = _make_raw_file(raw_dir, "test-f4-blocked", "2026-06-13")
+        config = _make_runner_config(tmp_path, auto_promote=False)
+
+        with mock.patch("src.akb2.quality.runner._run_admission_segment") as mock_adm, \
+             mock.patch("src.akb2.quality.runner._run_distill_segment") as mock_distill, \
+             mock.patch("src.akb2.quality.runner._run_quality_segments") as mock_qual, \
+             mock.patch("src.akb2.quality.runner._run_promote_segment") as mock_promote:
+            mock_adm.return_value = (True, "", [])
+            mock_distill.return_value = (
+                True, "staging/candidate/test-f4-blocked.md", "", "candidate text",
+                {"retries_used": 0, "maker_fallback_used": False},
+            )
+            mock_qual.return_value = (True, "", "", {"repair_trace_paths": []})
+            # promote failure（gates fail → promoted=False）
+            mock_promote.return_value = (False, "proposal", "Gate-5 grader FAIL")
+            result = _run_pipeline_segments(str(f), str(f.read_text(encoding="utf-8")), config)
+
+        assert result["converged"] is True
+        assert result["promoted"] is False
+        # F4：blocked → final_status=promotion_blocked（不返 proposal_passed）
+        assert result["final_status"] == "promotion_blocked", (
+            f"promote failure 应 final_status=promotion_blocked, got {result['final_status']}"
+        )
+        assert result["promotion_outcome"] == "promotion_blocked"

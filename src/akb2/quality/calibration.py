@@ -343,6 +343,10 @@ def _process_corpus_entry(
     fbasis = pipeline_result.get("fallback_quality_basis")
     if isinstance(fbasis, dict):
         result["fallback_quality_basis"] = fbasis
+    # §0.2/F3：透传 mechanism_rendering（D12 hidden_mechanism_edges 真算）
+    mrender = pipeline_result.get("mechanism_rendering")
+    if isinstance(mrender, dict):
+        result["mechanism_rendering"] = mrender
 
     if expected == "ingest":
         # path 5: 正样本——期望通过
@@ -1010,16 +1014,12 @@ def _compute_repair_quality_funnel(
         err_str = str(e.get("error", ""))
         if "related_concepts" in err_str and "cold" in err_str.lower():
             a2_cold_start += 1
-        # hidden_mechanism_edges: fallback_quality_basis 显示有边但正文未渲染（C1 修）
-        basis = e.get("fallback_quality_basis") or {}
-        if isinstance(basis, dict) and (
-            basis.get("source_causal_edge_count", 0) > 0
-            or basis.get("inferred_edge_count", 0) > 0
-        ):
-            # 若候选页已过到 promote 阶段（failure_segment 不在 distill/compose），边应已渲染
-            if e.get("passed") and fn not in ("distill_extract", "distill_compose"):
-                hidden_edges += 0  # passed → 已渲染（无 hidden）
-            # fail 在 distill/compose 阶段不算 hidden（边未到正文阶段）
+        # hidden_mechanism_edges: extract 有 eligible edge 但正文机制表未渲染（C1 修后应 0）
+        # §0.2/F3：真算——用 mechanism_rendering.hidden（source_causal_edge_count>0 但
+        # 正文未渲染机制表/边）。旧实现永远 0（假实现）。
+        mrender = e.get("mechanism_rendering") or {}
+        if isinstance(mrender, dict) and mrender.get("hidden"):
+            hidden_edges += 1
         # failure_class 分布
         fc = e.get("failure_class") or (
             "none" if e.get("passed") else (fn or "unknown")

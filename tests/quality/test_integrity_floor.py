@@ -436,3 +436,84 @@ class TestRunnerFloorEarlyReturn:
 
         # floor pass → self-gate 被调（没 early-return）
         assert mock_sg.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# §0.2/F1：eligible edge evidence_anchor 必须是真实 raw anchor（防伪 §Z/合成 §raw）
+# ---------------------------------------------------------------------------
+
+
+def _f1_extract(edges, claims_anchors=("§A", "§B")):
+    """构造 F1 concept extract：claims 带 anchor，edges 给定。"""
+    claims = [
+        {
+            "provenance": "source_grounded",
+            "claim": f"claim {a}",
+            "anchor": a,
+            "evidence_gap": "未提供 X",
+        }
+        for a in claims_anchors
+    ]
+    return {
+        "claims": claims,
+        "argumentation": [],
+        "mechanism_components": [
+            {"name": "A", "role": "r"}, {"name": "B", "role": "r"}, {"name": "C", "role": "r"},
+        ],
+        "causal_edges": edges,
+        "how_steps": [],
+    }
+
+
+class TestF1EligibleEdgeAnchorValidation:
+    """§0.2/F1：eligible edge evidence_anchor 必须在可信 raw anchor 集（grounded claims）。
+
+    伪 §Z / 合成 §raw 不计 eligible → F4 fail（防伪边破坏 traceability）。
+    """
+
+    def test_real_anchor_eligible_edge_passes_f4(self):
+        """evidence_anchor=§A（在 claims anchors）→ eligible → F4 pass。"""
+        d = _f1_extract([
+            {"from": "A", "to": "B", "relation": "r", "edge_kind": "source_causal",
+             "evidence": "A feeds B", "evidence_anchor": "§A"},
+        ])
+        r = evaluate_integrity_floor(d, "concept")
+        assert FLOOR_CORE_VALUE_F4 not in r.failed_floors, "真实 §A anchor 应 eligible"
+
+    def test_fake_anchor_z_not_eligible(self):
+        """evidence_anchor=§Z（不在 claims anchors）→ 非 eligible → F4 fail。"""
+        d = _f1_extract([
+            {"from": "A", "to": "B", "relation": "r", "edge_kind": "source_causal",
+             "evidence": "A feeds B", "evidence_anchor": "§Z"},  # 伪 §Z
+        ])
+        r = evaluate_integrity_floor(d, "concept")
+        assert FLOOR_CORE_VALUE_F4 in r.failed_floors, "伪 §Z 不应计 eligible"
+
+    def test_synthetic_raw_anchor_not_eligible(self):
+        """evidence_anchor=§raw（合成，不在 claims anchors）→ 非 eligible → F4 fail。"""
+        d = _f1_extract([
+            {"from": "A", "to": "B", "relation": "r", "edge_kind": "source_causal",
+             "evidence": "A feeds B", "evidence_anchor": "§raw"},  # 合成 §raw
+        ])
+        r = evaluate_integrity_floor(d, "concept")
+        assert FLOOR_CORE_VALUE_F4 in r.failed_floors, "合成 §raw 不应计 eligible"
+
+    def test_zero_eligible_with_components_triggers_retake_signal(self):
+        """§0.2/F1 太脆：0 eligible + 组件≥3 → needs_causal_edge_retake 信号（不静默早死）。"""
+        d = _f1_extract([
+            {"from": "A", "to": "B", "relation": "r", "edge_kind": "source_causal",
+             "evidence": "", "evidence_anchor": ""},  # 缺字段 → 0 eligible
+        ])
+        r = evaluate_integrity_floor(d, "concept")
+        assert FLOOR_CORE_VALUE_F4 in r.failed_floors, "0 eligible 仍 F4 fail"
+        assert r.meta.get("needs_causal_edge_retake") is True, (
+            "0 eligible + 组件≥3 应标 needs_causal_edge_retake（runner 补抽）"
+        )
+
+    def test_too_few_components_no_retake_signal(self):
+        """<3 组件 → F4 fail 但不标 retake（retake 只救 0 eligible，不救 <3 组件）。"""
+        d = _f1_extract([], claims_anchors=("§A",))
+        d["mechanism_components"] = [{"name": "A", "role": "r"}]
+        r = evaluate_integrity_floor(d, "concept")
+        assert FLOOR_CORE_VALUE_F4 in r.failed_floors
+        assert not r.meta.get("needs_causal_edge_retake"), "<3 组件不应标 retake"

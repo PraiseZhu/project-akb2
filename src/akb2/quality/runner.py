@@ -641,6 +641,48 @@ def _run_admission_segment(
     return result.passed, result.reason, result.checks, result.content_lane, result.lane_reason
 
 
+def _compute_mechanism_rendering(
+    extract_data: dict[str, Any], candidate_text: str
+) -> dict[str, Any]:
+    """§0.2/F3：机制渲染信息——供 D12 hidden_mechanism_edges 真算。
+
+    - mechanism_section_rendered: 正文是否含 ## 机制组件与因果边证据 节
+    - rendered_edge_count: 渲染的因果边表行数（粗计 |from|to|...| 行）
+    - extract_source_causal_edge_count: extract_data 中 eligible edge 数
+    - hidden: extract 有 eligible edge 但正文未渲染机制表/边 → True
+    """
+    edges = extract_data.get("causal_edges", []) or []
+    eligible_count = sum(
+        1 for e in edges
+        if isinstance(e, dict)
+        and e.get("edge_kind") in ("source_causal", "llm_evidence")
+    )
+    section_rendered = "## 机制组件与因果边证据" in (candidate_text or "")
+    # 粗计渲染的边表行：机制节内以 | from | 或 |组件名| 开头的数据行
+    rendered_edge_count = 0
+    if section_rendered:
+        # 数机制节内 "因果边" 表的数据行（含 edge_kind 的行）
+        import re as _re
+        section_match = _re.search(
+            r"## 机制组件与因果边证据\s*(.*?)(?=\n## |\Z)",
+            candidate_text or "",
+            _re.DOTALL,
+        )
+        if section_match:
+            section = section_match.group(1)
+            edge_part = section.split("因果边：")[-1] if "因果边：" in section else ""
+            for line in edge_part.splitlines():
+                line = line.strip()
+                if line.startswith("|") and "---" not in line and "from" not in line.lower():
+                    rendered_edge_count += 1
+    return {
+        "mechanism_section_rendered": section_rendered,
+        "rendered_edge_count": rendered_edge_count,
+        "extract_source_causal_edge_count": eligible_count,
+        "hidden": bool(eligible_count > 0 and (not section_rendered or rendered_edge_count == 0)),
+    }
+
+
 def _run_distill_segment(
     raw_path: str,
     raw_content: str,
@@ -696,6 +738,30 @@ def _run_distill_segment(
     from src.akb2.quality.integrity_floor import evaluate_integrity_floor
 
     floor_result = evaluate_integrity_floor(extract_result.data, content_lane)
+
+    # §0.2/F1 太脆：concept primary success 但 0 eligible edge（LLM 漏 edge_kind/anchor
+    # 字段）→ floor 标 needs_causal_edge_retake。runner 用确定性 _build_real_causal_edges
+    # 从 raw 补抽带真实 §-anchor 的 source_causal 边（不造假），合并进 extract_data，
+    # 重评 floor。仍 0 eligible → fail-closed（不放松 F4）。
+    if (
+        str(content_lane).lower() == "concept"
+        and floor_result.meta.get("needs_causal_edge_retake")
+        and extract_result.success
+    ):
+        from src.akb2.quality.distill import _build_real_causal_edges
+
+        components = extract_result.data.get("mechanism_components", []) or []
+        retake_edges = _build_real_causal_edges(components, raw_content)
+        if retake_edges:
+            # 合并：保留 LLM 原有 eligible 边（若有），补 fallback 抽的真实边
+            existing = list(extract_result.data.get("causal_edges", []) or [])
+            existing_pairs = {(e.get("from"), e.get("to")) for e in existing if isinstance(e, dict)}
+            for e in retake_edges:
+                if (e.get("from"), e.get("to")) not in existing_pairs:
+                    existing.append(e)
+            extract_result.data["causal_edges"] = existing
+            floor_result = evaluate_integrity_floor(extract_result.data, content_lane)
+            floor_result.meta["causal_edge_retake_applied"] = True
 
     # 段 2: 成稿
     ts = _now().strftime("%Y-%m-%d-%H%M%S")
@@ -754,6 +820,11 @@ def _run_distill_segment(
             "floor_result": floor_result,
             # §0.2/D9：fallback 成功路径也携 fallback_quality_basis（机读质量基线）。
             "fallback_quality_basis": extract_result.data.get("fallback_quality_basis"),
+            # §0.2/F3：机制渲染信息——供 D12 hidden_mechanism_edges 真算
+            # （source_causal_edge_count>0 但正文未渲染机制表/边 → hidden>0）。
+            "mechanism_rendering": _compute_mechanism_rendering(
+                extract_result.data, candidate_text
+            ),
         },
     )
 
@@ -1387,6 +1458,7 @@ def _run_pipeline_segments(
             "error_class": "distill_failed",
             # §0.2/D9：calibration 漏斗归因需 fallback_quality_basis（component/eligible edge 计数）
             "fallback_quality_basis": distill_meta.get("fallback_quality_basis"),
+        "mechanism_rendering": distill_meta.get("mechanism_rendering"),
         }
 
     _log_event(config, "distill_extract", "distill_extract", content_hash,
@@ -1526,13 +1598,19 @@ def _run_pipeline_segments(
         _promotion_outcome = "proposal_passed"
     else:
         _promotion_outcome = "promotion_blocked"
+    # §0.2/F4：final_status 从 promotion_outcome 派生（旧 blocked 时仍写 proposal_passed 矛盾）
+    _final_status = {
+        "active_promoted": "promoted",
+        "proposal_passed": "proposal_passed",
+        "promotion_blocked": "promotion_blocked",
+    }.get(_promotion_outcome, "proposal_passed")
 
     return {
         "converged": True,
         "rounds": rounds,
         "promoted": promoted,
         "promotion_mode": promotion_mode,
-        "final_status": "promoted" if promoted else "proposal_passed",
+        "final_status": _final_status,
         "promotion_outcome": _promotion_outcome,
         "error": None if promoted else promote_detail,
         "content_lane": content_lane,
@@ -1541,6 +1619,8 @@ def _run_pipeline_segments(
         # §0.2/D9：成功路径也透传 fallback_quality_basis（fallback 成功时为机读质量基线；
         # LLM 成功时为 None）。calibration 漏斗归因可见。
         "fallback_quality_basis": distill_meta.get("fallback_quality_basis"),
+        # §0.2/F3：机制渲染信息透传（D12 hidden_mechanism_edges 真算）
+        "mechanism_rendering": distill_meta.get("mechanism_rendering"),
     }
 
 

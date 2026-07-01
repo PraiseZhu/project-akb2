@@ -174,16 +174,35 @@ def _interpretation_traceability_failed(extract_data: dict) -> tuple[bool, str, 
     return False, "", skipped_no_grounded
 
 
+def _trusted_raw_anchors(extract_data: dict) -> set[str]:
+    """§0.2/F1：可信 raw anchor 集——source_grounded claims 的 §X anchor。
+
+    eligible edge 的 evidence_anchor 必须在此集内（防伪 §Z / 合成 §raw 把伪边计入 F4，
+    破坏 traceability）。grounded claims 的 anchor 经 _claim_anchor_rate_failed 校验为
+    真实 §X 格式，故可信。akb_interpretation claims 的 anchor 不入此集（解读非源锚）。
+    """
+    anchors: set[str] = set()
+    for c in extract_data.get("claims", []) or []:
+        if not isinstance(c, dict):
+            continue
+        if str(c.get("provenance", "")).strip() != "source_grounded":
+            continue
+        a = str(c.get("anchor", "")).strip()
+        if a:
+            anchors.add(a)
+    return anchors
+
+
 def _core_value_f4_failed(extract_data: dict, content_lane: str) -> tuple[bool, str]:
     """④ 车道核心价值（F4）。
 
-    §0.2/D1：F4 只认 eligible edge = ``edge_kind ∈ {source_causal, llm_evidence}``
-    + ``evidence`` 非空 + ``evidence_anchor`` 非空（三者缺一即非 eligible）。
+    §0.2/D1 + §0.2/F1：F4 只认 eligible edge = ``edge_kind ∈ {source_causal, llm_evidence}``
+    + ``evidence`` 非空 + ``evidence_anchor`` 非空 **且 ∈ 可信 raw anchor 集**
+    （grounded claims 的 §X anchor）。伪 §Z / 合成 §raw 不计 eligible（防伪边过 F4）。
     ``inferred_from_structure`` 弱边**一律不计入 F4**（只渲染进正文表 + 交 grader H3
-    审语义）。0 eligible edge 仍 fail——不再要求"每个组件都连边"（去孤立点整篇拒），
-    但至少 1 条 eligible edge 连接两个命名组件。
+    审语义）。0 eligible edge → F4 fail（runner 据需 retake 信号补抽，仍 0 才 fail-closed）。
 
-    - concept: ≥3 唯一命名组件 + ≥1 eligible edge。
+    - concept: ≥3 唯一命名组件 + ≥1 eligible edge（anchor 必须真实）。
     - procedural: how_steps 中至少 1 条 how_level==H1（命令级），即 H1≥1。
     """
     if _is_concept_lane(content_lane):
@@ -202,10 +221,12 @@ def _core_value_f4_failed(extract_data: dict, content_lane: str) -> tuple[bool, 
                 f"（输入 {len(named)} 条，去重后 {len(named_set)}）"
             )
         edges = extract_data.get("causal_edges", []) or []
-        # §0.2/D1：统计 eligible edge（弱边不计 F4）
+        # §0.2/D1 + F1：统计 eligible edge（弱边不计；evidence_anchor 须 ∈ 可信 anchor 集）
         eligible_kinds = {"source_causal", "llm_evidence"}
+        trusted_anchors = _trusted_raw_anchors(extract_data)
         eligible_count = 0
         weak_count = 0
+        untrusted_anchor_count = 0
         eligible_components: set[str] = set()
         for e in edges:
             if not isinstance(e, dict):
@@ -218,16 +239,22 @@ def _core_value_f4_failed(extract_data: dict, content_lane: str) -> tuple[bool, 
             evidence = str(e.get("evidence", "")).strip()
             evidence_anchor = str(e.get("evidence_anchor", "")).strip()
             if kind in eligible_kinds and evidence and evidence_anchor:
-                eligible_count += 1
-                eligible_components.add(src)
-                eligible_components.add(dst)
+                # §0.2/F1：evidence_anchor 必须是真实 raw anchor（∈ grounded claims anchors）
+                if evidence_anchor in trusted_anchors:
+                    eligible_count += 1
+                    eligible_components.add(src)
+                    eligible_components.add(dst)
+                else:
+                    untrusted_anchor_count += 1
             elif kind == "inferred_from_structure":
                 weak_count += 1
         if eligible_count == 0:
             return True, (
                 f"concept F4：0 eligible 因果边（source_causal/llm_evidence 带 evidence + "
-                f"evidence_anchor）；{weak_count} 条 inferred_from_structure 弱边不计 F4"
-                f"（§0.2 D1：弱边只渲染进正文表 + 交 grader H3，不救 F4）"
+                f"evidence_anchor ∈ 真实 raw anchor 集）；{weak_count} 条 inferred 弱边不计 F4；"
+                f"{untrusted_anchor_count} 条边 evidence_anchor 不在可信 anchor 集"
+                f"（伪 §Z/合成 §raw 不计）"
+                f"（§0.2 D1+F1：弱边/伪 anchor 不救 F4）"
             )
         return False, ""
 
@@ -282,6 +309,21 @@ def evaluate_integrity_floor(extract_data: dict, content_lane: str = "") -> Floo
     if f4_failed:
         failed.append(FLOOR_CORE_VALUE_F4)
         reasons.append(f4_reason)
+        # §0.2/F1 太脆：concept F4 因 0 eligible edge 失败（非 <3 组件）+ 组件≥3 →
+        # 标 needs_causal_edge_retake，runner 据此补抽 causal edges（仍 0 才 fail-closed），
+        # 不静默 F4 早死救不回真机漏字段。
+        if _is_concept_lane(content_lane):
+            components = extract_data.get("mechanism_components", []) or []
+            named_set = {
+                str(c.get("name", "")).strip()
+                for c in components
+                if isinstance(c, dict) and str(c.get("name", "")).strip()
+            }
+            if (
+                len(named_set) >= CONCEPT_MIN_MECHANISM_COMPONENTS
+                and "0 eligible" in f4_reason
+            ):
+                trace_meta["needs_causal_edge_retake"] = True
 
     return FloorResult(
         passed=not failed,
