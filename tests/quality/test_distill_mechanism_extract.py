@@ -21,6 +21,7 @@ from pathlib import Path
 
 from src.akb2.quality.distill import (
     _build_frontmatter,
+    _build_real_causal_edges,
     _normalize_causal_edges,
     _normalize_mechanism_components,
     _validate_extract_output,
@@ -61,6 +62,117 @@ def _base_concept_data(
         "applicability_boundary": "applicability boundary with enough chars to pass min",
         "graph_edges": [],
     }
+
+
+# ---------------------------------------------------------------------------
+# §0.2/M1/D9：fallback raw-grounded 边（edge_kind）+ fallback_quality_basis
+# ---------------------------------------------------------------------------
+
+
+class TestM1FallbackEdgesAndBasis:
+    """§0.2/M1/D2/D9：fallback 产 source_causal eligible 边 + inferred 弱边 + basis。
+
+    source_causal（带 evidence + evidence_anchor）计入 F4 eligible；inferred 不计。
+    fallback_quality_basis 在成功与失败路径都携带（D9 不靠 error string）。
+    """
+
+    _CAPTAIN_RAW = (
+        "# Captain Architecture\n\n"
+        "### 1. Captain\nThe Captain dispatches to the Executor Pool.\n\n"
+        "### 2. Executor Pool\nThe Executor Pool feeds the Task Graph.\n\n"
+        "### 3. Task Graph\nThe Task Graph writes to the Lifecycle.\n\n"
+        "### 4. Lifecycle\nThe Lifecycle notifies the Captain.\n"
+    )
+
+    def test_build_real_causal_edges_source_causal_with_evidence(self):
+        """真因果语言句 → source_causal 边（带 evidence 句 + evidence_anchor）。"""
+        components = [
+            {"name": "Captain", "role": "r"},
+            {"name": "Executor Pool", "role": "r"},
+            {"name": "Task Graph", "role": "r"},
+            {"name": "Lifecycle", "role": "r"},
+        ]
+        edges = _build_real_causal_edges(components, self._CAPTAIN_RAW)
+        source_causal = [e for e in edges if e["edge_kind"] == "source_causal"]
+        assert len(source_causal) >= 1, "应有 source_causal eligible 边"
+        for e in source_causal:
+            assert e["edge_kind"] == "source_causal"
+            assert e["evidence"], "source_causal 边须带 evidence 句"
+            assert e["evidence_anchor"], "source_causal 边须带 evidence_anchor（F4 eligible）"
+
+    def test_build_real_causal_edges_inferred_weak_edges(self):
+        """相邻组件未被 source_causal 覆盖时 → inferred_from_structure 弱边（无 evidence）。"""
+        # 无因果语言 → 所有相邻对走 inferred
+        components = [
+            {"name": "Alpha", "role": "r"},
+            {"name": "Beta", "role": "r"},
+            {"name": "Gamma", "role": "r"},
+        ]
+        raw = "# Plain Article\n\n### 1. Alpha\nA thing.\n### 2. Beta\nAnother.\n### 3. Gamma\nThird.\n"
+        edges = _build_real_causal_edges(components, raw)
+        inferred = [e for e in edges if e["edge_kind"] == "inferred_from_structure"]
+        assert len(inferred) >= 1, "相邻组件未被 source_causal 覆盖时应有 inferred 弱边"
+        for e in inferred:
+            assert e["edge_kind"] == "inferred_from_structure"
+            assert e["evidence"] == ""
+            assert e["evidence_anchor"] == ""
+
+    def test_build_real_causal_edges_no_causal_language_zero_eligible(self):
+        """无因果语言 → 0 source_causal eligible 边（inferred 仍可能存在但不救 F4）。"""
+        components = [
+            {"name": "Alpha", "role": "r"},
+            {"name": "Beta", "role": "r"},
+            {"name": "Gamma", "role": "r"},
+        ]
+        raw = "# Plain Article\n\n### 1. Alpha\nA thing.\n### 2. Beta\nAnother.\n### 3. Gamma\nThird.\n"
+        edges = _build_real_causal_edges(components, raw)
+        source_causal = [e for e in edges if e["edge_kind"] == "source_causal"]
+        assert source_causal == [], "无因果语言 → 0 eligible 边"
+        # inferred 弱边仍建（供 grader H3）
+        inferred = [e for e in edges if e["edge_kind"] == "inferred_from_structure"]
+        assert len(inferred) >= 1
+
+    def test_fallback_success_carries_fallback_quality_basis(self):
+        """concept fallback 成功路径也携 fallback_quality_basis（机读质量基线）。"""
+        result = build_deterministic_extract_result(
+            self._CAPTAIN_RAW, content_lane="concept"
+        )
+        assert result.success is True, result.error
+        basis = result.data.get("fallback_quality_basis")
+        assert basis is not None, "成功路径也应携 fallback_quality_basis"
+        assert basis["component_count"] >= 3
+        assert basis["source_causal_edge_count"] >= 1, "Captain fixture 有因果语言 → ≥1 eligible"
+        # inferred 计数可为 0（相邻对全被 source_causal 覆盖时），只要是非负 int
+        assert isinstance(basis["inferred_edge_count"], int)
+        assert basis["inferred_edge_count"] >= 0
+        assert isinstance(basis["component_evidence_anchors"], list)
+
+    def test_fallback_fail_closed_carries_basis_zero_eligible(self):
+        """0 eligible edge → fail-closed，但 data 携 fallback_quality_basis（D9 不靠 error）。"""
+        # 黄金样张：编号列表有实体名（≥3 组件）但无因果语言 → 0 eligible
+        raw = (
+            "# Loop Article\n\n"
+            "A well-designed loop has five components:\n"
+            "1. A trigger (schedule, event, or manual)\n"
+            "2. A work unit selector (read ledger, pick next item)\n"
+            "3. An action executor (run the actual work)\n"
+        )
+        result = build_deterministic_extract_result(raw, content_lane="concept")
+        assert result.success is False, "0 eligible edge 应 fail-closed"
+        basis = result.data.get("fallback_quality_basis")
+        assert basis is not None, "失败路径也须携 fallback_quality_basis（D9）"
+        assert basis["component_count"] >= 3
+        assert basis["source_causal_edge_count"] == 0, "无因果语言 → 0 eligible"
+        assert "eligible" in result.error or "因果边" in result.error
+
+    def test_fallback_fail_closed_carries_basis_too_few_components(self):
+        """<3 组件 → fail-closed，data 携 basis（component_count < 3 可见）。"""
+        raw = "# Some Safety Article\n\nPure policy prose without component headings."
+        result = build_deterministic_extract_result(raw, content_lane="concept")
+        assert result.success is False
+        basis = result.data.get("fallback_quality_basis")
+        assert basis is not None
+        assert basis["component_count"] < 3
 
 
 # ---------------------------------------------------------------------------

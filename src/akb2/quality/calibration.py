@@ -330,6 +330,12 @@ def _process_corpus_entry(
     result["content_lane"] = pipeline_result.get("content_lane", "")
     result["failed_node"] = pipeline_result.get("failed_node")
     result["error_class"] = pipeline_result.get("error_class")
+    # §0.2/D9：透传 fallback_quality_basis（component_count/source_causal_edge_count/
+    # inferred_edge_count/component_evidence_anchors）——失败路径也须可见，不靠 error
+    # string 解析。供 §10 漏斗量化 + D12 counters 归因。
+    fbasis = pipeline_result.get("fallback_quality_basis")
+    if isinstance(fbasis, dict):
+        result["fallback_quality_basis"] = fbasis
 
     if expected == "ingest":
         # path 5: 正样本——期望通过

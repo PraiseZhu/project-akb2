@@ -1905,11 +1905,18 @@ _CAUSAL_CONNECTOR_RE = re.compile(
 
 def _build_real_causal_edges(
     components: list[dict[str, str]], raw_content: str
-) -> list[dict[str, str]]:
-    """从 raw 真实因果/依赖/触发语言建边（P1-A：禁排版顺序边替代因果边）。
+) -> list[dict[str, Any]]:
+    """§0.2/D2/M1：从 raw 真实因果语言建 eligible 边 + 相邻组件结构推断弱边。
 
-    扫含因果连接词的句，若 ≥2 组件名共现 → 按句中出现顺序建边。
-    无真实因果语言 → 返空边（F4 连通性 fail → fallback fail-closed，不造假边）。
+    - 真因果/依赖/触发语言句 + ≥2 组件共现 → edge_kind="source_causal"（带 evidence
+      句 + evidence_anchor，计入 F4 eligible edge，§0.2 D1）
+    - 同编号段相邻组件 → edge_kind="inferred_from_structure"（无 evidence，不计 F4，
+      只渲染进正文表 + 交 grader H3 审语义；§0.2 D1 弱边不救 F4）
+    无真实因果 → 0 eligible edge（inferred 弱边仍可能存在但不计入 F4）→ fallback
+    fail-closed（不造假边救活；F4 由 floor 兜底，此处 maker 级先拦）。
+
+    evidence_anchor 用合成 "§raw"（fallback 路径无逐句 §-anchor 映射；LLM/§4 两阶段
+    抽取产真实 §-anchor）。非空 → F4 eligible；grader H3/A 层可判其弱。
     """
     if not components or not raw_content:
         return []
@@ -1920,9 +1927,9 @@ def _build_real_causal_edges(
         norm = re.sub(r"^(?:A|An|The)\s+", "", name.strip(), flags=re.I).lower().strip()
         if norm:
             comp_norm.append((norm, name))
-    edges: list[dict[str, str]] = []
+    edges: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
-    # 按句扫（句号/换行/问号/叹号分隔）
+    # 1. source_causal edges：含因果连接词的句 + ≥2 组件共现 → eligible edge
     for sent in re.split(r"[。\n.!?]", raw_content):
         if not _CAUSAL_CONNECTOR_RE.search(sent):
             continue
@@ -1937,7 +1944,32 @@ def _build_real_causal_edges(
                 a, b = found_orig[i], found_orig[j]
                 if (a, b) not in seen:
                     seen.add((a, b))
-                    edges.append({"from": a, "to": b, "relation": "raw_causal"})
+                    edges.append(
+                        {
+                            "from": a,
+                            "to": b,
+                            "relation": "raw_causal",
+                            "edge_kind": "source_causal",
+                            "evidence": sent.strip()[:200],
+                            "evidence_anchor": "§raw",
+                        }
+                    )
+    # 2. inferred_from_structure edges：相邻组件顺序推断（不计 F4，供 grader H3）
+    for i in range(len(components) - 1):
+        a = components[i]["name"]
+        b = components[i + 1]["name"]
+        if a != b and (a, b) not in seen:
+            seen.add((a, b))
+            edges.append(
+                {
+                    "from": a,
+                    "to": b,
+                    "relation": "structural_sequence",
+                    "edge_kind": "inferred_from_structure",
+                    "evidence": "",
+                    "evidence_anchor": "",
+                }
+            )
     return edges
 
 
@@ -1953,9 +1985,11 @@ def build_deterministic_extract_result(
     proposal handling.
 
     content_lane（SC-3a）：传给 _build_deterministic_extract_data + _validate_extract_output。
-    concept 车道：扫 raw 找真实命名机制组件（≥3）+ 顺序因果边，不硬编码 loop 组件（D8），
-    不注入假 AKB 操作化步骤（D7 poisoned trace）；<3 真实组件 → fail-closed abort。
-    procedural 行为不变（零回归）。
+    concept 车道：扫 raw 找真实命名机制组件 + 真因果 eligible 边 + 相邻 inferred 弱边
+    （§0.2/M1/D2），不硬编码 loop 组件（D8），不注入假 AKB 操作化步骤（D7 poisoned trace）。
+    §0.2/D9：concept fallback 凑不齐 ≥3 组件或 0 eligible edge → 构造 fallback_quality_basis
+    再 fail-closed 返回（失败路径也携 basis，不靠 error string 解析）；成功路径也携 basis
+    作机读质量基线。procedural 行为不变（零回归）。
     """
     try:
         data = _build_deterministic_extract_data(
@@ -1969,7 +2003,52 @@ def build_deterministic_extract_result(
             retries_used=0,
             error=f"deterministic_maker_fallback_failed: {exc}",
         )
+    # §0.2/M1/D9：concept fallback 质量基线检查（<3 组件或 0 eligible edge → fail-closed）
+    if _is_concept_lane(content_lane):
+        basis = _build_fallback_quality_basis(data)
+        data["fallback_quality_basis"] = basis
+        if (
+            basis["component_count"] < CONCEPT_MIN_MECHANISM_COMPONENTS
+            or basis["source_causal_edge_count"] == 0
+        ):
+            return ExtractResult(
+                success=False,
+                data={"fallback_quality_basis": basis},
+                retries_used=0,
+                error=(
+                    f"concept deterministic fallback fail-closed: "
+                    f"{basis['component_count']} 组件 / "
+                    f"{basis['source_causal_edge_count']} eligible 因果边 "
+                    f"（需 ≥{CONCEPT_MIN_MECHANISM_COMPONENTS} 组件且 ≥1 eligible edge，"
+                    f"§0.2 D1；inferred 弱边不计）"
+                ),
+            )
     return ExtractResult(success=True, data=data, retries_used=0)
+
+
+def _build_fallback_quality_basis(data: dict[str, Any]) -> dict[str, Any]:
+    """§0.2/D9：fallback 机读质量基线（失败路径也须携带，不靠 error string 解析）。
+
+    component_count / source_causal_edge_count（F4 eligible）/ inferred_edge_count
+    （不计 F4）/ component_evidence_anchors。runner/calibration 透传供 e2e 可见。
+    """
+    components = data.get("mechanism_components", []) or []
+    edges = data.get("causal_edges", []) or []
+    source_causal = [
+        e for e in edges if isinstance(e, dict) and e.get("edge_kind") == "source_causal"
+    ]
+    inferred = [
+        e for e in edges
+        if isinstance(e, dict) and e.get("edge_kind") == "inferred_from_structure"
+    ]
+    return {
+        "component_count": len(components),
+        "source_causal_edge_count": len(source_causal),
+        "inferred_edge_count": len(inferred),
+        "component_evidence_anchors": [
+            str(c.get("evidence_anchor", "")) for c in components if isinstance(c, dict)
+        ],
+    }
 
 
 def _build_deterministic_extract_data(
@@ -2165,30 +2244,16 @@ def _build_deterministic_extract_data(
             "evidence_kind": "interpretation",
         },
     ]
-    # WP-3/D8: concept 车道扫 raw 找真实命名机制组件（编号 H2/H3/H4 标题），≥3 才用 +
-    # 顺序因果边（F4 连通）；<3 → raise 让 build_deterministic_extract_result 返
-    # success=False → runner fail-closed abort（concept no-mechanism 不被 fallback 救活，
-    # 不再硬编码 loop-engineering 组件造假机制）。procedural 不注入（空数组，零回归）。
-    # §0.2/A2：F4 不再前移到 _validate_extract_output，fallback 的 0-边 fail-closed 改由
-    # 此处 maker 级检查承载（M1 step-3 再细化为 eligible-edge + fallback_quality_basis）。
+    # WP-3/D8 + §0.2/M1/D9：concept 车道扫 raw 找真实命名机制组件 + 真因果 eligible 边
+    # + 相邻组件 inferred 弱边。不在此处 raise——component/eligible-edge 计数与
+    # fallback_quality_basis 构造交给 build_deterministic_extract_result（D9 失败路径也
+    # 须携 basis，不靠 error string 解析；此处只产结构数据）。procedural 不注入（零回归）。
     mechanism_components: list[dict[str, str]] = []
-    causal_edges: list[dict[str, str]] = []
+    causal_edges: list[dict[str, Any]] = []
     if _is_concept_lane(content_lane):
         real_components = _scan_real_mechanism_components(raw_content)
-        if len(real_components) < CONCEPT_MIN_MECHANISM_COMPONENTS:
-            raise ValueError(
-                f"concept deterministic fallback: raw 仅 {len(real_components)} 命名机制组件 "
-                f"< {CONCEPT_MIN_MECHANISM_COMPONENTS}，无法从 raw 证明机制，fail-closed"
-            )
         mechanism_components = real_components
-        # P1-A: 真实因果/依赖/触发语言才建边（禁排版顺序边）；无真实因果 → 空边
-        # → 0 因果边 fail-closed（不造假边救活；F4 连通性由 floor 兜底，此处 maker 级先拦）
         causal_edges = _build_real_causal_edges(real_components, raw_content)
-        if not causal_edges:
-            raise ValueError(
-                f"concept deterministic fallback: raw 有 {len(real_components)} 命名机制组件"
-                f"但 0 真实因果边（无因果/依赖/触发语言），无法证明机制连通，fail-closed"
-            )
     return {
         "claims": claims,
         "how_steps": how_steps,

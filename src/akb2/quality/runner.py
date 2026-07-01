@@ -642,6 +642,9 @@ def _run_distill_segment(
                 "retries_used": extract_result.retries_used,
                 "maker_fallback_used": maker_fallback_used,
                 "maker_primary_error": maker_primary_error,
+                # §0.2/D9：fallback 失败路径也须携 fallback_quality_basis（不靠 error
+                # string 解析），供 calibration 漏斗归因。
+                "fallback_quality_basis": extract_result.data.get("fallback_quality_basis"),
             },
         )
 
@@ -707,6 +710,8 @@ def _run_distill_segment(
             "maker_primary_error": maker_primary_error,
             # step-3 SC-3b/SC-3h：完整性地板结果随 distill_meta 携出，供评分段 early-return。
             "floor_result": floor_result,
+            # §0.2/D9：fallback 成功路径也携 fallback_quality_basis（机读质量基线）。
+            "fallback_quality_basis": extract_result.data.get("fallback_quality_basis"),
         },
     )
 
@@ -1324,6 +1329,9 @@ def _run_pipeline_segments(
         details["maker_fallback_used"] = distill_meta.get("maker_fallback_used", False)
         if distill_meta.get("maker_primary_error"):
             details["maker_primary_error"] = distill_meta.get("maker_primary_error")
+        # §0.2/D9：fallback 失败路径透传 fallback_quality_basis（不靠 error string）
+        if distill_meta.get("fallback_quality_basis"):
+            details["fallback_quality_basis"] = distill_meta.get("fallback_quality_basis")
         _log_event(config, "abort", failed_node, content_hash, details)
         return {
             "converged": False,
@@ -1335,6 +1343,8 @@ def _run_pipeline_segments(
             "content_lane": content_lane,
             "failed_node": failed_node,
             "error_class": "distill_failed",
+            # §0.2/D9：calibration 漏斗归因需 fallback_quality_basis（component/eligible edge 计数）
+            "fallback_quality_basis": distill_meta.get("fallback_quality_basis"),
         }
 
     _log_event(config, "distill_extract", "distill_extract", content_hash,
@@ -1472,6 +1482,9 @@ def _run_pipeline_segments(
         "content_lane": content_lane,
         "failed_node": None,
         "error_class": None,
+        # §0.2/D9：成功路径也透传 fallback_quality_basis（fallback 成功时为机读质量基线；
+        # LLM 成功时为 None）。calibration 漏斗归因可见。
+        "fallback_quality_basis": distill_meta.get("fallback_quality_basis"),
     }
 
 
