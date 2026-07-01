@@ -1514,12 +1514,26 @@ def _run_pipeline_segments(
         _log_event(config, "abort", "promote", content_hash,
                    {"reason": promote_detail})
 
+    # §0.2/D4：promote 三分类——active_promoted / proposal_passed / promotion_blocked。
+    # active_promoted: AUTO_PROMOTE=1 + 真写 active（real_link+high）；proposal_passed:
+    # AUTO_PROMOTE=0 + proposal 口径过（含 proposed_node_only 灰区）；promotion_blocked:
+    # quality 过但 Gate-1/4/5/CLI 非允许失败或 AUTO_PROMOTE=1 proposed_node_only 二次拒
+    # （不计 positive pass，防 proposal_passed 虚高）。
+    _auto_promote_env = os.environ.get("AKB2_AUTO_PROMOTE", "0")
+    if promoted and _auto_promote_env == "1":
+        _promotion_outcome = "active_promoted"
+    elif promoted:
+        _promotion_outcome = "proposal_passed"
+    else:
+        _promotion_outcome = "promotion_blocked"
+
     return {
         "converged": True,
         "rounds": rounds,
         "promoted": promoted,
         "promotion_mode": promotion_mode,
         "final_status": "promoted" if promoted else "proposal_passed",
+        "promotion_outcome": _promotion_outcome,
         "error": None if promoted else promote_detail,
         "content_lane": content_lane,
         "failed_node": None,

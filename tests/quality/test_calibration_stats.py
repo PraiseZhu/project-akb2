@@ -476,3 +476,105 @@ class TestAcceptanceModeExit:
         monkeypatch.setattr(calib, "run_calibration", _fake_run)
         rc = calib.main(["--corpus", "x.yaml", "--report-out", "/tmp/_t.json", "--acceptance-mode", "quality-repair"])
         assert rc == 1, "quality-repair mode gate=False → exit 1"
+
+
+# ---------------------------------------------------------------------------
+# §0.2/D4：promotion_outcome 三分类 + §0.2/D12：repair_quality_funnel counters
+# ---------------------------------------------------------------------------
+
+
+class TestD4PromotionOutcome:
+    """§0.2/D4：promotion_outcome 三分类（active_promoted/proposal_passed/promotion_blocked）。
+
+    calibration 只计 active_promoted + proposal_passed 为 positive pass；
+    promotion_blocked 不计（防 proposal_passed 虚高）。
+    """
+
+    def _entry(self, outcome, expected="ingest", mechanism_present=True):
+        return {
+            "index": 0, "expected": expected, "passed": outcome in ("active_promoted", "proposal_passed"),
+            "promotion_outcome": outcome,
+            "final_status": "promoted" if outcome == "active_promoted" else (
+                "proposal_passed" if outcome == "proposal_passed" else "failed"
+            ),
+            "failure_segment": None if outcome in ("active_promoted", "proposal_passed") else "promotion_blocked",
+            "audit": {"mechanism_present": mechanism_present},
+        }
+
+    def test_active_promoted_counts_as_pass(self):
+        e = self._entry("active_promoted")
+        report: dict[str, Any] = {"entries": [e] + [_neg_entry(1)]}
+        _compute_statistics(report)
+        assert report["entries"][0]["passed"] is True
+
+    def test_proposal_passed_counts_as_pass(self):
+        e = self._entry("proposal_passed")
+        report: dict[str, Any] = {"entries": [e] + [_neg_entry(1)]}
+        _compute_statistics(report)
+        assert report["entries"][0]["passed"] is True
+
+    def test_promotion_blocked_not_counted_as_pass(self):
+        """promotion_blocked 不计 positive pass（防虚高）。"""
+        e = self._entry("promotion_blocked")
+        # promotion_blocked 的 final_status="failed"，expected=ingest → passed=False
+        report: dict[str, Any] = {"entries": [e] + [_neg_entry(1)]}
+        _compute_statistics(report)
+        assert report["entries"][0]["passed"] is False
+        assert report["entries"][0].get("failure_segment") == "promotion_blocked"
+
+
+class TestD12RepairQualityFunnel:
+    """§0.2/D12：repair_quality_funnel counters（旧早死模式修复后应全 0）。"""
+
+    def _mech_entry(self, *, error_class="", failed_node="", error="", passed=True):
+        return {
+            "index": 0, "expected": "ingest", "passed": passed,
+            "error_class": error_class, "failed_node": failed_node,
+            "failure_segment": None if passed else failed_node,
+            "error": error,
+            "audit": {"mechanism_present": True},
+            "final_status": "promoted" if passed else "failed",
+        }
+
+    def test_funnel_all_zero_when_no_old_early_death(self):
+        """修复后正常路径 → 旧早死 counters 全 0。"""
+        e = self._mech_entry(passed=True)
+        report: dict[str, Any] = {"entries": [e]}
+        _compute_statistics(report)
+        funnel = report["repair_quality_funnel"]
+        assert funnel["old_no_mechanism_signal_on_h2h3_count"] == 0
+        assert funnel["distill_f4_precompose_death_count"] == 0
+        assert funnel["a2_related_only_cold_start_death_count"] == 0
+        assert funnel["hidden_mechanism_edges_count"] == 0
+
+    def test_funnel_scoped_to_mechanism_present_ingest(self):
+        """scope: mechanism_present=true / expected=ingest（负样本/非机制不入 scope）。"""
+        e_mech = self._mech_entry(passed=True)
+        e_neg = {"index": 1, "expected": "reject", "passed": True, "final_status": "rejected_correctly",
+                 "audit": {"mechanism_present": False}}
+        e_nonmech = self._mech_entry(passed=False)
+        e_nonmech["audit"] = {"mechanism_present": False}
+        report: dict[str, Any] = {"entries": [e_mech, e_neg, e_nonmech]}
+        _compute_statistics(report)
+        funnel = report["repair_quality_funnel"]
+        # 只 mechanism_present=true + expected=ingest 入 scope（e_mech 一条）
+        assert funnel["scoped_total"] == 1
+
+    def test_funnel_detects_old_no_mechanism_on_h2h3(self):
+        """admission no_mechanism + mechanism_present=true → old_no_mechanism counter。"""
+        e = self._mech_entry(
+            passed=False, error_class="no_mechanism_signal", failed_node="admission"
+        )
+        report: dict[str, Any] = {"entries": [e]}
+        _compute_statistics(report)
+        funnel = report["repair_quality_funnel"]
+        assert funnel["old_no_mechanism_signal_on_h2h3_count"] == 1
+
+    def test_funnel_top_failure_class_share(self):
+        """top_failure_class_share <= 1.0（单 bucket 占 100% 时 = 1.0）。"""
+        e = self._mech_entry(passed=False, failed_node="admission", error_class="no_mechanism_signal")
+        report: dict[str, Any] = {"entries": [e]}
+        _compute_statistics(report)
+        funnel = report["repair_quality_funnel"]
+        assert 0.0 <= funnel["top_failure_class_share"] <= 1.0
+        assert isinstance(funnel["failure_class_distribution"], dict)

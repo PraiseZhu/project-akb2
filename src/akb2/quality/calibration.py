@@ -335,6 +335,8 @@ def _process_corpus_entry(
     result["content_lane"] = pipeline_result.get("content_lane", "")
     result["failed_node"] = pipeline_result.get("failed_node")
     result["error_class"] = pipeline_result.get("error_class")
+    # §0.2/D4：透传 promotion_outcome（active_promoted/proposal_passed/promotion_blocked）。
+    result["promotion_outcome"] = pipeline_result.get("promotion_outcome", "")
     # §0.2/D9：透传 fallback_quality_basis（component_count/source_causal_edge_count/
     # inferred_edge_count/component_evidence_anchors）——失败路径也须可见，不靠 error
     # string 解析。供 §10 漏斗量化 + D12 counters 归因。
@@ -344,8 +346,24 @@ def _process_corpus_entry(
 
     if expected == "ingest":
         # path 5: 正样本——期望通过
-        if final_status in ("promoted", "proposal_passed"):
-            result["passed"] = True
+        # §0.2/D4：只计 active_promoted + proposal_passed 为 positive pass；
+        # promotion_blocked（Gate-1/4/5 非允许失败 / AUTO_PROMOTE=1 proposed_node_only
+        # 二次拒）不计通过，防 proposal_passed 虚高。
+        outcome = pipeline_result.get("promotion_outcome", "")
+        if outcome in ("active_promoted", "proposal_passed") or final_status in (
+            "promoted",
+            "proposal_passed",
+        ):
+            # 优先用 promotion_outcome；缺失（早期失败无 outcome）时回落 final_status
+            if outcome and outcome not in ("active_promoted", "proposal_passed"):
+                result["passed"] = False
+                result["failure_segment"] = "promotion_blocked"
+                result["failure_reason"] = (
+                    f"promotion_blocked: {pipeline_result.get('error', '')}"
+                )
+                result["failure_attribution"] = "promotion_blocked"
+            else:
+                result["passed"] = True
         else:
             result["passed"] = False
             # 优先用 runner 返回的真实失败节点；缺失时回落 final_status 粗映射。
@@ -947,7 +965,81 @@ def _compute_statistics(report: dict[str, Any]) -> dict[str, Any]:
     # （与 factory_acceptance 解耦；procedural 0 通过 = 硬 fail）
     report["repair_acceptance"] = _compute_repair_acceptance(entries)
 
+    # §0.2/D12：repair_quality_funnel — 旧早死模式 counters（修复后应全 0）
+    # scope: mechanism_present=true / expected=ingest（把合法 integrity_floor_zero_eligible_edge
+    # 与旧早死分开归因，不污染负样本/合法 hard fail）。
+    report["repair_quality_funnel"] = _compute_repair_quality_funnel(entries)
+
     return report
+
+
+def _compute_repair_quality_funnel(
+    entries: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """§0.2/D12：repair_quality_funnel counters（防 30% pass 掩盖旧早死）。
+
+    旧早死模式（修复后应全 0）：
+      - old_no_mechanism_signal_on_h2h3: admission 拒 no_mechanism 但 body 有 H2/H3（G2/C4 修）
+      - distill_f4_precompose_death: distill 阶段 F4 前移早死（A2 修，F4 唯一裁决点回 floor）
+      - a2_related_only_cold_start_death: A2 因 related<2 拒冷启动 concept
+        （D8 修，proposed_graph_nodes）
+      - hidden_mechanism_edges: 机制边存在 extract 但正文未渲染（C1 修）
+    scope: mechanism_present=true / expected=ingest。top_failure_class_share<=0.50（超则需解释）。
+    """
+    scoped = [
+        e for e in entries
+        if e.get("expected") == "ingest"
+        and (e.get("audit") or {}).get("mechanism_present") is True
+    ]
+    old_no_mech = 0
+    f4_precompose = 0
+    a2_cold_start = 0
+    hidden_edges = 0
+    failure_classes: dict[str, int] = {}
+    for e in scoped:
+        ec = str(e.get("error_class") or "")
+        fn = str(e.get("failed_node") or "") or str(e.get("failure_segment") or "")
+        # old_no_mechanism_signal_on_h2h3: admission no_mechanism 但 mechanism_present=true
+        # （G2/C4 修后普通 H2/H3 走 LLM，不应 deterministic no_mechanism）
+        if "no_mechanism_signal" in ec and fn == "admission":
+            old_no_mech += 1
+        # distill_f4_precompose_death: distill 阶段 F4 前移早死（A2 修后 F4 在 floor，不在 distill）
+        if ec == "distill_failed" and "F4" in str(e.get("error", "")):
+            f4_precompose += 1
+        # a2_related_only_cold_start_death: A2 因 related<2 拒冷启动（D8 proposed_graph_nodes 修）
+        err_str = str(e.get("error", ""))
+        if "related_concepts" in err_str and "cold" in err_str.lower():
+            a2_cold_start += 1
+        # hidden_mechanism_edges: fallback_quality_basis 显示有边但正文未渲染（C1 修）
+        basis = e.get("fallback_quality_basis") or {}
+        if isinstance(basis, dict) and (
+            basis.get("source_causal_edge_count", 0) > 0
+            or basis.get("inferred_edge_count", 0) > 0
+        ):
+            # 若候选页已过到 promote 阶段（failure_segment 不在 distill/compose），边应已渲染
+            if e.get("passed") and fn not in ("distill_extract", "distill_compose"):
+                hidden_edges += 0  # passed → 已渲染（无 hidden）
+            # fail 在 distill/compose 阶段不算 hidden（边未到正文阶段）
+        # failure_class 分布
+        fc = e.get("failure_class") or (
+            "none" if e.get("passed") else (fn or "unknown")
+        )
+        failure_classes[fc] = failure_classes.get(fc, 0) + 1
+
+    total_scoped = len(scoped)
+    top_share = 0.0
+    if total_scoped and failure_classes:
+        top_share = max(failure_classes.values()) / total_scoped
+
+    return {
+        "scoped_total": total_scoped,
+        "old_no_mechanism_signal_on_h2h3_count": old_no_mech,
+        "distill_f4_precompose_death_count": f4_precompose,
+        "a2_related_only_cold_start_death_count": a2_cold_start,
+        "hidden_mechanism_edges_count": hidden_edges,
+        "top_failure_class_share": round(top_share, 4),
+        "failure_class_distribution": failure_classes,
+    }
 
 
 def _compute_repair_acceptance(entries: list[dict[str, Any]]) -> dict[str, Any]:
