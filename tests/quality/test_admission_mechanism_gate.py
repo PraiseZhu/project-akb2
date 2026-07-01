@@ -279,3 +279,113 @@ class TestMultiRejectCalibration:
         novelty = next(c for c in result.checks if c.name == "novelty")
         assert novelty.passed is False
         assert "novelty" in result.reason
+
+
+# ---------------------------------------------------------------------------
+# §0.2/G2/C4：普通 H2/H3 weak 信号分级（不触发 deterministic pass，只救误拒）
+# ---------------------------------------------------------------------------
+
+
+class TestG2C4WeakSignalGrading:
+    """§0.2/G2/C4：普通（非编号）H2/H3 标题 = weak 机制信号。
+
+    - weak 不触发 deterministic pass（C4：3 泛技术标题观点稿不绕过 LLM 仲裁）
+    - weak 计入 total，避免普通 H2/H3 机制文被 no_mechanism_signal 误拒（idx0/idx8）
+    """
+
+    def test_scan_mechanism_signals_distinguishes_strong_weak(self):
+        """编号标题=strong components；普通标题=weak_components。"""
+        from src.akb2.quality.admission import _scan_mechanism_signals
+
+        body = (
+            "### 1. Captain\nx.\n"  # strong (numbered)
+            "### 2. Executor Pool\nx.\n"  # strong
+            "## Captain Architecture\nx.\n"  # weak (plain)
+            "### Results\nx.\n"  # weak (plain)
+        )
+        sig = _scan_mechanism_signals(body)
+        assert sig["components"] == 2, "编号标题=strong"
+        assert sig["weak_components"] == 2, "普通标题=weak"
+
+    def test_plain_heading_mechanism_not_deterministic_fail(self, tmp_path: Path):
+        """普通 H2/H3 机制文（无编号标题）→ 不被 no_mechanism_signal deterministic fail。
+
+        idx0/idx8 修复：普通 H2/H3 机制文 → total>0（weak_components）→ 走 LLM 窄仲裁。
+        """
+        plain_mechanism = """---
+artifact_type: raw
+source_slug: plain-mechanism
+source_url: https://example.com/plain
+---
+
+# Plain Mechanism Article
+
+## Captain
+The Captain dispatches sub-tasks to executors.
+
+## Executor Pool
+Executors register capability manifests.
+
+## Task Graph
+The task graph tracks sub-task dependencies.
+"""
+        result = run_admission(
+            raw_path="raw/plain-mechanism--raw--2026-06-29.md",
+            raw_content=plain_mechanism,
+            ledger_path=str(tmp_path / "ledger.jsonl"),
+            route_llm_fn=_make_mock(lane=LANE_CONCEPT, pass_response=True),
+        )
+        mech = next(c for c in result.checks if c.name == "mechanism_signal")
+        # 不被 no_mechanism_signal deterministic fail（走 LLM 仲裁，mock pass → pass）
+        assert not mech.reason.startswith("no_mechanism_signal"), (
+            f"普通 H2/H3 机制文不应 deterministic fail: {mech.reason}"
+        )
+
+    def test_three_plain_headings_not_deterministic_pass(self, tmp_path: Path):
+        """C4：3 个普通标题（weak）不触发 deterministic pass → 走 LLM 仲裁。
+
+        防 3 泛技术标题观点/新闻稿绕过 LLM 仲裁混进。mock LLM fail → fail。
+        """
+        three_plain = """---
+artifact_type: raw
+source_slug: opinion
+source_url: https://example.com/opinion
+---
+
+# Opinion Piece
+
+## Introduction
+Some opinion prose.
+
+## Analysis
+More opinion prose.
+
+## Conclusion
+Final opinion.
+"""
+        # mock LLM fail（观点稿应被 LLM 仲裁拒）
+        result = run_admission(
+            raw_path="raw/opinion--raw--2026-06-29.md",
+            raw_content=three_plain,
+            ledger_path=str(tmp_path / "ledger.jsonl"),
+            route_llm_fn=_make_mock(lane=LANE_CONCEPT, pass_response=False),
+        )
+        mech = next(c for c in result.checks if c.name == "mechanism_signal")
+        # weak 不触发 deterministic pass → 走 LLM → mock fail → fail
+        assert mech.passed is False, "3 普通标题（weak）不应 deterministic pass"
+        assert not mech.reason.startswith("确定性机制信号"), (
+            f"weak 不应 deterministic pass: {mech.reason}"
+        )
+
+    def test_pure_prose_no_headings_still_deterministic_fail(self, tmp_path: Path):
+        """纯散文（无任何标题）→ total==0 → no_mechanism_signal deterministic fail（不变）。"""
+        result = run_admission(
+            raw_path="raw/pure-prose--raw--2026-06-29.md",
+            raw_content=_NO_MECHANISM_PROSE,
+            ledger_path=str(tmp_path / "ledger.jsonl"),
+            route_llm_fn=_make_mock(lane=LANE_CONCEPT, pass_response=True),
+        )
+        mech = next(c for c in result.checks if c.name == "mechanism_signal")
+        assert mech.reason.startswith("no_mechanism_signal"), (
+            "纯散文（无标题）仍应 deterministic fail"
+        )

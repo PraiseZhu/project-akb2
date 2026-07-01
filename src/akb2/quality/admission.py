@@ -645,8 +645,12 @@ def _has_strong_procedural_signal(body: str) -> bool:
 # 模板组件（D8 maker fallback 造假机制的源头）。procedural 不受此门（F4 H1 判）。
 MECHANISM_COMPONENT_MIN: int = 3
 
-# 命名组件候选：编号 H2/H3/H4 标题（### 1. Captain / ## 2. Executor Pool / ### Step 1）
+# 命名组件候选（strong）：编号 H2/H3/H4 标题（### 1. Captain / ## 2. Executor Pool / ### Step 1）
 _MECHANISM_COMPONENT_RE = re.compile(r"(?m)^#{2,4}\s+\d+[\.\)]\s+\S+")
+# §0.2/G2/C4：普通（非编号）H2/H3/H4 标题 → weak 机制候选（## Captain / ### Executor Pool）。
+# weak 信号不触发 deterministic pass（C4：3 泛技术标题观点稿不绕过 LLM 仲裁），只让
+# 普通 H2/H3 机制文不被 no_mechanism_signal 强反信号误拒（idx0/idx8）→ 走 LLM 窄仲裁。
+_PLAIN_MECHANISM_HEADING_RE = re.compile(r"(?m)^#{2,4}\s+(?!\d+[\.\)]\s*)\S+")
 # 因果连接词（机制组件间的因果关系）
 _CAUSAL_CONNECTOR_RE = re.compile(
     r"(?i)\b(?:leads?\s+to|triggers?|causes?|because\s+of|therefore|"
@@ -660,8 +664,12 @@ def _scan_mechanism_signals(body: str) -> dict[str, int]:
     """确定性扫描机制信号强度（命名组件 / 因果连接词 / 编号步 / code / source_operation）。
 
     纯代码无 LLM：供 ``_check_mechanism_signal`` 确定性短路用。
+
+    §0.2/G2/C4：components = strong（编号标题）；weak_components = 普通 H2/H3 标题。
+    weak 不触发 deterministic pass，只计入 total 避免 no_mechanism_signal 误拒普通机制文。
     """
     components = len(_MECHANISM_COMPONENT_RE.findall(body))
+    weak_components = len(_PLAIN_MECHANISM_HEADING_RE.findall(body))
     causal = len(_CAUSAL_CONNECTOR_RE.findall(body))
     numbered_steps = len(_NUMBERED_STEP_RE.findall(body))
     code_blocks = body.count("```") // 2
@@ -673,6 +681,7 @@ def _scan_mechanism_signals(body: str) -> dict[str, int]:
         src_ops = 0
     return {
         "components": components,
+        "weak_components": weak_components,
         "causal": causal,
         "numbered_steps": numbered_steps,
         "code_blocks": code_blocks,
@@ -693,12 +702,14 @@ def _check_mechanism_signal(body: str, route_llm_fn: Any) -> AdmissionCheck:
     """
     signals = _scan_mechanism_signals(body)
     comp = signals["components"]
+    weak_comp = signals["weak_components"]
     causal = signals["causal"]
     steps = signals["numbered_steps"]
     code = signals["code_blocks"]
     src_ops = signals["source_operations"]
 
-    # 确定性 PASS：强机制信号
+    # 确定性 PASS：强机制信号（§0.2/C4：仅 strong 信号触发 deterministic pass；
+    # weak_components 不触发，3 泛技术标题观点稿不绕过 LLM 仲裁）
     if comp >= MECHANISM_COMPONENT_MIN:
         return AdmissionCheck(
             name="mechanism_signal", passed=True,
@@ -716,7 +727,9 @@ def _check_mechanism_signal(body: str, route_llm_fn: Any) -> AdmissionCheck:
         )
 
     # 确定性 FAIL：全无信号（纯散文）—— LLM 不可绕过此强反信号
-    total = comp + causal + steps + code + src_ops
+    # §0.2/G2：weak_components（普通 H2/H3）计入 total，避免普通标题机制文被误拒
+    # （idx0/idx8：普通 H2/H3 机制文 → total>0 → 走 LLM 窄仲裁，不 deterministic fail）
+    total = comp + weak_comp + causal + steps + code + src_ops
     if total == 0:
         return AdmissionCheck(
             name="mechanism_signal", passed=False,
