@@ -199,7 +199,8 @@ _EXTRACT_SCHEMA: dict[str, Any] = {
         # step-3 SC-3a/A3-5：命名机制组件 + 因果边（concept F4 结构真相源）。
         # 顶层 minItems=0 非 required——procedural 零回归（不产），concept 由
         # _validate_extract_output 按 lane 硬卡 ≥3；F4 只读这两字段不反解 H3 标签。
-        # §0.2/D2：扩 component_id/aliases/evidence_anchor/evidence_sentence（同 _HOW_PARAMS_SCHEMA）。
+        # §0.2/D2：扩 component_id/aliases/evidence_anchor/evidence_sentence
+        # （同 _HOW_PARAMS_SCHEMA）。
         "mechanism_components": {
             "type": "array",
             "items": {
