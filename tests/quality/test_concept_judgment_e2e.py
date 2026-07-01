@@ -47,9 +47,16 @@ def _concept_positive_extract() -> dict:
             {"name": "组件B", "role": "process"},
             {"name": "组件C", "role": "output"},
         ],
+        # §0.2/D1：eligible edge（source_causal + evidence + evidence_anchor）→ F4 pass
         "causal_edges": [
-            {"from": "组件A", "to": "组件B", "relation": "feeds"},
-            {"from": "组件B", "to": "组件C", "relation": "produces"},
+            {
+                "from": "组件A", "to": "组件B", "relation": "feeds",
+                "edge_kind": "source_causal", "evidence": "A feeds B", "evidence_anchor": "§A",
+            },
+            {
+                "from": "组件B", "to": "组件C", "relation": "produces",
+                "edge_kind": "source_causal", "evidence": "B produces C", "evidence_anchor": "§B",
+            },
         ],
         "how_steps": [],
     }

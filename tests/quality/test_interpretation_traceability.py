@@ -189,7 +189,16 @@ def _valid_extract(n_akb: int = 0, with_mechanism: bool = False) -> dict:
             if with_mechanism else []
         ),
         "causal_edges": (
-            [{"from": "A", "to": "B", "relation": "r"}, {"from": "B", "to": "C", "relation": "r"}]
+            [
+                {
+                    "from": "A", "to": "B", "relation": "r",
+                    "edge_kind": "source_causal", "evidence": "A feeds B", "evidence_anchor": "§A",
+                },
+                {
+                    "from": "B", "to": "C", "relation": "r",
+                    "edge_kind": "source_causal", "evidence": "B produces C", "evidence_anchor": "§B",
+                },
+            ]
             if with_mechanism else []
         ),
         "params": {},

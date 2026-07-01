@@ -177,8 +177,13 @@ def _interpretation_traceability_failed(extract_data: dict) -> tuple[bool, str, 
 def _core_value_f4_failed(extract_data: dict, content_lane: str) -> tuple[bool, str]:
     """④ 车道核心价值（F4）。
 
-    - concept: len(mechanism_components)≥3 且每个命名组件在 causal_edges 中至少有一条出边
-      或入边指向另一命名组件（只读结构字段，A3-5，不从 H3 标签/自然语言反解）。
+    §0.2/D1：F4 只认 eligible edge = ``edge_kind ∈ {source_causal, llm_evidence}``
+    + ``evidence`` 非空 + ``evidence_anchor`` 非空（三者缺一即非 eligible）。
+    ``inferred_from_structure`` 弱边**一律不计入 F4**（只渲染进正文表 + 交 grader H3
+    审语义）。0 eligible edge 仍 fail——不再要求"每个组件都连边"（去孤立点整篇拒），
+    但至少 1 条 eligible edge 连接两个命名组件。
+
+    - concept: ≥3 唯一命名组件 + ≥1 eligible edge。
     - procedural: how_steps 中至少 1 条 how_level==H1（命令级），即 H1≥1。
     """
     if _is_concept_lane(content_lane):
@@ -197,21 +202,32 @@ def _core_value_f4_failed(extract_data: dict, content_lane: str) -> tuple[bool, 
                 f"（输入 {len(named)} 条，去重后 {len(named_set)}）"
             )
         edges = extract_data.get("causal_edges", []) or []
-        # 统计每个命名组件是否有出/入边指向另一个命名组件
-        connected: set[str] = set()
+        # §0.2/D1：统计 eligible edge（弱边不计 F4）
+        eligible_kinds = {"source_causal", "llm_evidence"}
+        eligible_count = 0
+        weak_count = 0
+        eligible_components: set[str] = set()
         for e in edges:
             if not isinstance(e, dict):
                 continue
             src = str(e.get("from", "")).strip()
             dst = str(e.get("to", "")).strip()
-            if src in named_set and dst in named_set and src != dst:
-                connected.add(src)
-                connected.add(dst)
-        isolated = named_set - connected
-        if isolated:
+            if src not in named_set or dst not in named_set or src == dst:
+                continue
+            kind = str(e.get("edge_kind", "")).strip()
+            evidence = str(e.get("evidence", "")).strip()
+            evidence_anchor = str(e.get("evidence_anchor", "")).strip()
+            if kind in eligible_kinds and evidence and evidence_anchor:
+                eligible_count += 1
+                eligible_components.add(src)
+                eligible_components.add(dst)
+            elif kind == "inferred_from_structure":
+                weak_count += 1
+        if eligible_count == 0:
             return True, (
-                f"concept F4：命名组件无因果边连接: {sorted(isolated)}"
-                "（纯名词清单，机制未讲清）"
+                f"concept F4：0 eligible 因果边（source_causal/llm_evidence 带 evidence + "
+                f"evidence_anchor）；{weak_count} 条 inferred_from_structure 弱边不计 F4"
+                f"（§0.2 D1：弱边只渲染进正文表 + 交 grader H3，不救 F4）"
             )
         return False, ""
 

@@ -61,9 +61,24 @@ def _concept_pass_extract() -> dict:
             {"name": "组件B", "role": "process"},
             {"name": "组件C", "role": "output"},
         ],
+        # §0.2/D1：eligible edge = source_causal/llm_evidence + evidence + evidence_anchor
         "causal_edges": [
-            {"from": "组件A", "to": "组件B", "relation": "feeds"},
-            {"from": "组件B", "to": "组件C", "relation": "produces"},
+            {
+                "from": "组件A",
+                "to": "组件B",
+                "relation": "feeds",
+                "edge_kind": "source_causal",
+                "evidence": "A feeds B",
+                "evidence_anchor": "§A",
+            },
+            {
+                "from": "组件B",
+                "to": "组件C",
+                "relation": "produces",
+                "edge_kind": "source_causal",
+                "evidence": "B produces C",
+                "evidence_anchor": "§B",
+            },
         ],
         "how_steps": [],
     }
@@ -178,7 +193,10 @@ class TestInterpretationTraceability:
 
 
 class TestCoreValueF4:
-    def test_concept_pass_3_components_with_edges(self):
+    """§0.2/D1：F4 只认 eligible edge（source_causal/llm_evidence + evidence + anchor）。"""
+
+    def test_concept_pass_3_components_with_eligible_edges(self):
+        """≥3 组件 + ≥1 eligible edge（source_causal 带 evidence+anchor）→ F4 pass。"""
         r = evaluate_integrity_floor(_concept_pass_extract(), "concept")
         assert FLOOR_CORE_VALUE_F4 not in r.failed_floors
 
@@ -190,20 +208,98 @@ class TestCoreValueF4:
         assert not r.passed
 
     def test_concept_fail_no_causal_edges(self):
-        """纯名词清单（3 组件但 0 causal_edges）→ F4 fail（机制未讲清）。"""
+        """0 边 → 0 eligible → F4 fail（机制未讲清）。"""
         d = _concept_pass_extract()
         d["causal_edges"] = []
         r = evaluate_integrity_floor(d, "concept")
         assert FLOOR_CORE_VALUE_F4 in r.failed_floors
 
-    def test_concept_fail_isolated_component(self):
-        """某组件无出/入边（孤立）→ F4 fail。"""
+    def test_concept_fail_only_inferred_weak_edges(self):
+        """§0.2/D1(b)：只有 inferred_from_structure 弱边、无 eligible edge → 仍 F4 fail。"""
         d = _concept_pass_extract()
         d["causal_edges"] = [
-            {"from": "组件A", "to": "组件B", "relation": "x"}
-        ]  # 组件C 无边
+            {
+                "from": "组件A",
+                "to": "组件B",
+                "relation": "structural_sequence",
+                "edge_kind": "inferred_from_structure",
+                "evidence": "",
+                "evidence_anchor": "",
+            }
+        ]
+        r = evaluate_integrity_floor(d, "concept")
+        assert FLOOR_CORE_VALUE_F4 in r.failed_floors, "inferred 弱边不计 F4 → 0 eligible 仍 fail"
+
+    def test_concept_fail_edges_missing_evidence_anchor(self):
+        """§0.2/D1：source_causal 边缺 evidence_anchor → 非 eligible → 0 eligible fail。"""
+        d = _concept_pass_extract()
+        d["causal_edges"] = [
+            {
+                "from": "组件A",
+                "to": "组件B",
+                "relation": "feeds",
+                "edge_kind": "source_causal",
+                "evidence": "A feeds B",
+                "evidence_anchor": "",  # 缺 anchor → 非 eligible
+            }
+        ]
+        r = evaluate_integrity_floor(d, "concept")
+        assert FLOOR_CORE_VALUE_F4 in r.failed_floors, "缺 evidence_anchor → 非 eligible"
+
+    def test_concept_fail_edges_missing_evidence(self):
+        """§0.2/D1：source_causal 边缺 evidence → 非 eligible → 0 eligible fail。"""
+        d = _concept_pass_extract()
+        d["causal_edges"] = [
+            {
+                "from": "组件A",
+                "to": "组件B",
+                "relation": "feeds",
+                "edge_kind": "source_causal",
+                "evidence": "",
+                "evidence_anchor": "§A",
+            }
+        ]
         r = evaluate_integrity_floor(d, "concept")
         assert FLOOR_CORE_VALUE_F4 in r.failed_floors
+
+    def test_concept_pass_llm_evidence_eligible_edge(self):
+        """§0.2/D1(c)：llm_evidence 边带 evidence+anchor 也算 eligible → pass。"""
+        d = _concept_pass_extract()
+        d["causal_edges"] = [
+            {
+                "from": "组件A",
+                "to": "组件B",
+                "relation": "implies",
+                "edge_kind": "llm_evidence",
+                "evidence": "A implies B (interpretation)",
+                "evidence_anchor": "§A",
+            }
+        ]
+        r = evaluate_integrity_floor(d, "concept")
+        assert FLOOR_CORE_VALUE_F4 not in r.failed_floors
+
+    def test_concept_pass_isolated_component_with_eligible_edge(self):
+        """§0.2/D1：不再要求每组件连边——组件C 孤立但 ≥1 eligible edge → pass。
+
+        D1 推翻旧"每个组件都连边"口径（孤立点整篇拒）：≥1 eligible edge 连接两个命名
+        组件即过 F4，孤立组件交 grader H3 审语义。
+        """
+        d = _concept_pass_extract()
+        # 只留 1 条 eligible edge（A→B），组件C 无边（孤立）
+        d["causal_edges"] = [
+            {
+                "from": "组件A",
+                "to": "组件B",
+                "relation": "feeds",
+                "edge_kind": "source_causal",
+                "evidence": "A feeds B",
+                "evidence_anchor": "§A",
+            }
+        ]
+        r = evaluate_integrity_floor(d, "concept")
+        assert FLOOR_CORE_VALUE_F4 not in r.failed_floors, (
+            "D1：≥1 eligible edge 即过 F4，组件C 孤立不再整篇拒"
+        )
 
     def test_concept_fail_duplicate_component_names(self):
         """codex worker：重复名 [A,A,B] 不能伪装 3 组件过 F4（去重后只 2 唯一）。"""
@@ -213,7 +309,16 @@ class TestCoreValueF4:
             {"name": "组件A", "role": "y"},  # 重复名
             {"name": "组件B", "role": "z"},
         ]
-        d["causal_edges"] = [{"from": "组件A", "to": "组件B", "relation": "r"}]
+        d["causal_edges"] = [
+            {
+                "from": "组件A",
+                "to": "组件B",
+                "relation": "r",
+                "edge_kind": "source_causal",
+                "evidence": "A to B",
+                "evidence_anchor": "§A",
+            }
+        ]
         r = evaluate_integrity_floor(d, "concept")
         assert FLOOR_CORE_VALUE_F4 in r.failed_floors
         assert not r.passed
