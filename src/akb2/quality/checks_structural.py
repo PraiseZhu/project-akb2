@@ -1035,6 +1035,131 @@ def _body_without_frontmatter(text: str) -> str:
     return _extract_body_text(text)
 
 
+# §0.2/D7/C1：机制组件与因果边证据表 SG 检查
+_VALID_EDGE_KIND_LABELS = {
+    "source_causal", "llm_evidence", "inferred_from_structure",
+    "inferred_from_structure (weak)", "",
+}
+
+
+def _parse_mechanism_tables(body: str) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    """从 body 的 `## 机制组件与因果边证据` 节解析 components + edges 表行。
+
+    返回 (components, edges)，每项是 {col: cell} dict。节缺失 → ([], [])。
+    """
+    import re
+
+    section_match = re.search(
+        r"## 机制组件与因果边证据\s*(.*?)(?=\n## |\Z)", body, re.DOTALL
+    )
+    if not section_match:
+        return [], []
+    section = section_match.group(1)
+    # 拆 components / edges 两表（按 "组件：" / "因果边：" 标记）
+    comp_part_match = re.search(
+        r"组件：\s*\n\s*\|[^\n]*\n\|[-| ]+\n(.*?)(?=\n\s*因果边：|\Z)",
+        section, re.DOTALL,
+    )
+    edge_part_match = re.search(
+        r"因果边：\s*\n\s*\|[^\n]*\n\|[-| ]+\n(.*?)(?=\n## |\Z)",
+        section, re.DOTALL,
+    )
+    comp_cols = ["component_id", "name", "role", "evidence_anchor", "evidence_sentence"]
+    edge_cols = ["from", "to", "relation", "edge_kind", "evidence_anchor", "evidence_sentence"]
+
+    def parse_rows(part: str, cols: list[str]) -> list[dict[str, str]]:
+        rows = []
+        for line in (part or "").strip().splitlines():
+            line = line.strip()
+            if not line.startswith("|") or "---" in line:
+                continue
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            if len(cells) >= len(cols):
+                rows.append(dict(zip(cols, cells[: len(cols)], strict=False)))
+        return rows
+
+    components = parse_rows(comp_part_match.group(1) if comp_part_match else "", comp_cols)
+    edges = parse_rows(edge_part_match.group(1) if edge_part_match else "", edge_cols)
+    return components, edges
+
+
+def _check_sg_mechanism_edge_evidence(
+    body: str, content_lane: str
+) -> list[Defect]:
+    """§0.2/D7/C1：SG-mechanism-edge-evidence — 机制组件与因果边证据表完整性。
+
+    - concept + 节缺失 → defect（concept 须渲染机制证据表供 grader H3/A 层消费）
+    - eligible edge（source_causal/llm_evidence）空 evidence 或 evidence_anchor → defect
+    - 未知 edge_kind → defect
+    - edge 端点不在 components → defect
+    - inferred 弱边须标 weak（edge_kind 含 inferred_from_structure）
+    """
+    defects: list[Defect] = []
+    components, edges = _parse_mechanism_tables(body)
+    comp_names = {c.get("name", "") for c in components if c.get("name")}
+
+    if "## 机制组件与因果边证据" not in body:
+        if str(content_lane).lower() == "concept":
+            defects.append(
+                Defect(
+                    dimension="SG-mechanism-edge-evidence",
+                    location="正文.机制组件与因果边证据",
+                    defect="concept 候选缺机制组件与因果边证据节",
+                    suggestion="concept 须渲染 ## 机制组件与因果边证据 两表供 grader H3 审语义",
+                )
+            )
+        return defects
+
+    for idx, e in enumerate(edges, 1):
+        kind = (e.get("edge_kind") or "").strip()
+        # 未知 edge_kind（"inferred_from_structure (weak)" 渲染标签合法）
+        if kind and kind not in _VALID_EDGE_KIND_LABELS:
+            defects.append(
+                Defect(
+                    dimension="SG-mechanism-edge-evidence",
+                    location=f"正文.机制组件与因果边证据.edges[{idx}]",
+                    defect=f"未知 edge_kind: {kind}",
+                    suggestion="edge_kind 用 source_causal/llm_evidence/inferred_from_structure",
+                )
+            )
+        # eligible edge 须带 evidence + evidence_anchor
+        is_eligible = kind in ("source_causal", "llm_evidence")
+        if is_eligible:
+            if not (e.get("evidence_sentence") or "").strip():
+                defects.append(
+                    Defect(
+                        dimension="SG-mechanism-edge-evidence",
+                        location=f"正文.机制组件与因果边证据.edges[{idx}]",
+                        defect=f"eligible 边 {kind} 缺 evidence 句",
+                        suggestion="source_causal/llm_evidence 边须带原文 evidence 句",
+                    )
+                )
+            if not (e.get("evidence_anchor") or "").strip():
+                defects.append(
+                    Defect(
+                        dimension="SG-mechanism-edge-evidence",
+                        location=f"正文.机制组件与因果边证据.edges[{idx}]",
+                        defect=f"eligible 边 {kind} 缺 evidence_anchor",
+                        suggestion="source_causal/llm_evidence 边须带 §X evidence_anchor",
+                    )
+                )
+        # 端点须在 components
+        for end in ("from", "to"):
+            val = (e.get(end) or "").strip()
+            if val and val not in comp_names:
+                defects.append(
+                    Defect(
+                        dimension="SG-mechanism-edge-evidence",
+                        location=f"正文.机制组件与因果边证据.edges[{idx}]",
+                        defect=f"edge.{end}={val} 不在 mechanism_components 名单",
+                        suggestion=(
+                            "edge from/to 须指向 mechanism_components 的 name/alias"
+                        ),
+                    )
+                )
+    return defects
+
+
 def _provenance_counts(body: str) -> tuple[int, int]:
     return body.count("(source_grounded)"), body.count("(akb_interpretation)")
 
@@ -1176,6 +1301,9 @@ def run_candidate_self_gate(
                 suggestion="所有关键论点、边界、图谱 evidence 必须补充真实 raw anchor",
             )
         )
+
+    # §0.2/D7/C1：SG-mechanism-edge-evidence — 机制组件与因果边证据表完整性
+    defects.extend(_check_sg_mechanism_edge_evidence(body, content_lane))
 
     provenance_body = _core_provenance_body(text)
     source_count, akb_count = _provenance_counts(provenance_body)

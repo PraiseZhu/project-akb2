@@ -4321,6 +4321,55 @@ def _filter_resolvable_graph_edges(
     return kept_edges, kept_concepts, dropped
 
 
+def _edge_kind_label(kind: str) -> str:
+    """§0.2/D7：edge_kind 渲染标签（inferred 标 weak，不计 F4）。"""
+    k = str(kind or "").strip()
+    if k == "inferred_from_structure":
+        return "inferred_from_structure (weak)"
+    return k
+
+
+def _build_mechanism_evidence_section(extract_data: dict[str, Any]) -> str:
+    """§0.2/D7/C1：渲染机制组件与因果边证据表（grader H3 + A 层 SG-mechanism-edge-evidence 消费）。
+
+    components 表：component_id | name | role | evidence_anchor | evidence_sentence
+    edges 表：from | to | relation | edge_kind | evidence_anchor | evidence_sentence
+    inferred_from_structure 边标 weak（不计 F4，供 grader H3 审语义；
+    eligible 边带 evidence+anchor）。
+    无 mechanism_components → 返空串（procedural 不渲染该节）。
+    """
+    components = extract_data.get("mechanism_components") or []
+    edges = extract_data.get("causal_edges") or []
+    if not components:
+        return ""
+    comp_rows = "\n".join(
+        f"| {c.get('component_id', '')} | {_md_table_cell(c.get('name', ''))} | "
+        f"{_md_table_cell(c.get('role', ''))} | {c.get('evidence_anchor', '')} | "
+        f"{_md_table_cell(c.get('evidence_sentence', ''))} |"
+        for c in components
+        if isinstance(c, dict)
+    ) or "|  |  |  |  |  |"
+    edge_rows = "\n".join(
+        f"| {e.get('from', '')} | {e.get('to', '')} | "
+        f"{_md_table_cell(e.get('relation', ''))} | "
+        f"{_edge_kind_label(e.get('edge_kind', ''))} | "
+        f"{e.get('evidence_anchor', '')} | {_md_table_cell(e.get('evidence', ''))} |"
+        for e in edges
+        if isinstance(e, dict)
+    ) or "|  |  |  |  |  |  |"
+    return (
+        "## 机制组件与因果边证据\n\n"
+        "组件：\n\n"
+        "| component_id | name | role | evidence_anchor | evidence_sentence |\n"
+        "|---|---|---|---|---|\n"
+        f"{comp_rows}\n\n"
+        "因果边：\n\n"
+        "| from | to | relation | edge_kind | evidence_anchor | evidence_sentence |\n"
+        "|---|---|---|---|---|---|\n"
+        f"{edge_rows}\n\n"
+    )
+
+
 def _build_body(
     extract_data: dict[str, Any],
     raw_path: str,
@@ -4581,6 +4630,9 @@ def _build_body(
 
     _now_date_str = datetime.now(UTC).strftime("%Y-%m-%d")
 
+    # §0.2/D7/C1：机制组件与因果边证据表（grader H3 + A 层 SG-mechanism-edge-evidence 消费）
+    mechanism_section = _build_mechanism_evidence_section(extract_data)
+
     body = f"""## TLDR
 
 {tldr}
@@ -4626,8 +4678,7 @@ def _build_body(
 图谱边按 evidence 的 provenance 判定；weak 边仍需后续图谱校准确认。
 
 {graph_rows}
-
-## Future Questions
+{mechanism_section}## Future Questions
 
 {chr(10).join(f'- {q}' for q in _generate_questions(claims, how_steps))}
 

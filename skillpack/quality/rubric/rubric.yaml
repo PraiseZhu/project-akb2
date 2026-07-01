@@ -108,7 +108,7 @@ lanes:
     dimensions:
       - name: "概念机制清晰度(H3)"
         weight: 3.5
-        note: "核心价值：组件命名 + 因果边讲清机制（H3≥3）"
+        note: "§0.2/D6：H3 pass 需机制组件/因果边/edge evidence 在正文可读可追溯（## 机制组件与因果边证据 两表）。仅 1 条 inferred_from_structure 弱边、其余组件无因果说明 → H3 fail。无 evidence 的边不作机制清晰度证据。eligible 边（source_causal/llm_evidence）须带 evidence + evidence_anchor。"
       - name: "实现机制说明(H2)"
         weight: 0.5
         note: "机制如何落地的说明（非命令密度）"

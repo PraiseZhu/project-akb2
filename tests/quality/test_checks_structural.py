@@ -1530,3 +1530,108 @@ class TestSGCommandRecheckFailClosed:
         recheck = [d for d in defects if d.dimension == "SG-command-recheck"]
         assert recheck, "空 raw 不得跳过 SG-command-recheck"
         assert any("npm install" in d.defect for d in recheck)
+
+
+# ---------------------------------------------------------------------------
+# §0.2/D7/C1：SG-mechanism-edge-evidence — 机制组件与因果边证据表完整性
+# ---------------------------------------------------------------------------
+
+
+class TestSGMechanismEdgeEvidence:
+    """§0.2/D7/C1：SG-mechanism-edge-evidence 检查机制证据表完整性。
+
+    - concept + 节缺失 → defect
+    - eligible 边空 evidence/anchor → defect
+    - 未知 edge_kind → defect
+    - edge 端点不在 components → defect
+    - 合格表（eligible 带证据 + 端点在 components）→ 无 defect
+    """
+
+    _VALID_BODY = """## TLDR
+
+test [raw §A]
+
+## 机制组件与因果边证据
+
+组件：
+
+| component_id | name | role | evidence_anchor | evidence_sentence |
+|---|---|---|---|---|
+| captain | Captain | dispatch | §A | The Captain dispatches |
+| executor | Executor | run | §A | The Executor runs |
+
+因果边：
+
+| from | to | relation | edge_kind | evidence_anchor | evidence_sentence |
+|---|---|---|---|---|---|
+| Captain | Executor | dispatches | source_causal | §A | The Captain dispatches |
+| Captain | Executor | seq | inferred_from_structure (weak) |  |  |
+"""
+
+    def test_concept_missing_section_defect(self):
+        """concept + 无机制证据节 → defect。"""
+        from src.akb2.quality.checks_structural import _check_sg_mechanism_edge_evidence
+
+        body = "## TLDR\n\ntest [raw §A]\n"
+        defects = _check_sg_mechanism_edge_evidence(body, "concept")
+        assert any(d.dimension == "SG-mechanism-edge-evidence" for d in defects)
+
+    def test_procedural_missing_section_no_defect(self):
+        """procedural + 无机制证据节 → 无 defect（procedural 不渲染该节）。"""
+        from src.akb2.quality.checks_structural import _check_sg_mechanism_edge_evidence
+
+        body = "## TLDR\n\ntest [raw §A]\n"
+        defects = _check_sg_mechanism_edge_evidence(body, "procedural")
+        assert not any(d.dimension == "SG-mechanism-edge-evidence" for d in defects)
+
+    def test_valid_table_no_defect(self):
+        """合格表（eligible 带证据 + 端点在 components + inferred 标 weak）→ 无 defect。"""
+        from src.akb2.quality.checks_structural import _check_sg_mechanism_edge_evidence
+
+        defects = _check_sg_mechanism_edge_evidence(self._VALID_BODY, "concept")
+        sg = [d for d in defects if d.dimension == "SG-mechanism-edge-evidence"]
+        assert sg == [], f"合格表不应有 defect: {sg}"
+
+    def test_eligible_edge_missing_evidence_defect(self):
+        """eligible 边（source_causal）缺 evidence → defect。"""
+        from src.akb2.quality.checks_structural import _check_sg_mechanism_edge_evidence
+
+        body = self._VALID_BODY.replace(
+            "| Captain | Executor | dispatches | source_causal | §A | The Captain dispatches |",
+            "| Captain | Executor | dispatches | source_causal | §A |  |",
+        )
+        defects = _check_sg_mechanism_edge_evidence(body, "concept")
+        assert any("缺 evidence" in d.defect for d in defects)
+
+    def test_eligible_edge_missing_anchor_defect(self):
+        """eligible 边缺 evidence_anchor → defect。"""
+        from src.akb2.quality.checks_structural import _check_sg_mechanism_edge_evidence
+
+        body = self._VALID_BODY.replace(
+            "| Captain | Executor | dispatches | source_causal | §A |",
+            "| Captain | Executor | dispatches | source_causal |  |",
+            1,
+        )
+        defects = _check_sg_mechanism_edge_evidence(body, "concept")
+        assert any("缺 evidence_anchor" in d.defect for d in defects)
+
+    def test_unknown_edge_kind_defect(self):
+        """未知 edge_kind → defect。"""
+        from src.akb2.quality.checks_structural import _check_sg_mechanism_edge_evidence
+
+        body = self._VALID_BODY.replace(
+            "inferred_from_structure (weak)", "bogus_kind"
+        )
+        defects = _check_sg_mechanism_edge_evidence(body, "concept")
+        assert any("未知 edge_kind" in d.defect for d in defects)
+
+    def test_edge_endpoint_not_in_components_defect(self):
+        """edge 端点不在 components → defect。"""
+        from src.akb2.quality.checks_structural import _check_sg_mechanism_edge_evidence
+
+        body = self._VALID_BODY.replace(
+            "| Captain | Executor | dispatches | source_causal |",
+            "| Captain | Nonexistent | dispatches | source_causal |",
+        )
+        defects = _check_sg_mechanism_edge_evidence(body, "concept")
+        assert any("不在 mechanism_components" in d.defect for d in defects)

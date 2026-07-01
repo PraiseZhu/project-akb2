@@ -245,6 +245,23 @@ def _build_grader_weight_floor_note(content_lane: str = "") -> str:
     )
 
 
+def _concept_h3_fail_note(content_lane: str) -> str:
+    """§0.2/D6：concept 车道 H3 fail 条件显式注入 grader prompt。
+
+    concept H3（概念机制清晰度）pass 需机制组件/因果边/edge evidence 在正文可读可追溯；
+    仅 1 条 inferred_from_structure 弱边、其余组件无因果说明 → H3 fail；
+    无 evidence 的边不作机制清晰度证据。
+    """
+    if str(content_lane or "").strip().lower() != "concept":
+        return ""
+    return (
+        "6. concept H3（概念机制清晰度）fail 条件：仅 1 条 inferred_from_structure 弱边、"
+        "其余组件无因果说明 → H3 fail；无 evidence 的边不作机制清晰度证据；"
+        "eligible 边（source_causal/llm_evidence）须带 evidence + evidence_anchor，"
+        "读 ## 机制组件与因果边证据 两表判定。\n"
+    )
+
+
 def _build_grader_prompt(
     candidate_text: str, rubric_text: str, content_lane: str = ""
 ) -> list[dict[str, str]]:
@@ -295,7 +312,7 @@ def _build_grader_prompt(
    是否真从其所引 [raw §X] anchor 推出。anchor 真实存在但与解读语义无关
    （poisoned-trace，挂羊头卖狗肉）→ false；推导真成立 → true。concept 车道必填此字段，
    procedural 可省。此字段是异族硬判地板，false 即整体 reject（不可被加权分补偿）。
-
+{_concept_h3_fail_note(content_lane)}
 输出 JSON 结构（必须严格使用以下字段名，不得用 verdict / overall_decision / overall_pass
 等其他字段名；上列每个维度都必须各输出恰好一条）:
 {{
