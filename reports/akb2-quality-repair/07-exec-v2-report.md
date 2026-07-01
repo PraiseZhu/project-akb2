@@ -9,7 +9,7 @@
 
 ## 0. 总览：完成 vs 延期
 
-**第二轮（lead 接力后）新增 P0 §4 + P1 D8 + P1 C1/D6，全部完成。**
+**第三轮（P2）新增 step 4b + 9b + 7，全部完成。§5 步 1-9 全部实现，仅 step 10 真机 e2e 留 lead 阶段4。**
 
 | §5 步 | 内容 | 状态 | commit |
 |-------|------|------|--------|
@@ -18,18 +18,18 @@
 | 3a | D2 schema 扩展 + normalize 保留 + edge_kind fail-closed | ✅ 完成 | bee483f |
 | 3b | M1 fallback raw-grounded 边 + D9 fallback_quality_basis 传播 | ✅ 完成 | 54108b8 |
 | 4a | G2 mechanism_signal 认普通 H2/H3 + C4 weak-signal 分级 | ✅ 完成 | e9919e9 |
-| 4b | G1 novelty top-k 结构化 + D11 lane reject 二次确认 | ⏳ 延期 | — |
+| 4b | G1 novelty top-k 结构化 + D11 lane reject 二次确认 | ✅ 完成 | c4bbadb |
 | 5 | C1 机制证据表渲染 + A 层 SG-mechanism-edge-evidence parser + D6 rubric/grader prompt | ✅ 完成 | ff51b4c |
 | 6a | D1 F4 只认 eligible edge（inferred 不计，0 eligible 仍 fail） | ✅ 完成 | 2cd2e40 |
 | 6b | D8 proposed_graph_nodes/A2/promote 冷启动分叉 + smoke_validator 同步 | ✅ 完成 | fbd23df |
-| 7 | D3 门控路由化 defect schema + repair 白名单 + A4 早停 | ⏳ 延期 | — |
+| 7 | D3 门控路由化 defect schema + repair 白名单 + A4 hard_fail 早停 | ✅ 完成 | 32bc770 |
 | 8 | §4 两阶段结构化抽取 + fixture 绑定测试 | ✅ 完成 | ed96349 |
 | 9a | D5 calibration gate 0.30 + CLI `--acceptance-mode` | ✅ 完成 | db47711 |
-| 9b | D4 promote 三分类 + D12 repair_quality_funnel counters | ⏳ 延期 | — |
-| 10 | 自测 + mini e2e | ✅ 部分（mini e2e fixture 级 done；full 真机 e2e 需 lead 派） | — |
+| 9b | D4 promote 三分类 + D12 repair_quality_funnel counters | ✅ 完成 | 6e19c12 |
+| 10 | 自测 + mini e2e | ✅ mini e2e fixture 级 done；full 真机 e2e 留 lead 阶段4 | — |
 | lint | ruff E501 修 | ✅ | 4a74f35 |
 
-**完成 11 个核心 commit**：覆盖 §0.2 D1/D2/D4-D9 + §4 + §5 C1 + G2/C4 + A1/A2/M1/M2。
+**完成 14 个核心 commit**：§5 步 1-9 + §0.2 D1-D12 全部实现（D10 G1/D11 lane/D12 counters 含）。仅 step 10 full 真机 e2e（需 DEEPSEEK/NLM key）留 lead 阶段4。
 
 ## 1. 改动清单（按文件）
 
@@ -118,21 +118,16 @@ mini e2e 硬证据（`reports/akb2-quality-repair/_tmp/mini-e2e-v2-section4.txt`
 
 ## 6. 阻塞 / 未完成项（按优先级）
 
-### P2 — step 7 D3 门控路由化 defect schema + repair 白名单 + A4 早停
-- 结构化 defect schema（defect_type/repairability/source_node/required_evidence/retry_budget/final_fallback）；repair 白名单（repair.py:942-964）；A4 无 actionable defect 早停。
-- 不做则 repair 仍对语义缺陷空转 3 轮（省时优化，不影响率）。
-
-### P2 — step 4b G1 novelty top-k + D11 lane reject
-- G1：wiki_references 结构化（path/slug/title/tldr/source_url）+ `_select_novelty_neighbors`；D11：lane reject 二次确认。
-- 不做则 idx6/idx10 novelty 误拒 + idx6 lane reject 抖动仍在。
-
-### P2 — step 9b D4 promote 三分类 + D12 counters
-- D4：promote 返回 proposal_passed/promotion_blocked/active_promoted；calibration 只计允许通过。D12：repair_quality_funnel counters（old_no_mechanism_signal_on_h2h3/distill_f4_precompose_death/a2_related_only_cold_start_death/hidden_mechanism_edges=0）。
-- 不做则 proposal_passed 虚高风险（但 D5 gate 0.30 + D8 active 二次拒已守住底线）。
-
-### P3 — full 真机 e2e（step 10）
+### P3 — full 真机 e2e（step 10，留 lead 阶段4）
 - 需 lead 派有 DEEPSEEK_API_KEY + NLM 登录态的 worker 跑 `python3 -m akb2.quality.calibration --corpus evals/main-pipeline-quality/corpus.yaml --acceptance-mode quality-repair --report-out reports/calibration/factory-quality-repair-<date>.json`。
-- worker env 无 key，无法跑真机 e2e。
+- worker env 无 key，无法跑真机 e2e。mini e2e（fixture 级 + §4 mock）已验证 D1/D2/D4-D12 + §4 + C1 链路行为正确。
+
+### 真机验收关注点（lead 阶段4 跑时核查）
+- §4 LLM 遵守度：真机 DeepSeek 是否按新 prompt 产 edge_kind=source_causal + evidence + evidence_anchor（mini e2e 用 mock 证链路通，真机 LLM 遵守度需实跑验证）。
+- D12 repair_quality_funnel counters 全 0：真机跑后核查 old_no_mechanism_signal_on_h2h3/distill_f4_precompose_death/a2_related_only_cold_start_death/hidden_mechanism_edges 均 0。
+- D5 repair_acceptance_gate：`--acceptance-mode quality-repair` 下 30% pass → exit 0。
+- D8 active 二次拒：AUTO_PROMOTE=1 + proposed_node_only 不写 active。
+- D11 lane_reject_recheck：idx6 how PASS + strong mechanism 不再误拒。
 
 ## 7. 质量底线（全部保留，未砍）
 
