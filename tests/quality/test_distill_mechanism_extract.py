@@ -669,7 +669,49 @@ class TestFrontmatterResolveAndRealLink:
         assert _graph_readiness(fm) != "real_link", (
             "悬空 frontmatter related 不应产 real_link"
         )
-        assert _graph_readiness(fm) == "none"
+        # §0.2/D8：冷启动写 proposed_graph_nodes → _graph_readiness 返 "proposed_node_only"
+        # （gate CLI 本就支持 proposed_node_only + decision_confidence=medium）
+        assert _graph_readiness(fm) == "proposed_node_only", (
+            "D8 冷启动（proposed_graph_nodes 非空）应返 proposed_node_only"
+        )
+
+    def test_cold_start_writes_proposed_graph_nodes(self):
+        """§0.2/D8：resolver 提供但 related < MIN（冷启动）→ 写 proposed_graph_nodes + graph_pending。
+
+        冷启动 concept 候选（referenced 未 resolve）写 proposed_graph_nodes（每项
+        {slug,label,reason,source_anchor}）+ graph_pending=true；proposal 模式接受
+        proposed_graph_nodes>=1（check_a2_frontmatter D8），auto-promote 二次拒写 active。
+        """
+        data = _frontmatter_data(["totally-unknown-concept", "another-unknown"])
+        fm = _build_frontmatter(
+            "raw/fake--raw--2026-06-29.md",
+            data,
+            content_lane="concept",
+            known_concepts=[],  # 提供但空 → 冷启动
+        )
+        # related_concepts 仍空（未 resolve）
+        assert fm["related_concepts"] == []
+        # D8：写 proposed_graph_nodes + graph_pending
+        assert fm.get("graph_pending") is True, "冷启动应 graph_pending=true"
+        proposed = fm.get("proposed_graph_nodes", [])
+        assert len(proposed) >= 1, "冷启动应写 ≥1 proposed_graph_node"
+        for node in proposed:
+            assert "slug" in node and "label" in node and "reason" in node and "source_anchor" in node
+        # slug 是 slugify 后的稳定 id
+        labels = [n["label"] for n in proposed]
+        assert "totally-unknown-concept" in labels
+
+    def test_resolved_no_proposed_graph_nodes(self):
+        """§0.2/D8：已 resolve ≥MIN（related≥2）→ 不写 proposed_graph_nodes，graph_pending=False。"""
+        data = _frontmatter_data(["loop-engineering", "agent-collaboration"])
+        fm = _build_frontmatter(
+            "raw/fake--raw--2026-06-29.md",
+            data,
+            content_lane="concept",
+            known_concepts=["loop-engineering", "agent-collaboration"],  # 已 resolve ≥2
+        )
+        assert fm.get("graph_pending") is False
+        assert fm.get("proposed_graph_nodes") == []
 
     def test_resolved_produces_real_link(self):
         """≥1 真实 resolved related → related_concepts 非空 → gate real_link。"""

@@ -442,6 +442,43 @@ test
         rc_defects = [d for d in defects if "related_concepts" in d.location]
         assert len(rc_defects) >= 1
 
+    def test_cold_start_proposed_graph_nodes_accepted_concept_proposal(self):
+        """§0.2/D8：concept+proposal 模式接受 related<2 OR proposed_graph_nodes>=1。
+
+        冷启动 concept（related=1 但 proposed_graph_nodes>=1）→ 不报 related_concepts 缺陷。
+        """
+        text = """---
+status: candidate
+content_lane: concept
+gate_decision: null
+source_refs:
+  - raw/test.md
+gate_reason: ok
+future_questions:
+  - q1
+  - q2
+related_concepts:
+  - only one
+proposed_graph_nodes:
+  - slug: cold-concept
+    label: cold-concept
+    reason: cold start
+    source_anchor: §A
+---
+
+## TLDR
+test
+"""
+        # concept+proposal：接受 proposed_graph_nodes>=1 → 无 related_concepts 缺陷
+        defects = check_a2_frontmatter(text, content_lane="concept", promotion_mode="proposal")
+        rc_defects = [d for d in defects if "related_concepts" in d.location]
+        assert rc_defects == [], f"concept+proposal 冷启动应接受 proposed_graph_nodes: {rc_defects}"
+
+        # active/lint 模式（promotion_mode != proposal）：仍要求 related>=2 → 有缺陷
+        defects_active = check_a2_frontmatter(text, content_lane="concept", promotion_mode="active")
+        rc_defects_active = [d for d in defects_active if "related_concepts" in d.location]
+        assert len(rc_defects_active) >= 1, "active 模式仍要求 related>=2（proposed 不替代）"
+
     def test_missing_frontmatter(self):
         """负: 无 frontmatter → 多缺陷。"""
         text = """# No frontmatter

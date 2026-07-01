@@ -290,11 +290,18 @@ def check_a1_sections(text: str) -> list[Defect]:
 # ---------------------------------------------------------------------------
 
 
-def check_a2_frontmatter(text: str) -> list[Defect]:
+def check_a2_frontmatter(
+    text: str, *, content_lane: str = "", promotion_mode: str = "proposal"
+) -> list[Defect]:
     """检查 frontmatter 硬字段约束。
 
     A2: source_refs≥1, future_questions 2-3, related_concepts≥2,
         gate_decision 必须 null, gate_reason≤150 字符
+
+    §0.2/D8：concept + proposal 模式接受 ``related_concepts>=2 OR proposed_graph_nodes>=1``
+    （冷启动：resolver 未 resolve 足够 related 时，写 proposed_graph_nodes 待 adjudication）。
+    active/lint（promotion_mode != proposal）仍要求真实 related_concepts>=2（proposed
+    不替代 active 的 real_link）。
     """
     defects: list[Defect] = []
     try:
@@ -387,16 +394,38 @@ def check_a2_frontmatter(text: str) -> list[Defect]:
                     )
                 )
 
-    # related_concepts >= 2
+    # related_concepts >= 2  （§0.2/D8：concept+proposal 接受 proposed_graph_nodes>=1 替代）
     rc = fm.get("related_concepts", [])
+    proposed_nodes = fm.get("proposed_graph_nodes", [])
+    is_concept_proposal = (
+        str(content_lane).lower() == "concept"
+        and str(promotion_mode).lower() == "proposal"
+    )
     if isinstance(rc, list):
-        if len(rc) < MIN_RELATED_CONCEPTS:
+        rc_ok = len(rc) >= MIN_RELATED_CONCEPTS
+        proposed_ok = (
+            is_concept_proposal
+            and isinstance(proposed_nodes, list)
+            and len(proposed_nodes) >= 1
+        )
+        if not (rc_ok or proposed_ok):
             defects.append(
                 Defect(
                     dimension="A2-frontmatter",
                     location="frontmatter.related_concepts",
-                    defect=f"related_concepts 数量不足: {len(rc)} < {MIN_RELATED_CONCEPTS}",
-                    suggestion="添加至少 2 个相关概念",
+                    defect=(
+                        f"related_concepts 数量不足: {len(rc)} < {MIN_RELATED_CONCEPTS}"
+                        + (
+                            "（concept+proposal 可用 proposed_graph_nodes>=1 替代）"
+                            if is_concept_proposal
+                            else ""
+                        )
+                    ),
+                    suggestion=(
+                        "添加至少 2 个可 resolve 的相关概念"
+                        + ("，或 concept 冷启动写 proposed_graph_nodes>=1"
+                           if is_concept_proposal else "")
+                    ),
                 )
             )
     else:
@@ -980,7 +1009,10 @@ def run_structural_checks(
     defects: list[Defect] = []
 
     defects.extend(check_a1_sections(text))
-    defects.extend(check_a2_frontmatter(text))
+    # §0.2/D8：传 content_lane + promotion_mode=proposal（concept 冷启动接受 proposed_graph_nodes）
+    defects.extend(
+        check_a2_frontmatter(text, content_lane=content_lane, promotion_mode="proposal")
+    )
     defects.extend(check_a3_raw_anchors(text, raw_content))
     # step-3 SC-3e/A3-8：check_a4 增 known_concepts/pending_queue 形参——concept 图谱边
     # 必须 resolve 到真实节点或 pending ≥3 共指（纯代码确定性查，不调 LLM）。

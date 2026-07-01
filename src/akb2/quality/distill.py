@@ -2733,6 +2733,31 @@ def _build_frontmatter(
     raw_reason = f"候选来源锚点 [raw {first_anchor}]；待 GPT-5.4 裁判与五闸确认。"
     gate_reason = raw_reason[:GATE_REASON_MAX_CHARS]
 
+    # §0.2/D8：冷启动分叉——resolver 提供但 related 不足 RELATED_CONCEPTS_MIN 时，
+    # 写 proposed_graph_nodes（未 resolve 的 referenced_concepts，每项 {slug,label,
+    # reason,source_anchor}）+ graph_pending=true。proposal 模式（check_a2_frontmatter
+    # concept）接受 proposed_graph_nodes>=1；auto-promote/active 仍要求真实 related_*
+    # （run_promote AUTO_PROMOTE=1 二次拒 proposed_node_only 写 active，D8 底线）。
+    proposed_graph_nodes: list[dict[str, str]] = []
+    graph_pending = False
+    if resolver_provided and len(related) < RELATED_CONCEPTS_MIN:
+        graph_pending = True
+        unresolved = [
+            str(c) for c in (concepts if concepts else []) if str(c) not in related
+        ]
+        for c in unresolved[:4]:
+            proposed_graph_nodes.append(
+                {
+                    "slug": _slugify_component_id(c),
+                    "label": c,
+                    "reason": (
+                        "冷启动：referenced_concept 未 resolve 到 known/pending，"
+                        "待 adjudication"
+                    ),
+                    "source_anchor": first_anchor,
+                }
+            )
+
     slug = _derive_slug(raw_path)
     source_title = str(raw_fm.get("source_title", "")).strip()
     canonical_title = f"{slug} — {source_title}" if source_title else slug
@@ -2763,6 +2788,9 @@ def _build_frontmatter(
         "future_questions": questions,
         "related_concepts": related_links,
         "source_refs": [raw_path],  # 必须含 raw 路径（已知坑 2）
+        # §0.2/D8：冷启动 proposed_graph_nodes + graph_pending（proposal 模式接受）
+        "proposed_graph_nodes": proposed_graph_nodes,
+        "graph_pending": graph_pending,
         # 保留
         "artifact_type": "wiki",
         "pipeline_version": "v1",
