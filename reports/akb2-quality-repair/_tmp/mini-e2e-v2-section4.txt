@@ -1,0 +1,43 @@
+=== §4 two-phase extraction mini e2e (LLM mock, AKB2_AUTO_PROMOTE=0) ===
+{
+  "golden_loop": {
+    "extract_success": true,
+    "component_count": 4,
+    "component_ids": [
+      "trigger",
+      "work_selector",
+      "action_executor",
+      "quality_gate"
+    ],
+    "eligible_edges": 2,
+    "inferred_edges": 1,
+    "floor_F4_pass": true
+  },
+  "ag2_captain": {
+    "extract_success": true,
+    "component_count": 3,
+    "component_ids": [
+      "captain",
+      "executor_pool",
+      "task_graph"
+    ],
+    "eligible_edges": 1,
+    "inferred_edges": 1,
+    "floor_F4_pass": true
+  },
+  "vercel": {
+    "extract_success": true,
+    "component_count": 3,
+    "component_ids": [
+      "streamingparser",
+      "buffer",
+      "renderer"
+    ],
+    "eligible_edges": 1,
+    "inferred_edges": 1,
+    "floor_F4_pass": true
+  }
+}
+
+=== 硬证据：golden/ag2/vercel 三类 concept 正样本 §4 LLM 路径均产 ≥1 eligible edge + F4 pass ===
+注：真机 LLM 是否产 D2 字段取决于 prompt 改后 LLM 遵守度（step 10 真机 e2e 验收）

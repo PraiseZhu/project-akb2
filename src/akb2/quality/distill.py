@@ -713,11 +713,19 @@ def _build_extract_segment_messages(
             "- how_level: 标注每步的机制层级——H1=命令级（可直接执行的命令/调用）；"
             "H2=数据流/状态/接口说明级（讲清数据怎么流、状态怎么变、接口怎么对接）；"
             "H3=命名机制组件+因果边级（讲清是哪几个命名组件、组件间因果如何驱动）。\n"
-            "- mechanism_components: 命名机制组件数组，每项 {name, role}——概念型原文须 ≥3 个"
-            "命名组件（如 'work_selector'/'quality_gate'），role 写该组件在机制里的职责。\n"
-            "- causal_edges: 因果边数组，每项 {from, to, relation}，from/to 必须是"
-            "mechanism_components 里的 name，relation 写因果关系"
-            "（如 activates/feeds/writes_to）。\n"
+            "- mechanism_components: 命名机制组件数组，概念型原文须 ≥3 个命名组件"
+            "（如 'work_selector'/'quality_gate'）。每项含：\n"
+            "  {name(必填), role(职责), aliases(可选,同义名/简称数组), "
+            "evidence_anchor(§X 指向原文该组件出处), evidence_sentence(原文证明该组件"
+            "存在的句子)}。component_id 由后处理生成，不需你产。\n"
+            "- causal_edges: 因果边数组，概念型原文须 ≥1 条带 evidence 的 eligible 边。每项含：\n"
+            "  {from, to, relation, edge_kind, evidence, evidence_anchor}。\n"
+            "  from/to 用 mechanism_components 的 name（或 alias，后处理对齐）。\n"
+            "  edge_kind 枚举：source_causal=原文明示因果（feeds/triggers/dispatches/"
+            "writes_to 等，evidence 写原文因果句，evidence_anchor 写 §X）；"
+            "llm_evidence=LLM 推断因果（akb 解读，须带 evidence 句 + §X anchor）；"
+            "inferred_from_structure=结构顺序推断弱边（无 evidence，不计 F4，少用）。\n"
+            "  宁少勿强：无原文支撑的因果不编造（F4 0 eligible 会 fail，不靠弱边凑）。\n"
             "- 只抽取原文明确给出的步骤、组件、流程或配置，不要补 AKB 自己的命令。\n"
             "- param_entries: 参数/配置/选项数组，每项 {key, value}；value 统一写成字符串。"
         ),
@@ -798,17 +806,20 @@ def _normalize_extract_segment(
             ]
         if param_entries is None and isinstance(parsed.get("param_entries"), list):
             param_entries = parsed["param_entries"]
+        # §4 两阶段抽取后处理：component_id 生成 + alias 对齐 + inferred 弱边补全
+        components = _normalize_mechanism_components(parsed.get("mechanism_components"))
+        edges = _normalize_causal_edges(parsed.get("causal_edges"))
+        components, edges = _enrich_mechanism(components, edges)
         return {
             "how_steps": [
                 _normalize_how_step(item, idx)
                 for idx, item in enumerate(parsed.get("how_steps", []), 1)
             ],
-            # step-3 SC-3a/A3-5：concept F4 结构真相源——命名机制组件 + 因果边。
-            # 从 how_params segment 原始响应携出（procedural 不产 → 归一为空数组，零回归）。
-            "mechanism_components": _normalize_mechanism_components(
-                parsed.get("mechanism_components")
-            ),
-            "causal_edges": _normalize_causal_edges(parsed.get("causal_edges")),
+            # step-3 SC-3a/A3-5 + §0.2/D2：concept F4 结构真相源——命名机制组件 +
+            # 因果边（含 component_id/aliases/evidence_anchor/evidence_sentence +
+            # edge_kind/evidence/evidence_anchor，经 _enrich_mechanism 后处理）。
+            "mechanism_components": components,
+            "causal_edges": edges,
             "param_entries": [
                 _normalize_param_entry(item)
                 for item in (param_entries or [])
@@ -1147,7 +1158,70 @@ def _normalize_causal_edges(raw: Any) -> list[dict[str, Any]]:
                 }
             )
     return edges
-    return edges
+
+
+def _slugify_component_id(name: str) -> str:
+    """§4 两阶段抽取阶段A 后处理：name → 稳定 component_id（slug）。"""
+    s = re.sub(r"[^\w\s-]", "", str(name or "").lower().strip())
+    s = re.sub(r"[\s_-]+", "_", s).strip("_")
+    return s or "component"
+
+
+def _enrich_mechanism(
+    components: list[dict[str, Any]], edges: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """§4 两阶段抽取后处理（单次 LLM 抽取后的确定性等价）。
+
+    - 阶段A 等价：为每个 component 生成稳定 component_id（slugify name），并建
+      alias→name 映射（aliases + name 自身）。
+    - 阶段B 等质：alias 对齐 edges 的 from/to 到 component name（边不再要求 from/to
+      字面等于 name，可用 alias）；对齐失败的边丢弃（F4 不计，第一轮不留 unresolved
+      诊断，后续可加）。
+    - 补 inferred_from_structure 弱边：相邻组件未被覆盖时补（不计 F4，§0.2 D1）。
+    """
+    if not components:
+        return components, edges
+    # 阶段A：component_id + alias→name 映射
+    alias_to_name: dict[str, str] = {}
+    valid_names: set[str] = set()
+    for c in components:
+        if not c.get("component_id"):
+            c["component_id"] = _slugify_component_id(c.get("name", ""))
+        name = c.get("name", "")
+        if name:
+            valid_names.add(name)
+            alias_to_name[name.lower()] = name
+        for a in c.get("aliases", []) or []:
+            if a:
+                alias_to_name[a.lower()] = name
+    # 阶段B：alias 对齐 edges，丢弃端点不在 components 的边
+    aligned: list[dict[str, Any]] = []
+    for e in edges:
+        src = str(e.get("from", ""))
+        dst = str(e.get("to", ""))
+        src_a = alias_to_name.get(src.lower(), src)
+        dst_a = alias_to_name.get(dst.lower(), dst)
+        if src_a in valid_names and dst_a in valid_names and src_a != dst_a:
+            e["from"] = src_a
+            e["to"] = dst_a
+            aligned.append(e)
+    # 补 inferred 弱边（相邻组件，未被覆盖）
+    existing = {(e["from"], e["to"]) for e in aligned}
+    for i in range(len(components) - 1):
+        a = components[i].get("name", "")
+        b = components[i + 1].get("name", "")
+        if a and b and a != b and (a, b) not in existing:
+            aligned.append(
+                {
+                    "from": a,
+                    "to": b,
+                    "relation": "structural_sequence",
+                    "edge_kind": "inferred_from_structure",
+                    "evidence": "",
+                    "evidence_anchor": "",
+                }
+            )
+    return components, aligned
 
 
 def _infer_source_command_from_instruction(instruction: str) -> str:
@@ -2253,6 +2327,10 @@ def _build_deterministic_extract_data(
     causal_edges: list[dict[str, Any]] = []
     if _is_concept_lane(content_lane):
         real_components = _scan_real_mechanism_components(raw_content)
+        # §4/D2：fallback 组件也生成稳定 component_id（一致性 + C1 渲染消费）
+        for c in real_components:
+            if not c.get("component_id"):
+                c["component_id"] = _slugify_component_id(c.get("name", ""))
         mechanism_components = real_components
         causal_edges = _build_real_causal_edges(real_components, raw_content)
     return {

@@ -26,7 +26,13 @@ from src.akb2.quality.distill import (
     _normalize_mechanism_components,
     _validate_extract_output,
     build_deterministic_extract_result,
+    extract_claims,
 )
+from src.akb2.quality.integrity_floor import (
+    FLOOR_CORE_VALUE_F4,
+    evaluate_integrity_floor,
+)
+from src.akb2.quality.llm_router import LLMResponse
 
 # ---------------------------------------------------------------------------
 # 辅助：构造 concept extract data（base 过 F4 外所有 _validate_extract_output 检查）
@@ -795,3 +801,236 @@ class TestD7Idx5PoisonedTraceFixture:
         for marker in self._IDX5_FAKE_MARKERS:
             assert marker not in str(result.data.get("how_steps", []))
             assert marker not in str(result.data.get("params", {}))
+
+
+# ---------------------------------------------------------------------------
+# §4 两阶段结构化抽取（LLM 路径，mock 响应产 D2 字段 → eligible edge）
+# ---------------------------------------------------------------------------
+
+
+def _claims_seg_concept() -> dict:
+    """概念型 claims 段（≤40% akb，每条带 anchor + evidence_gap）。"""
+    return {
+        "claims": [
+            {
+                "text": "Loop engineering 把 agent 工作收束为有停止条件的反馈循环",
+                "anchor": "§A", "provenance": "source_grounded",
+                "evidence_gap": "未量化：原文未提供该机制的成功率",
+            },
+            {
+                "text": "工作队列携带 source URL 与生命周期状态",
+                "anchor": "§B", "provenance": "source_grounded",
+                "evidence_gap": "未覆盖：原文未展开并发冲突处理",
+            },
+            {
+                "text": "修复路径固定轮数、只在缺陷清零时接受候选",
+                "anchor": "§C", "provenance": "source_grounded",
+                "evidence_gap": "未比较：原文未比较修复策略效果",
+            },
+        ],
+        "tldr": "Loop engineering 用命名机制组件与因果边把 agent 主链路讲清为可观测反馈循环。",
+    }
+
+
+def _how_seg_with_eligible_edges(components, edges) -> dict:
+    """构造 how_params 段：含 D2 字段的 components + source_causal eligible edges。"""
+    return {
+        "how_steps": [
+            {"instruction": "trigger 通过调度启动 loop", "command": "", "executable": False, "how_level": "H3"},
+        ],
+        "mechanism_components": components,
+        "causal_edges": edges,
+        "param_entries": [{"key": "max_rounds", "value": "3"}],
+    }
+
+
+def _make_segment_route_v2(claims_seg, how_seg):
+    """mock route_llm：按 prompt 关键词返回 claims/how_params 段。"""
+    def route(model_family, messages, response_schema=None, **kwargs):
+        joined = " ".join(m.get("content", "") for m in messages)
+        if "mechanism_components" in joined or "causal_edges" in joined or "how_steps" in joined:
+            return LLMResponse(content=how_seg, model_used=model_family)
+        return LLMResponse(content=claims_seg, model_used=model_family)
+    return route
+
+
+def _golden_loop_components_edges():
+    """golden loop 风格：trigger/selector/executor/gate/ledger 组件 + 散文因果 eligible 边。"""
+    components = [
+        {"name": "trigger", "aliases": ["scheduler"], "role": "启动 loop",
+         "evidence_anchor": "§B", "evidence_sentence": "A trigger (schedule, event, or manual)"},
+        {"name": "work_selector", "aliases": ["selector"], "role": "选下一个工作单元",
+         "evidence_anchor": "§B", "evidence_sentence": "A work unit selector (read ledger, pick next)"},
+        {"name": "action_executor", "aliases": ["executor"], "role": "执行工作",
+         "evidence_anchor": "§B", "evidence_sentence": "An action executor (run the actual work)"},
+        {"name": "quality_gate", "role": "校验输出",
+         "evidence_anchor": "§B", "evidence_sentence": "A quality gate (verify output meets standards)"},
+        {"name": "ledger_writer", "aliases": ["ledger"], "role": "记录",
+         "evidence_anchor": "§B", "evidence_sentence": "A ledger writer (record what happened)"},
+    ]
+    # 散文因果：trigger 启动 → selector 选 → executor 执行（eligible，带 evidence+anchor）
+    edges = [
+        {"from": "trigger", "to": "work_selector", "relation": "activates",
+         "edge_kind": "source_causal", "evidence": "the trigger activates the work selector",
+         "evidence_anchor": "§B"},
+        {"from": "work_selector", "to": "action_executor", "relation": "feeds",
+         "edge_kind": "source_causal", "evidence": "the selector feeds the executor",
+         "evidence_anchor": "§B"},
+    ]
+    return components, edges
+
+
+def _ag2_captain_components_edges():
+    """ag2 captain 风格：Captain/Executor Pool/Task Graph + 跨句代词因果 eligible 边。"""
+    components = [
+        {"name": "Captain", "aliases": ["coordinator"], "role": "dispatch",
+         "evidence_anchor": "§A", "evidence_sentence": "The Captain dispatches to the Executor Pool"},
+        {"name": "Executor Pool", "role": "run",
+         "evidence_anchor": "§A", "evidence_sentence": "The Executor Pool feeds the Task Graph"},
+        {"name": "Task Graph", "role": "track",
+         "evidence_anchor": "§A", "evidence_sentence": "The Task Graph writes to the Lifecycle"},
+    ]
+    edges = [
+        {"from": "Captain", "to": "Executor Pool", "relation": "dispatches",
+         "edge_kind": "source_causal", "evidence": "The Captain dispatches to the Executor Pool",
+         "evidence_anchor": "§A"},
+    ]
+    return components, edges
+
+
+def _vercel_components_edges():
+    """vercel 风格：streaming parser + buffer + renderer 组件 + eligible 边。"""
+    components = [
+        {"name": "StreamingParser", "aliases": ["parser"], "role": "parse chunks",
+         "evidence_anchor": "§A", "evidence_sentence": "The streaming parser parses incoming chunks"},
+        {"name": "Buffer", "role": "accumulate",
+         "evidence_anchor": "§A", "evidence_sentence": "The buffer accumulates partial chunks"},
+        {"name": "Renderer", "role": "render",
+         "evidence_anchor": "§A", "evidence_sentence": "The renderer renders the buffered output"},
+    ]
+    edges = [
+        {"from": "StreamingParser", "to": "Buffer", "relation": "feeds",
+         "edge_kind": "source_causal", "evidence": "the parser feeds the buffer",
+         "evidence_anchor": "§A"},
+    ]
+    return components, edges
+
+
+class TestSection4TwoPhaseExtraction:
+    """§4 两阶段抽取：LLM 产 D2 字段 → _enrich_mechanism 后处理 → eligible edge → F4 pass。
+
+    验收（spec §4.5 + §8.3）：golden loop / ag2 captain / vercel 各产 ≥3 唯一组件 +
+    ≥1 条 eligible edge（带 evidence_anchor）；负样本（政策承诺）仍 0 组件 fail-closed。
+    """
+
+    def test_golden_loop_produces_eligible_edge_and_passes_f4(self):
+        """golden loop 风格：LLM 产 trigger→selector→executor eligible 边 → F4 pass。"""
+        comps, edges = _golden_loop_components_edges()
+        route = _make_segment_route_v2(
+            _claims_seg_concept(), _how_seg_with_eligible_edges(comps, edges)
+        )
+        result = extract_claims("# §A Loop\n\ncontent", route_llm_fn=route, content_lane="concept")
+        assert result.success is True, result.error
+        merged = result.data
+        assert len(merged["mechanism_components"]) >= 3
+        eligible = [e for e in merged["causal_edges"]
+                    if e.get("edge_kind") in ("source_causal", "llm_evidence")
+                    and e.get("evidence") and e.get("evidence_anchor")]
+        assert len(eligible) >= 1, "golden loop 应产 ≥1 eligible edge（§4 救率硬证据）"
+        # floor F4 pass（D1：≥3 组件 + ≥1 eligible edge）
+        r = evaluate_integrity_floor(merged, "concept")
+        assert FLOOR_CORE_VALUE_F4 not in r.failed_floors, f"golden F4 应 pass: {r.reason}"
+
+    def test_ag2_captain_produces_eligible_edge_and_passes_f4(self):
+        """ag2 captain 风格：跨句代词因果 → eligible edge → F4 pass。"""
+        comps, edges = _ag2_captain_components_edges()
+        route = _make_segment_route_v2(
+            _claims_seg_concept(), _how_seg_with_eligible_edges(comps, edges)
+        )
+        result = extract_claims("# §A Captain\n\ncontent", route_llm_fn=route, content_lane="concept")
+        assert result.success is True, result.error
+        eligible = [e for e in result.data["causal_edges"]
+                    if e.get("edge_kind") in ("source_causal", "llm_evidence")
+                    and e.get("evidence") and e.get("evidence_anchor")]
+        assert len(eligible) >= 1, "ag2 captain 应产 ≥1 eligible edge"
+        r = evaluate_integrity_floor(result.data, "concept")
+        assert FLOOR_CORE_VALUE_F4 not in r.failed_floors
+
+    def test_vercel_produces_eligible_edge_and_passes_f4(self):
+        """vercel 风格：parser→buffer eligible 边 → F4 pass。"""
+        comps, edges = _vercel_components_edges()
+        route = _make_segment_route_v2(
+            _claims_seg_concept(), _how_seg_with_eligible_edges(comps, edges)
+        )
+        result = extract_claims("# §A Vercel\n\ncontent", route_llm_fn=route, content_lane="concept")
+        assert result.success is True, result.error
+        eligible = [e for e in result.data["causal_edges"]
+                    if e.get("edge_kind") in ("source_causal", "llm_evidence")
+                    and e.get("evidence") and e.get("evidence_anchor")]
+        assert len(eligible) >= 1, "vercel 应产 ≥1 eligible edge"
+        r = evaluate_integrity_floor(result.data, "concept")
+        assert FLOOR_CORE_VALUE_F4 not in r.failed_floors
+
+    def test_enrich_generates_component_id(self):
+        """§4 阶段A：_enrich_mechanism 为每个组件生成稳定 component_id（slugify name）。"""
+        from src.akb2.quality.distill import _enrich_mechanism
+        comps = [{"name": "Captain", "role": "r", "aliases": [], "evidence_anchor": "", "evidence_sentence": ""},
+                 {"name": "Executor Pool", "role": "r", "aliases": [], "evidence_anchor": "", "evidence_sentence": ""}]
+        edges = []
+        out_comps, _ = _enrich_mechanism(comps, edges)
+        assert out_comps[0]["component_id"] == "captain"
+        assert out_comps[1]["component_id"] == "executor_pool"
+
+    def test_enrich_alias_alignment_resolves_alias_to_name(self):
+        """§4 阶段B：edge.from/to 用 alias → _enrich 对齐到 component name。"""
+        from src.akb2.quality.distill import _enrich_mechanism
+        comps = [{"name": "Captain", "aliases": ["coordinator", "dispatcher"], "role": "r"}]
+        edges = [{"from": "coordinator", "to": "Captain", "relation": "r",
+                  "edge_kind": "source_causal", "evidence": "x", "evidence_anchor": "§A"}]
+        # 单组件，from=coordinator(alias)→to=Captain，但 src!=dst 要求两不同组件；
+        # 加第二个组件让边端点都在 components
+        comps = [{"name": "Captain", "aliases": ["coordinator"], "role": "r"},
+                 {"name": "Executor", "aliases": ["worker"], "role": "r"}]
+        edges = [{"from": "coordinator", "to": "worker", "relation": "dispatches",
+                  "edge_kind": "source_causal", "evidence": "dispatches", "evidence_anchor": "§A"}]
+        out_comps, out_edges = _enrich_mechanism(comps, edges)
+        assert out_edges[0]["from"] == "Captain", "alias coordinator 应对齐到 Captain"
+        assert out_edges[0]["to"] == "Executor", "alias worker 应对齐到 Executor"
+
+    def test_enrich_drops_edges_with_unaligned_endpoints(self):
+        """§4 阶段B：端点不在 components（也不在 aliases）的边 → 丢弃（不进 causal_edges）。"""
+        from src.akb2.quality.distill import _enrich_mechanism
+        comps = [{"name": "A", "role": "r"}, {"name": "B", "role": "r"}]
+        edges = [{"from": "A", "to": "B", "relation": "r", "edge_kind": "source_causal",
+                  "evidence": "x", "evidence_anchor": "§A"},
+                 {"from": "A", "to": "Nonexistent", "relation": "r", "edge_kind": "source_causal",
+                  "evidence": "y", "evidence_anchor": "§A"}]  # Nonexistent 不在 components
+        _, out_edges = _enrich_mechanism(comps, edges)
+        # 第二条边端点不在 components → 丢弃；只剩第一条 + inferred（A→B 已存在，不补）
+        froms_tos = [(e["from"], e["to"]) for e in out_edges]
+        assert ("A", "Nonexistent") not in froms_tos, "未对齐端点的边应丢弃"
+        assert ("A", "B") in froms_tos
+
+    def test_enrich_adds_inferred_weak_edges_for_adjacent_uncovered(self):
+        """§4：相邻组件未被 eligible 覆盖 → 补 inferred_from_structure 弱边（不计 F4）。"""
+        from src.akb2.quality.distill import _enrich_mechanism
+        comps = [{"name": "A", "role": "r"}, {"name": "B", "role": "r"}, {"name": "C", "role": "r"}]
+        edges = [{"from": "A", "to": "B", "relation": "r", "edge_kind": "source_causal",
+                  "evidence": "x", "evidence_anchor": "§A"}]  # B→C 未覆盖
+        _, out_edges = _enrich_mechanism(comps, edges)
+        inferred = [e for e in out_edges if e["edge_kind"] == "inferred_from_structure"]
+        assert len(inferred) >= 1, "B→C 相邻未覆盖应补 inferred 弱边"
+        assert ("B", "C") in [(e["from"], e["to"]) for e in inferred]
+
+    def test_policy_commitment_negative_still_fail_closed(self):
+        """政策承诺编号列表（动词，无机制实体名）→ fallback 0 组件 fail-closed（§4 负样本仍拒）。"""
+        raw = (
+            "# Safety Standards Commitment\n\n"
+            "We commit to the following principles:\n"
+            "1. Establish shared safety standards across the industry\n"
+            "2. Coordinate incident reporting between organizations\n"
+            "3. Build public trust through transparency\n"
+        )
+        result = build_deterministic_extract_result(raw, content_lane="concept")
+        assert result.success is False, "政策承诺编号列表应 fail-closed"
+        assert result.data.get("fallback_quality_basis", {}).get("component_count", 0) < 3
