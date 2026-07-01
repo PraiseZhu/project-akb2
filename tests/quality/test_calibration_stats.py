@@ -4,7 +4,7 @@
     - 去重 funnel: 按 chrome-stripped body content hash（同正文不同 fetched_at → dedup=1）
     - hash 输入排除 frontmatter / TOC / 锚点声明行 / volatile fetched_at / chrome
     - failure_class 全链 taxonomy 非 null（pass→"none"；pipeline 失败按 failed_node 映射）
-    - repair_acceptance 与 factory_acceptance 解耦（SC-5 修复门，concept 起步 0.60）
+    - repair_acceptance 与 factory_acceptance 解耦（SC-5 修复门，§0.2/D5 起步 0.30）
     - needs_adjudication 不计 negative 也不计 mechanism_present=true 分母
     - procedural 0 通过 = 硬 fail
 
@@ -309,28 +309,33 @@ class TestRepairAcceptance:
         assert ra["mechanism_present_true_passed"] == 1
         assert ra["positive_pass_rate"] == 0.5
 
-    def test_gate_passes_at_060_threshold(self):
-        """concept 起步线 0.60：mp_true 5 条 3 过(0.6) + 负样本全拒 → gate=True。"""
+    def test_gate_passes_at_030_threshold(self):
+        """§0.2/D5：quality-repair 起步线 0.30——mp_true 10 条 3 过(0.30) + 负样本全拒 → gate=True。"""
+        from src.akb2.quality.calibration import QUALITY_REPAIR_ACCEPTANCE_FLOOR
+
+        assert QUALITY_REPAIR_ACCEPTANCE_FLOOR == 0.30
         entries = [
             _mp_entry(0, True), _mp_entry(1, True), _mp_entry(2, True),
-            _mp_entry(3, False), _mp_entry(4, False),
-        ] + [_neg_entry(5)]
+            _mp_entry(3, False), _mp_entry(4, False), _mp_entry(5, False),
+            _mp_entry(6, False), _mp_entry(7, False), _mp_entry(8, False),
+            _mp_entry(9, False),
+        ] + [_neg_entry(10)]
         report: dict[str, Any] = {"entries": entries}
         _compute_statistics(report)
         ra = report["repair_acceptance"]
-        assert ra["positive_pass_rate"] == 0.6
+        assert ra["positive_pass_rate"] == 0.3
         assert ra["repair_acceptance_gate"] is True
 
-    def test_gate_fails_below_060(self):
-        """mp_true 5 条 2 过(0.4) → gate=False（未达 0.60 起步线）。"""
+    def test_gate_fails_below_030(self):
+        """§0.2/D5：mp_true 5 条 1 过(0.2) → gate=False（未达 0.30 起步线）。"""
         entries = [
-            _mp_entry(0, True), _mp_entry(1, True),
-            _mp_entry(2, False), _mp_entry(3, False), _mp_entry(4, False),
+            _mp_entry(0, True),
+            _mp_entry(1, False), _mp_entry(2, False), _mp_entry(3, False), _mp_entry(4, False),
         ] + [_neg_entry(5)]
         report: dict[str, Any] = {"entries": entries}
         _compute_statistics(report)
         ra = report["repair_acceptance"]
-        assert ra["positive_pass_rate"] == 0.4
+        assert ra["positive_pass_rate"] == 0.2
         assert ra["repair_acceptance_gate"] is False
 
     def test_gate_fails_if_negative_not_rejected(self):
@@ -416,3 +421,58 @@ def report_auto_promote() -> str:
     report: dict[str, Any] = {"entries": []}
     _compute_statistics(report)
     return report["repair_acceptance"]["AUTO_PROMOTE"]
+
+
+# ---------------------------------------------------------------------------
+# §0.2/D5：CLI --acceptance-mode exit 切换（factory vs quality-repair）
+# ---------------------------------------------------------------------------
+
+
+class TestAcceptanceModeExit:
+    """§0.2/D5：CLI exit 口径可切换——factory（出厂混池 0.9）vs quality-repair（0.30）。
+
+    factory_acceptance 与 repair_acceptance_gate 解耦：30% pass 时 factory mode exit 1、
+    quality-repair mode exit 0。验收只读对应口径，避免 30% 仍 exit 1 失真。
+    """
+
+    def test_quality_repair_mode_exits_zero_when_repair_gate_true(self, monkeypatch):
+        """repair_acceptance_gate=True + factory_acceptance=False → quality-repair mode exit 0。"""
+        from src.akb2.quality import calibration as calib
+
+        def _fake_run(**kwargs):
+            return {
+                "factory_acceptance": False,  # 出厂混池 0.9 未达
+                "repair_acceptance": {"repair_acceptance_gate": True},  # 本轮 0.30 达
+            }
+
+        monkeypatch.setattr(calib, "run_calibration", _fake_run)
+        rc = calib.main(["--corpus", "x.yaml", "--report-out", "/tmp/_t.json", "--acceptance-mode", "quality-repair"])
+        assert rc == 0, "quality-repair mode 应跟 repair_acceptance_gate（True → exit 0）"
+
+    def test_factory_mode_exits_one_when_factory_acceptance_false(self, monkeypatch):
+        """同 report（factory=False, repair_gate=True）→ factory mode exit 1（默认口径）。"""
+        from src.akb2.quality import calibration as calib
+
+        def _fake_run(**kwargs):
+            return {
+                "factory_acceptance": False,
+                "repair_acceptance": {"repair_acceptance_gate": True},
+            }
+
+        monkeypatch.setattr(calib, "run_calibration", _fake_run)
+        rc = calib.main(["--corpus", "x.yaml", "--report-out", "/tmp/_t.json"])  # 默认 factory mode
+        assert rc == 1, "factory mode 应跟 factory_acceptance（False → exit 1）"
+
+    def test_quality_repair_mode_exits_one_when_repair_gate_false(self, monkeypatch):
+        """repair_acceptance_gate=False → quality-repair mode exit 1（即便 factory True）。"""
+        from src.akb2.quality import calibration as calib
+
+        def _fake_run(**kwargs):
+            return {
+                "factory_acceptance": True,
+                "repair_acceptance": {"repair_acceptance_gate": False},
+            }
+
+        monkeypatch.setattr(calib, "run_calibration", _fake_run)
+        rc = calib.main(["--corpus", "x.yaml", "--report-out", "/tmp/_t.json", "--acceptance-mode", "quality-repair"])
+        assert rc == 1, "quality-repair mode gate=False → exit 1"

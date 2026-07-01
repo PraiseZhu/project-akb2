@@ -65,6 +65,11 @@ MAX_LIVE_SAMPLE_DEFAULT: int = 3
 LIVE_POSITIVE_QUOTA: int = 3           # live 正样本最少条数
 LIVE_POSITIVE_PASS_FLOOR: float = 0.9  # live 正样本通过率下限
 
+# §0.2/D5：本轮 quality-repair acceptance gate 起步线（精选 corpus proposal/repair 口径）。
+# 旧 0.60 不现实（两骨折一致：精选 30-45% 是第一轮目标）。factory_acceptance（出厂混池 0.9）
+# 拆成独立字段，不与本轮 repair gate 口径混淆。
+QUALITY_REPAIR_ACCEPTANCE_FLOOR: float = 0.30
+
 # corpus fixtures 目录（_load_fixture_content 按 fixture:<name> 读取）
 _FIXTURES_DIR_DEFAULT = Path("evals/main-pipeline-quality/fixtures")
 
@@ -950,7 +955,7 @@ def _compute_repair_acceptance(entries: list[dict[str, Any]]) -> dict[str, Any]:
 
     与 factory_acceptance 解耦（factory_acceptance / CLI exit 不动）：
       - positive_pass_rate: mechanism_present=true 且 expected=ingest 子集通过率，
-        SC-5 concept 起步线 ≥0.60；
+        §0.2/D5 起步线 ≥QUALITY_REPAIR_ACCEPTANCE_FLOOR（0.30）；旧 0.60 不现实；
       - negative_reject_rate: 负样本（含 no_mechanism）拒收率，目标 ==1.0；
       - layers: live/fixture/concept/procedural 分层通过率（concept/procedural
         取运行时 content_lane；空 lane 不计入 concept/procedural 层）；
@@ -993,7 +998,7 @@ def _compute_repair_acceptance(entries: list[dict[str, Any]]) -> dict[str, Any]:
         procedural_layer["total"] > 0 and procedural_layer["passed"] == 0
     )
     gate = (
-        mp_layer["pass_rate"] >= 0.60
+        mp_layer["pass_rate"] >= QUALITY_REPAIR_ACCEPTANCE_FLOOR
         and neg_reject_rate == 1.0
         and not procedural_hard_fail
     )
@@ -1254,6 +1259,16 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_TIMEOUT_PER_ENTRY_SEC,
         help=f"每条超时秒数 (默认 {DEFAULT_TIMEOUT_PER_ENTRY_SEC})",
     )
+    parser.add_argument(
+        "--acceptance-mode",
+        choices=["factory", "quality-repair"],
+        default="factory",
+        help=(
+            "exit code 判定口径：factory（默认，出厂混池 0.9 factory_acceptance）；"
+            "quality-repair（§0.2/D5，本轮 repair_acceptance_gate，起步 0.30，"
+            "用于 quality-repair 验收避免 30% 仍 exit 1）"
+        ),
+    )
 
     args = parser.parse_args(argv)
 
@@ -1276,6 +1291,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: 校准失败: {exc}", file=sys.stderr)
         return 1
 
+    # §0.2/D5：CLI exit 口径可切换——factory（出厂混池 0.9，默认）vs quality-repair
+    # （本轮 repair_acceptance_gate，起步 0.30）。report 同时保留两字段，验收只读对应口径。
+    if args.acceptance_mode == "quality-repair":
+        ra = report.get("repair_acceptance", {}) or {}
+        return 0 if ra.get("repair_acceptance_gate", False) else 1
     return 0 if report.get("factory_acceptance", False) else 1
 
 
