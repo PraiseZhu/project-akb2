@@ -2283,11 +2283,96 @@ _MECHANISM_ENTITY_KEYWORDS = (
     "运行时", "缓存", "调度", "生产者", "消费者",
 )
 
+# P1b-2/F-B: 普通标题组件抽取的过滤常量(宁缺勿假:挡 Introduction/Conclusion/FAQ 类)
+_GENERIC_PLAIN_TITLE_NAMES: frozenset[str] = frozenset({
+    "introduction", "conclusion", "faq", "overview", "summary", "background",
+    "references", "related work", "appendix", "preface", "tldr", "intro",
+    "outro", "abstract", "changelog", "credits", "table of contents",
+    "further reading",
+})
+# 句子起始词(动词/疑问词):以这些词开头的标题是祈使句/疑问句,非命名短语
+_SENTENCE_STARTER_WORDS: frozenset[str] = frozenset({
+    "how", "when", "why", "what", "where", "who", "which", "choose", "write",
+    "set", "import", "manage", "enable", "view", "troubleshoot", "organize",
+    "audit", "edit", "add", "use", "install", "configure", "create", "build",
+    "run", "check", "verify", "understand", "learn", "getting", "started",
+    "read", "download", "update", "delete", "remove", "start", "stop",
+    "test", "deploy", "commit", "push", "pull", "merge", "see",
+})
+# 小写助动词(出现则标题是句子而非命名短语):is/are/seem/has/do/can/will...
+_AUX_VERB_WORDS: frozenset[str] = frozenset({
+    "is", "are", "was", "were", "been", "being", "seem", "seems", "appear",
+    "appears", "become", "becomes", "has", "have", "had", "do", "does", "did",
+    "can", "could", "will", "would", "shall", "should", "must", "may", "might",
+    "gets", "get", "makes", "make",
+})
+_APOSTROPHE_CHARS: str = "'’´`"
+
 
 def _item_has_mechanism_entity(item_text: str) -> bool:
     """编号列表项是否含可识别机制实体名（区别于政策承诺动词列表）。"""
     lower = item_text.lower()
     return any(kw in lower for kw in _MECHANISM_ENTITY_KEYWORDS)
+
+
+# F-B: 普通 H2/H3 标题(非编号/非 §-锚)正则
+_PLAIN_TITLE_HEADING_RE: re.Pattern[str] = re.compile(r"(?m)^#{2,3}\s+(.+?)\s*$")
+
+
+def _is_plain_title_component(title: str) -> bool:
+    """F-B: 普通 H2/H3 标题是否算机制组件。
+
+    两条路径(满足任一):
+    - 含机制实体关键词(component/step/module/agent/...)→ 是
+    - title-case 命名短语:≤6 词 + 首词大写 + 非句子起始词(动词/疑问词) +
+      非收缩词(无 ' isn't/it's) + 非小写助动词(is/are/seem/...) + 非泛节名
+
+    宁缺勿假:Introduction/Conclusion/FAQ/Overview/Summary 等泛节名直接拒;
+    祈使句/疑问句标题(How/When/Choose/Write...开头)拒;含收缩词或助动词的句子拒。
+    """
+    t = title.strip()
+    if not t:
+        return False
+    low = t.lower()
+    if low in _GENERIC_PLAIN_TITLE_NAMES:
+        return False
+    if any(kw in low for kw in _MECHANISM_ENTITY_KEYWORDS):
+        return True
+    words = t.split()
+    if len(words) > 6 or len(words) < 1:
+        return False
+    if not words[0][:1].isupper():
+        return False
+    if words[0].lower() in _SENTENCE_STARTER_WORDS:
+        return False
+    if any(any(c in _APOSTROPHE_CHARS for c in w) for w in words):
+        return False  # 收缩词(isn't/it's)= 句子
+    if any(w.lower() in _AUX_VERB_WORDS for w in words):
+        return False  # 小写助动词 = 句子
+    return True
+
+
+def _scan_plain_title_components(raw_content: str) -> list[str]:
+    """F-B: 扫普通 H2/H3 标题(非编号/非 §-锚/非表格)取机制组件名。
+
+    优先级最低(在编号标题/§-锚标题/表格/编号列表之后),供 memory 等纯散文标题型 raw
+    补足组件。去重保序。
+    """
+    if not raw_content:
+        return []
+    names: list[str] = []
+    seen: set[str] = set()
+    for m in _PLAIN_TITLE_HEADING_RE.finditer(raw_content):
+        title = m.group(1).strip()
+        # 跳过 §-锚标题(别处处理)、编号标题、表格行
+        if title.startswith("§") or re.match(r"^\d+[.)]", title) or title.startswith("|"):
+            continue
+        if _is_plain_title_component(title):
+            name = title.rstrip(".").strip()
+            if name and name not in seen:
+                seen.add(name)
+                names.append(name)
+    return names
 
 
 # P1b-2: 表格组件列 header 关键词(命中则取该列单元作组件名)
@@ -2420,6 +2505,18 @@ def _scan_real_mechanism_components(raw_content: str) -> list[dict[str, str]]:
             components.append({"name": name, "role": "raw 命名机制组件"})
             if len(components) >= CONCEPT_MIN_MECHANISM_COMPONENTS:
                 break
+    # 3. F-B: 普通 H2/H3 标题(最低优先级,编号列表之后)——供 memory 等纯散文标题型 raw
+    # 补足组件。须过 _is_plain_title_component 过滤(实体关键词 OR title-case 命名短语,
+    # 挡 Introduction/Conclusion/FAQ/祈使句/疑问句)。不卡 MIN=3(取到全局 12 上限),
+    # 因 P1b-3 边抽取需更多组件共现机会——MIN=3 会让 vercel 只取 3 组件致 0 边。
+    if len(components) < CONCEPT_MIN_MECHANISM_COMPONENTS:
+        for name in _scan_plain_title_components(raw_content or ""):
+            name = name.strip().rstrip(".").strip()
+            if name and len(name) <= 80 and name not in seen:
+                seen.add(name)
+                components.append({"name": name, "role": "raw 命名机制组件"})
+                if len(components) >= FALLBACK_MAX_COMPONENTS:
+                    break
     # P1b-2: 全局上限(防长表格/编号列表灌水;有界预算)
     if len(components) > FALLBACK_MAX_COMPONENTS:
         components = components[:FALLBACK_MAX_COMPONENTS]
