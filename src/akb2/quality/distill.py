@@ -796,23 +796,38 @@ def retake_traceability(
     extract_data: dict[str, Any],
     raw_content: str,
     content_lane: str = "",
-) -> dict[str, Any] | None:
-    """F2-B: traceability 有界 retake(一次 LLM 调用,补 traces_to 或改判 provenance)。
+) -> dict[str, Any]:
+    """F2-B/F3-A: traceability 有界 retake(一次 LLM 调用,补 traces_to 或改判 provenance)。
 
     caller(runner)在 floor 仅因 FLOOR_INTERPRETATION_TRACEABILITY fail 时触发本函数。
     本函数不放宽 floor,只给 LLM 一次机会补 traces_to;retake 后 caller 重评 floor,
     仍 fail → fail-closed。TRACEABILITY_RETAKE_MAX=1(具名,有界)。
 
-    Args:
-        extract_data: extract 产出的结构化 dict(本函数 in-place 更新 claims)。
-        raw_content: raw 全文(供 LLM 判断解读出处)。
-        content_lane: 车道(目前只 concept 触发)。
+    F3-A 修(lead 复现定位):
+    1. 覆盖面:原只收 `not tt`(traces_to 空),漏 traces_to 非空但指错(不在 grounded 集)
+       的 interpretation(ag2 §T_CONFIGURATION/vercel §E_CLAIMS 指错)。改为 tt 空 OR
+       tt ∩ grounded 集 == ∅ 都纳入 retake。
+    2. 接受逻辑:原 `traces_to ⊆ grounded_set` 精确匹配,LLM 按示例返单字母 §E 而 grounded
+       是全名 §E_CLAIMS → 全拒 → changed=False。改:接受前对每个锚过 resolve_anchor_ref
+       唯一前缀解析(目标集=grounded_set);解析不了才拒(不放水)。
+    3. fail-visible:返回结构化 {changed, data, diagnostics}(interp_count/llm_called/
+       items_returned/accepted_count/reject_reason),worker/ledger 可见。
+
     Returns:
-        更新后的 extract_data(若有改动);None 表示无可 retake / LLM 失败(caller 维持原状)。
+        {"changed": bool, "data": extract_data, "diagnostics": {...}}
+        changed=True 时 data 已 in-place 更新;changed=False 时 data 不变,diagnostics 记原因。
     """
+    diag: dict[str, Any] = {
+        "interp_count": 0,
+        "llm_called": False,
+        "items_returned": 0,
+        "accepted_count": 0,
+        "reject_reason": "",
+    }
     claims = extract_data.get("claims")
     if not isinstance(claims, list) or not claims:
-        return None
+        diag["reject_reason"] = "no_claims"
+        return {"changed": False, "data": extract_data, "diagnostics": diag}
     # 收集 grounded anchors(source_grounded claims 的 anchor,去重保序)
     grounded_anchors: list[str] = []
     seen: set[str] = set()
@@ -826,9 +841,12 @@ def retake_traceability(
             if a and a not in seen:
                 seen.add(a)
                 grounded_anchors.append(a)
+    grounded_set = set(grounded_anchors)
     if not grounded_anchors:
-        return None  # 无 grounded anchor → retake 无处指(维持原状 fail-closed)
-    # 收集需 retake 的 interpretation claims(缺 traces_to)
+        diag["reject_reason"] = "no_grounded"
+        return {"changed": False, "data": extract_data, "diagnostics": diag}
+    # F3-A 覆盖面:收需 retake 的 interpretation claims —— traces_to 空 OR 指错(与 grounded
+    # 集无交集,即指向非 grounded 的锚)。原只收 `not tt` 漏指错锚。
     interp: list[dict[str, Any]] = []
     for i, c in enumerate(claims):
         if not isinstance(c, dict):
@@ -836,11 +854,17 @@ def retake_traceability(
         if str(c.get("provenance", "")).strip() != "akb_interpretation":
             continue
         tt = c.get("traces_to")
-        if not tt:  # 缺 traces_to
+        tt_set = (
+            {str(a).strip() for a in tt if isinstance(a, str) and str(a).strip()}
+            if isinstance(tt, list) else set()
+        )
+        if not tt_set or not (tt_set & grounded_set):  # 空 OR 指错(与 grounded 无交集)
             c["_retake_index"] = i
             interp.append(c)
+    diag["interp_count"] = len(interp)
     if not interp:
-        return None  # 无缺 traces_to 的 interpretation → 无需 retake
+        diag["reject_reason"] = "no_interp"
+        return {"changed": False, "data": extract_data, "diagnostics": diag}
     # 调 LLM
     from src.akb2.quality.llm_router import route_llm as _default
 
@@ -859,15 +883,26 @@ def retake_traceability(
                 strict_schema=True,
                 extra_body={"enable_thinking": False} if DISTILL_DISABLE_THINKING else None,
             )
-    except Exception:
-        return None  # LLM 失败 → 维持原状(caller fail-closed)
+    except Exception as exc:
+        diag["reject_reason"] = f"llm_failed: {type(exc).__name__}"
+        for c in claims:
+            if isinstance(c, dict):
+                c.pop("_retake_index", None)
+        return {"changed": False, "data": extract_data, "diagnostics": diag}
+    diag["llm_called"] = True
     parsed = _coerce_json_dict(response.content)
     retake_items = parsed.get("retake") if isinstance(parsed, dict) else None
     if not isinstance(retake_items, list):
-        return None
-    # 更新 claims(只接受 traces_to ⊆ grounded_anchors 的;防 LLM 编造)
-    grounded_set = set(grounded_anchors)
+        diag["reject_reason"] = "no_items"
+        for c in claims:
+            if isinstance(c, dict):
+                c.pop("_retake_index", None)
+        return {"changed": False, "data": extract_data, "diagnostics": diag}
+    diag["items_returned"] = len(retake_items)
+    # F3-A 接受逻辑:对每个 LLM 返回的锚过 resolve_anchor_ref 唯一前缀解析(目标集=grounded_set),
+    # 解析不了才拒(防 LLM 编造 §Z;但接受 LLM 返单字母 §E → 解析为全名 §E_CLAIMS)。
     changed = False
+    accepted = 0
     for item in retake_items:
         if not isinstance(item, dict):
             continue
@@ -879,28 +914,60 @@ def retake_traceability(
             continue
         tt = item.get("traces_to")
         if isinstance(tt, list):
-            # 只接受 grounded_anchors 里的(防 LLM 编造 §Z)
-            clean_tt = [
-                str(a).strip() for a in tt
-                if isinstance(a, str) and str(a).strip() in grounded_set
-            ]
-            if clean_tt and clean_tt != claim.get("traces_to"):
+            clean_tt: list[str] = []
+            for a in tt:
+                if not isinstance(a, str):
+                    continue
+                ref = a.strip()
+                if not ref:
+                    continue
+                # F3-A:canonicalize + 精确 + 唯一前缀解析,三级匹配
+                resolved = _resolve_grounded_anchor(ref, grounded_set)
+                if resolved:
+                    clean_tt.append(resolved)
+            if clean_tt and clean_tt != (
+                claim.get("traces_to") if isinstance(claim.get("traces_to"), list) else []
+            ):
                 claim["traces_to"] = clean_tt
                 changed = True
+                accepted += 1
         prov = str(item.get("provenance", "")).strip()
         if prov in ("akb_interpretation", "source_grounded") and prov != claim.get("provenance"):
-            # 改判 source_grounded 须同时有 grounded anchor
             if prov == "source_grounded" and claim.get("anchor") in grounded_set:
                 claim["provenance"] = "source_grounded"
                 changed = True
+                accepted += 1
             elif prov == "akb_interpretation":
                 claim["provenance"] = "akb_interpretation"
                 changed = True
+                accepted += 1
+    diag["accepted_count"] = accepted
+    if not changed:
+        diag["reject_reason"] = "no_accept"
     # 清理临时 _retake_index
     for c in claims:
         if isinstance(c, dict):
             c.pop("_retake_index", None)
-    return extract_data if changed else None
+    return {"changed": changed, "data": extract_data, "diagnostics": diag}
+
+
+def _resolve_grounded_anchor(ref: str, grounded_set: set[str]) -> str | None:
+    """F3-A: 把 LLM 返回的 traces_to 锚解析到 grounded 集——canonicalize + 精确 + 唯一前缀。
+
+    三级匹配(都不中才拒,fail-closed 不放水):
+    1. canonicalize(ref) 精确 ∈ grounded_set(LLM 产全名或已剥后缀)
+    2. ref 精确 ∈ grounded_set(原样)
+    3. resolve_anchor_ref(canonicalize(ref), grounded_set) 唯一前缀解析(单字母 §E → §E_CLAIMS)
+    """
+    if not ref or not grounded_set:
+        return None
+    canon = canonicalize_anchor(ref)
+    if canon in grounded_set:
+        return canon
+    if ref in grounded_set:
+        return ref
+    resolved = resolve_anchor_ref(canon, grounded_set)
+    return resolved
 
 
 def _build_extract_segment_messages(

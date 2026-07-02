@@ -22,16 +22,24 @@ from typing import Any
 from src.akb2.quality.distill import extract_claims, retake_traceability
 
 
-def _payload(success: bool, data: dict[str, Any], retries_used: int, error: str) -> str:
-    return json.dumps(
-        {
-            "success": success,
-            "data": data,
-            "retries_used": retries_used,
-            "error": error,
-        },
-        ensure_ascii=False,
-    )
+def _payload(
+    success: bool,
+    data: dict[str, Any],
+    retries_used: int,
+    error: str,
+    diagnostics: dict[str, Any] | None = None,
+) -> str:
+    """F3-A fail-visible:payload 带 diagnostics(interp_count/llm_called/items_returned/
+    accepted_count/reject_reason),供 ledger 可见。"""
+    out = {
+        "success": success,
+        "data": data,
+        "retries_used": retries_used,
+        "error": error,
+    }
+    if diagnostics is not None:
+        out["diagnostics"] = diagnostics
+    return json.dumps(out, ensure_ascii=False)
 
 
 def _decode_payload(payload: Any) -> tuple[str, str]:
@@ -66,14 +74,19 @@ def main() -> int:
         content_lane = str(payload.get("content_lane", ""))
         extract_data = payload["extract_data"]
         try:
-            updated = retake_traceability(extract_data, raw_content, content_lane)
+            # F3-A: retake_traceability 返回 {"changed", "data", "diagnostics"}
+            result = retake_traceability(extract_data, raw_content, content_lane)
         except BaseException as exc:
             print(_payload(False, {}, 0, f"retake_worker_uncaught: {exc}"))
             return 0
-        if updated is None:
-            print(_payload(False, {}, 0, "retake_no_change"))
+        if not isinstance(result, dict):
+            print(_payload(False, {}, 0, "retake_invalid_result"))
+            return 0
+        diag = result.get("diagnostics", {}) if isinstance(result.get("diagnostics"), dict) else {}
+        if result.get("changed"):
+            print(_payload(True, result.get("data", {}), 0, "", diagnostics=diag))
         else:
-            print(_payload(True, updated, 0, ""))
+            print(_payload(False, {}, 0, "retake_no_change", diagnostics=diag))
         return 0
 
     raw_content, content_lane = _decode_payload(payload)

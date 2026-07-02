@@ -801,7 +801,7 @@ def _run_distill_segment(
         and floor_result.failed_floors == [FLOOR_INTERPRETATION_TRACEABILITY]
         and not floor_result.meta.get("traceability_retake_applied")
     ):
-        retaken = _run_traceability_retake_worker(
+        retaken, retake_diag = _run_traceability_retake_worker(
             extract_result.data, raw_content, content_lane
         )
         if isinstance(retaken, dict):
@@ -813,7 +813,15 @@ def _run_distill_segment(
             _log_event(
                 config, "distill_extract", "traceability_retake",
                 _compute_raw_hash(raw_path),
-                {"applied": True, "passed_after": floor_result.passed},
+                {"applied": True, "passed_after": floor_result.passed,
+                 "diagnostics": retake_diag},
+            )
+        else:
+            # F3-A fail-visible:失败路径也记 ledger(applied=False + reject_reason)
+            _log_event(
+                config, "distill_extract", "traceability_retake",
+                _compute_raw_hash(raw_path),
+                {"applied": False, "diagnostics": retake_diag},
             )
 
     # 段 2: 成稿
@@ -971,12 +979,14 @@ def _run_extract_claims_worker(raw_content: str, content_lane: str = "") -> Any:
 
 def _run_traceability_retake_worker(
     extract_data: dict[str, Any], raw_content: str, content_lane: str = ""
-) -> dict[str, Any] | None:
-    """F2-B: traceability retake 子进程(加载 route_llm,调 distill.retake_traceability)。
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """F2-B/F3-A: traceability retake 子进程(加载 route_llm,调 distill.retake_traceability)。
 
     floor 仅因 traceability fail 时 caller 触发。子进程内 retake_traceability 重发
     interpretation + grounded anchors 给 LLM,补 traces_to/改判 provenance。
-    返回更新后的 extract_data;None 表示无改动/失败(caller 维持原状 fail-closed)。
+    Returns:
+        (updated_data | None, diagnostics | None):data 有改动时非 None;diagnostics 始终
+        带(含 reject_reason),供 caller ledger 记录失败原因(F3-A fail-visible)。
     """
     cmd = [sys.executable, "-m", DISTILL_EXTRACT_WORKER_MODULE]
     worker_input = json.dumps(
@@ -1004,19 +1014,23 @@ def _run_traceability_retake_worker(
     except (subprocess.TimeoutExpired, OSError):
         if proc is not None:
             _kill_process_group(proc, DISTILL_EXTRACT_WORKER_KILL_GRACE_S)
-        return None
+        return None, {"reject_reason": "worker_timeout_or_osperror"}
 
     stdout = (stdout or "").strip()
     if proc.returncode != 0:
-        return None
+        return None, {"reject_reason": f"worker_exit_{proc.returncode}"}
     try:
         payload = json.loads(stdout)
     except (json.JSONDecodeError, ValueError):
-        return None
+        return None, {"reject_reason": "worker_invalid_json"}
+    diag = payload.get("diagnostics") if isinstance(payload, dict) else None
+    if not isinstance(diag, dict):
+        err = payload.get("error", "") if isinstance(payload, dict) else ""
+        diag = {"reject_reason": err}
     if not isinstance(payload, dict) or not payload.get("success"):
-        return None
+        return None, diag  # 失败也带 diagnostics(含 reject_reason)
     data = payload.get("data")
-    return data if isinstance(data, dict) else None
+    return (data if isinstance(data, dict) else None), diag
 
 
 def _kill_process_group(proc: subprocess.Popen[Any], grace_s: float) -> None:
