@@ -2708,7 +2708,8 @@ def _is_plain_title_component(title: str) -> bool:
       非收缩词(无 ' isn't/it's) + 非小写助动词(is/are/seem/...) + 非泛节名
 
     宁缺勿假:Introduction/Conclusion/FAQ/Overview/Summary 等泛节名直接拒;
-    祈使句/疑问句标题(How/When/Choose/Write...开头)拒;含收缩词或助动词的句子拒。
+    祈使句/疑问句标题(How/When/Choose/Write/Invoke...开头)拒,即使含 entity 词
+    (F5-C:'Invoke subagents explicitly' 含 'agent' 但祈使句 → 拒);含收缩词或助动词的句子拒。
     """
     t = title.strip()
     if not t:
@@ -2716,14 +2717,16 @@ def _is_plain_title_component(title: str) -> bool:
     low = t.lower()
     if low in _GENERIC_PLAIN_TITLE_NAMES:
         return False
+    # F5-C: 祈使句/疑问句首词检查在 entity keyword 之前(防 'Invoke subagents explicitly'
+    # 含 'agent' 被 entity 路径先接受)
+    words = t.split()
+    if words and words[0][:1].isupper() and words[0].lower() in _SENTENCE_STARTER_WORDS:
+        return False
     if any(kw in low for kw in _MECHANISM_ENTITY_KEYWORDS):
         return True
-    words = t.split()
     if len(words) > 6 or len(words) < 1:
         return False
     if not words[0][:1].isupper():
-        return False
-    if words[0].lower() in _SENTENCE_STARTER_WORDS:
         return False
     if any(any(c in _APOSTROPHE_CHARS for c in w) for w in words):
         return False  # 收缩词(isn't/it's)= 句子
