@@ -77,6 +77,21 @@
 - **多# §4 mini e2e 硬证据**：LLM 多#raw 2 eligible + F4 pass；fallback 多#raw 2 eligible
   （§A/§B 真实多#）+ F4 pass；伪 §Z 多#raw 仍 fail。真机主流多#格式产 eligible。
 
+### F1-regex 根治 — trusted 只认 raw 不回落 claims（codex 独审反方向放水缝，commit 7d90167）
+- `_trusted_raw_anchors` 只认 `raw_anchors`（raw 真实声明 §-anchor 全集），**不回落 claims anchors**。
+- codex 查出反方向放水缝：LLM 把 raw 不存在的 §Z 同时写进 source_grounded claim 和 edge →
+  §Z 进 claims → 旧回落口径让 §Z 进 trusted → 伪边计 eligible 混过 F4（claim anchor 只校验
+  §[A-Z0-9]+ 格式，不校验真在 raw）。根治：trusted=raw 全集 → §Z 不在 raw → 不 trusted → 不计 eligible。
+- raw_anchors 为 None/空 → 返空集（fail-closed）。调用方必须传 raw_anchors（runner 已传；测试显式传）。
+- **根治硬证据测试**：raw 无 §Z，但 grounded claim 和 causal_edge 都写 §Z → F4 仍 fail（§Z 不在 raw 声明集）。
+
+### F2-taxonomy — A3/机制边伪 anchor 进 hard_fail（codex 独查，commit 7d90167）
+- `_classify_defect_schema` hard_fail_dims 加 `A3-锚点真实`（引用锚点 raw 不存在）。
+- `SG-mechanism-edge-evidence` 中只把真实性缺陷（伪/合成 anchor、无对应 [raw §X]、raw 不存在）
+  列 hard_fail；保留"漏渲染/缺字段但 extract/raw 已支撑"为 repairable（不一刀切）。
+- 防混合缺陷里 LLM"猜一个可用 anchor"洗掉伪引用。
+- 测试：A3 + A8 混合 → `a4_hard_fail_early_stop` 不调 LLM；SG 伪 anchor hard_fail；SG 漏渲染 repairable。
+
 ## 1. 改动清单（按文件）
 
 ### `src/akb2/quality/distill.py`（4388→~4460 行）
