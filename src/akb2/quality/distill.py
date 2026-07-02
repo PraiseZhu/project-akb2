@@ -847,6 +847,8 @@ def retake_traceability(
         "accepted_new_claim": 0,
         "rejected_new_claim": 0,
         "llm_return_summary": "",
+        # F5-B: 确定性补 grounded claim 计数(去 LLM 化)
+        "deterministic_backfill_count": 0,
     }
     claims = extract_data.get("claims")
     if not isinstance(claims, list) or not claims:
@@ -889,11 +891,55 @@ def retake_traceability(
     if not interp:
         diag["reject_reason"] = "no_interp"
         return {"changed": False, "data": extract_data, "diagnostics": diag}
-    # 调 LLM
+    # F5-B: 确定性优先——先走纯代码路径补 grounded claim(去 LLM 化,raw 原文天然 verbatim)
+    raw_decl_set = declared_anchor_set(raw_content) if raw_content else set()
+    anchor_blocks = _extract_anchor_blocks(raw_content) if raw_content else {}
+    changed = False
+    det_backfill_count = 0
+    remaining_interp: list[dict[str, Any]] = []
+    for c in interp:
+        interp_text = str(c.get("text", "") or c.get("claim", "") or "")
+        # target anchor:interp 的 traces_to 指向的锚(resolve 后),空则在全 raw 找
+        tt = c.get("traces_to")
+        target_anchor = ""
+        if isinstance(tt, list) and tt:
+            for a in tt:
+                if isinstance(a, str) and a.strip():
+                    resolved = _resolve_grounded_anchor(a.strip(), raw_decl_set)
+                    if resolved:
+                        target_anchor = resolved
+                        break
+        backfill = _deterministic_backfill_grounded_claim(
+            interp_text, target_anchor, anchor_blocks, raw_content or ""
+        )
+        if backfill:
+            # 原样摘句作新 source_grounded claim
+            new_claim = {
+                "text": backfill["text"],
+                "anchor": backfill["anchor"],
+                "provenance": "source_grounded",
+                "evidence_gap": "未提供 verbatim 校验细节",
+            }
+            claims.append(new_claim)
+            c["traces_to"] = [backfill["anchor"]]
+            det_backfill_count += 1
+            changed = True
+        else:
+            remaining_interp.append(c)  # 留给 LLM retake
+    diag["deterministic_backfill_count"] = det_backfill_count
+    # 全部确定性补了 → 不调 LLM(去 LLM 化,省一次调用)
+    if not remaining_interp:
+        diag["llm_called"] = False
+        # 清理临时 _retake_index
+        for c in claims:
+            if isinstance(c, dict):
+                c.pop("_retake_index", None)
+        return {"changed": changed, "data": extract_data, "diagnostics": diag}
+    # 仍有未补的 → 走 LLM retake(用 remaining_interp)
     from src.akb2.quality.llm_router import route_llm as _default
 
     messages = _build_traceability_retake_messages(
-        interp, grounded_anchors, raw_content or ""
+        remaining_interp, grounded_anchors, raw_content or ""
     )
     try:
         with _distill_attempt_deadline(TRACEABILITY_RETAKE_TIMEOUT_S):
@@ -929,12 +975,9 @@ def retake_traceability(
         diag["llm_return_summary"] = _json.dumps(retake_items, ensure_ascii=False)[:80]
     except Exception:
         diag["llm_return_summary"] = str(retake_items)[:80]
-    # F4-B: raw 声明集 + anchor blocks(供 new_grounded_claim 的 anchor resolve + B1 verbatim 校验)
-    raw_decl_set = declared_anchor_set(raw_content) if raw_content else set()
-    anchor_blocks = _extract_anchor_blocks(raw_content) if raw_content else {}
+    # F4-B: raw_decl_set + anchor_blocks 已在 F5-B 确定性段算过,此处复用
     # F3-A 接受逻辑:对每个 LLM 返回的锚过 resolve_anchor_ref 唯一前缀解析(目标集=grounded_set),
     # 解析不了才拒(防 LLM 编造 §Z;但接受 LLM 返单字母 §E → 解析为全名 §E_CLAIMS)。
-    changed = False
     accepted = 0
     for item in retake_items:
         if not isinstance(item, dict):
@@ -1016,6 +1059,55 @@ def retake_traceability(
         if isinstance(c, dict):
             c.pop("_retake_index", None)
     return {"changed": changed, "data": extract_data, "diagnostics": diag}
+
+
+def _deterministic_backfill_grounded_claim(
+    interp_text: str,
+    target_anchor: str,
+    anchor_blocks: dict[str, str],
+    raw_content: str,
+) -> dict[str, str] | None:
+    """F5-B: 确定性补 grounded claim——从 raw 该锚 block 挑与 interpretation 文本
+    token 重合度最高的一句,原样摘句作 source_grounded claim。
+
+    去 LLM 化:raw 原文天然 verbatim,无造假空间。挑不出合格句 → 返 None(留给 LLM retake)。
+    - target_anchor 有值 → block = anchor_blocks[target_anchor]
+    - target_anchor 空 → 在所有 anchor_blocks 里找最高重合 block
+    - 句分割:re.split 句号/换行;排除标题行(#)/表格行(|)/空行
+    - 合格句:≥2 长 token(len≥5 非停用词)与 interp_text 重合 + 长度 20-300 字符
+    """
+    if not interp_text or not raw_content:
+        return None
+    interp_tokens = set(_tokenize_long_tokens(interp_text))
+    if not interp_tokens:
+        return None
+    # 候选 block
+    candidates: list[tuple[str, str]] = []  # (anchor, block_text)
+    if target_anchor:
+        block = anchor_blocks.get(target_anchor, "")
+        if block:
+            candidates.append((target_anchor, block))
+    else:
+        for anchor, block in anchor_blocks.items():
+            if block:
+                candidates.append((anchor, block))
+    if not candidates:
+        return None
+    best: dict[str, str] | None = None
+    best_overlap = 0
+    for anchor, block in candidates:
+        for sent in re.split(r"[。\n.!?]", block):
+            sent = sent.strip()
+            if not sent or len(sent) < 20 or len(sent) > 300:
+                continue
+            if sent.startswith("#") or sent.startswith("|"):
+                continue  # 排除标题/表格行
+            sent_tokens = set(_tokenize_long_tokens(sent))
+            overlap = len(interp_tokens & sent_tokens)
+            if overlap >= 2 and overlap > best_overlap:
+                best_overlap = overlap
+                best = {"text": sent, "anchor": anchor}
+    return best
 
 
 def _resolve_grounded_anchor(ref: str, grounded_set: set[str]) -> str | None:
