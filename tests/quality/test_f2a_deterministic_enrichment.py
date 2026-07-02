@@ -241,6 +241,39 @@ class TestF5AEndpointClosure:
                         f"端点闭合不变式违反: {ep!r} 不在组件表 {comp_names}"
                     )
 
+    def test_f6a_global_closure_drops_llm_bad_endpoints(self):
+        """F6-A 全局闭合:extract 路径(无 det_components)LLM 边端点不在组件表→丢边。"""
+        from src.akb2.quality.distill import _close_edge_endpoints
+
+        data = {
+            "mechanism_components": [
+                {"name": "Executor Pool", "role": "x"},
+                {"name": "Task Graph", "role": "y"},
+            ],
+            "causal_edges": [
+                {"from": "Executor Pool", "to": "Auto memory", "relation": "r",
+                 "edge_kind": "source_causal", "evidence": "ev", "evidence_anchor": "§A"},
+                {"from": "Executor Pool", "to": "Task Graph", "relation": "r",
+                 "edge_kind": "inferred_from_structure", "evidence": "", "evidence_anchor": ""},
+            ],
+            "graph_edges": [
+                {"from": "Task Graph", "to": "BadNode", "relation": "r",
+                 "evidence": "ev", "evidence_anchor": "§A"},
+            ],
+        }
+        dropped = _close_edge_endpoints(data)  # 无 det_components → 只丢不补
+        assert dropped == 2  # "Auto memory" + "BadNode" 丢
+        # 剩余边端点都在组件表
+        comp_names = {"executor pool", "task graph"}
+        for e in data["causal_edges"]:
+            for ep in (e.get("from", ""), e.get("to", "")):
+                if ep:
+                    assert ep.lower() in comp_names
+        for e in data["graph_edges"]:
+            for ep in (e.get("from", ""), e.get("to", "")):
+                if ep:
+                    assert ep.lower() in comp_names
+
 
 class TestEligiblePresentNotTriggered:
     """caller(runner)守:LLM 已有 eligible 边时不触发 enrichment。本测试验证 enrichment

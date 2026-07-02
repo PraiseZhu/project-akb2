@@ -668,6 +668,10 @@ def extract_claims(
             # SG-command-recheck 同口径),编造的(如全角分号垃圾片段)在 distill 侧就剥,
             # 不让进 body;procedural 跌破 HOW_STEPS_MIN_EXECUTABLE → 既有 fail-closed 接手。
             _strip_fabricated_how_commands(merged, raw_content)
+            # F6-A: 全局端点闭合——所有 causal_edges/graph_edges 的 from/to ∈ mechanism_components
+            # names(含 alias);不在→丢边(防 compose SG-mechanism-edge-evidence 自拒,如 probe-p5
+            # memory 'edge.to=Auto memory 不在组件表')。enrichment 路径也复用同一 helper(带 det_components)。
+            _close_edge_endpoints(merged)
             # §0.2/F6：LLM 产 edge 的 evidence_anchor 校正——若 anchor 不在 raw 声明集，
             # 用 evidence sentence 在 raw 定位真实 anchor（_nearest_preceding_anchor，复用
             # fallback 映射逻辑），而非直接信 LLM 编的 anchor；映射不到 → 该边不计 eligible
@@ -3262,6 +3266,64 @@ def _build_real_causal_edges(
     return edges
 
 
+def _close_edge_endpoints(
+    extract_data: dict[str, Any],
+    det_components: list[dict[str, Any]] | None = None,
+) -> int:
+    """F6-A: 全局端点闭合——所有 causal_edges/graph_edges 的 from/to ∈ mechanism_components
+    names(含 alias)。不在→若 det_components 提供且匹配→补进名单;否则丢边。
+
+    Returns dropped_count(丢掉的边数)。
+    不变式:渲染进的每条边端点都在组件表(与 SG-mechanism-edge-evidence 同口径,自检不自拒)。
+    """
+    final_comps = extract_data.get("mechanism_components", []) or []
+    comp_names: set[str] = set()
+    for c in final_comps:
+        if not isinstance(c, dict):
+            continue
+        n = str(c.get("name", "")).strip().lower()
+        if n:
+            comp_names.add(n)
+        for a in c.get("aliases") or []:
+            if isinstance(a, str) and a.strip():
+                comp_names.add(a.strip().lower())
+    det_names_map: dict[str, str] = {}
+    if det_components:
+        for dc in det_components:
+            n = str(dc.get("name", "")).strip()
+            if n:
+                det_names_map[n.lower()] = n
+    dropped = 0
+    for edge_key in ("causal_edges", "graph_edges"):
+        all_edges = extract_data.get(edge_key, []) or []
+        closed: list[dict[str, Any]] = []
+        for e in all_edges:
+            if not isinstance(e, dict):
+                closed.append(e)
+                continue
+            frm = str(e.get("from", "")).strip()
+            to = str(e.get("to", "")).strip()
+            missing = [ep for ep in (frm, to) if ep and ep.lower() not in comp_names]
+            if not missing:
+                closed.append(e)
+                continue
+            # 端点不在名单 → 尝试从 det_components 补
+            added_from_closure = False
+            for ep in missing:
+                det_name = det_names_map.get(ep.lower())
+                if det_name and len(final_comps) < FALLBACK_MAX_COMPONENTS:
+                    final_comps.append({"name": det_name, "role": "raw 命名机制组件"})
+                    comp_names.add(det_name.lower())
+                    added_from_closure = True
+            if added_from_closure:
+                extract_data["mechanism_components"] = final_comps
+                closed.append(e)
+            else:
+                dropped += 1  # 丢边(防 SG 自拒)
+        extract_data[edge_key] = closed
+    return dropped
+
+
 def _enrich_zero_eligible_with_deterministic(
     extract_data: dict[str, Any], raw_content: str | None
 ) -> dict[str, Any]:
@@ -3351,59 +3413,8 @@ def _enrich_zero_eligible_with_deterministic(
         diag["edges_added"] += 1
     if added_edge:
         extract_data["causal_edges"] = existing_edges
-    # F5-A: 端点闭合——所有 causal_edges 的 from/to 必须 ∈ 最终 mechanism_components names
-    # (含 alias)。不在 → 若来自 det_components(过滤合格)补进名单;否则丢边计
-    # edges_dropped_endpoint(probe-p4 vercel/crewai/sub-agents 新死因:LLM 产边端点
-    # Multi-Step Loop/Quick Start/Invoke subagents explicitly 不在组件表 → SG-mechanism-
-    # edge-evidence 自拒)。不变式:渲染进的每条边端点都在组件表(与 SG 同口径,自检不自拒)。
-    final_comps = extract_data.get("mechanism_components", []) or []
-    comp_names: set[str] = set()
-    for c in final_comps:
-        if not isinstance(c, dict):
-            continue
-        n = str(c.get("name", "")).strip().lower()
-        if n:
-            comp_names.add(n)
-        for a in c.get("aliases") or []:
-            if isinstance(a, str) and a.strip():
-                comp_names.add(a.strip().lower())
-    # det_components 名字(供端点补名单)
-    det_names_map: dict[str, str] = {}
-    for dc in det_components:
-        n = str(dc.get("name", "")).strip()
-        if n:
-            det_names_map[n.lower()] = n
-    all_edges = extract_data.get("causal_edges", []) or []
-    closed_edges: list[dict[str, Any]] = []
-    for e in all_edges:
-        if not isinstance(e, dict):
-            closed_edges.append(e)
-            continue
-        frm = str(e.get("from", "")).strip()
-        to = str(e.get("to", "")).strip()
-        missing = [ep for ep in (frm, to) if ep and ep.lower() not in comp_names]
-        if not missing:
-            closed_edges.append(e)
-            continue
-        # 端点不在名单 → 尝试从 det_components 补(若过滤合格)
-        added_from_closure = False
-        for ep in missing:
-            det_name = det_names_map.get(ep.lower())
-            if det_name and len(final_comps) < FALLBACK_MAX_COMPONENTS:
-                final_comps.append(
-                    {"name": det_name, "role": "raw 命名机制组件"}
-                )
-                comp_names.add(det_name.lower())
-                added_from_closure = True
-                if not added_comp:
-                    diag["components_added"] += 1
-        if added_from_closure:
-            extract_data["mechanism_components"] = final_comps
-            closed_edges.append(e)  # 补了组件,边保留
-        else:
-            # 端点既不在名单也不是合格确定性组件 → 丢边(防 SG 自拒)
-            diag["edges_dropped_endpoint"] += 1
-    extract_data["causal_edges"] = closed_edges
+    # F5-A/F6-A: 端点闭合——复用全局 _close_edge_endpoints(含 det_components 补名单)
+    diag["edges_dropped_endpoint"] = _close_edge_endpoints(extract_data, det_components)
     diag["enriched"] = added_comp or added_edge or diag["edges_dropped_endpoint"] > 0
     return diag
 
