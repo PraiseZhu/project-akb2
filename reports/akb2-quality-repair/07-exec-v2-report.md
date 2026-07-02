@@ -58,6 +58,16 @@
 - runner final_status 从 promotion_outcome 派生（active→promoted / proposal success→proposal_passed /
   blocked→promotion_blocked）；旧 blocked 仍写 proposal_passed 矛盾修正。
 
+### F1-followup — trusted anchor 集过窄（第2轮双审，commit 319a41e）
+- `_trusted_raw_anchors` 从"grounded claims anchors"扩到 **raw 真实 §-anchor 全集**（runner
+  `_raw_anchor_set` 从 raw_content 解析，与 distill `_raw_anchor_positions` 同源）。
+- `evaluate_integrity_floor` / `_core_value_f4_failed` 增 `raw_anchors` 参数；runner floor 初始
+  评估 + retake 重评都传 `raw_anchor_set`。
+- 修 needs_retake 补抽的真边（anchor 来自 raw 但未被 claim 引用）被误杀；LLM primary 真边
+  （anchor 未被 claim 覆盖）也不被误杀。防伪仍成立：伪 §Z/合成 §raw 不在 raw 真实集 → 仍不计 eligible。
+- mini e2e 硬证据：golden §A/§B ∈ raw 过；§D ∈ raw 但 ∉ claims 过（F1-followup）；伪 §Z/§raw 不过；
+  needs_retake 补抽边（§D ∈ raw）重评过。
+
 ## 1. 改动清单（按文件）
 
 ### `src/akb2/quality/distill.py`（4388→~4460 行）
