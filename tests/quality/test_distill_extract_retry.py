@@ -356,7 +356,7 @@ class TestExtractRetry:
                 "how_steps": [
                     {"text": "Define trigger"},
                     {"text": "Select next work item"},
-                    {"text": "Write ledger entry"},
+                    {"text": "Load checkpoint"},
                 ],
                 "param_entries": [
                     {"name": "max_rounds", "evidence_gap": "未提供默认值"}
@@ -421,7 +421,7 @@ class TestExtractRetry:
                 "how_steps": [
                     {"text": "Define trigger"},
                     {"text": "Select next item"},
-                    {"text": "Write ledger"},
+                    {"text": "Load checkpoint"},
                 ],
                 "param_entries": [],
             },

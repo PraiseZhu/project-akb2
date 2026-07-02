@@ -664,6 +664,10 @@ def extract_claims(
                         )
                     parsed_segments[segment_name] = segment_data
             merged = _merge_extract_segments(parsed_segments)
+            # F3-B: how_steps command 确定性校验——command 必须在 raw 原文存在(与
+            # SG-command-recheck 同口径),编造的(如全角分号垃圾片段)在 distill 侧就剥,
+            # 不让进 body;procedural 跌破 HOW_STEPS_MIN_EXECUTABLE → 既有 fail-closed 接手。
+            _strip_fabricated_how_commands(merged, raw_content)
             # §0.2/F6：LLM 产 edge 的 evidence_anchor 校正——若 anchor 不在 raw 声明集，
             # 用 evidence sentence 在 raw 定位真实 anchor（_nearest_preceding_anchor，复用
             # fallback 映射逻辑），而非直接信 LLM 编的 anchor；映射不到 → 该边不计 eligible
@@ -1505,6 +1509,41 @@ def _enrich_mechanism(
                 }
             )
     return components, aligned
+
+
+def _strip_fabricated_how_commands(
+    extract_data: dict[str, Any], raw_content: str | None
+) -> None:
+    """F3-B: how_steps command 确定性校验——command 必须在 raw 原文存在(与 SG-command-recheck
+    同口径,复用 is_command_allowed_for_candidate);不存在(编造)→ 去掉 command + executable=False
+    (降级为非可执行,不让进 body)。
+
+    真机探针 probe-p2 memory 死于 SG-command-recheck 拦编造命令(全角分号垃圾片段
+    `；claude/rules/`)。本 pass 在 distill 侧就拦,不让编造 command 进 body:
+    - 复用 is_command_allowed_for_candidate(command, raw) 同口径(reserved/dangerous/in-raw 三态)
+    - 不允许(编造或危险)→ command="" + executable=False
+    - procedural lane 若因此跌破 HOW_STEPS_MIN_EXECUTABLE → _validate_extract_output 既有
+      fail-closed
+    """
+    if not raw_content:
+        return
+    how_steps = extract_data.get("how_steps")
+    if not isinstance(how_steps, list):
+        return
+    from src.akb2.quality.source_ops_scanners.raw_verify import (
+        is_command_allowed_for_candidate,
+    )
+
+    for step in how_steps:
+        if not isinstance(step, dict):
+            continue
+        command = str(step.get("command", "") or "").strip()
+        if not command:
+            continue  # 空 command,无可校
+        # 同口径 SG-command-recheck:不允许(编造/危险)→ 降级
+        if not is_command_allowed_for_candidate(command, raw_content):
+            step["command"] = ""
+            step["executable"] = False
 
 
 def _resolve_short_anchors_to_full(merged: dict[str, Any], raw_content: str | None) -> None:

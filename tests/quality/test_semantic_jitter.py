@@ -92,7 +92,9 @@ def _how_params_response(commands: list[str]) -> LLMResponse:
 
 
 # 共享命令（两次产出都出现 → 进交集；≥3 条 executable 通过 _validate_extract_output）
-_SHARED_COMMANDS = ["tools/list", "tools/call", "resources/read"]
+# F3-B:命令须在 sample_raw_content 原文存在(否则被 _strip_fabricated_how_commands 剥),
+# 故用 sample 里的真命令(make deploy/make test/python -m akb2.quality.runner --once)
+_SHARED_COMMANDS = ["make deploy", "make test", "python -m akb2.quality.runner --once"]
 
 
 class TestSemanticRetakeConstant:
@@ -232,14 +234,15 @@ class TestSemanticRetakeIntersection:
         monkeypatch.setenv("AKB2_DISTILL_SEMANTIC_RETAKE", "1")
         from tests.quality.conftest import make_mock_route_llm
 
+        # F3-B:命令须在 sample_raw_content 原文存在,故用 sample 真命令 + 空白抖动
         sample_a = _how_params_response(
-            ["pip install akb2", "python -m akb2.quality.runner --once", "git status"]
+            ["make deploy", "python -m akb2.quality.runner --once", "make test"]
         )
         sample_b = _how_params_response(
-            ["python -m pip install akb2", "python -m akb2.quality.runner --once", "git  status"]
+            ["make  deploy", "python -m akb2.quality.runner --once", "make  test"]
         )
-        # 第三条 command 归一化靠空白；前两条覆盖 pip 归一化 + instruction 语义兜底。
-        sample_b.content["how_steps"][0]["instruction"] = "Run pip install akb2"
+        # 第三条 command 归一化靠空白;前两条覆盖归一化 + instruction 语义兜底。
+        sample_b.content["how_steps"][0]["instruction"] = "Run make deploy"
         sample_b.content["how_steps"][1]["instruction"] = "Run python quality runner once"
         responses = {
             f"{DISTILL_MODEL_FAMILY}:0": _claims_response(),
@@ -252,9 +255,9 @@ class TestSemanticRetakeIntersection:
 
         assert result.success is True, result.error
         assert [s["command"] for s in result.data["how_steps"]] == [
-            "pip install akb2",
+            "make deploy",
             "python -m akb2.quality.runner --once",
-            "git status",
+            "make test",
         ]
 
 

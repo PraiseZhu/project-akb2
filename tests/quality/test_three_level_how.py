@@ -101,6 +101,17 @@ def _concept_how_params_segment() -> dict:
     }
 
 
+# F3-B:命令须在 sample_raw_content 原文存在(否则被 _strip_fabricated_how_commands 剥),
+# 故用 sample 里的真命令
+_PROC_REAL_COMMANDS = (
+    "make deploy",
+    "make test",
+    "python -m akb2.quality.runner --once",
+    "make pipeline",
+    "trigger=schedule",
+)
+
+
 def _procedural_how_params_segment(executable_count: int) -> dict:
     """操作型 how_params 段：executable_count 条可执行命令步骤（无机制组件）。"""
     steps = []
@@ -108,7 +119,7 @@ def _procedural_how_params_segment(executable_count: int) -> dict:
         steps.append(
             {
                 "instruction": f"操作步骤 {i}",
-                "command": f"akb_op_{i}=run(input=x)",
+                "command": _PROC_REAL_COMMANDS[i % len(_PROC_REAL_COMMANDS)],
                 "executable": True,
                 "how_level": "H1",
             }
