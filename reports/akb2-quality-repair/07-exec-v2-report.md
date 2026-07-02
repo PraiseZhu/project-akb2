@@ -68,6 +68,15 @@
 - mini e2e 硬证据：golden §A/§B ∈ raw 过；§D ∈ raw 但 ∉ claims 过（F1-followup）；伪 §Z/§raw 不过；
   needs_retake 补抽边（§D ∈ raw）重评过。
 
+### F1-regex — raw anchor regex 只认单#，多#raw 0 eligible（第2轮双审，commit d528aa7）
+- `_RAW_ANCHOR_LINE_RE` = `^#\s*§` 只匹配单 `#`，真实 raw 大量用多 `#`（`## §A` / `### §B`）
+  → 抽不到 anchor → 边不产 eligible → 0 eligible F4 早死（真机 0% 根因，单# mini e2e 掩盖）。
+- 修：`^#\s*(§...)` → `^#{1,6}\s*(§...)`（与 `_extract_anchor_blocks` 的 `#{1,6}` 一致，单#是子集）；
+  runner `_raw_anchor_set` 复用 distill `_RAW_ANCHOR_LINE_RE`（不重复定义，防漂移）。
+- 防伪仍成立：anchor 仍须真实出现在 raw（多#raw 真实 §A/§B/§C 才计；伪 §Z/§raw 仍不计）。
+- **多# §4 mini e2e 硬证据**：LLM 多#raw 2 eligible + F4 pass；fallback 多#raw 2 eligible
+  （§A/§B 真实多#）+ F4 pass；伪 §Z 多#raw 仍 fail。真机主流多#格式产 eligible。
+
 ## 1. 改动清单（按文件）
 
 ### `src/akb2/quality/distill.py`（4388→~4460 行）
