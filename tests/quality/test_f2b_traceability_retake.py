@@ -102,16 +102,19 @@ class TestF3ACoverageAndAcceptance:
         assert data["claims"][1]["traces_to"] == ["§E_CLAIMS"]
 
     def test_fabricated_anchor_rejected_fail_closed(self, monkeypatch):
-        """[F3-A 接受逻辑] LLM 返编造 §Z(无前缀匹配)→ resolve 不了 → 拒(fail-closed 不放水)。"""
+        """[F3-A 接受逻辑] LLM 返编造 §Z(无前缀匹配)→ resolve 不了 → 拒(fail-closed 不放水)。
+        F6-B:§Z 被拒后 interp 仍漂浮 → 从 claims 移除(dropped_floating_interpretations=1)。"""
         data = _extract(interp_traces=None)
         _patch_route_llm(
             monkeypatch,
             {"retake": [{"claim_index": 1, "traces_to": ["§Z"], "provenance": "akb_interpretation"}]},
         )
         result = retake_traceability(data, _RAW, "concept")
-        assert result["changed"] is False  # §Z 解析不了,拒
-        assert not data["claims"][1].get("traces_to")  # 未补
-        assert result["diagnostics"]["reject_reason"] == "no_accept"
+        # §Z 被拒 → interp 仍漂浮 → F6-B 丢弃
+        assert result["changed"] is True  # 数据变(interp 被移除)
+        assert result["diagnostics"]["dropped_floating_interpretations"] == 1
+        # interp 从 claims 移除,只剩 source_grounded
+        assert all(c.get("provenance") == "source_grounded" for c in data["claims"])
 
     def test_diagnostics_returned_on_success(self, monkeypatch):
         """[F3-A fail-visible] 成功也带 diagnostics。"""

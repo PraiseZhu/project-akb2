@@ -856,6 +856,8 @@ def retake_traceability(
         "llm_return_summary": "",
         # F5-B: 确定性补 grounded claim 计数(去 LLM 化)
         "deterministic_backfill_count": 0,
+        # F6-B: 飘浮 interpretation 丢弃计数
+        "dropped_floating_interpretations": 0,
     }
     claims = extract_data.get("claims")
     if not isinstance(claims, list) or not claims:
@@ -1061,6 +1063,31 @@ def retake_traceability(
     diag["accepted_count"] = accepted
     if not changed:
         diag["reject_reason"] = "no_accept"
+    # F6-B: 飘浮 interpretation 有界丢弃——确定性 backfill + LLM retake 都救不回的
+    # interpretation(仍无 traces_to)从 claims 移除(不发表无据解读)。护栏:只移除救济链
+    # 走完仍无据的;移除后若 interpretation 占比/总量归零导致其他检查 fail → 维持 fail-closed
+    # (caller 重评 floor,不在此处放行)。grader 仍裁内容深度(丢太多自然过不了,诚实代价)。
+    dropped_floating = 0
+    remaining_claims: list[dict[str, Any]] = []
+    for c in claims:
+        if not isinstance(c, dict):
+            remaining_claims.append(c)
+            continue
+        if str(c.get("provenance", "")).strip() == "akb_interpretation":
+            tt = c.get("traces_to")
+            tt_set = (
+                {str(a).strip() for a in tt if isinstance(a, str) and str(a).strip()}
+                if isinstance(tt, list) else set()
+            )
+            if not tt_set:
+                # 仍无 traces_to(漂浮)→ 丢弃
+                dropped_floating += 1
+                continue
+        remaining_claims.append(c)
+    if dropped_floating > 0:
+        extract_data["claims"] = remaining_claims
+        changed = True  # 数据变了(caller 须重评 floor)
+    diag["dropped_floating_interpretations"] = dropped_floating
     # 清理临时 _retake_index
     for c in claims:
         if isinstance(c, dict):
