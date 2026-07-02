@@ -389,8 +389,8 @@ LANE_INDEX_STATUS_FIRST_RUN = "first_run_no_index"
 LANE_INDEX_STATUS_EMPTY = "configured_but_empty"
 LANE_INDEX_STATUS_LOAD_ERROR = "load_error"
 
-# _check_novelty 只用前 5 条 wiki_references
-VAULT_WIKI_REFERENCES_MAX = 5
+# [N3] cap 语义定死:最多保留 200 条有元数据的 wiki_references(扫描全库,超限截尾记账)
+VAULT_WIKI_REFERENCES_SCAN_MAX = 200
 
 
 def _load_vault_concept_index(
@@ -454,13 +454,18 @@ def _load_vault_concept_index(
         # §0.2/D10/G1：wiki_references 改结构化 {path,slug,title,tldr,source_url,taxonomy}
         # 供 _select_novelty_neighbors 按 slug/url/title/topic top-k 选近邻（修 idx6/idx10
         # 全库前 5 条无关引用导致 novelty 误拒）。
+        # [N3] 扫描全库(不再前-5 break),最多保留 200 条,超限截尾并在 counts 记 truncated。
         wiki_references: list[dict[str, str]] = []
         source_paths: list[str] = []
+        truncated_refs = 0
         for page in wiki_pages:
             if exclude_slug and page.stem == exclude_slug:
                 continue  # 排除当前处理源自身，防自比对误判
             tldr = _read_page_tldr(page)
             if not tldr:
+                continue
+            if len(wiki_references) >= VAULT_WIKI_REFERENCES_SCAN_MAX:
+                truncated_refs += 1  # 超过 200,后续截尾不保留(计数可见)
                 continue
             meta = _read_wiki_page_meta(page)
             wiki_references.append(
@@ -474,8 +479,6 @@ def _load_vault_concept_index(
                 }
             )
             source_paths.append(str(page))
-            if len(wiki_references) >= VAULT_WIKI_REFERENCES_MAX:
-                break
 
         pending_queue = _read_pending_concepts(
             staging_root / "pending" / "concept-backlinks.jsonl"
@@ -503,6 +506,7 @@ def _load_vault_concept_index(
             "known_concepts": len(known_concepts),
             "pending_queue": len(pending_queue),
             "wiki_references": len(wiki_references),
+            "truncated": truncated_refs,  # [N3] 超 200 截尾计数(可见)
         },
         "wiki_references": wiki_references,
         "known_concepts": known_concepts,

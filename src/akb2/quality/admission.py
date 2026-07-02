@@ -353,13 +353,19 @@ def _strip_raw_boilerplate(raw_content: str) -> str:
     return stripped if stripped else raw_content
 
 
-def _build_how_tendency_snippet(raw_content: str) -> str:
-    """构建 How 倾向专用窗口。
+def _build_keyword_aware_snippet(
+    raw_content: str,
+    section_filter: Any,
+    context_chars: int,
+    max_chars: int,
+) -> str:
+    """P2 通用关键词感知窗口:去 TOC + 短导语 + 命中 section_filter 的章节,限 max_chars。
 
-    真实 raw 归档可能没有 `§X_CONTENT_START`，且开头常含抓取说明、传播背景、
-    锚点目录和概念导语。机械前 4000 字会让 §B/§H 等 how 章节不可见，造成
-    `how_tendency` 误拒。这里保留短导语作为上下文，再优先拼入命中 how 关键词
-    的章节，仍限制总长度，避免把整篇文章无界送入轻量准入模型。
+    `_build_how_tendency_snippet` 的重构通用版(行为逐字节不变,测试锁);
+    `_build_mechanism_snippet` 复用同结构,换 section_filter(how ∪ mechanism 谓词)。
+
+    真实 raw 开头常含抓取说明/传播背景/锚点目录/概念导语,机械前 N 字让后段章节不可见
+    → 误拒。本函数保留短导语作上下文,再优先拼入命中 filter 的章节,限 max_chars。
     """
     text = _remove_anchor_toc(raw_content).strip()
     if not text:
@@ -368,27 +374,75 @@ def _build_how_tendency_snippet(raw_content: str) -> str:
         return text[:MAX_ADMISSION_CONTENT_CHARS]
 
     sections = _split_heading_sections(text)
-    selected = [
-        section.strip()
-        for section in sections
-        if _section_is_how_candidate(section)
-    ]
+    selected = [section.strip() for section in sections if section_filter(section)]
 
     if not selected:
         return text[:MAX_ADMISSION_CONTENT_CHARS]
 
-    parts = [text[:HOW_TENDENCY_CONTEXT_CHARS].strip()]
+    parts = [text[:context_chars].strip()]
     seen: set[str] = {parts[0]} if parts[0] else set()
     for section in selected:
         if not section or section in seen:
             continue
         parts.append(section)
         seen.add(section)
-        if len("\n\n".join(parts)) >= MAX_HOW_TENDENCY_CONTENT_CHARS:
+        if len("\n\n".join(parts)) >= max_chars:
             break
 
     snippet = "\n\n".join(part for part in parts if part).strip()
-    return snippet[:MAX_HOW_TENDENCY_CONTENT_CHARS]
+    return snippet[:max_chars]
+
+
+def _build_how_tendency_snippet(raw_content: str) -> str:
+    """构建 How 倾向专用窗口(P2 重构为 _build_keyword_aware_snippet 委托,行为逐字节不变)。"""
+    return _build_keyword_aware_snippet(
+        raw_content,
+        _section_is_how_candidate,
+        HOW_TENDENCY_CONTEXT_CHARS,
+        MAX_HOW_TENDENCY_CONTENT_CHARS,
+    )
+
+
+# P2: mechanism 仲裁窗口(how ∪ mechanism 谓词,cap 8000)
+MAX_MECHANISM_CONTENT_CHARS: int = 8000
+MECHANISM_CONTEXT_CHARS: int = 1200
+# mechanism 谓词关键词(标题/正文出现即算机制章节候选)
+_MECHANISM_HEADING_RE = re.compile(
+    r"(?im)^#{1,4}\s+.*(?:"
+    r"mechanism|component|architecture|pipeline|flow|graph|layer|runtime|"
+    r"scheduler|executor|coordinator|dispatcher|protocol|"
+    r"机制|组件|架构|管线|流程|图谱|层|运行时|调度|协调|协议"
+    r").*$"
+)
+
+
+def _section_is_mechanism_candidate(section: str) -> bool:
+    """P2: 章节是否值得送入 mechanism 仲裁窗口(how ∪ mechanism 谓词)。"""
+    if _section_is_how_candidate(section):
+        return True
+    if _MECHANISM_HEADING_RE.search(section):
+        return True
+    lower = section.lower()
+    return any(
+        kw in lower
+        for kw in (
+            "mechanism", "component", "architecture", "pipeline",
+            "机制", "组件", "架构", "管线",
+        )
+    )
+
+
+def _build_mechanism_snippet(raw_content: str) -> str:
+    """P2: mechanism 仲裁专用窗口(how ∪ mechanism 谓词,cap 8000)。
+
+    长文机制在后段(body[:4000] 截断漏判 idx0),改用关键词感知窗口拼入机制章节。
+    """
+    return _build_keyword_aware_snippet(
+        raw_content,
+        _section_is_mechanism_candidate,
+        MECHANISM_CONTEXT_CHARS,
+        MAX_MECHANISM_CONTENT_CHARS,
+    )
 
 
 def _remove_anchor_toc(raw_content: str) -> str:
@@ -913,7 +967,9 @@ def _check_mechanism_signal(body: str, route_llm_fn: Any) -> AdmissionCheck:
     # 模糊（部分信号未达强信号）→ LLM 窄仲裁
     from src.akb2.quality.llm_router import RouterConfigError
 
-    content_snippet = body[:MAX_ADMISSION_CONTENT_CHARS]
+    # P2: mechanism 仲裁用关键词感知窗口(how ∪ mechanism 谓词,cap 8000),非 body[:4000]
+    # (长文机制在后段,截断漏判 idx0)
+    content_snippet = _build_mechanism_snippet(body)
     messages = [
         {
             "role": "system",
@@ -974,7 +1030,8 @@ def _classify_content_lane(
         )
 
     # 2. 其余 → LLM 主判 intent（concept vs procedural）
-    content_snippet = body[:MAX_ADMISSION_CONTENT_CHARS]
+    # P2: lane 仲裁用 mechanism 窗口(how ∪ mechanism 谓词,cap 8000),非 body[:4000]
+    content_snippet = _build_mechanism_snippet(body)
     messages = [
         {
             "role": "system",
