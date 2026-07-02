@@ -111,7 +111,6 @@ class TestEnrichment:
         """LLM 已有 'Executor Pool' → 确定性抽的同名组件不重复补(别名/同名对齐)。"""
         data = _extract_zero_eligible(_RAW_WITH_CAUSAL)
         # LLM 已有 3 组件(Executor Pool/Task Graph/Lifecycle Manager)
-        n_comps_before = len(data["mechanism_components"])
         _enrich_zero_eligible_with_deterministic(data, _RAW_WITH_CAUSAL)
         # 确定性抽的同名组件不重复补(可能补别名变体,但不重复同名)
         names = [c["name"] for c in data["mechanism_components"]]
