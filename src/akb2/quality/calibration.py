@@ -360,6 +360,21 @@ def _process_corpus_entry(
     mrender = pipeline_result.get("mechanism_rendering")
     if isinstance(mrender, dict):
         result["mechanism_rendering"] = mrender
+    # F-C fail-visible(P4):repair 不收敛时透出残留缺陷维度名列表 + distill 失败原因分类。
+    # 不改判定逻辑,只让部分失败可见,供报告归因。
+    _fds = pipeline_result.get("final_defects_summary")
+    if isinstance(_fds, list) and _fds:
+        result["residual_defects"] = [
+            str(d.get("dimension", "")).strip()
+            for d in _fds
+            if isinstance(d, dict) and d.get("dimension")
+        ]
+    _fn = str(pipeline_result.get("failed_node") or "")
+    if _fn.startswith("distill"):
+        result["distill_extract_failure_reason"] = _classify_distill_failure_reason(
+            str(pipeline_result.get("error", "")),
+            str(pipeline_result.get("error_class", "")),
+        )
 
     if expected == "ingest":
         # path 5: 正样本——期望通过
@@ -723,6 +738,31 @@ def _persist_raw_content(
         return None, None, f"{type(exc).__name__}: {exc}"
     raw_file_sha = hashlib.sha256(raw_content.encode("utf-8")).hexdigest()
     return str(out_path), raw_file_sha, None
+
+
+def _classify_distill_failure_reason(error: str, error_class: str) -> str:
+    """F-C: distill extract/compose 失败原因分类(schema错/超时/重试耗尽/provider/other)。
+
+    不改判定逻辑,只把 error+error_class 字符串归类,供报告 fail-visible。
+    顺序:重试耗尽 > 超时 > schema错 > provider > other(重试耗尽消息可能不含 schema 词,
+    schema 失败消息含校验失败,故先认重试耗尽)。
+    """
+    low = f"{error} {error_class}".lower()
+    if (
+        "重试耗尽" in low or "retry_exhausted" in low or "exhausted" in low
+        or ("retries" in low and "耗尽" in error)
+    ):
+        return "retry_exhausted"
+    if "timeout" in low or "deadline" in low or "超时" in low:
+        return "timeout"
+    if (
+        "schema" in low or "jsonschema" in low or "validation" in low
+        or "invalid_json" in low or "校验失败" in low or "非 json" in low
+    ):
+        return "schema_invalid"
+    if "provider" in low or "调用失败" in low or "api" in low:
+        return "provider_error"
+    return "other"
 
 
 def _classify_failure_class_chain(result: dict[str, Any]) -> str:

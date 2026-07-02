@@ -1587,6 +1587,9 @@ def _run_pipeline_segments(
             "content_lane": content_lane,
             "failed_node": "grader" if str(error_class).startswith("grader_") else "repair_loop",
             "error_class": error_class,
+            # F-C fail-visible(P4):repair 不收敛时透出残留缺陷摘要,供 calibration
+            # 落 residual_defects(维度名列表)。不改判定,只让部分失败可见。
+            "final_defects_summary": final_defects_summary,
         }
 
     _log_event(config, "repair_loop", "repair_loop", content_hash,
