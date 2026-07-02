@@ -1978,7 +1978,10 @@ _CAUSAL_CONNECTOR_RE = re.compile(
 )
 
 
-_RAW_ANCHOR_LINE_RE = re.compile(r"(?m)^#\s*(§[A-Z0-9_]+)")
+# §0.2/F1-regex：raw §-anchor 行 regex。用 #{1,6}（与 _extract_anchor_blocks 一致）——
+# 真实 raw 大量用多 #（## §A / ### §B），旧 ^#\s*§ 只匹配单 #，多 # raw 抽不到 anchor
+# → _nearest_preceding_anchor 返空 → 边不产 eligible → 0 eligible F4 早死（真机 0% 根因）。
+_RAW_ANCHOR_LINE_RE = re.compile(r"(?m)^#{1,6}\s*(§[A-Z0-9_]+)")
 
 
 def _raw_anchor_positions(raw_content: str) -> list[tuple[str, int]]:

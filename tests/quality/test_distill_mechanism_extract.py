@@ -1076,3 +1076,108 @@ class TestSection4TwoPhaseExtraction:
         result = build_deterministic_extract_result(raw, content_lane="concept")
         assert result.success is False, "政策承诺编号列表应 fail-closed"
         assert result.data.get("fallback_quality_basis", {}).get("component_count", 0) < 3
+
+
+# ---------------------------------------------------------------------------
+# §0.2/F1-regex：多 # raw（## §A / ### §B）anchor 解析 + eligible edge
+# ---------------------------------------------------------------------------
+
+
+class TestF1RegexMultiHashRaw:
+    """§0.2/F1-regex：raw anchor regex 认多 #（## §A / ### §B），不只单 #。
+
+    真实 raw 大量用多 #（## §A Loop engineering）。旧 ^#\\s*§ 只匹配单 # → 多 # raw
+    抽不到 anchor → 边不产 eligible → 0 eligible F4 早死（真机 0% 根因）。
+    """
+
+    _MULTI_HASH_RAW = (
+        "# Captain Architecture\n\n"
+        "## §A Captain Section\n"
+        "The Captain dispatches to the Executor Pool.\n\n"
+        "### §B Executor Section\n"
+        "The Executor Pool feeds the Task Graph.\n\n"
+        "## §C Task Graph Section\n"
+        "The Task Graph writes to the Lifecycle.\n"
+    )
+
+    def test_raw_anchor_positions_parses_multi_hash(self):
+        """多 # raw（## §A / ### §B / ## §C）→ _raw_anchor_positions 抽出 §A/§B/§C。"""
+        from src.akb2.quality.distill import _raw_anchor_positions
+
+        positions = _raw_anchor_positions(self._MULTI_HASH_RAW)
+        anchors = [a for a, _ in positions]
+        assert "§A" in anchors and "§B" in anchors and "§C" in anchors, (
+            f"多 # raw 应抽出 §A/§B/§C: {anchors}"
+        )
+
+    def test_runner_raw_anchor_set_parses_multi_hash(self):
+        """runner._raw_anchor_set 对多 # raw 抽出 §A/§B/§C（复用 distill regex）。"""
+        from src.akb2.quality.runner import _raw_anchor_set
+
+        anchors = _raw_anchor_set(self._MULTI_HASH_RAW)
+        assert {"§A", "§B", "§C"} <= anchors, f"runner 应抽出多 # anchor: {anchors}"
+
+    def test_multi_hash_raw_produces_eligible_edge(self):
+        """多 # raw 的 source_causal 边（anchor 映射到 §A/§B）→ eligible + F4 pass。"""
+        from src.akb2.quality.integrity_floor import FLOOR_CORE_VALUE_F4, evaluate_integrity_floor
+
+        components = [
+            {"name": "Captain", "role": "r"},
+            {"name": "Executor Pool", "role": "r"},
+            {"name": "Task Graph", "role": "r"},
+        ]
+        # 用 _build_real_causal_edges 从多 # raw 抽边（anchor 自动映射到 §A/§B/§C）
+        from src.akb2.quality.distill import _build_real_causal_edges
+        edges = _build_real_causal_edges(components, self._MULTI_HASH_RAW)
+        source_causal = [e for e in edges if e["edge_kind"] == "source_causal"]
+        assert len(source_causal) >= 1, "多 # raw 应产 source_causal eligible 边"
+        for e in source_causal:
+            assert e["evidence_anchor"] in ("§A", "§B", "§C"), (
+                f"evidence_anchor 应映射到真实多 # anchor: {e['evidence_anchor']}"
+            )
+            assert e["evidence_anchor"] != "§raw", "不得合成 §raw"
+
+        # F4 用 raw 全集判 trusted → eligible → pass
+        from src.akb2.quality.runner import _raw_anchor_set
+        raw_anchors = _raw_anchor_set(self._MULTI_HASH_RAW)
+        extract = {
+            "claims": [{"provenance": "source_grounded", "claim": "c", "anchor": "§A",
+                        "evidence_gap": "未量化：x"}],
+            "argumentation": [],
+            "mechanism_components": components,
+            "causal_edges": edges,
+            "how_steps": [],
+        }
+        r = evaluate_integrity_floor(extract, "concept", raw_anchors=raw_anchors)
+        assert FLOOR_CORE_VALUE_F4 not in r.failed_floors, (
+            f"多 # raw eligible 边应 F4 pass: {r.reason}"
+        )
+
+    def test_multi_hash_raw_fake_anchor_still_fail(self):
+        """多 # raw + 伪 §Z edge → 仍 F4 fail（防伪不破，§Z 不在 raw 真实集）。"""
+        from src.akb2.quality.integrity_floor import FLOOR_CORE_VALUE_F4, evaluate_integrity_floor
+        from src.akb2.quality.runner import _raw_anchor_set
+
+        extract = {
+            "claims": [{"provenance": "source_grounded", "claim": "c", "anchor": "§A",
+                        "evidence_gap": "未量化：x"}],
+            "argumentation": [],
+            "mechanism_components": [
+                {"name": "A", "role": "r"}, {"name": "B", "role": "r"}, {"name": "C", "role": "r"}],
+            "causal_edges": [
+                {"from": "A", "to": "B", "relation": "r", "edge_kind": "source_causal",
+                 "evidence": "A to B", "evidence_anchor": "§Z"},  # 伪 §Z
+            ],
+            "how_steps": [],
+        }
+        raw_anchors = _raw_anchor_set(self._MULTI_HASH_RAW)  # {§A,§B,§C}，不含 §Z
+        r = evaluate_integrity_floor(extract, "concept", raw_anchors=raw_anchors)
+        assert FLOOR_CORE_VALUE_F4 in r.failed_floors, "伪 §Z ∉ raw 真实集 → 仍 fail"
+
+    def test_single_hash_still_parsed(self):
+        """单 # raw（# §A）仍解析（#{1,6} 是单 # 的超集，不回归）。"""
+        from src.akb2.quality.distill import _raw_anchor_positions
+
+        raw = "# §A Single\n\n# §B Single2\n"
+        anchors = [a for a, _ in _raw_anchor_positions(raw)]
+        assert anchors == ["§A", "§B"]
