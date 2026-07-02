@@ -560,7 +560,12 @@ Verification is still on you.
         assert defects == []
 
     def test_bracketed_raw_anchor_lines_exist(self):
-        """正: smoke/raw 常用的 `[raw §A] ...` 段落行应被识别为锚点声明。"""
+        """[B4] 正: 目录块内的行首 `[raw §A]` 声明形态被识别;正文 `[raw §A] text` 是引用不算声明。
+
+        P1a [B4] 收窄:行首 `[raw §X]` 声明形态只在锚点目录块内识别(防正文示例行误声明)。
+        故本 fixture 在 `## 锚点目录` 块内用 `[raw §A]`/`[raw §I]` 声明,正文 `[raw §A] text`
+        段落是引用(不算声明,但因目录块已声明 §A/§I 故 A3 过)。
+        """
         candidate = """---
 status: candidate
 gate_decision: null
@@ -574,11 +579,40 @@ Loop 工程需要显式停止条件 [raw §A]，也需要失败可观测 [raw §
 artifact_type: raw
 ---
 
+## 锚点目录
+
+[raw §A]
+[raw §I]
+
+---
+
 [raw §A] Loop engineering is bounded, convergent, and observable.
 
 [raw §I] A loop is deployable only when failure is observable.
 """
         assert check_a3_raw_anchors(candidate, raw) == []
+
+    def test_body_rawline_not_treated_as_declaration(self):
+        """[B4] 负: 正文 `[raw §A] text` 段落行不算声明(只目录块内算)→ §A 未声明 → A3 缺陷。"""
+        candidate = """---
+status: candidate
+gate_decision: null
+---
+
+## TLDR
+
+引用 [raw §A]。
+"""
+        # raw 无目录块、无 heading/marker,只有正文 [raw §A] 段落行(引用,非声明)
+        raw = """---
+artifact_type: raw
+---
+
+[raw §A] Loop engineering is bounded, convergent, and observable.
+"""
+        defects = check_a3_raw_anchors(candidate, raw)
+        assert len(defects) == 1
+        assert "§A" in defects[0].defect
 
     def test_numeric_anchor_headings_exist(self):
         """正: fresh raw 的 `§1/§2` 数字锚点必须被识别。"""

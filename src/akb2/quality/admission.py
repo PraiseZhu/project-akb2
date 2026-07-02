@@ -27,6 +27,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from src.akb2.quality.raw_anchors import ANCHOR_TOKEN_PAT
+
 # ---------------------------------------------------------------------------
 # 内容车道常量（spec FR-001：concept/procedural 二值）
 # ---------------------------------------------------------------------------
@@ -305,7 +307,8 @@ def run_admission(
 # ---------------------------------------------------------------------------
 
 # 正文起始锚点：raw_archiver 写入 §A_CONTENT_START（或 §X_CONTENT_START）标记正文开端
-_ANCHOR_DECL_RE = r"§[A-Z0-9]+"
+# P1a: token pattern 走 raw_anchors.ANCHOR_TOKEN_PAT（含下划线,认业务锚 §I_LIMITATIONS）
+_ANCHOR_DECL_RE = ANCHOR_TOKEN_PAT
 _CONTENT_START_RE = re.compile(rf"{_ANCHOR_DECL_RE}_CONTENT_START")
 
 _ANCHOR_HEADING_RE = re.compile(rf"(?m)^##\s+{_ANCHOR_DECL_RE}\.?\s+.+$")

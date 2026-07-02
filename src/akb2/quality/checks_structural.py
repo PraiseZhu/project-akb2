@@ -27,6 +27,12 @@ from dataclasses import dataclass
 import yaml
 
 from src.akb2.quality.md_table import split_md_table_row
+from src.akb2.quality.raw_anchors import (
+    ANCHOR_TOKEN_PAT,
+    RAW_ANCHOR_REF_RE,
+    canonicalize_anchor,
+    declared_anchor_set,
+)
 from src.akb2.quality.source_ops_scanners import scan_all as _scan_source_evidence
 from src.akb2.quality.source_ops_scanners.raw_verify import (
     verify_commands_in_raw as _verify_commands_in_raw,
@@ -94,9 +100,9 @@ GRAPH_EDGE_COLUMNS: tuple[str, ...] = (
 GRAPH_EDGE_STRENGTHS: set[str] = {"strong", "medium", "weak"}
 GRAPH_EDGE_PROVENANCES: set[str] = {"source_grounded", "akb_interpretation"}
 PROVENANCE_MARKERS: tuple[str, ...] = ("(source_grounded)", "(akb_interpretation)")
-RAW_ANCHOR_TOKEN_RE = re.compile(r"§[A-Z0-9]+")
-RAW_ANCHOR_RE = re.compile(r"\[raw\s+(§[A-Z0-9]+)\]")
-RAW_ANCHOR_DECL_RE = r"§[A-Z0-9]+"
+RAW_ANCHOR_TOKEN_RE = re.compile(ANCHOR_TOKEN_PAT)
+RAW_ANCHOR_RE = RAW_ANCHOR_REF_RE
+RAW_ANCHOR_DECL_RE = ANCHOR_TOKEN_PAT
 MD_TABLE_SEPARATOR_RE = re.compile(r":?-{3,}:?")
 
 # Candidate self-gate 约束：这些不是基础结构格式检查，而是 maker 侧出稿前
@@ -138,7 +144,7 @@ FORBIDDEN_HOW_FALLBACK_MARKERS: tuple[str, ...] = (
     "无可复制命令",
 )
 HOW_STEP_COMMAND_RE = re.compile(
-    r"(?m)^\s*(?:[-*]\s*)?\d+\.\s+\[raw\s+§[A-Z0-9]+\]\s+"
+    rf"(?m)^\s*(?:[-*]\s*)?\d+\.\s+\[raw\s+{ANCHOR_TOKEN_PAT}\]\s+"
     r"\((source_grounded|akb_interpretation)\)\s+.+?`([^`\n]+)`"
 )
 FORBIDDEN_HARDCODED_COMPARISONS: tuple[str, ...] = (
@@ -233,27 +239,14 @@ def _extract_body_text(text: str) -> str:
 
 
 def _extract_raw_anchors(raw_content: str) -> set[str]:
-    """提取 raw 文件中声明过的 `§X` 锚点。
+    """提取 raw 文件中声明过的 canonical `§X` 锚点集合。
 
-    raw 归档当前存在四类合法声明形态：
-    - markdown 章节标题：`# §A Loop`、`## §A. 开篇`
-    - raw 段落行：`[raw §A] ...`
-    - defuddle/archiver 标记：`§A_CONTENT_START`
-    - 锚点目录表：`| §A | 开篇 |`
-
-    只把行首、标题、表格单元、`[raw §X]` 行和 `_CONTENT_START`
-    识别为声明，避免正文里偶然提到 `§A` 就被当作可引用锚点。
+    P1a:口径统一到 ``src.akb2.quality.raw_anchors.declared_anchor_set``——heading 与
+    marker 形态全 raw 生效;表格单元 `| §X |` 与行首 `[raw §X]` 只在 `## 锚点目录` 块内
+    识别(防正文表格/示例行偶然提到 `§Z` 被当声明)。marker 后缀 `_CONTENT_START`/
+    `_CONTENT_END` 剥离归一,业务下划线锚(`§I_LIMITATIONS` 类)保留全名。
     """
-    patterns = (
-        re.compile(rf"(?m)^#{{1,6}}\s+({RAW_ANCHOR_DECL_RE})(?:[.\s:：]|$)"),
-        re.compile(rf"(?m)^\[raw\s+({RAW_ANCHOR_DECL_RE})\]"),
-        re.compile(rf"(?m)^({RAW_ANCHOR_DECL_RE})_[A-Z_]+\b"),
-        re.compile(rf"(?m)^\|\s*({RAW_ANCHOR_DECL_RE})\s*\|"),
-    )
-    anchors: set[str] = set()
-    for pattern in patterns:
-        anchors.update(pattern.findall(raw_content))
-    return anchors
+    return declared_anchor_set(raw_content)
 
 
 # ---------------------------------------------------------------------------
@@ -485,8 +478,11 @@ def check_a3_raw_anchors(text: str, raw_content: str | None = None) -> list[Defe
 
     body = _extract_body_text(text)
 
-    # 提取所有 [raw §X] 引用
-    referenced_anchors = set(RAW_ANCHOR_RE.findall(body))
+    # 提取所有 [raw §X] 引用,canonicalize 后与 raw 声明集比对
+    # (引用 §A_CONTENT_START 与声明 §A 经 canonicalize 都归一为 §A)
+    referenced_anchors = {
+        canonicalize_anchor(a) for a in RAW_ANCHOR_RE.findall(body)
+    }
 
     raw_anchors = _extract_raw_anchors(raw_content)
 
@@ -1282,7 +1278,7 @@ def _normalize_must_cover_text(s: str) -> str:
     归一化后只比"实质内容是否渲染"，tolerant 格式差异、仍 fail-closed 真缺失
     （内容根本没渲染时归一化后仍不匹配 → 仍报缺陷）。
     """
-    s = re.sub(r"\[raw\s*§[A-Z0-9]+\]", " ", s)  # 去 [raw §X] 锚点
+    s = re.sub(rf"\[raw\s*{ANCHOR_TOKEN_PAT}\]", " ", s)  # 去 [raw §X] 锚点
     # P2-C：单引号 ' 与反引号 ` 同去——渲染侧 _sanitize 把 literal 反引号换成 '，
     # 校验侧也消掉 '，两侧同口径（修 `Conv`→'Conv' 后 must_cover 失配，满仓 #6/#16）。
     s = re.sub(r"[`'*#>_]", " ", s)  # 去 markdown 标记 + 单引号

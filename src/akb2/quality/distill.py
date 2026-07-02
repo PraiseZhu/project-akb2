@@ -35,6 +35,15 @@ from typing import Any
 
 import yaml
 
+from src.akb2.quality.raw_anchors import (
+    ANCHOR_TOKEN_PAT,
+    RAW_ANCHOR_DECL_RE,
+    RAW_ANCHOR_REF_RE,
+    RAW_ANCHOR_VALUE_RE,
+    canonicalize_anchor,
+    declared_anchor_positions,
+    nearest_preceding_anchor,
+)
 from src.akb2.quality.source_ops_scanners.raw_verify import (
     is_command_allowed_for_candidate,
 )
@@ -68,9 +77,8 @@ DISTILL_DISABLE_THINKING: bool = True
 # Step-7: 语义型 How 抖动兜底。how_params segment（LLM 自由文本 how_steps，
 # 非 must_cover 代码直出）多取取交集，抵抗单次 LLM 抖动。有界：SEMANTIC_RETAKE_MAX 次。
 SEMANTIC_RETAKE_MAX: int = 2
-RAW_ANCHOR_DECL_RE: str = r"§[A-Z0-9]+"
-RAW_ANCHOR_VALUE_RE = re.compile(rf"^{RAW_ANCHOR_DECL_RE}$")
-RAW_ANCHOR_REF_RE = re.compile(rf"\[raw\s+({RAW_ANCHOR_DECL_RE})\]")
+# P1a: §-anchor 解析口径统一到 raw_anchors 模块（RAW_ANCHOR_DECL_RE/VALUE_RE/REF_RE
+# 自 raw_anchors 导入，canonical 规则 + 声明形态见该模块 docstring）。
 
 # Step-5: How provenance 细分标注层（三态）。
 # source_grounded 的细分：source_operation（原文操作/命令）、source_fact（原文非操作的事实陈述）；
@@ -1843,7 +1851,7 @@ def _validate_extract_output(data: dict[str, Any], content_lane: str = "") -> No
         anchor = claim.get("anchor", "")
         if not RAW_ANCHOR_VALUE_RE.match(str(anchor)):
             raise ValueError(
-                f"claim[{i}] anchor 格式无效: {anchor!r}（期望 §[A-Z0-9]+）"
+                f"claim[{i}] anchor 格式无效: {anchor!r}（期望 §X 锚点,字母/数字/下划线）"
             )
 
     # 3. provenance 必须在枚举内
@@ -1971,7 +1979,7 @@ _REAL_COMPONENT_HEADING_RE = re.compile(r"(?m)^#{2,4}\s+\d+[\.\)]\s+([^\n(]+)")
 # + 组件名作标题（ag2 等），旧 scanner 只认编号标题 → 0 组件 → fallback fail-closed。
 # 认 §-anchor 标题后的名字为组件候选（与编号标题同 strong 信号）。
 _SECTION_ANCHOR_COMPONENT_RE = re.compile(
-    r"(?m)^#{2,4}\s+§[A-Z0-9_]+\s+(.+?)(?:\s*$)"
+    rf"(?m)^#{{2,4}}\s+{ANCHOR_TOKEN_PAT}\s+(.+?)(?:\s*$)"
 )
 _NUMBERED_ITEM_RE = re.compile(r"(?m)^\s*\d+\.\s+([^\n]+)")
 # 机制实体名关键词（noun，非动词承诺）：组件/阶段/模块/子系统/角色/机制 + 常见机制角色
@@ -2060,34 +2068,36 @@ _CAUSAL_CONNECTOR_RE = re.compile(
 )
 
 
-# §0.2/F1-regex：raw §-anchor 行 regex。用 #{1,6}（与 _extract_anchor_blocks 一致）——
-# 真实 raw 大量用多 #（## §A / ### §B），旧 ^#\s*§ 只匹配单 #，多 # raw 抽不到 anchor
-# → _nearest_preceding_anchor 返空 → 边不产 eligible → 0 eligible F4 早死（真机 0% 根因）。
-_RAW_ANCHOR_LINE_RE = re.compile(r"(?m)^#{1,6}\s*(§[A-Z0-9_]+)")
+# §0.2/F1-regex：raw §-anchor 位置——P1a 口径统一到 raw_anchors.declared_anchor_positions
+# （认 heading + marker 全 raw,不只得 heading;canonical 归一 _CONTENT_START 后缀）。
 
 
 def _raw_anchor_positions(raw_content: str) -> list[tuple[str, int]]:
     """§0.2/F1：raw 内 §-anchor 的 (anchor, 字符位置) 有序列表（供 evidence_anchor 映射）。
 
-    fallback 不得合成 ``§raw``——evidence_anchor 必须映射到真实 raw anchor block，
+    P1a:委托 raw_anchors.declared_anchor_positions（返回 (pos, anchor)），本函数保持
+    (anchor, pos) 旧签名供 _correct_edge_anchors_to_raw 复用。
+
+    fallback 不得合成 ``§raw``——evidence_anchor 必须映射到真实 raw anchor block,
     否则不计 eligible edge（破坏 traceability）。
     """
-    if not raw_content:
-        return []
-    return [(m.group(1), m.start()) for m in _RAW_ANCHOR_LINE_RE.finditer(raw_content)]
+    return [(anchor, pos) for pos, anchor in declared_anchor_positions(raw_content)]
 
 
 def _nearest_preceding_anchor(
     sent_pos: int, anchor_positions: list[tuple[str, int]]
 ) -> str:
-    """§0.2/F1：句子位置 → 最近的在其之前（含同位）的 §-anchor（无则空串）。"""
-    result = ""
-    for anchor, pos in anchor_positions:
-        if pos <= sent_pos:
-            result = anchor
-        else:
-            break
-    return result
+    """§0.2/F1：句子位置 → 最近的在其之前（含同位）的 §-anchor（无则空串）。
+
+    P1a:委托 raw_anchors.nearest_preceding_anchor（strict fail-closed,不回落首锚）。
+    本函数保持 (sent_pos, anchor_positions) 旧签名供 _build_real_causal_edges /
+    _correct_edge_anchors_to_raw 复用。
+    """
+    if not anchor_positions:
+        return ""
+    # 转 (pos, anchor) 序供 raw_anchors
+    decls = sorted([(p, a) for a, p in anchor_positions], key=lambda x: x[0])
+    return nearest_preceding_anchor(None, sent_pos, decls)
 
 
 def _build_real_causal_edges(
@@ -2496,7 +2506,7 @@ def _extract_anchor_blocks(raw_content: str) -> dict[str, str]:
         return {"§A": re.sub(r"\s+", " ", body).strip()[:800]}
     blocks: dict[str, str] = {}
     for idx, match in enumerate(matches):
-        anchor = match.group(1)
+        anchor = canonicalize_anchor(match.group(1))
         end = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)
         block = body[match.start():end]
         _strip_re = rf"(?m)^(?:#{{1,6}}\s*)?{RAW_ANCHOR_DECL_RE}(?:[_A-Z0-9-]*|\b).*"
@@ -3147,11 +3157,14 @@ def _is_strong_edge_evidence(evidence: str) -> bool:
 
 
 def _extract_raw_anchor(text: str) -> str:
-    """从文本中提取第一个 §X 锚点，返回空字符串表示无锚点。"""
-    m = re.search(rf"\[raw\s+({RAW_ANCHOR_DECL_RE})\]|(?<![A-Za-z0-9])§([A-Z0-9]+)", str(text))
+    """从文本中提取第一个 §X 锚点(canonicalize 后),返回空字符串表示无锚点。"""
+    m = re.search(
+        rf"\[raw\s+({RAW_ANCHOR_DECL_RE})\]|(?<![A-Za-z0-9])({ANCHOR_TOKEN_PAT})",
+        str(text),
+    )
     if not m:
         return ""
-    return m.group(1) or f"§{m.group(2)}"
+    return canonicalize_anchor(m.group(1) or m.group(2))
 
 
 def _ensure_graph_evidence_contract(
@@ -3189,9 +3202,10 @@ def _normalize_raw_anchor_mentions(text: str) -> str:
         return key
 
     normalized = re.sub(rf"\[raw\s+{RAW_ANCHOR_DECL_RE}\]", _protect, normalized)
-    normalized = re.sub(r"\braw\s+§([A-Z0-9]+)", r"[raw §\1]", normalized)
-    normalized = re.sub(r"原文\s*§([A-Z0-9]+)", r"[raw §\1]", normalized)
-    normalized = re.sub(r"§([A-Z0-9]+)", r"[raw §\1]", normalized)
+    # P1a: 认下划线(§I_LIMITATIONS 也归一为 [raw §I_LIMITATIONS]),token 走 ANCHOR_TOKEN_PAT
+    normalized = re.sub(rf"\braw\s+({ANCHOR_TOKEN_PAT})", r"[raw \1]", normalized)
+    normalized = re.sub(rf"原文\s*({ANCHOR_TOKEN_PAT})", r"[raw \1]", normalized)
+    normalized = re.sub(rf"({ANCHOR_TOKEN_PAT})", r"[raw \1]", normalized)
     for key, value in placeholders.items():
         normalized = normalized.replace(key, value)
     return normalized
@@ -3648,7 +3662,7 @@ def _load_raw_anchor_texts(raw_path: str) -> dict[str, str]:
     for idx, match in enumerate(matches):
         start = match.start()
         end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
-        sections[match.group(1)] = re.sub(r"\s+", " ", text[start:end]).strip()
+        sections[canonicalize_anchor(match.group(1))] = re.sub(r"\s+", " ", text[start:end]).strip()
     return sections
 
 
@@ -4200,24 +4214,17 @@ from src.akb2.quality.md_table import md_table_cell as _md_table_cell  # noqa: E
 # 故须把每个 span 就近映射到一个已声明的 §X 标题——落在该标题之下的 evidence 归属该节。
 # ---------------------------------------------------------------------------
 
-# 与 checks_structural._extract_raw_anchors 同源的四种声明形态，但这里保留位置
-# 用于就近映射（_extract_raw_anchors 只返回 set，丢失位置信息）。
-_RAW_ANCHOR_DECL_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(rf"(?m)^#{{1,6}}\s+({RAW_ANCHOR_DECL_RE})(?:[.\s:：]|$)"),
-    re.compile(rf"(?m)^\[raw\s+({RAW_ANCHOR_DECL_RE})\]"),
-    re.compile(rf"(?m)^({RAW_ANCHOR_DECL_RE})_[A-Z_]+\b"),
-    re.compile(rf"(?m)^\|\s*({RAW_ANCHOR_DECL_RE})\s*\|"),
-)
+# P1a:声明形态 + 位置 + 就近映射统一委托 raw_anchors（口径唯一,见该模块 docstring）。
+# 旧本地 _RAW_ANCHOR_DECL_PATTERNS（4 形态全局,不认 [B4] 目录块收窄、不 canonicalize）已删。
 
 
 def _declared_raw_anchors_with_pos(raw_content: str) -> list[tuple[int, str]]:
-    """Return (position, §X) pairs for all declared raw anchors, sorted by position."""
-    decls: list[tuple[int, str]] = []
-    for pattern in _RAW_ANCHOR_DECL_PATTERNS:
-        for m in pattern.finditer(raw_content):
-            decls.append((m.start(), m.group(1)))
-    decls.sort(key=lambda x: x[0])
-    return decls
+    """Return (position, canonical §X) pairs for all declared raw anchors, sorted.
+
+    P1a:委托 ``raw_anchors.declared_anchor_positions``——heading + marker 全 raw,
+    table/rawline 只在 `## 锚点目录` 块;marker 后缀剥离归一。
+    """
+    return declared_anchor_positions(raw_content)
 
 
 def _map_span_to_declared_anchor(
@@ -4227,25 +4234,21 @@ def _map_span_to_declared_anchor(
 ) -> str:
     """Map a raw_text char offset to the nearest preceding declared §X anchor.
 
-    Returns the largest-position declaration at or before span_start. If the span
-    precedes all declarations (rare; evidence in frontmatter/prologue), falls
-    back to the first declared anchor. Returns "" only when raw has no declared
-    anchors at all (A3 is skipped when raw_content is None, so empty is safe then).
+    P1a:委托 ``raw_anchors.nearest_preceding_anchor``（strict,不回落首锚）+ compose
+    渲染层 lenient 兜底:span 先于所有声明(frontmatter/prologue)→ 回落首锚,保留既有
+    must_cover 渲染兜底(evidence 须有 [raw §X] 可渲染,否则 A3 缺陷)。
+
+    严格 fail-closed(不回落)由 F4 eligibility 走 ``_build_real_causal_edges`` 的
+    ``nearest_preceding_anchor`` 直接判定——渲染层与 eligibility 层语义不同。
+    Returns "" only when raw has no declared anchors at all.
     """
-    if not raw_content:
-        return ""
     if decls is None:
-        decls = _declared_raw_anchors_with_pos(raw_content)
+        decls = declared_anchor_positions(raw_content) if raw_content else []
     if not decls:
         return ""
-    chosen = ""
-    for pos, anchor in decls:
-        if pos <= span_start:
-            chosen = anchor
-        else:
-            break
+    chosen = nearest_preceding_anchor(raw_content, span_start, decls)
     if not chosen:
-        chosen = decls[0][1]
+        chosen = decls[0][1]  # compose 渲染 lenient 回落首锚
     return chosen
 
 

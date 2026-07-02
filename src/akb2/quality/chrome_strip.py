@@ -21,6 +21,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from src.akb2.quality.raw_anchors import ANCHOR_TOKEN_PAT
+
 # ---------------------------------------------------------------------------
 # 单行 chrome 模式（无歧义，命中即删整行）
 # ---------------------------------------------------------------------------
@@ -50,9 +52,10 @@ _INTERNAL_LINK_ONLY_RE = re.compile(
     r"^\s*(?:\[[^\]]{0,40}\]\((?:/[^)]*|#)\)\s*)+\s*$"
 )
 
-# 锚点声明行（raw_archiver._inject_anchors 注入的 §A_CONTENT_START 等）
-# —— 供 calibration 去重 hash 排除锚点行用（chrome 剥离本身不删它，留给 hash 专用路径）
-ANCHOR_DECL_RE = re.compile(r"^§[A-Z]_[A-Z_]+\s*$")
+# 锚点声明行（raw_archiver._inject_anchors 注入的 §A_CONTENT_START / §I_LIMITATIONS 等）
+# —— 供 calibration 去重 hash 排除锚点行用（chrome 剥离本身不删它，留给 hash 专用路径）。
+# P1a: token pattern 走 raw_anchors.ANCHOR_TOKEN_PAT（含下划线,认业务锚）。
+ANCHOR_DECL_RE = re.compile(rf"^{ANCHOR_TOKEN_PAT}\s*$")
 
 
 @dataclass

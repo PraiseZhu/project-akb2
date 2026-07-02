@@ -642,17 +642,17 @@ def _run_admission_segment(
 
 
 def _raw_anchor_set(raw_content: str) -> set[str]:
-    """§0.2/F1-followup：raw 真实 §-anchor 全集。
+    """§0.2/F1-followup：raw 真实 §-anchor canonical 全集。
 
-    §0.2/F1-regex：直接复用 distill._RAW_ANCHOR_LINE_RE（#{1,6}，认多 # 真实 raw 格式），
-    不重复定义 regex 防漂移。F4 eligible edge 的 evidence_anchor 须 ∈ 此集（不只 grounded
-    claims），防 needs_retake 补抽的真边被误杀。
+    P1a:委托 ``raw_anchors.declared_anchor_set``——heading + marker 全 raw(认多 # 真实
+    raw 格式 + raw_archiver marker),table/rawline 只在 `## 锚点目录` 块;canonical 归一
+    (_CONTENT_START/_CONTENT_END 剥离,业务下划线保留)。不重复定义 regex 防漂移。
+    F4 eligible edge 的 evidence_anchor 须 ∈ 此集(不只 grounded claims),防 needs_retake
+    补抽的真边被误杀。
     """
-    if not raw_content:
-        return set()
-    from src.akb2.quality.distill import _RAW_ANCHOR_LINE_RE
+    from src.akb2.quality.raw_anchors import declared_anchor_set
 
-    return {m.group(1) for m in _RAW_ANCHOR_LINE_RE.finditer(raw_content)}
+    return declared_anchor_set(raw_content)
 
 
 def _compute_mechanism_rendering(

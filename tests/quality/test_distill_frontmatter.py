@@ -1276,6 +1276,9 @@ source_url: https://example.com/neighbor
             raw_path = Path(tmp_dir) / "raw" / "smoke-loop-engineering--raw--2026-06-22.md"
             raw_path.parent.mkdir(parents=True)
             raw_path.write_text(
+                # P1a [B4]:行首 [raw §X] 声明只在锚点目录块内识别,故在此声明 §D/§E/§I;
+                # 下方 [raw §X] 段落行是引用(不算声明),但因目录块已声明故 A3 过。
+                "## 锚点目录\n\n[raw §D]\n[raw §E]\n[raw §I]\n\n---\n\n"
                 "[raw §D] Every loop must have explicit budgets for max repair rounds, timeout per model call, max retries, and maximum parallel workers.\n\n"
                 "[raw §E] The model that produces content must be different from the model that judges it.\n\n"
                 "[raw §I] A loop is deployable only when failure is observable.\n"

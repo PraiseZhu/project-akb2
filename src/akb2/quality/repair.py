@@ -47,6 +47,10 @@ from src.akb2.quality.checks_structural import (
 from src.akb2.quality.grader import run_grader_with_fixture_detailed
 from src.akb2.quality.llm_router import RouterConfigError
 from src.akb2.quality.md_table import md_table_cell, split_md_table_row
+from src.akb2.quality.raw_anchors import (
+    declared_anchor_positions,
+    nearest_preceding_anchor,
+)
 from src.akb2.quality.source_ops_scanners import scan_all as scan_source_ops
 from src.akb2.quality.source_ops_scanners.raw_verify import (
     is_command_allowed_for_candidate,
@@ -593,20 +597,16 @@ def _how_command_for_claim(claim: str, idx: int) -> tuple[str, str]:
     )
 
 
-_RAW_ANCHOR_DECL_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(rf"(?m)^#{{1,6}}\s+({RAW_ANCHOR_DECL_RE})(?:[.\s:：]|$)"),
-    re.compile(rf"(?m)^\[raw\s+({RAW_ANCHOR_DECL_RE})\]"),
-    re.compile(rf"(?m)^({RAW_ANCHOR_DECL_RE})_[A-Z_]+\b"),
-    re.compile(rf"(?m)^\|\s*({RAW_ANCHOR_DECL_RE})\s*\|"),
-)
+# P1a:声明形态 + 位置 + 就近映射统一委托 raw_anchors（口径唯一）。旧本地
+# _RAW_ANCHOR_DECL_PATTERNS（4 形态全局,不认 [B4] 目录块收窄、不 canonicalize）已删。
 
 
 def _declared_raw_anchors_with_pos(raw_text: str) -> list[tuple[int, str]]:
-    decls: list[tuple[int, str]] = []
-    for pattern in _RAW_ANCHOR_DECL_PATTERNS:
-        for match in pattern.finditer(raw_text):
-            decls.append((match.start(), match.group(1)))
-    return sorted(decls, key=lambda x: x[0])
+    """Return (position, canonical §X) pairs for all declared raw anchors, sorted.
+
+    P1a:委托 ``raw_anchors.declared_anchor_positions``。
+    """
+    return declared_anchor_positions(raw_text)
 
 
 def _map_span_to_declared_anchor(
@@ -614,18 +614,17 @@ def _map_span_to_declared_anchor(
     span_start: int,
     decls: list[tuple[int, str]] | None = None,
 ) -> str:
-    if not raw_text:
-        return "§A"
+    """P1a:委托 raw_anchors.nearest_preceding_anchor + repair lenient 回落。
+
+    repair 渲染 How 命令须有 [raw §X] 可渲染:无声明 → 回落 ``§A``(raw_archiver
+    REQUIRED_ANCHORS 保证 A 必声明);span 先于所有声明 → 回落首锚。严格 fail-closed
+    由 F4 eligibility 走 _build_real_causal_edges 直接判定,不在此处。
+    """
     if decls is None:
-        decls = _declared_raw_anchors_with_pos(raw_text)
+        decls = declared_anchor_positions(raw_text) if raw_text else []
     if not decls:
         return "§A"
-    chosen = ""
-    for pos, anchor in decls:
-        if pos <= span_start:
-            chosen = anchor
-        else:
-            break
+    chosen = nearest_preceding_anchor(raw_text, span_start, decls)
     return chosen or decls[0][1]
 
 
