@@ -749,7 +749,10 @@ def _run_distill_segment(
     # step-3 SC-3b/SC-3h：完整性地板在 distill 段评估（持有结构化 extract，A-R4 保留）。
     # FloorResult 是小对象，随 distill_meta 携出（保持 5 元组契约，不扩 tuple arity 避免
     # 破坏既有 5 元组解包的存量调用方/测试）；评分段先看本结果 early-return（加权分不算）。
-    from src.akb2.quality.integrity_floor import evaluate_integrity_floor
+    from src.akb2.quality.integrity_floor import (
+        FLOOR_CORE_VALUE_F4,
+        evaluate_integrity_floor,
+    )
 
     # §0.2/F1-followup：raw 真实 §-anchor 全集——F4 eligible edge 的 evidence_anchor 须
     # ∈ 此集（不只 grounded claims），防 needs_retake 补抽的真边被误杀（口径与
@@ -759,29 +762,23 @@ def _run_distill_segment(
         extract_result.data, content_lane, raw_anchors=raw_anchor_set
     )
 
-    # §0.2/F1 太脆：concept primary success 但 0 eligible edge（LLM 漏 edge_kind/anchor
-    # 字段）→ floor 标 needs_causal_edge_retake。runner 用确定性 _build_real_causal_edges
-    # 从 raw 补抽带真实 §-anchor 的 source_causal 边（不造假），合并进 extract_data，
-    # 重评 floor。仍 0 eligible → fail-closed（不放松 F4）。
+    # §0.2/F1 太脆 + F2-A:concept LLM extract 成功但 F4 fail(0 eligible 或 <3 组件)→
+    # 确定性抽边 enrichment:补 _scan_real_mechanism_components 组件 + _build_real_causal_edges
+    # source_causal 边合并进 extract_data,重评 floor。仍 fail → fail-closed(不放松 F4)。
+    # F2-A 比原 needs_causal_edge_retake 更广:原仅 ≥3 组件 + "0 eligible" 才触发,致 <3 组件
+    # 或 LLM 漏组件的样本(如 idx3 Harness Eng)确定性抽边没机会跑;现 F4 fail 即触发。
     if (
         str(content_lane).lower() == "concept"
-        and floor_result.meta.get("needs_causal_edge_retake")
         and extract_result.success
+        and FLOOR_CORE_VALUE_F4 in floor_result.failed_floors
     ):
-        from src.akb2.quality.distill import _build_real_causal_edges
+        from src.akb2.quality.distill import _enrich_zero_eligible_with_deterministic
 
-        components = extract_result.data.get("mechanism_components", []) or []
-        retake_edges = _build_real_causal_edges(components, raw_content)
-        if retake_edges:
-            # 合并：保留 LLM 原有 eligible 边（若有），补 fallback 抽的真实边
-            existing = list(extract_result.data.get("causal_edges", []) or [])
-            existing_pairs = {(e.get("from"), e.get("to")) for e in existing if isinstance(e, dict)}
-            for e in retake_edges:
-                if (e.get("from"), e.get("to")) not in existing_pairs:
-                    existing.append(e)
-            extract_result.data["causal_edges"] = existing
-            # §0.2/F1-followup：重评也传 raw_anchor_set（补抽边 anchor 来自 raw，
-            # 须用 raw 全集判 trusted）
+        enriched = _enrich_zero_eligible_with_deterministic(
+            extract_result.data, raw_content
+        )
+        if enriched:
+            # §0.2/F1-followup:重评也传 raw_anchor_set(补抽边 anchor 来自 raw,须用 raw 全集判 trusted)
             floor_result = evaluate_integrity_floor(
                 extract_result.data, content_lane, raw_anchors=raw_anchor_set
             )

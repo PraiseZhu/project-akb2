@@ -2787,6 +2787,83 @@ def _build_real_causal_edges(
     return edges
 
 
+def _enrich_zero_eligible_with_deterministic(
+    extract_data: dict[str, Any], raw_content: str | None
+) -> bool:
+    """F2-A: LLM extract 成功但 0 eligible 边时的确定性抽边 enrichment(并入主路径)。
+
+    真机探针暴露:LLM extract 成功但只产 inferred 弱边 → F4 0 eligible 早死,而
+    _build_real_causal_edges 离线对同一 raw 能抽 eligible 边却没机会跑。本函数在
+    LLM 成功路径上补这一刀:
+
+    1. _scan_real_mechanism_components(raw) → 确定性组件,合并进 mechanism_components
+       (LLM 已有同名/别名则对齐不重复,否则补进,守 FALLBACK_MAX_COMPONENTS=12)。
+    2. _build_real_causal_edges(merged_components, raw) → source_causal 边,合并进
+       causal_edges(dedup by from/to)。
+    Returns True 若加了组件或边(需重评 floor);False 若 raw 无可抽(维持原状 fail-closed)。
+
+    宁缺勿假:抽不出 → 返 False,extract_data 不动,后续 floor fail-closed 接手。
+    幂等:LLM 已有 eligible 边时不触发(caller 守);再跑一次也无新增(dedup)。
+    """
+    if not raw_content:
+        return False
+    # 1. 确定性组件,合并(别名感知 dedup)
+    det_components = _scan_real_mechanism_components(raw_content)
+    existing_comps: list[dict[str, Any]] = list(
+        extract_data.get("mechanism_components", []) or []
+    )
+    existing_keys: set[str] = set()
+    for c in existing_comps:
+        if not isinstance(c, dict):
+            continue
+        n = str(c.get("name", "")).strip().lower()
+        if n:
+            existing_keys.add(n)
+        for a in c.get("aliases") or []:
+            if isinstance(a, str) and a.strip():
+                existing_keys.add(a.strip().lower())
+    added_comp = False
+    for dc in det_components:
+        name = str(dc.get("name", "")).strip()
+        if not name or name.lower() in existing_keys:
+            continue
+        if len(existing_comps) >= FALLBACK_MAX_COMPONENTS:
+            break
+        existing_comps.append(
+            {"name": name, "role": dc.get("role", "raw 命名机制组件")}
+        )
+        existing_keys.add(name.lower())
+        added_comp = True
+    if added_comp:
+        extract_data["mechanism_components"] = existing_comps
+    # 2. 确定性 source_causal 边(只合并 eligible-capable 的 source_causal,inferred 弱边
+    # 无 evidence/anchor 不计 F4,合并无意义且 LLM 多半已有)
+    det_edges = [
+        e for e in _build_real_causal_edges(existing_comps, raw_content)
+        if e.get("edge_kind") == "source_causal"
+    ]
+    if not det_edges:
+        return added_comp  # 加了组件但没 source_causal 边 → 仍需重评(组件数可能救 <3 那条)
+    existing_edges: list[dict[str, Any]] = list(
+        extract_data.get("causal_edges", []) or []
+    )
+    existing_pairs: set[tuple[str, str]] = {
+        (str(e.get("from", "")), str(e.get("to", "")))
+        for e in existing_edges
+        if isinstance(e, dict)
+    }
+    added_edge = False
+    for e in det_edges:
+        pair = (str(e.get("from", "")), str(e.get("to", "")))
+        if pair not in existing_pairs:
+            existing_edges.append(e)
+            existing_pairs.add(pair)
+            added_edge = True
+    if added_edge:
+        extract_data["causal_edges"] = existing_edges
+    return added_comp or added_edge
+
+
 def build_deterministic_extract_result(
     raw_content: str,
     raw_path: str = "",
