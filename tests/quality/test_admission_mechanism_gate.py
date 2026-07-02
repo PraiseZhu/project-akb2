@@ -574,3 +574,57 @@ Google announced new products. The keynote included updates.
         )
         assert result.lane_reject_recheck is False
         assert result.passed is False, "新闻负样本应仍拒"
+
+    def test_f8_long_prose_no_signal_goes_to_llm(self, tmp_path):
+        """§0.2/F8：长正文（≥500 字）无机制信号 → 走 LLM 窄仲裁（不 deterministic fail）。
+
+        long-running-agents 等长机制散文无标题/连接词/code 但有机制内容 → LLM 判，
+        不 deterministic no_mechanism_signal 误拒。
+        """
+        long_prose = """---
+artifact_type: raw
+source_slug: long-agents
+source_url: https://example.com/long
+---
+
+# Long Running Agents
+
+Long running agents require careful design of the agent loop to handle
+sustained operation over hours or days. The core challenge is managing
+state persistence across failures, ensuring the agent can recover from
+interruptions without losing progress. A well designed system separates
+the trigger mechanism from the work execution, allowing the agent to
+pick up where it left off. The work selector reads the ledger to find
+the next pending item, while the executor processes it and writes results
+back. A quality gate verifies the output meets standards before the
+ledger records completion. This loop continues until all work is done
+or the budget is exhausted. The maker checker separation ensures the
+model producing content is not the same as the one judging it, preventing
+systematic bias. Error handling must be explicit with failure signatures
+recorded for escalation after repeated occurrences.
+"""
+        # 长正文 ≥500 字 + mock LLM pass（机制内容）
+        result = run_admission(
+            raw_path="raw/long-agents--raw--2026-06-29.md",
+            raw_content=long_prose,
+            ledger_path=str(tmp_path / "ledger.jsonl"),
+            route_llm_fn=_make_mock(lane=LANE_CONCEPT, pass_response=True),
+        )
+        mech = next(c for c in result.checks if c.name == "mechanism_signal")
+        # 长正文 → 不 deterministic fail（走 LLM）
+        assert not mech.reason.startswith("no_mechanism_signal"), (
+            f"长正文（≥500 字）应走 LLM 窄仲裁，不 deterministic fail: {mech.reason}"
+        )
+
+    def test_f8_short_prose_no_signal_still_deterministic_fail(self, tmp_path):
+        """§0.2/F8：短正文（<500 字）无机制信号 → 仍 deterministic fail（不放松负样本）。"""
+        result = run_admission(
+            raw_path="raw/short-prose--raw--2026-06-29.md",
+            raw_content=_NO_MECHANISM_PROSE,  # 短 prose
+            ledger_path=str(tmp_path / "ledger.jsonl"),
+            route_llm_fn=_make_mock(lane=LANE_CONCEPT, pass_response=True),
+        )
+        mech = next(c for c in result.checks if c.name == "mechanism_signal")
+        assert mech.reason.startswith("no_mechanism_signal"), (
+            "短 prose 无信号仍应 deterministic fail"
+        )

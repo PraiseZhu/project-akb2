@@ -10,8 +10,10 @@ step-3 SC-3b/SC-3h/A3-2/A3-5：循环1 在 distill 段评估结构化 extract �
   ③ interpretation_traceability(层①) — 每条 akb_interpretation 带 traces_to 指向 claims 中真实
                             存在的 source_grounded anchor（确定性 pre-grader 地板；F3 层② entailment
                             由 grader 异族硬判，见 grader.interpretation_entailment）
-  ④ F4 车道核心价值        — concept: len(mechanism_components)≥3 且每组件在 causal_edges 有出/入边
-                            （只读结构字段，不反解 H3 标签，A3-5）；procedural: H1≥1
+  ④ F4 车道核心价值        — concept: ≥3 唯一命名组件 + ≥1 eligible edge（source_causal/
+                            llm_evidence 带 evidence + evidence_anchor ∈ raw 声明全集）；
+                            inferred_from_structure 弱边不计 F4；0 eligible fail（§0.2 D1+F1）；
+                            procedural: H1≥1
 
 设计原则：
 - 二值（pass/fail），无连续分（宪法原则 8）。

@@ -808,6 +808,9 @@ def _has_strong_procedural_signal(body: str) -> bool:
 # 纯观点）在 admission 即拒（error_class=no_mechanism_signal），不下传 distill 硬填
 # 模板组件（D8 maker fallback 造假机制的源头）。procedural 不受此门（F4 H1 判）。
 MECHANISM_COMPONENT_MIN: int = 3
+# §0.2/F8：长正文阈值——total==0 但 body_length ≥ 此值时走 LLM 窄仲裁（不 deterministic fail），
+# 救 long-running-agents 等长机制散文（无标题/连接词/code 但有机制内容）。短正文 total==0 仍 fail。
+MECHANISM_LONG_PROSE_THRESHOLD: int = 500
 
 # 命名组件候选（strong）：编号 H2/H3/H4 标题（### 1. Captain / ## 2. Executor Pool / ### Step 1）
 _MECHANISM_COMPONENT_RE = re.compile(r"(?m)^#{2,4}\s+\d+[\.\)]\s+\S+")
@@ -890,14 +893,18 @@ def _check_mechanism_signal(body: str, route_llm_fn: Any) -> AdmissionCheck:
             reason=f"确定性机制信号: {steps} 编号步 + code 块",
         )
 
-    # 确定性 FAIL：全无信号（纯散文）—— LLM 不可绕过此强反信号
+    # 确定性 FAIL：全无信号 + 正文短（纯短散文/新闻 recap）—— LLM 不可绕过此强反信号
     # §0.2/G2：weak_components（普通 H2/H3）计入 total，避免普通标题机制文被误拒
     # （idx0/idx8：普通 H2/H3 机制文 → total>0 → 走 LLM 窄仲裁，不 deterministic fail）
+    # §0.2/F8：长正文（body_length ≥ MECHANISM_LONG_PROSE_THRESHOLD）即使 total==0 也走 LLM
+    # 窄仲裁（long-running-agents 等长机制散文无标题/连接词/code 但有机制内容）；
+    # 短正文 total==0 → 仍 deterministic fail（短新闻/营销 recap）。
     total = comp + weak_comp + causal + steps + code + src_ops
-    if total == 0:
+    body_length = len(body or "")
+    if total == 0 and body_length < MECHANISM_LONG_PROSE_THRESHOLD:
         return AdmissionCheck(
             name="mechanism_signal", passed=False,
-            reason="no_mechanism_signal: 无命名组件/因果边/编号步/code/source_operation",
+            reason="no_mechanism_signal: 无命名组件/因果边/编号步/code/source_operation 且正文短",
         )
 
     # 模糊（部分信号未达强信号）→ LLM 窄仲裁

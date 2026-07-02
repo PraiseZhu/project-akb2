@@ -993,7 +993,9 @@ def _compute_repair_quality_funnel(
     scoped = [
         e for e in entries
         if e.get("expected") == "ingest"
-        and (e.get("audit") or {}).get("mechanism_present") is True
+        # §0.2/F9：mechanism_present 是 entry 顶层字段（calibration.py:220 透传），
+        # 非 e["audit"]["mechanism_present"]——旧 scope 读错位置 → scoped_total=0。
+        and e.get("mechanism_present") is True
     ]
     old_no_mech = 0
     f4_precompose = 0

@@ -532,7 +532,7 @@ class TestD12RepairQualityFunnel:
             "error_class": error_class, "failed_node": failed_node,
             "failure_segment": None if passed else failed_node,
             "error": error,
-            "audit": {"mechanism_present": True},
+            "mechanism_present": True,
             "final_status": "promoted" if passed else "failed",
         }
 
@@ -551,9 +551,9 @@ class TestD12RepairQualityFunnel:
         """scope: mechanism_present=true / expected=ingest（负样本/非机制不入 scope）。"""
         e_mech = self._mech_entry(passed=True)
         e_neg = {"index": 1, "expected": "reject", "passed": True, "final_status": "rejected_correctly",
-                 "audit": {"mechanism_present": False}}
+                 "mechanism_present": False,}
         e_nonmech = self._mech_entry(passed=False)
-        e_nonmech["audit"] = {"mechanism_present": False}
+        e_nonmech["mechanism_present"] = False
         report: dict[str, Any] = {"entries": [e_mech, e_neg, e_nonmech]}
         _compute_statistics(report)
         funnel = report["repair_quality_funnel"]
