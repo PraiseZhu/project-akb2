@@ -3250,7 +3250,60 @@ def _enrich_zero_eligible_with_deterministic(
         diag["edges_added"] += 1
     if added_edge:
         extract_data["causal_edges"] = existing_edges
-    diag["enriched"] = added_comp or added_edge
+    # F5-A: 端点闭合——所有 causal_edges 的 from/to 必须 ∈ 最终 mechanism_components names
+    # (含 alias)。不在 → 若来自 det_components(过滤合格)补进名单;否则丢边计
+    # edges_dropped_endpoint(probe-p4 vercel/crewai/sub-agents 新死因:LLM 产边端点
+    # Multi-Step Loop/Quick Start/Invoke subagents explicitly 不在组件表 → SG-mechanism-
+    # edge-evidence 自拒)。不变式:渲染进的每条边端点都在组件表(与 SG 同口径,自检不自拒)。
+    final_comps = extract_data.get("mechanism_components", []) or []
+    comp_names: set[str] = set()
+    for c in final_comps:
+        if not isinstance(c, dict):
+            continue
+        n = str(c.get("name", "")).strip().lower()
+        if n:
+            comp_names.add(n)
+        for a in c.get("aliases") or []:
+            if isinstance(a, str) and a.strip():
+                comp_names.add(a.strip().lower())
+    # det_components 名字(供端点补名单)
+    det_names_map: dict[str, str] = {}
+    for dc in det_components:
+        n = str(dc.get("name", "")).strip()
+        if n:
+            det_names_map[n.lower()] = n
+    all_edges = extract_data.get("causal_edges", []) or []
+    closed_edges: list[dict[str, Any]] = []
+    for e in all_edges:
+        if not isinstance(e, dict):
+            closed_edges.append(e)
+            continue
+        frm = str(e.get("from", "")).strip()
+        to = str(e.get("to", "")).strip()
+        missing = [ep for ep in (frm, to) if ep and ep.lower() not in comp_names]
+        if not missing:
+            closed_edges.append(e)
+            continue
+        # 端点不在名单 → 尝试从 det_components 补(若过滤合格)
+        added_from_closure = False
+        for ep in missing:
+            det_name = det_names_map.get(ep.lower())
+            if det_name and len(final_comps) < FALLBACK_MAX_COMPONENTS:
+                final_comps.append(
+                    {"name": det_name, "role": "raw 命名机制组件"}
+                )
+                comp_names.add(det_name.lower())
+                added_from_closure = True
+                if not added_comp:
+                    diag["components_added"] += 1
+        if added_from_closure:
+            extract_data["mechanism_components"] = final_comps
+            closed_edges.append(e)  # 补了组件,边保留
+        else:
+            # 端点既不在名单也不是合格确定性组件 → 丢边(防 SG 自拒)
+            diag["edges_dropped_endpoint"] += 1
+    extract_data["causal_edges"] = closed_edges
+    diag["enriched"] = added_comp or added_edge or diag["edges_dropped_endpoint"] > 0
     return diag
 
 

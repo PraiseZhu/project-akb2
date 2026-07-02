@@ -165,6 +165,83 @@ class TestEnrichment:
         assert floor_after.passed, f"alias 组件名 enrichment 后 F4 应过: {floor_after.reason}"
 
 
+class TestF5AEndpointClosure:
+    """F5-A: enrichment 合并后端点闭合——所有 causal_edges 的 from/to ∈ 组件表。
+
+    probe-p4 vercel/crewai/sub-agents 新死因:LLM 产边端点(Multi-Step Loop/Quick Start/
+    Invoke subagents explicitly)不在 mechanism_components 名单 → SG-mechanism-edge-evidence 自拒。
+    """
+
+    def test_llm_edge_endpoint_not_in_comps_dropped(self):
+        """LLM 边端点不在组件表(且非确定性组件)→ 丢边 + edges_dropped_endpoint 计数。"""
+        data = {
+            "claims": [
+                {"text": "x", "anchor": "§A", "provenance": "source_grounded",
+                 "evidence_gap": "未提供 X"},
+            ],
+            "argumentation": [],
+            "mechanism_components": [
+                {"name": "Executor Pool", "role": "x"},
+                {"name": "Task Graph", "role": "y"},
+                {"name": "Lifecycle", "role": "z"},
+            ],
+            # LLM 边端点 "Quick Start" 不在组件表(泛节名,非确定性组件)
+            "causal_edges": [
+                {"from": "Executor Pool", "to": "Quick Start", "relation": "r",
+                 "edge_kind": "source_causal", "evidence": "ev", "evidence_anchor": "§A"},
+            ],
+            "how_steps": [],
+        }
+        raw = (
+            "## 锚点目录\n\n| §A | x |\n\n---\n\n§A_CONTENT_START\n\n"
+            "The Executor Pool dispatches to the Task Graph.\n"
+        )
+        diag = _enrich_zero_eligible_with_deterministic(data, raw)
+        # "Quick Start" 不在组件表且非确定性组件 → 丢边
+        assert diag["edges_dropped_endpoint"] >= 1
+        # 丢后无 "Quick Start" 端点的边
+        for e in data["causal_edges"]:
+            assert "Quick Start" not in (e.get("from", ""), e.get("to", ""))
+
+    def test_endpoint_closure_invariant_all_edges_in_comps(self):
+        """不变式:enrichment 后所有 causal_edges 的 from/to ∈ 组件表 names。"""
+        data = {
+            "claims": [
+                {"text": "x", "anchor": "§A", "provenance": "source_grounded",
+                 "evidence_gap": "未提供 X"},
+            ],
+            "argumentation": [],
+            "mechanism_components": [
+                {"name": "Executor Pool", "role": "x"},
+                {"name": "Task Graph", "role": "y"},
+            ],
+            "causal_edges": [
+                {"from": "Executor Pool", "to": "Garbage Endpoint", "relation": "r",
+                 "edge_kind": "source_causal", "evidence": "ev", "evidence_anchor": "§A"},
+                {"from": "Executor Pool", "to": "Task Graph", "relation": "r",
+                 "edge_kind": "inferred_from_structure", "evidence": "", "evidence_anchor": ""},
+            ],
+            "how_steps": [],
+        }
+        raw = (
+            "## 锚点目录\n\n| §A | x |\n\n---\n\n§A_CONTENT_START\n\n"
+            "The Executor Pool dispatches to the Task Graph.\n"
+        )
+        _enrich_zero_eligible_with_deterministic(data, raw)
+        # 不变式:所有边端点 ∈ 组件表
+        comp_names = {
+            str(c.get("name", "")).strip().lower()
+            for c in data.get("mechanism_components", [])
+            if isinstance(c, dict)
+        }
+        for e in data["causal_edges"]:
+            for ep in (e.get("from", ""), e.get("to", "")):
+                if ep:
+                    assert ep.lower() in comp_names, (
+                        f"端点闭合不变式违反: {ep!r} 不在组件表 {comp_names}"
+                    )
+
+
 class TestEligiblePresentNotTriggered:
     """caller(runner)守:LLM 已有 eligible 边时不触发 enrichment。本测试验证 enrichment
     函数本身在有 eligible 边时仍可调用(但 runner 不会调)— 主要锁 caller 侧的 F4 fail 触发。"""
