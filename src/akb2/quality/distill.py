@@ -2418,8 +2418,15 @@ _CROSS_SENTENCE_MAX_EDGES: int = 3
 
 
 def _generate_component_variants(name: str) -> list[str]:
-    """生成组件名匹配变体:归一全名 + 朴素单复数 + 多词名长 token(len≥5)+ 其单复数。"""
-    norm = re.sub(r"^(?:A|An|The)\s+", "", name.strip(), flags=re.I).lower().strip()
+    """生成组件名匹配变体:归一全名 + 朴素单复数 + 多词名长 token(len≥5)+ 其单复数。
+
+    P1b-3: 先剥括号示例(``A work unit selector (read ledger, pick next item)`` →
+    ``A work unit selector``),否则括号里的示例词(``ledger``)会被当 token 误匹配正文
+    里的同名泛词,造 spurious causal edge。
+    """
+    # 剥括号示例(非组件名一部分)
+    name_clean = re.sub(r"\([^)]*\)", "", name).strip()
+    norm = re.sub(r"^(?:A|An|The)\s+", "", name_clean, flags=re.I).lower().strip()
     if not norm:
         return []
     variants: list[str] = []

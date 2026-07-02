@@ -124,7 +124,7 @@ class TestCrossSentence:
         for i in range(5):
             parts.append(f"Executor Pool{i} is ready.")
             parts.append(f"It dispatches to Task Queue{i}.")
-        raw = f"## §A\n\n" + " ".join(parts) + "\n"
+        raw = "## §A\n\n" + " ".join(parts) + "\n"
         comps = [f"Executor Pool{i}" for i in range(5)] + [
             f"Task Queue{i}" for i in range(5)
         ]
