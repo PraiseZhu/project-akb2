@@ -3536,6 +3536,7 @@ def compose_candidate(
         raw_content=raw_content,
         known_concepts=known_concepts,
         pending_queue=pending_queue,
+        content_lane=content_lane,
     )
 
     # 组装完整候选页
@@ -5369,6 +5370,55 @@ def _build_mechanism_evidence_section(extract_data: dict[str, Any]) -> str:
     )
 
 
+def _render_concept_mechanism_walkthrough(
+    extract_data: dict[str, Any], raw_content: str | None
+) -> str:
+    """P3: concept lane 且 how 双空时,从 eligible 边渲染机制 walkthrough(≤5 行,零编造)。
+
+    痛点:concept 文无可锚定操作步骤时,_build_body 自产"原文无可安全锚定的操作步骤"占位
+    → SG-how-executability(FORBIDDEN markers)拒掉自己人。本函数从已过校验的 eligible
+    source_causal 边确定性渲染机制关系行,替代占位:
+        [raw §X] (source_grounded) 机制关系:from → to(relation):evidence
+    - 零编造:只从 extract_data 的 eligible 边(有 evidence + evidence_anchor)渲染。
+    - anchor 走 P1a 统一 parser:canonicalize + resolve_anchor_ref 唯一前缀解析,∈ raw 声明集。
+    - [N2] 零 eligible 防御分支(正常不可达,floor 已 fail):单行说明避开全部
+      FORBIDDEN/TEMPLATE marker 且不伪装 source_grounded 标记。
+    """
+    edges = extract_data.get("causal_edges", []) or []
+    eligible = [
+        e for e in edges
+        if isinstance(e, dict)
+        and e.get("edge_kind") == "source_causal"
+        and e.get("evidence")
+        and e.get("evidence_anchor")
+    ]
+    # [N2] 零 eligible 兜底:单行说明,无 FORBIDDEN/TEMPLATE marker,无 (source_grounded) 伪标
+    _zero_fallback = "（concept 文无可锚定操作步骤;机制组件与因果边见图谱关系节。）"
+    if not eligible:
+        return _zero_fallback
+    decl = declared_anchor_set(raw_content)
+    if not decl:
+        return _zero_fallback
+    lines: list[str] = []
+    for e in eligible[:5]:
+        anchor = str(e.get("evidence_anchor", "")).strip()
+        # P1a 统一 parser:canonicalize + 唯一前缀解析
+        anchor = canonicalize_anchor(anchor)
+        if anchor not in decl:
+            resolved = resolve_anchor_ref(anchor, decl)
+            anchor = resolved if resolved else anchor
+        if anchor not in decl:
+            continue  # 不在声明集 → 跳过(不造假 anchor)
+        frm = str(e.get("from", "")).strip()
+        to = str(e.get("to", "")).strip()
+        rel = str(e.get("relation", "")).strip() or "raw_causal"
+        ev = re.sub(r"\s+", " ", str(e.get("evidence", ""))).strip()[:80]
+        lines.append(
+            f"[raw {anchor}] (source_grounded) 机制关系:{frm} → {to}({rel}):{ev}"
+        )
+    return "\n".join(lines) if lines else _zero_fallback
+
+
 def _build_body(
     extract_data: dict[str, Any],
     raw_path: str,
@@ -5378,6 +5428,7 @@ def _build_body(
     raw_content: str | None = None,
     known_concepts: list[str] | None = None,
     pending_queue: list[str] | None = None,
+    content_lane: str = "",
 ) -> str:
     """构建 10 节正文（确定性脚本，只填 extract_data 槽位，不调 LLM）。
 
@@ -5523,7 +5574,12 @@ def _build_body(
     elif llm_how_text:
         how_text = llm_how_text
     else:
-        how_text = "（原文无可安全锚定的操作步骤；候选阶段不强行生成 AKB 操作化步骤。）"
+        # P3: how 双空 — concept lane 从 eligible 边渲染机制 walkthrough(零编造,避 FORBIDDEN
+        # marker);procedural(含空 lane)占位原样保留 → SG 照拒(严格性零回退)。
+        if str(content_lane).strip().lower() == "concept":
+            how_text = _render_concept_mechanism_walkthrough(extract_data, raw_content)
+        else:
+            how_text = "（原文无可安全锚定的操作步骤；候选阶段不强行生成 AKB 操作化步骤。）"
     params = extract_data.get("params") or {}
     if isinstance(params, dict) and params:
         how_text = f"{how_text}\n\n配置示例：\n{_build_params_example(params)}"
