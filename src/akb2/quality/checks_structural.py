@@ -1084,12 +1084,16 @@ def _parse_mechanism_tables(body: str) -> tuple[list[dict[str, str]], list[dict[
 
 
 def _check_sg_mechanism_edge_evidence(
-    body: str, content_lane: str
+    body: str, content_lane: str, raw_anchors: set[str] | None = None
 ) -> list[Defect]:
-    """§0.2/D7/C1：SG-mechanism-edge-evidence — 机制组件与因果边证据表完整性。
+    """§0.2/D7/C1 + §0.2/F5：SG-mechanism-edge-evidence — 机制组件与因果边证据表完整性。
 
     - concept + 节缺失 → defect（concept 须渲染机制证据表供 grader H3/A 层消费）
     - eligible edge（source_causal/llm_evidence）空 evidence 或 evidence_anchor → defect
+    - §0.2/F5：eligible edge 的 evidence_anchor 须 ∈ raw 声明 anchor 全集（与 F4 统一口径，
+      复用 _extract_raw_anchors 同源判断）；**不再要求正文额外渲染 [raw §X]**——
+      旧口径要求正文有 `[raw §X]`（只来自 claims，不覆盖所有 raw anchor）→ F4 认可的真边
+      （anchor∈raw 但未被 claim 引用）被 SG 拒 → 7 条 compose_failed。统一为 raw 全集。
     - 未知 edge_kind → defect
     - edge 端点不在 components → defect
     - inferred 弱边须标 weak（edge_kind 含 inferred_from_structure）
@@ -1144,19 +1148,21 @@ def _check_sg_mechanism_edge_evidence(
                         suggestion="source_causal/llm_evidence 边须带 §X evidence_anchor",
                     )
                 )
-            elif f"[raw {anchor}]" not in body:
-                # §0.2/F1：evidence_anchor 必须是真实 raw anchor——body 须有对应 [raw §X]
-                # （防伪 §Z / 合成 §raw 把伪边计入 eligible，破坏 traceability）
+            elif raw_anchors is not None and anchor not in raw_anchors:
+                # §0.2/F1 + §0.2/F5：evidence_anchor 须 ∈ raw 声明 anchor 全集（与 F4 统一口径，
+                # 复用 _extract_raw_anchors 同源判断）；不再要求正文额外渲染 [raw §X]。
+                # 防伪仍成立：伪 §Z/合成 §raw 不在 raw 声明集 → 不计 eligible（破坏 traceability）。
+                # raw_anchors=None 时跳过此检查（无 raw_content 兜底，不阻断）。
                 defects.append(
                     Defect(
                         dimension="SG-mechanism-edge-evidence",
                         location=f"正文.机制组件与因果边证据.edges[{idx}]",
                         defect=(
-                            f"eligible 边 evidence_anchor {anchor} 无对应 [raw {anchor}]"
-                            " 锚点（伪/合成 anchor 不计 eligible）"
+                            f"eligible 边 evidence_anchor {anchor} 不在 raw 声明 anchor 集"
+                            "（伪/合成 anchor 不计 eligible）"
                         ),
                         suggestion=(
-                            "evidence_anchor 须指向真实 raw §-anchor（body 有 [raw §X]）"
+                            "evidence_anchor 须指向真实 raw §-anchor（∈ raw 声明全集）"
                         ),
                     )
                 )
@@ -1319,8 +1325,15 @@ def run_candidate_self_gate(
             )
         )
 
-    # §0.2/D7/C1：SG-mechanism-edge-evidence — 机制组件与因果边证据表完整性
-    defects.extend(_check_sg_mechanism_edge_evidence(body, content_lane))
+    # §0.2/D7/C1 + §0.2/F5：SG-mechanism-edge-evidence — 机制组件与因果边证据表完整性
+    # F5：与 F4 统一口径——eligible edge 的 evidence_anchor 须 ∈ raw 声明全集
+    # （复用 _extract_raw_anchors，认 #{1,6} 多# + [raw §X] + _CONTENT_START + 表格）。
+    _sg_raw_anchors: set[str] = set()
+    if raw_content:
+        _sg_raw_anchors = _extract_raw_anchors(raw_content)
+    defects.extend(
+        _check_sg_mechanism_edge_evidence(body, content_lane, raw_anchors=_sg_raw_anchors)
+    )
 
     provenance_body = _core_provenance_body(text)
     source_count, akb_count = _provenance_counts(provenance_body)

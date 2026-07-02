@@ -1635,3 +1635,78 @@ test [raw §A]
         )
         defects = _check_sg_mechanism_edge_evidence(body, "concept")
         assert any("不在 mechanism_components" in d.defect for d in defects)
+
+
+# ---------------------------------------------------------------------------
+# §0.2/F5：SG-mechanism-edge-evidence 与 F4 统一口径（eligible anchor ∈ raw 全集）
+# ---------------------------------------------------------------------------
+
+
+class TestF5UnifiedAnchorCaliber:
+    """§0.2/F5：SG eligible edge 的 evidence_anchor 须 ∈ raw 声明全集（与 F4 同口径）。
+
+    旧口径要求正文有 `[raw §X]`（只来自 claims，不覆盖所有 raw anchor）→ F4 认可的真边
+    （anchor∈raw 但未被 claim 引用）被 SG 拒 → 7 条 compose_failed。统一为 raw 全集。
+    """
+
+    _F5_BODY = """## TLDR
+
+test [raw §A]
+
+## 机制组件与因果边证据
+
+组件：
+
+| component_id | name | role | evidence_anchor | evidence_sentence |
+|---|---|---|---|---|
+| a | A | r | §I_LIMIT | A does x |
+| b | B | r | §A | B does y |
+
+因果边：
+
+| from | to | relation | edge_kind | evidence_anchor | evidence_sentence |
+|---|---|---|---|---|---|
+| A | B | feeds | source_causal | §I_LIMIT | A feeds B |
+"""
+
+    def test_f5_edge_anchor_in_raw_not_in_body_no_defect(self):
+        """F5：edge anchor §I_LIMIT ∈ raw_anchors 但 body 无 [raw §I_LIMIT] → SG 不拒。
+
+        F4 认可（§I_LIMIT ∈ raw），SG 旧口径会拒（body 无 [raw §I_LIMIT]）→ 统一后不拒。
+        """
+        from src.akb2.quality.checks_structural import _check_sg_mechanism_edge_evidence
+
+        # raw_anchors 含 §I_LIMIT（raw 真实声明），body 无 [raw §I_LIMIT]
+        raw_anchors = {"§A", "§I_LIMIT"}
+        defects = _check_sg_mechanism_edge_evidence(
+            self._F5_BODY, "concept", raw_anchors=raw_anchors
+        )
+        anchor_defects = [
+            d for d in defects
+            if "不在 raw 声明" in d.defect or "无对应 [raw" in d.defect
+        ]
+        assert anchor_defects == [], (
+            f"§I_LIMIT ∈ raw_anchors → SG 不应拒（F5 统一口径）: {anchor_defects}"
+        )
+
+    def test_f5_edge_anchor_not_in_raw_still_defect(self):
+        """F5：edge anchor §Z ∉ raw_anchors → SG 仍拒（防伪不破）。"""
+        from src.akb2.quality.checks_structural import _check_sg_mechanism_edge_evidence
+
+        raw_anchors = {"§A", "§I_LIMIT"}  # 不含 §Z
+        defects = _check_sg_mechanism_edge_evidence(
+            self._F5_BODY.replace("§I_LIMIT", "§Z"), "concept", raw_anchors=raw_anchors
+        )
+        anchor_defects = [d for d in defects if "不在 raw 声明" in d.defect]
+        assert len(anchor_defects) >= 1, "§Z ∉ raw → SG 应拒（防伪）"
+
+    def test_f5_no_raw_anchors_skips_anchor_check(self):
+        """F5：raw_anchors=None → 跳过 anchor 检查（无 raw 兜底，不阻断）。"""
+        from src.akb2.quality.checks_structural import _check_sg_mechanism_edge_evidence
+
+        defects = _check_sg_mechanism_edge_evidence(self._F5_BODY, "concept")
+        anchor_defects = [
+            d for d in defects
+            if "不在 raw 声明" in d.defect or "无对应 [raw" in d.defect
+        ]
+        assert anchor_defects == [], "raw_anchors=None → 跳过 anchor 检查"

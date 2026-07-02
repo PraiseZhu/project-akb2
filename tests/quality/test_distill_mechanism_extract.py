@@ -1181,3 +1181,134 @@ class TestF1RegexMultiHashRaw:
         raw = "# §A Single\n\n# §B Single2\n"
         anchors = [a for a, _ in _raw_anchor_positions(raw)]
         assert anchors == ["§A", "§B"]
+
+
+# ---------------------------------------------------------------------------
+# §0.2/F6：LLM 产 edge anchor 校正到真实 raw anchor
+# ---------------------------------------------------------------------------
+
+
+class TestF6EdgeAnchorCorrection:
+    """§0.2/F6：LLM 产 edge 的 evidence_anchor 不在 raw → 用 evidence sentence 定位真实 anchor。
+
+    真机 LLM 编的 anchor 可能不在 raw 声明集 → F4 0 eligible fail。修：用 evidence sentence
+    在 raw 定位 + _nearest_preceding_anchor 映射真实 anchor；映射不到 → 不计 eligible（不放松）。
+    """
+
+    def test_correct_fake_anchor_to_real_via_evidence(self):
+        """LLM 产 anchor=§Z（不在 raw），但 evidence sentence 能在 raw 定位 → 校正到真实 §A。"""
+        from src.akb2.quality.distill import _correct_edge_anchors_to_raw
+        raw = "# §A Captain\n\nThe Captain dispatches to the Executor Pool.\n"
+        merged = {"causal_edges": [
+            {"from": "Captain", "to": "Executor Pool", "relation": "dispatches",
+             "edge_kind": "source_causal", "evidence": "The Captain dispatches to the Executor Pool",
+             "evidence_anchor": "§Z"},  # LLM 编的 §Z 不在 raw
+        ]}
+        _correct_edge_anchors_to_raw(merged, raw)
+        assert merged["causal_edges"][0]["evidence_anchor"] == "§A", (
+            "evidence sentence 在 raw §A block 下 → 校正到真实 §A"
+        )
+
+    def test_correct_no_change_if_anchor_already_real(self):
+        """LLM 产 anchor=§A（已在 raw）→ 不改。"""
+        from src.akb2.quality.distill import _correct_edge_anchors_to_raw
+        raw = "# §A Captain\n\ncontent\n"
+        merged = {"causal_edges": [
+            {"from": "A", "to": "B", "relation": "r", "edge_kind": "source_causal",
+             "evidence": "A feeds B", "evidence_anchor": "§A"},
+        ]}
+        _correct_edge_anchors_to_raw(merged, raw)
+        assert merged["causal_edges"][0]["evidence_anchor"] == "§A"
+
+    def test_correct_no_mapping_leaves_anchor_untrusted(self):
+        """evidence sentence 不在 raw → 不改（anchor 仍不 trusted，不计 eligible，不放松）。"""
+        from src.akb2.quality.distill import _correct_edge_anchors_to_raw
+        raw = "# §A Captain\n\nsome content\n"
+        merged = {"causal_edges": [
+            {"from": "A", "to": "B", "relation": "r", "edge_kind": "source_causal",
+             "evidence": "completely nonexistent sentence xyz123", "evidence_anchor": "§Z"},
+        ]}
+        _correct_edge_anchors_to_raw(merged, raw)
+        assert merged["causal_edges"][0]["evidence_anchor"] == "§Z", (
+            "evidence 不在 raw → 不改（§Z 仍 untrusted，不计 eligible）"
+        )
+
+    def test_correct_inferred_edges_not_affected(self):
+        """inferred_from_structure 弱边无 anchor → 不受校正影响。"""
+        from src.akb2.quality.distill import _correct_edge_anchors_to_raw
+        raw = "# §A\n\ncontent\n"
+        merged = {"causal_edges": [
+            {"from": "A", "to": "B", "relation": "r", "edge_kind": "inferred_from_structure",
+             "evidence": "", "evidence_anchor": ""},
+        ]}
+        _correct_edge_anchors_to_raw(merged, raw)
+        assert merged["causal_edges"][0]["evidence_anchor"] == ""
+
+
+# ---------------------------------------------------------------------------
+# §0.2/F7：fallback _build_real_causal_edges 增强（ag2 等显式关系抽 source_causal）
+# ---------------------------------------------------------------------------
+
+
+class TestF7FallbackCausalConnectors:
+    """§0.2/F7：fallback 因果连接词集增强，ag2 等真实 raw 显式关系能抽 ≥1 source_causal。
+
+    旧集只认 "dispatches to"（须带 to）/feeds?，ag2 "dispatch"/"collect" 抽不到 → 0 source_causal
+    → fallback fail-closed。增强后 dispatch/collect/register/spawn/route/forward/return 等都认。
+    """
+
+    _AG2_RAW = """---
+artifact_type: raw
+source_slug: ag2-captain
+---
+
+# Captain Architecture
+
+## §A Captain
+The Captain dispatches sub-tasks to the Executor Pool.
+
+## §B Executor Pool
+Executors register capability manifests and receive scoped context.
+
+## §C Task Graph
+The task graph collects sub-tasks with dependencies.
+
+## §D Lifecycle
+Executors spawn on demand and terminate after producing a typed result.
+"""
+
+    def test_ag2_raw_produces_source_causal(self):
+        """ag2 raw（dispatch/collect/spawn）→ fallback ≥1 source_causal eligible edge。"""
+        from src.akb2.quality.distill import (
+            _build_real_causal_edges,
+            _scan_real_mechanism_components,
+        )
+
+        components = _scan_real_mechanism_components(self._AG2_RAW)
+        assert len(components) >= 3, f"ag2 应 ≥3 组件: {components}"
+        edges = _build_real_causal_edges(components, self._AG2_RAW)
+        source_causal = [e for e in edges if e["edge_kind"] == "source_causal"]
+        assert len(source_causal) >= 1, (
+            f"ag2 dispatch/collect/spawn 应抽 ≥1 source_causal: {[e.get('relation') for e in edges]}"
+        )
+        for e in source_causal:
+            assert e["evidence_anchor"] in ("§A", "§B", "§C", "§D"), (
+                f"evidence_anchor 须真实 raw anchor: {e['evidence_anchor']}"
+            )
+
+    def test_dispatch_without_to_matched(self):
+        """dispatch（不带 to）→ 因果连接词匹配。"""
+        from src.akb2.quality.distill import _CAUSAL_CONNECTOR_RE
+
+        assert _CAUSAL_CONNECTOR_RE.search("The Captain dispatch sub-tasks")
+        assert _CAUSAL_CONNECTOR_RE.search("The executor collects results")
+        assert _CAUSAL_CONNECTOR_RE.search("The worker spawns on demand")
+
+    def test_ag2_fallback_success(self):
+        """ag2 raw → build_deterministic_extract_result success（≥3 组件 + ≥1 eligible）。"""
+        result = build_deterministic_extract_result(
+            self._AG2_RAW, content_lane="concept"
+        )
+        assert result.success is True, f"ag2 fallback 应 success: {result.error}"
+        basis = result.data.get("fallback_quality_basis", {})
+        assert basis.get("source_causal_edge_count", 0) >= 1, "ag2 应 ≥1 eligible edge"

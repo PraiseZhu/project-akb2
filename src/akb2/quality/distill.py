@@ -649,6 +649,11 @@ def extract_claims(
                         )
                     parsed_segments[segment_name] = segment_data
             merged = _merge_extract_segments(parsed_segments)
+            # §0.2/F6：LLM 产 edge 的 evidence_anchor 校正——若 anchor 不在 raw 声明集，
+            # 用 evidence sentence 在 raw 定位真实 anchor（_nearest_preceding_anchor，复用
+            # fallback 映射逻辑），而非直接信 LLM 编的 anchor；映射不到 → 该边不计 eligible
+            # （不放松防伪）。修真机 floor_failed（LLM 编 anchor 不 ∈ raw → 0 eligible）。
+            _correct_edge_anchors_to_raw(merged, raw_content)
             _validate_extract_output(merged, content_lane=content_lane)
         except SemanticJitterError as exc:
             # Step-7: 语义 segment 连续不稳定达阈值 → fail-closed（不无限重试，有界）。
@@ -1222,6 +1227,53 @@ def _enrich_mechanism(
                 }
             )
     return components, aligned
+
+
+def _correct_edge_anchors_to_raw(merged: dict[str, Any], raw_content: str) -> None:
+    """§0.2/F6：LLM 产 edge 的 evidence_anchor 校正到真实 raw anchor。
+
+    真机 LLM 编的 evidence_anchor 可能不在 raw 声明集（格式不符/编造）→ F4 0 eligible fail。
+    修：对 eligible edge（source_causal/llm_evidence），若 evidence_anchor 不在 raw 声明集，
+    用 evidence sentence 在 raw 定位（find 前缀）+ _nearest_preceding_anchor 映射真实 anchor。
+    映射不到 → 不改（该边不计 eligible，不放松防伪）。in-place 修改 merged["causal_edges"]。
+    """
+    if not raw_content:
+        return
+    edges = merged.get("causal_edges")
+    if not isinstance(edges, list) or not edges:
+        return
+    raw_anchor_positions = _raw_anchor_positions(raw_content)
+    if not raw_anchor_positions:
+        return
+    raw_anchor_set = {a for a, _ in raw_anchor_positions}
+    for e in edges:
+        if not isinstance(e, dict):
+            continue
+        kind = str(e.get("edge_kind", "")).strip()
+        if kind not in ("source_causal", "llm_evidence"):
+            continue
+        anchor = str(e.get("evidence_anchor", "")).strip()
+        if anchor and anchor in raw_anchor_set:
+            continue  # 已是真实 raw anchor
+        # 尝试用 evidence sentence 在 raw 定位真实 anchor
+        evidence = str(e.get("evidence", "")).strip()
+        if not evidence:
+            continue
+        # 用 evidence 前 40 字在 raw 定位（LLM evidence 应是原文句，前缀可匹配）
+        prefix = evidence[:40]
+        sent_pos = raw_content.find(prefix)
+        if sent_pos < 0:
+            # 退化：用 evidence 中最长的连续 token
+            for tok in reversed(sorted(evidence.split(), key=len)):
+                if len(tok) >= 4:
+                    p = raw_content.find(tok)
+                    if p >= 0:
+                        sent_pos = p
+                        break
+        if sent_pos >= 0:
+            mapped = _nearest_preceding_anchor(sent_pos, raw_anchor_positions)
+            if mapped:
+                e["evidence_anchor"] = mapped
 
 
 def _infer_source_command_from_instruction(instruction: str) -> str:
@@ -1915,6 +1967,12 @@ def _validate_extract_output(data: dict[str, Any], content_lane: str = "") -> No
 # 可识别机制实体名（组件/阶段/模块/角色/trigger/selector 等）才纳——防政策承诺
 # 编号列表（"1. Establish safety standards..."）被当机制组件救活。
 _REAL_COMPONENT_HEADING_RE = re.compile(r"(?m)^#{2,4}\s+\d+[\.\)]\s+([^\n(]+)")
+# §0.2/F7：§-anchor 标题（## §A Captain / ### §B Executor Pool）——真实 raw 常用 §-anchor
+# + 组件名作标题（ag2 等），旧 scanner 只认编号标题 → 0 组件 → fallback fail-closed。
+# 认 §-anchor 标题后的名字为组件候选（与编号标题同 strong 信号）。
+_SECTION_ANCHOR_COMPONENT_RE = re.compile(
+    r"(?m)^#{2,4}\s+§[A-Z0-9_]+\s+(.+?)(?:\s*$)"
+)
 _NUMBERED_ITEM_RE = re.compile(r"(?m)^\s*\d+\.\s+([^\n]+)")
 # 机制实体名关键词（noun，非动词承诺）：组件/阶段/模块/子系统/角色/机制 + 常见机制角色
 _MECHANISM_ENTITY_KEYWORDS = (
@@ -1935,11 +1993,13 @@ def _item_has_mechanism_entity(item_text: str) -> bool:
 
 
 def _scan_real_mechanism_components(raw_content: str) -> list[dict[str, str]]:
-    """扫 raw 找真实命名机制组件（编号标题 + 含实体名的编号列表项）。
+    """扫 raw 找真实命名机制组件（编号标题 + §-anchor 标题 + 含实体名的编号列表项）。
 
     返回 ``[{name, role}]``（去重，保序）。
       1. 编号 H2/H3/H4 标题（``### 1. Captain``）——显式结构，信任；
-      2. 编号列表项（``1. A trigger``）——须含机制实体名（P1-A），过滤政策承诺
+      2. §0.2/F7：§-anchor 标题（``## §A Captain``）——真实 raw 常用 §-anchor + 组件名
+         作标题（ag2 等），与编号标题同 strong 信号；
+      3. 编号列表项（``1. A trigger``）——须含机制实体名（P1-A），过滤政策承诺
          （"1. Establish safety standards" 无实体名 → 不纳）。
     散文/政策承诺无实体名编号项 → 0 组件 → fail-closed。
     """
@@ -1951,6 +2011,21 @@ def _scan_real_mechanism_components(raw_content: str) -> list[dict[str, str]]:
         if name and name not in seen:
             seen.add(name)
             components.append({"name": name, "role": "raw 命名机制组件"})
+    # §0.2/F7：§-anchor 标题（## §A Captain）——补 §-anchor 格式组件
+    # 与编号标题同 strong 信号（信任，不卡实体关键词——"Task Graph"/"Lifecycle" 是真组件
+    # 但不含硬编码实体词；编号标题也不卡关键词，§-anchor 标题同口径）
+    if len(components) < CONCEPT_MIN_MECHANISM_COMPONENTS:
+        for m in _SECTION_ANCHOR_COMPONENT_RE.findall(raw_content or ""):
+            name = m.strip().rstrip(".").strip()
+            if (
+                name
+                and len(name) <= 80
+                and name not in seen
+            ):
+                seen.add(name)
+                components.append({"name": name, "role": "raw 命名机制组件"})
+                if len(components) >= CONCEPT_MIN_MECHANISM_COMPONENTS:
+                    break
     # 2. 编号列表项——须含机制实体名（P1-A：防政策承诺编号列表被当组件）
     if len(components) < CONCEPT_MIN_MECHANISM_COMPONENTS:
         for item in _NUMBERED_ITEM_RE.findall(raw_content or ""):
@@ -1970,11 +2045,18 @@ def _scan_real_mechanism_components(raw_content: str) -> list[dict[str, str]]:
 
 
 # P1-A: 真实因果/依赖/触发语言连接词（禁排版顺序边替代因果边）
+# §0.2/F7：因果连接词集——增强以覆盖 ag2 等真实 raw 的显式关系动词
+# （dispatch/collect/feeds/register/spawn/route/forward/return 等）。
+# 旧集只认 "dispatches to"（须带 to）/feeds? 等，ag2 "dispatch"/"collect" 抽不到 → 0 source_causal。
 _CAUSAL_CONNECTOR_RE = re.compile(
-    r"(?i)\b(?:leads?\s+to|triggers?|feeds?|enables?|activates?|depends?\s+on|"
-    r"before|after|causes?|results?\s+in|produces?|dispatches?\s+to|invokes?|"
-    r"schedules?|writes?\s+to|updates?|calls?|sends?\s+to|passes?\s+to|"
-    r"→|consumes?|notifies)\b"
+    r"(?i)\b(?:leads?\s+to|triggers?|feeds?(?:\s+(?:to|into))?|enables?|activates?|"
+    r"depends?\s+on|before|after|causes?|results?\s+in|produces?|"
+    r"dispatch(?:es)?(?:\s+(?:to|into))?|invokes?|schedules?|"
+    r"writes?\s+(?:to|into)|updates?|calls?|sends?\s+(?:to|into)|passes?\s+(?:to|into)|"
+    r"→|consumes?|notifies|"
+    r"collects?|registers?|spawns?|terminates?|returns?|routes?|forwards?|"
+    r"delegates?|assigns?|publishes?|subscribes?|emits?|delivers?|"
+    r"handoffs?|hand\s+offs?|transmits?|relays?)\b"
 )
 
 
