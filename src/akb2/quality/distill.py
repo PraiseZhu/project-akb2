@@ -44,7 +44,9 @@ from src.akb2.quality.raw_anchors import (
     RAW_ANCHOR_VALUE_RE,
     canonicalize_anchor,
     declared_anchor_positions,
+    declared_anchor_set,
     nearest_preceding_anchor,
+    resolve_anchor_ref,
     strip_directory_block,
 )
 from src.akb2.quality.source_ops_scanners.raw_verify import (
@@ -666,6 +668,9 @@ def extract_claims(
             # 用 evidence sentence 在 raw 定位真实 anchor（_nearest_preceding_anchor，复用
             # fallback 映射逻辑），而非直接信 LLM 编的 anchor；映射不到 → 该边不计 eligible
             # （不放松防伪）。修真机 floor_failed（LLM 编 anchor 不 ∈ raw → 0 eligible）。
+            # F-A: 单字母锚 → 全名唯一前缀解析(LLM 照示例产单字母 §W,raw 声明全名 §W_CAVEATS)
+            # 在 _correct_edge_anchors_to_raw 之前:结构化字段锚引用改写为全名,body 渲染 A3 自然过
+            _resolve_short_anchors_to_full(merged, raw_content)
             _correct_edge_anchors_to_raw(merged, raw_content)
             # P1b-1: claims/argumentation 接地校正(确定性单遍,无 LLM)——弱匹配假锚校正 +
             # 强匹配 interpretation→grounded 升级(连续片段覆盖≥60%)+ [B2] argumentation 补填。
@@ -1243,6 +1248,68 @@ def _enrich_mechanism(
                 }
             )
     return components, aligned
+
+
+def _resolve_short_anchors_to_full(merged: dict[str, Any], raw_content: str | None) -> None:
+    """F-A: 结构化字段单字母锚 → 全名唯一前缀解析(确定性,在 _correct_edge_anchors_to_raw 之前)。
+
+    真机探针暴露:LLM 照 prompt 示例产单字母引用(``§W``),但 raw 声明全名(``§W_CAVEATS``)
+    → compose 渲染 body 用单字母 → A3 拒(``锚点 §W 不存在``)。本 pass 对所有锚引用字段做
+    ``resolve_anchor_ref`` 唯一前缀解析:单字母能唯一解析的改写为全名;解析失败(无匹配/歧义)
+    保持原值,由后续 _correct_edge_anchors_to_raw / _ground_claims_to_raw / A3 fail-closed 接手。
+
+    覆盖字段:claims.anchor/traces_to、argumentation.claim_anchor/traces_to、
+    causal_edges.evidence_anchor、graph_edges.evidence_anchor、how_steps.anchor。
+    """
+    if not raw_content:
+        return
+    declared = declared_anchor_set(raw_content)
+    if not declared:
+        return  # raw 无声明锚 → 不解析(后续 fail-closed)
+
+    def _resolve(ref: str) -> str:
+        if not isinstance(ref, str):
+            return ref  # type: ignore[return-value]
+        resolved = resolve_anchor_ref(ref, declared)
+        return resolved if resolved is not None else ref  # 解析失败保持原值
+
+    # claims
+    claims = merged.get("claims")
+    if isinstance(claims, list):
+        for c in claims:
+            if not isinstance(c, dict) or not c.get("anchor"):
+                continue
+            c["anchor"] = _resolve(str(c["anchor"]))
+            tt = c.get("traces_to")
+            if isinstance(tt, list):
+                c["traces_to"] = [_resolve(str(a)) for a in tt if a is not None]
+
+    # argumentation
+    arg = merged.get("argumentation")
+    if isinstance(arg, list):
+        for item in arg:
+            if not isinstance(item, dict):
+                continue
+            if item.get("claim_anchor"):
+                item["claim_anchor"] = _resolve(str(item["claim_anchor"]))
+            tt = item.get("traces_to")
+            if isinstance(tt, list):
+                item["traces_to"] = [_resolve(str(a)) for a in tt if a is not None]
+
+    # causal_edges + graph_edges 的 evidence_anchor
+    for key in ("causal_edges", "graph_edges"):
+        edges = merged.get(key)
+        if isinstance(edges, list):
+            for e in edges:
+                if isinstance(e, dict) and e.get("evidence_anchor"):
+                    e["evidence_anchor"] = _resolve(str(e["evidence_anchor"]))
+
+    # how_steps.anchor
+    how = merged.get("how_steps")
+    if isinstance(how, list):
+        for h in how:
+            if isinstance(h, dict) and h.get("anchor"):
+                h["anchor"] = _resolve(str(h["anchor"]))
 
 
 def _correct_edge_anchors_to_raw(merged: dict[str, Any], raw_content: str) -> None:

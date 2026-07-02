@@ -67,6 +67,35 @@ def canonicalize_anchor(token: str) -> str:
     return token
 
 
+def resolve_anchor_ref(ref: str, declared_set: set[str]) -> str | None:
+    """F-A: 单字母/短引用 → 全名唯一前缀解析(确定性,不猜)。
+
+    LLM 照 prompt 示例产单字母引用(``§W``),但 raw 声明全名(``§W_CAVEATS``)→ A3 拒。
+    本函数把单字母引用解析回全名,使 LLM 单字母输出也能 match 声明集:
+
+    - ref 精确 ∈ declared_set → 原样返回(精确匹配优先)
+    - 否则,当且仅当 declared_set 中恰有一个以 ``ref + "_"`` 开头的锚 → 返回该全名
+    - 0 个匹配或 ≥2 个匹配(歧义)→ None(fail-closed,不猜;caller 保持原值由后续
+      校正/fail-closed 逻辑接手)
+
+    例:declared={§W_CAVEATS},ref=§W → §W_CAVEATS(唯一前缀)。
+       declared={§W_CAVEATS, §W_WORKERS},ref=§W → None(歧义)。
+       declared={§A},ref=§A → §A(精确)。
+    """
+    if not isinstance(ref, str):
+        return None
+    ref = ref.strip()
+    if not ref:
+        return None
+    if ref in declared_set:
+        return ref  # 精确匹配优先
+    prefix = ref + "_"
+    matches = [a for a in declared_set if a.startswith(prefix)]
+    if len(matches) == 1:
+        return matches[0]
+    return None  # 0 或 ≥2 → fail-closed
+
+
 # ---------------------------------------------------------------------------
 # 声明形态 regex
 # ---------------------------------------------------------------------------
