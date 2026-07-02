@@ -778,7 +778,7 @@ def _run_distill_segment(
             extract_result.data, raw_content
         )
         if enriched:
-            # §0.2/F1-followup:重评也传 raw_anchor_set(补抽边 anchor 来自 raw,须用 raw 全集判 trusted)
+            # §0.2/F1-followup:重评传 raw_anchor_set(补抽边 anchor 来自 raw,须用 raw 全集判 trusted)
             floor_result = evaluate_integrity_floor(
                 extract_result.data, content_lane, raw_anchors=raw_anchor_set
             )

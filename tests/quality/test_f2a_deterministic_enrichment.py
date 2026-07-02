@@ -13,7 +13,6 @@ from src.akb2.quality.distill import _enrich_zero_eligible_with_deterministic
 from src.akb2.quality.integrity_floor import evaluate_integrity_floor
 from src.akb2.quality.raw_anchors import declared_anchor_set
 
-
 # raw:声明 §A/§B/§C + §A 下 "Executor Pool dispatches to Task Graph" 因果句
 _RAW_WITH_CAUSAL = """\
 ## 锚点目录
