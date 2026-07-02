@@ -669,8 +669,8 @@ def extract_claims(
             # 不让进 body;procedural 跌破 HOW_STEPS_MIN_EXECUTABLE → 既有 fail-closed 接手。
             _strip_fabricated_how_commands(merged, raw_content)
             # F6-A: 全局端点闭合——所有 causal_edges/graph_edges 的 from/to ∈ mechanism_components
-            # names(含 alias);不在→丢边(防 compose SG-mechanism-edge-evidence 自拒,如 probe-p5
-            # memory 'edge.to=Auto memory 不在组件表')。enrichment 路径也复用同一 helper(带 det_components)。
+            # names(含 alias);不在→丢边(防 compose SG-mechanism-edge-evidence 自拒,如
+            # probe-p5 memory 'edge.to=Auto memory 不在组件表')。enrichment 复用同 helper。
             _close_edge_endpoints(merged)
             # §0.2/F6：LLM 产 edge 的 evidence_anchor 校正——若 anchor 不在 raw 声明集，
             # 用 evidence sentence 在 raw 定位真实 anchor（_nearest_preceding_anchor，复用
