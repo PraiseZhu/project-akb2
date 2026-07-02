@@ -672,6 +672,9 @@ def extract_claims(
             # names(含 alias);不在→丢边(防 compose SG-mechanism-edge-evidence 自拒,如
             # probe-p5 memory 'edge.to=Auto memory 不在组件表')。enrichment 复用同 helper。
             _close_edge_endpoints(merged)
+            # F6-D: 组件 evidence 确定性回填——evidence_anchor/evidence_sentence 为空的组件,
+            # 用 variants 在 raw 定位命中句 + 就近锚回填(H3 主因:9/16 缺陷是组件 evidence 空)
+            _backfill_component_evidence(merged, raw_content)
             # §0.2/F6：LLM 产 edge 的 evidence_anchor 校正——若 anchor 不在 raw 声明集，
             # 用 evidence sentence 在 raw 定位真实 anchor（_nearest_preceding_anchor，复用
             # fallback 映射逻辑），而非直接信 LLM 编的 anchor；映射不到 → 该边不计 eligible
@@ -3322,6 +3325,64 @@ def _close_edge_endpoints(
                 dropped += 1  # 丢边(防 SG 自拒)
         extract_data[edge_key] = closed
     return dropped
+
+
+def _backfill_component_evidence(
+    extract_data: dict[str, Any], raw_content: str | None
+) -> int:
+    """F6-D: 对 evidence_anchor/evidence_sentence 为空的组件做确定性回填。
+
+    H3 缺陷 9/16 是"mechanism_components 的 evidence_anchor/evidence_sentence 空,组件
+    不可追溯"(F2-C 诊断)。本函数用组件名 variants(_component_match_variants 同源)在 raw
+    定位首个词界命中句(20-300 字符,排除标题/表格行)→ evidence_sentence=该句原文,
+    evidence_anchor=就近声明锚(nearest_preceding_anchor)。定位不到→留空(不造假,grader 照裁)。
+    Returns backfilled count。
+    """
+    if not raw_content:
+        return 0
+    components = extract_data.get("mechanism_components", []) or []
+    if not components:
+        return 0
+    # anchor positions(供就近映射)
+    anchor_positions = _raw_anchor_positions(raw_content)
+    backfilled = 0
+    for comp in components:
+        if not isinstance(comp, dict):
+            continue
+        ea = str(comp.get("evidence_anchor", "")).strip()
+        es = str(comp.get("evidence_sentence", "")).strip()
+        if ea and es:
+            continue  # 已有,不覆盖
+        name = str(comp.get("name", "")).strip()
+        if not name:
+            continue
+        # 用本组件的 variants 在 raw 找命中句(单组件无 collision)
+        variant_map = _component_match_variants([{"name": name, "role": "x"}])
+        pattern = _compile_component_match_pattern(variant_map)
+        if not pattern:
+            continue
+        found_sent = None
+        found_pos = -1
+        for sent in re.split(r"[。\n.!?]", raw_content):
+            sent = sent.strip()
+            if not sent or len(sent) < 20 or len(sent) > 300:
+                continue
+            if sent.startswith("#") or sent.startswith("|"):
+                continue
+            if pattern.search(sent):
+                found_sent = sent
+                found_pos = raw_content.find(sent)
+                if found_pos >= 0:
+                    break
+        if found_sent and found_pos >= 0:
+            anchor = _nearest_preceding_anchor(found_pos, anchor_positions)
+            if anchor:
+                if not es:
+                    comp["evidence_sentence"] = found_sent
+                if not ea:
+                    comp["evidence_anchor"] = anchor
+                backfilled += 1
+    return backfilled
 
 
 def _enrich_zero_eligible_with_deterministic(
