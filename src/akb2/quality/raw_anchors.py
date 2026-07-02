@@ -109,6 +109,18 @@ def _directory_block_range(raw_content: str) -> tuple[int, int]:
     return start, end
 
 
+def strip_directory_block(raw_content: str) -> str:
+    """移除 `## 锚点目录` 块;格式不匹配原样返回。
+
+    供 P1b-1 grounding 匹配用:正文比对时去掉 raw_archiver 生成的 TOC 区(短条目,
+    非正文,避免 TOC 文字混入 claim 接地匹配)。
+    """
+    ds, de = _directory_block_range(raw_content)
+    if ds < 0:
+        return raw_content
+    return raw_content[:ds] + raw_content[de:]
+
+
 # ---------------------------------------------------------------------------
 # 公开 API
 # ---------------------------------------------------------------------------

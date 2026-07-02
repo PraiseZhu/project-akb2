@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import re
@@ -35,6 +36,7 @@ from typing import Any
 
 import yaml
 
+from src.akb2.quality.chrome_strip import strip_chrome_blocks
 from src.akb2.quality.raw_anchors import (
     ANCHOR_TOKEN_PAT,
     RAW_ANCHOR_DECL_RE,
@@ -43,6 +45,7 @@ from src.akb2.quality.raw_anchors import (
     canonicalize_anchor,
     declared_anchor_positions,
     nearest_preceding_anchor,
+    strip_directory_block,
 )
 from src.akb2.quality.source_ops_scanners.raw_verify import (
     is_command_allowed_for_candidate,
@@ -662,6 +665,9 @@ def extract_claims(
             # fallback 映射逻辑），而非直接信 LLM 编的 anchor；映射不到 → 该边不计 eligible
             # （不放松防伪）。修真机 floor_failed（LLM 编 anchor 不 ∈ raw → 0 eligible）。
             _correct_edge_anchors_to_raw(merged, raw_content)
+            # P1b-1: claims/argumentation 接地校正(确定性单遍,无 LLM)——弱匹配假锚校正 +
+            # 强匹配 interpretation→grounded 升级(连续片段覆盖≥60%)+ [B2] argumentation 补填。
+            _ground_claims_to_raw(merged, raw_content)
             _validate_extract_output(merged, content_lane=content_lane)
         except SemanticJitterError as exc:
             # Step-7: 语义 segment 连续不稳定达阈值 → fail-closed（不无限重试，有界）。
@@ -1282,6 +1288,221 @@ def _correct_edge_anchors_to_raw(merged: dict[str, Any], raw_content: str) -> No
             mapped = _nearest_preceding_anchor(sent_pos, raw_anchor_positions)
             if mapped:
                 e["evidence_anchor"] = mapped
+
+
+# ---------------------------------------------------------------------------
+# P1b-1: claims/argumentation 接地校正 pass(确定性单遍,无 LLM)
+# ---------------------------------------------------------------------------
+
+# 接地匹配具名常量(宪法 P1/P4:有界 + 预算显式)
+_GROUND_WEAK_PREFIX_CHARS: int = 60      # 弱匹配:取 claim 前 N 归一字符做连续命中探测
+_GROUND_WEAK_CONTIG_MIN: int = 25        # 弱匹配:连续命中 ≥ 此长度才算
+_GROUND_WEAK_TOKEN_MIN_LEN: int = 5      # 弱匹配:长 token 最短长度(非停用词)
+_GROUND_WEAK_TOKEN_MIN_COUNT: int = 2    # 弱匹配:≥ 此数长 token 同窗共现才算
+_GROUND_WEAK_WINDOW: int = 240           # 弱匹配:token 共现窗口
+_GROUND_STRONG_COVERAGE: float = 0.60    # 强匹配:连续片段覆盖 ≥ 此比例才升级
+_GROUND_BODY_MAX_CHARS: int = 30_000     # 接地匹配 body 上限(性能;claim 罕在 30k 后段)
+# 弱匹配 token 共现的停用词(泛词不作 variant)
+_GROUND_STOPWORDS: frozenset[str] = frozenset({
+    "the", "a", "an", "of", "and", "or", "to", "in", "for", "is", "are", "be",
+    "with", "as", "by", "on", "at", "this", "that", "it", "from", "which",
+    "的", "和", "与", "在", "为", "了", "是", "对", "从", "由", "及",
+})
+
+
+def _normalize_for_grounding(text: str) -> str:
+    """归一化(小写 + 去空白 + 去标点)供连续片段比对。"""
+    return "".join(
+        c.lower() for c in str(text) if not c.isspace() and c.isalnum()
+    )
+
+
+def _normalize_with_pos_map(text: str) -> tuple[str, list[int]]:
+    """归一化(小写 + 去空白 + 去标点),返回 (norm, pos_map)。
+
+    pos_map[i] = norm 第 i 字符在原 text 的位置(供匹配位置回映原 body 取 anchor)。
+    """
+    norm_chars: list[str] = []
+    pos_map: list[int] = []
+    for i, c in enumerate(text):
+        if c.isspace() or not c.isalnum():
+            continue
+        norm_chars.append(c.lower())
+        pos_map.append(i)
+    return "".join(norm_chars), pos_map
+
+
+def _tokenize_long_tokens(text: str) -> list[str]:
+    """分词(小写字母/数字序列),返回 len≥5 非停用词 token(去重保序)。"""
+    out: list[str] = []
+    seen: set[str] = set()
+    for t in re.findall(r"[A-Za-z0-9]+", str(text).lower()):
+        if (
+            len(t) >= _GROUND_WEAK_TOKEN_MIN_LEN
+            and t not in _GROUND_STOPWORDS
+            and t not in seen
+        ):
+            seen.add(t)
+            out.append(t)
+    return out
+
+
+def _strip_raw_for_grounding(raw_content: str) -> str:
+    """去 frontmatter + 锚点目录块 + chrome,留正文供 claim 接地匹配。"""
+    if not raw_content:
+        return ""
+    text = _strip_raw_frontmatter_text(raw_content)
+    text = strip_directory_block(text)
+    text, _ = strip_chrome_blocks(text)
+    return text.strip()
+
+
+def _weak_match_pos(
+    claim_norm: str,
+    claim_tokens: list[str],
+    body_norm: str,
+    pos_map: list[int],
+) -> int:
+    """弱匹配:返回匹配在原 body 的位置(pos_map 回映),-1 未匹配。
+
+    [B1] 两档(满足任一):
+    - 前 60 归一字符连续命中 ≥25
+    - ≥2 长 token(len≥5 非停用词)同 240 字窗共现
+    弱匹配只用于假锚校正(不升级 provenance)。
+    """
+    if not claim_norm or not body_norm or not pos_map:
+        return -1
+    # 档1:前 60 归一字符中找最长连续命中
+    prefix = claim_norm[:_GROUND_WEAK_PREFIX_CHARS]
+    if len(prefix) >= _GROUND_WEAK_CONTIG_MIN:
+        sm = difflib.SequenceMatcher(None, prefix, body_norm, autojunk=False)
+        m = sm.find_longest_match(0, len(prefix), 0, len(body_norm))
+        if m.size >= _GROUND_WEAK_CONTIG_MIN and m.b < len(pos_map):
+            return pos_map[m.b]
+    # 档2:长 token 同窗共现
+    if len(claim_tokens) >= _GROUND_WEAK_TOKEN_MIN_COUNT:
+        token_positions: list[tuple[int, str]] = []
+        for t in claim_tokens:
+            idx = body_norm.find(t)
+            if idx >= 0:
+                token_positions.append((idx, t))
+        token_positions.sort(key=lambda x: x[0])
+        for i in range(len(token_positions)):
+            for j in range(i + 1, len(token_positions)):
+                if token_positions[j][0] - token_positions[i][0] <= _GROUND_WEAK_WINDOW:
+                    b_pos = token_positions[i][0]
+                    if b_pos < len(pos_map):
+                        return pos_map[b_pos]
+    return -1
+
+
+def _strong_match_pos(
+    claim_norm: str, body_norm: str, pos_map: list[int]
+) -> int:
+    """强匹配:claim 归一文本连续片段覆盖 ≥60% → 返原 body 位置;否则 -1。
+
+    [B1] 强匹配是唯一允许 interpretation→grounded 升级的通路。近全文转写才升级;
+    局部前缀/共现不升级(防 paraphrase 误升级)。返回 -1 时 caller 保持 interpretation。
+    """
+    if not claim_norm or not body_norm or not pos_map or len(claim_norm) < 10:
+        return -1
+    sm = difflib.SequenceMatcher(None, claim_norm, body_norm, autojunk=False)
+    m = sm.find_longest_match(0, len(claim_norm), 0, len(body_norm))
+    if m.size / len(claim_norm) >= _GROUND_STRONG_COVERAGE and m.b < len(pos_map):
+        return pos_map[m.b]
+    return -1
+
+
+def _ground_claims_to_raw(merged: dict[str, Any], raw_content: str | None) -> None:
+    """P1b-1: claims/argumentation 接地校正(确定性单遍,无 LLM)。
+
+    调用点:extract_claims 中 _correct_edge_anchors_to_raw 之后、_validate_extract_output
+    之前。匹配目标 = 去除 frontmatter/TOC/chrome 后的 raw 正文。
+
+    [B1] 两档匹配(宁缺勿假,匹配不上→维持原状→fail-closed):
+    - 弱匹配(仅假锚校正,不升级 provenance):source_grounded claim 锚不在 raw 声明集 →
+      前60归一字符连续命中≥25 或 ≥2 长 token(len≥5 非停用词)同240字窗共现 → remap
+      anchor 到就近真实声明锚;失败不动。
+    - 强匹配(唯一 interpretation→grounded 升级通路):claim 归一文本连续片段覆盖 ≥60%
+      (近全文转写)→ 升级 provenance + remap anchor + 补 traces_to=[anchor];局部前缀/
+      token 共现不升级(paraphrase 反例:"Executor Pool guarantees fairness in Task Queue"
+      主题词共现但谓词非原文 → 不达 60% 连续覆盖 → 不升级)。
+
+    [B2] argumentation 显式覆盖:argumentation 条目 provenance==akb_interpretation 且
+    traces_to 空时,仅当其 claim_anchor 指向已严格接地的 source_grounded claim 才填
+    traces_to=[claim_anchor];否则保持 fail-closed(语义蕴含真伪仍由 GPT-5.4 entailment
+    硬门裁)。既有 test_interpretation_traceability.py floor 测试保持绿(它们直接构造 dict
+    调 floor,不经本 pass)。
+
+    golden 幂等:已接地/已正确者 no-op;无依据者不补造。
+    """
+    if not raw_content:
+        return
+    body = _strip_raw_for_grounding(raw_content)
+    if not body:
+        return
+    body = body[:_GROUND_BODY_MAX_CHARS]
+    body_norm, pos_map = _normalize_with_pos_map(body)
+    if not body_norm:
+        return
+
+    decls = declared_anchor_positions(body)
+    declared_set = {a for _, a in decls}
+    if not declared_set:
+        return  # raw 无声明锚 → 无法接地(fail-closed,不造假)
+
+    claims = merged.get("claims")
+    grounded_anchors: set[str] = set()  # 本就正确 + 升级后的 source_grounded claim anchors
+
+    if isinstance(claims, list):
+        for claim in claims:
+            if not isinstance(claim, dict):
+                continue
+            prov = str(claim.get("provenance", "")).strip()
+            anchor = str(claim.get("anchor", "")).strip()
+            text = str(claim.get("text", "") or claim.get("claim", "") or "")
+            if not text:
+                continue
+            claim_norm = _normalize_for_grounding(text)
+            claim_tokens = _tokenize_long_tokens(text)
+
+            if prov == "source_grounded":
+                if anchor and anchor in declared_set:
+                    grounded_anchors.add(anchor)  # 本就正确接地
+                elif anchor:
+                    # 弱匹配:假锚校正(不升级 provenance)
+                    pos = _weak_match_pos(claim_norm, claim_tokens, body_norm, pos_map)
+                    if pos >= 0:
+                        new_anchor = nearest_preceding_anchor(body, pos, decls)
+                        if new_anchor and new_anchor in declared_set:
+                            claim["anchor"] = new_anchor
+                            grounded_anchors.add(new_anchor)
+            elif prov == "akb_interpretation":
+                # 强匹配:唯一升级通路(连续片段覆盖 ≥60%)
+                pos = _strong_match_pos(claim_norm, body_norm, pos_map)
+                if pos >= 0:
+                    new_anchor = nearest_preceding_anchor(body, pos, decls)
+                    if new_anchor and new_anchor in declared_set:
+                        claim["provenance"] = "source_grounded"
+                        claim["anchor"] = new_anchor
+                        if not claim.get("traces_to"):
+                            claim["traces_to"] = [new_anchor]
+                        grounded_anchors.add(new_anchor)
+                # 无强匹配 → 留 interpretation;不补造 traces_to(fail-closed,由 floor 裁)
+
+    # [B2] argumentation 保守补填 traces_to
+    arg = merged.get("argumentation")
+    if isinstance(arg, list) and grounded_anchors:
+        for item in arg:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("provenance", "")).strip() != "akb_interpretation":
+                continue
+            if item.get("traces_to"):  # 已有 traces_to,不动
+                continue
+            claim_anchor = str(item.get("claim_anchor", "")).strip()
+            if claim_anchor and claim_anchor in grounded_anchors:
+                item["traces_to"] = [claim_anchor]
 
 
 def _infer_source_command_from_instruction(instruction: str) -> str:
