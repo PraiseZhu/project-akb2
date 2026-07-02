@@ -64,6 +64,8 @@ HOW_STEPS_MIN_EXECUTABLE: int = 3
 # step-3 SC-3a/A3-5：concept 车道命名机制组件下限（F4 结构真相源）。
 # concept extract 改判 len(mechanism_components)≥3（替代 procedural 的 executable≥3 门）。
 CONCEPT_MIN_MECHANISM_COMPONENTS: int = 3
+# P1b-2: fallback 组件抽取上限(防长表格灌水;有界预算)
+FALLBACK_MAX_COMPONENTS: int = 12
 # step-1 content_lane 枚举：concept（概念型）/ procedural（操作型，默认兼容）。
 CONTENT_LANE_CONCEPT: str = "concept"
 HOW_STEPS_MAX_RENDERED: int = 3
@@ -2221,16 +2223,88 @@ def _item_has_mechanism_entity(item_text: str) -> bool:
     return any(kw in lower for kw in _MECHANISM_ENTITY_KEYWORDS)
 
 
-def _scan_real_mechanism_components(raw_content: str) -> list[dict[str, str]]:
-    """扫 raw 找真实命名机制组件（编号标题 + §-anchor 标题 + 含实体名的编号列表项）。
+# P1b-2: 表格组件列 header 关键词(命中则取该列单元作组件名)
+_COMPONENT_HEADER_KEYWORDS: tuple[str, ...] = (
+    "component", "module", "subsystem", "stage", "layer", "service",
+    "组件", "模块", "子系统", "阶段", "层", "服务",
+)
 
-    返回 ``[{name, role}]``（去重，保序）。
+
+def _split_table_cells(line: str) -> list[str]:
+    """朴素拆 markdown 表格行 ``| a | b | c |`` → ['a','b','c']。"""
+    s = line.strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    return [c.strip() for c in s.split("|")]
+
+
+def _scan_component_table_rows(raw_content: str) -> list[str]:
+    """P1b-2: 扫 markdown 表格,header 命中组件类关键词(component/module/组件/模块…)的列,
+    取该列单元作组件名。
+
+    - 排除锚点目录块内的表(``## 锚点目录`` 区,经 strip_directory_block 去除)。
+    - 剥 ``**``/反引号;剥行首 ``§X`` 锚点 token(非组件名一部分)。
+    - 跳过分隔行(``|---|---|``)。
+    """
+    if not raw_content:
+        return []
+    body = strip_directory_block(raw_content)
+    names: list[str] = []
+    seen: set[str] = set()
+    lines = body.split("\n")
+    i = 0
+    while i < len(lines):
+        if not lines[i].strip().startswith("|"):
+            i += 1
+            continue
+        # 收集连续表格行(一张表)
+        table_lines: list[str] = []
+        while i < len(lines) and lines[i].strip().startswith("|"):
+            table_lines.append(lines[i])
+            i += 1
+        if len(table_lines) < 3:  # 至少 header + separator + 1 数据行
+            continue
+        header = _split_table_cells(table_lines[0])
+        # 找组件类列(首个命中的列)
+        col_idx = -1
+        for idx, h in enumerate(header):
+            h_lower = h.lower()
+            if any(kw in h_lower for kw in _COMPONENT_HEADER_KEYWORDS):
+                col_idx = idx
+                break
+        if col_idx < 0:
+            continue
+        # 跳过分隔行(table_lines[1]),取数据行
+        for row_line in table_lines[2:]:
+            cells = _split_table_cells(row_line)
+            if col_idx >= len(cells):
+                continue
+            cell = cells[col_idx]
+            # 分隔行兜底(|:---|---:|)
+            if re.fullmatch(r":?-{0,}:?", cell):
+                continue
+            cell = re.sub(r"[`*]", "", cell).strip()
+            cell = re.sub(rf"^{ANCHOR_TOKEN_PAT}\s+", "", cell).strip()  # 剥行首 §X
+            if cell and len(cell) <= 80 and cell not in seen:
+                seen.add(cell)
+                names.append(cell)
+    return names
+
+
+def _scan_real_mechanism_components(raw_content: str) -> list[dict[str, str]]:
+    """扫 raw 找真实命名机制组件（编号标题 + §-anchor 标题 + 表格组件列 + 含实体名的编号列表项）。
+
+    返回 ``[{name, role}]``（去重，保序，上限 FALLBACK_MAX_COMPONENTS）。
       1. 编号 H2/H3/H4 标题（``### 1. Captain``）——显式结构，信任；
       2. §0.2/F7：§-anchor 标题（``## §A Captain``）——真实 raw 常用 §-anchor + 组件名
          作标题（ag2 等），与编号标题同 strong 信号；
+      1.5. P1b-2：markdown 表格组件列（header 命中 component/组件/模块…）——补表格化组件
+         散文（idx2 组件数 2<3 需 table 抽取也命中才救）；
       3. 编号列表项（``1. A trigger``）——须含机制实体名（P1-A），过滤政策承诺
          （"1. Establish safety standards" 无实体名 → 不纳）。
-    散文/政策承诺无实体名编号项 → 0 组件 → fail-closed。
+    散文/政策承诺无实体名编号项 → 0 组件 → fail-closed。全局上限 FALLBACK_MAX_COMPONENTS=12。
     """
     components: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -2255,6 +2329,15 @@ def _scan_real_mechanism_components(raw_content: str) -> list[dict[str, str]]:
                 components.append({"name": name, "role": "raw 命名机制组件"})
                 if len(components) >= CONCEPT_MIN_MECHANISM_COMPONENTS:
                     break
+    # 1.5. P1b-2：markdown 表格组件列(header 命中 component/组件/模块…)取该列单元
+    if len(components) < CONCEPT_MIN_MECHANISM_COMPONENTS:
+        for name in _scan_component_table_rows(raw_content or ""):
+            name = name.strip().rstrip(".").strip()
+            if name and len(name) <= 80 and name not in seen:
+                seen.add(name)
+                components.append({"name": name, "role": "raw 命名机制组件"})
+                if len(components) >= CONCEPT_MIN_MECHANISM_COMPONENTS:
+                    break
     # 2. 编号列表项——须含机制实体名（P1-A：防政策承诺编号列表被当组件）
     if len(components) < CONCEPT_MIN_MECHANISM_COMPONENTS:
         for item in _NUMBERED_ITEM_RE.findall(raw_content or ""):
@@ -2270,6 +2353,9 @@ def _scan_real_mechanism_components(raw_content: str) -> list[dict[str, str]]:
             components.append({"name": name, "role": "raw 命名机制组件"})
             if len(components) >= CONCEPT_MIN_MECHANISM_COMPONENTS:
                 break
+    # P1b-2: 全局上限(防长表格/编号列表灌水;有界预算)
+    if len(components) > FALLBACK_MAX_COMPONENTS:
+        components = components[:FALLBACK_MAX_COMPONENTS]
     return components
 
 
