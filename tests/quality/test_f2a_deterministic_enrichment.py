@@ -78,8 +78,9 @@ class TestEnrichment:
         floor_before = evaluate_integrity_floor(data, "concept", raw_anchors=decl)
         assert not floor_before.passed  # 0 eligible → F4 fail
 
-        enriched = _enrich_zero_eligible_with_deterministic(data, _RAW_WITH_CAUSAL)
-        assert enriched  # 加了边
+        diag = _enrich_zero_eligible_with_deterministic(data, _RAW_WITH_CAUSAL)
+        assert diag["enriched"]  # 加了边
+        assert diag["edges_added"] >= 1
 
         floor_after = evaluate_integrity_floor(data, "concept", raw_anchors=decl)
         assert floor_after.passed, f"enrich 后 F4 应过: {floor_after.reason}"
@@ -88,14 +89,14 @@ class TestEnrichment:
         assert len(causal) >= 1
 
     def test_raw_not_extractable_returns_false_unchanged(self):
-        """raw 无因果句/组件 → 返 False,extract_data 不动(fail-closed)。"""
+        """raw 无因果句/组件 → enriched=False,extract_data 不动(fail-closed)。"""
         data = _extract_zero_eligible(_RAW_NO_CAUSAL)
         data_before = {
             "causal_edges": list(data["causal_edges"]),
             "mechanism_components": list(data["mechanism_components"]),
         }
-        enriched = _enrich_zero_eligible_with_deterministic(data, _RAW_NO_CAUSAL)
-        assert enriched is False
+        diag = _enrich_zero_eligible_with_deterministic(data, _RAW_NO_CAUSAL)
+        assert diag["enriched"] is False
         assert data["causal_edges"] == data_before["causal_edges"]
         assert data["mechanism_components"] == data_before["mechanism_components"]
 
@@ -118,6 +119,50 @@ class TestEnrichment:
         assert names.count("Task Graph") == 1
         # 组件数不超 FALLBACK_MAX_COMPONENTS=12
         assert len(data["mechanism_components"]) <= 12
+
+    def test_f4a_alias_component_names_enrichment_passes(self):
+        """F4-A 回归:LLM 组件名(slug/别名,如 executor_pool/Captain Agent)与确定性原名
+        (Executor Pool/Captain)不同时,enrichment 仍能用确定性组件抽 source_causal 边 → F4 过。
+
+        probe-p3 ag2 根因:原用 existing_comps(LLM+确定性混合)调 _build_real_causal_edges,
+        LLM slug(executor_pool)与确定性原名(Executor Pool)variant 碰撞 → 'executor'/'captain'
+        被 [N1]a 歧义弃用 → 0 source_causal 边。F4-A 改用 det_components 抽边,修复。
+        """
+        # LLM 组件名与确定性不同(slug + 别名)
+        data = {
+            "claims": [
+                {"text": "x", "anchor": "§A", "provenance": "source_grounded",
+                 "evidence_gap": "未提供 X"},
+            ],
+            "argumentation": [],
+            "mechanism_components": [
+                {"name": "Captain Agent", "role": "x"},
+                {"name": "executor_pool", "role": "y"},
+                {"name": "TaskGraph", "role": "z"},
+            ],
+            "causal_edges": [
+                # LLM 只产 inferred 弱边(无 evidence/anchor)→ 0 eligible
+                {"from": "Captain Agent", "to": "executor_pool", "relation": "seq",
+                 "edge_kind": "inferred_from_structure", "evidence": "", "evidence_anchor": ""},
+            ],
+            "how_steps": [],
+        }
+        raw = (
+            "## 锚点目录\n\n| §A | x |\n| §M | y |\n| §F | z |\n\n---\n\n"
+            "§A_CONTENT_START\n\nintro.\n\n"
+            "§M_PARAMS\n\nThe Captain dispatches to the Executor Pool.\n\n"
+            "§F_EVIDENCE\n\nThe Executor Pool feeds the Task Graph.\n"
+        )
+        decl = declared_anchor_set(raw)
+        floor_before = evaluate_integrity_floor(data, "concept", raw_anchors=decl)
+        assert not floor_before.passed  # 0 eligible → F4 fail
+
+        diag = _enrich_zero_eligible_with_deterministic(data, raw)
+        assert diag["enriched"]
+        assert diag["edges_added"] >= 1  # F4-A:确定性边真合入(原 0)
+
+        floor_after = evaluate_integrity_floor(data, "concept", raw_anchors=decl)
+        assert floor_after.passed, f"alias 组件名 enrichment 后 F4 应过: {floor_after.reason}"
 
 
 class TestEligiblePresentNotTriggered:

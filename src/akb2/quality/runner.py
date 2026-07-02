@@ -780,15 +780,21 @@ def _run_distill_segment(
     ):
         from src.akb2.quality.distill import _enrich_zero_eligible_with_deterministic
 
-        enriched = _enrich_zero_eligible_with_deterministic(
+        enrich_diag = _enrich_zero_eligible_with_deterministic(
             extract_result.data, raw_content
         )
-        if enriched:
+        if enrich_diag.get("enriched"):
             # §0.2/F1-followup:重评传 raw_anchor_set(补抽边 anchor 来自 raw,须用 raw 全集判 trusted)
             floor_result = evaluate_integrity_floor(
                 extract_result.data, content_lane, raw_anchors=raw_anchor_set
             )
             floor_result.meta["causal_edge_retake_applied"] = True
+            # F4-A fail-visible:ledger 记 enrichment 诊断(applied/edges_added/passed_after)
+            _log_event(
+                config, "distill_extract", "causal_edge_enrichment",
+                _compute_raw_hash(raw_path),
+                {"applied": True, **enrich_diag, "passed_after": floor_result.passed},
+            )
 
     # F2-B: traceability 有界 retake — floor 仅因 traceability fail(其余 floor 全过)时,
     # 重发 interpretation + grounded anchors 给 LLM 补 traces_to/改判 provenance,重评 floor。

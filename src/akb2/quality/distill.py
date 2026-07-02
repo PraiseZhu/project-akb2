@@ -3085,8 +3085,8 @@ def _build_real_causal_edges(
 
 def _enrich_zero_eligible_with_deterministic(
     extract_data: dict[str, Any], raw_content: str | None
-) -> bool:
-    """F2-A: LLM extract 成功但 0 eligible 边时的确定性抽边 enrichment(并入主路径)。
+) -> dict[str, Any]:
+    """F2-A/F4-A: LLM extract 成功但 0 eligible 边时的确定性抽边 enrichment(并入主路径)。
 
     真机探针暴露:LLM extract 成功但只产 inferred 弱边 → F4 0 eligible 早死,而
     _build_real_causal_edges 离线对同一 raw 能抽 eligible 边却没机会跑。本函数在
@@ -3094,20 +3094,26 @@ def _enrich_zero_eligible_with_deterministic(
 
     1. _scan_real_mechanism_components(raw) → 确定性组件,合并进 mechanism_components
        (LLM 已有同名/别名则对齐不重复,否则补进,守 FALLBACK_MAX_COMPONENTS=12)。
-    2. _build_real_causal_edges(merged_components, raw) → source_causal 边,合并进
+    2. _build_real_causal_edges(**det_components**, raw) → source_causal 边,合并进
        causal_edges(dedup by from/to)。
-    Returns True 若加了组件或边(需重评 floor);False 若 raw 无可抽(维持原状 fail-closed)。
+       F4-A 修:只用 det_components 抽边(不混 LLM 组件),避免 LLM slug 名(executor_pool)
+       与确定性原名(Executor Pool)variant 碰撞 → "executor"/"captain" 被 [N1]a 歧义弃用
+       → 抽不出 source_causal 边(probe-p3 ag2 根因)。
 
-    宁缺勿假:抽不出 → 返 False,extract_data 不动,后续 floor fail-closed 接手。
-    幂等:LLM 已有 eligible 边时不触发(caller 守);再跑一次也无新增(dedup)。
+    Returns:
+        {enriched, components_added, edges_added, edges_dropped_endpoint}
+        enriched=True 若加了组件或边(需重评 floor);False 若 raw 无可抽(fail-closed)。
+        F4-A fail-visible:caller(runner)记 ledger(applied/edges_added/passed_after)。
     """
+    diag = {"enriched": False, "components_added": 0, "edges_added": 0, "edges_dropped_endpoint": 0}
     if not raw_content:
-        return False
+        return diag
     # 1. 确定性组件,合并(别名感知 dedup)
     det_components = _scan_real_mechanism_components(raw_content)
     existing_comps: list[dict[str, Any]] = list(
         extract_data.get("mechanism_components", []) or []
     )
+    original_llm_comps = list(existing_comps)  # 合并前的 LLM 组件(供双跑抽边)
     existing_keys: set[str] = set()
     for c in existing_comps:
         if not isinstance(c, dict):
@@ -3130,34 +3136,44 @@ def _enrich_zero_eligible_with_deterministic(
         )
         existing_keys.add(name.lower())
         added_comp = True
+        diag["components_added"] += 1
     if added_comp:
         extract_data["mechanism_components"] = existing_comps
-    # 2. 确定性 source_causal 边(只合并 eligible-capable 的 source_causal,inferred 弱边
-    # 无 evidence/anchor 不计 F4,合并无意义且 LLM 多半已有)
-    det_edges = [
-        e for e in _build_real_causal_edges(existing_comps, raw_content)
-        if e.get("edge_kind") == "source_causal"
-    ]
+    # 2. 确定性 source_causal 边——F4-A 修:双跑(det_components + 原始 LLM comps)分开抽边,
+    # 避免 LLM slug(executor_pool)与确定性原名(Executor Pool)variant 碰撞致 'executor'
+    # 被 [N1]a 歧义弃用(probe-p3 ag2 根因)。双跑各自只用自己的组件,无跨集 collision;
+    # 合并两路 source_causal 边(dedup by from/to)。只取 source_causal(inferred 弱边不计 F4)。
+    det_edges: list[dict[str, Any]] = []
+    for comps_src in (det_components, original_llm_comps):
+        for e in _build_real_causal_edges(comps_src, raw_content):
+            if e.get("edge_kind") == "source_causal":
+                det_edges.append(e)
     if not det_edges:
-        return added_comp  # 加了组件但没 source_causal 边 → 仍需重评(组件数可能救 <3 那条)
+        diag["enriched"] = added_comp  # 加了组件但没边 → 仍需重评(组件数可能救 <3 那条)
+        return diag
     existing_edges: list[dict[str, Any]] = list(
         extract_data.get("causal_edges", []) or []
     )
+    # F4-A:dedup 只对 existing source_causal 边(不让 inferred 弱边同 (from,to) 阻挡
+    # source_causal eligible 边加入——inferred 无 evidence/anchor 不计 F4,source_causal 才计)
     existing_pairs: set[tuple[str, str]] = {
         (str(e.get("from", "")), str(e.get("to", "")))
         for e in existing_edges
-        if isinstance(e, dict)
+        if isinstance(e, dict) and e.get("edge_kind") == "source_causal"
     }
     added_edge = False
     for e in det_edges:
         pair = (str(e.get("from", "")), str(e.get("to", "")))
-        if pair not in existing_pairs:
-            existing_edges.append(e)
-            existing_pairs.add(pair)
-            added_edge = True
+        if pair in existing_pairs:
+            continue
+        existing_edges.append(e)
+        existing_pairs.add(pair)
+        added_edge = True
+        diag["edges_added"] += 1
     if added_edge:
         extract_data["causal_edges"] = existing_edges
-    return added_comp or added_edge
+    diag["enriched"] = added_comp or added_edge
+    return diag
 
 
 def build_deterministic_extract_result(
