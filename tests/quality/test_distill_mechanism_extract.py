@@ -980,7 +980,7 @@ class TestSection4TwoPhaseExtraction:
                     and e.get("evidence") and e.get("evidence_anchor")]
         assert len(eligible) >= 1, "golden loop 应产 ≥1 eligible edge（§4 救率硬证据）"
         # floor F4 pass（D1：≥3 组件 + ≥1 eligible edge）
-        r = evaluate_integrity_floor(merged, "concept")
+        r = evaluate_integrity_floor(merged, "concept", raw_anchors={"§A", "§B", "§C"})
         assert FLOOR_CORE_VALUE_F4 not in r.failed_floors, f"golden F4 应 pass: {r.reason}"
 
     def test_ag2_captain_produces_eligible_edge_and_passes_f4(self):
@@ -995,7 +995,7 @@ class TestSection4TwoPhaseExtraction:
                     if e.get("edge_kind") in ("source_causal", "llm_evidence")
                     and e.get("evidence") and e.get("evidence_anchor")]
         assert len(eligible) >= 1, "ag2 captain 应产 ≥1 eligible edge"
-        r = evaluate_integrity_floor(result.data, "concept")
+        r = evaluate_integrity_floor(result.data, "concept", raw_anchors={"§A", "§B", "§C"})
         assert FLOOR_CORE_VALUE_F4 not in r.failed_floors
 
     def test_vercel_produces_eligible_edge_and_passes_f4(self):
@@ -1010,7 +1010,7 @@ class TestSection4TwoPhaseExtraction:
                     if e.get("edge_kind") in ("source_causal", "llm_evidence")
                     and e.get("evidence") and e.get("evidence_anchor")]
         assert len(eligible) >= 1, "vercel 应产 ≥1 eligible edge"
-        r = evaluate_integrity_floor(result.data, "concept")
+        r = evaluate_integrity_floor(result.data, "concept", raw_anchors={"§A", "§B", "§C"})
         assert FLOOR_CORE_VALUE_F4 not in r.failed_floors
 
     def test_enrich_generates_component_id(self):

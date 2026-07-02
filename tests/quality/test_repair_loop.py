@@ -2251,7 +2251,7 @@ class TestD3DefectSchemaAndA4:
             candidate_text="---\nstatus: candidate\n---\n\n## TLDR\ntest [raw §A]\n\n## 适用边界\nx\n",
             a_defects=repairable_defects,
             b_defects=[],
-            raw_text="raw content",
+            raw_text="# §A raw content\n\nthe raw has §A anchor",  # 含 §A，避免 A3 hard_fail 触发
             golden_sample_text="",
             failures_path="/tmp/_failures.jsonl",
             mock_route_llm=mock_route,
@@ -2259,3 +2259,68 @@ class TestD3DefectSchemaAndA4:
         # 无 hard_fail → 不 A4 早停 → 走 LLM（mock 返空 patch → 不收敛 → fail-closed）
         assert llm_called, "仅 repairable 应走 LLM 修复路径（不 A4 早停）"
         assert result["converged"] is False, "mock 返空 patch → 不收敛 → fail-closed"
+
+    def test_f2_taxonomy_a3_anchor_mixed_hard_fail(self):
+        """§0.2/F2-taxonomy：A3-锚点真实 + A8-适用边界 混合 → hard_fail 早停不调 LLM。
+
+        A3-锚点真实（引用锚点 raw 不存在）是防伪底线，当前须列 hard_fail；否则混合缺陷
+        里 LLM 会"猜一个可用 anchor"洗掉伪引用。
+        """
+        from src.akb2.quality.repair import Defect, run_repair_loop
+
+        mixed = [
+            # A3-锚点真实（hard_fail）
+            Defect(dimension="A3-锚点真实", location="正文",
+                   defect="引用的锚点 §Z 在 raw 文件中不存在", suggestion="补真实 raw anchor"),
+            # A8-适用边界（repairable）
+            Defect(dimension="A8-applicability-boundary", location="适用边界",
+                   defect="缺少不适用场景", suggestion="添加不适用场景"),
+        ]
+        llm_called = []
+
+        class _Resp:
+            content = {}
+
+        def mock_route(messages, *a, **kw):
+            llm_called.append(True)
+            return _Resp()
+
+        result = run_repair_loop(
+            candidate_text="---\nstatus: candidate\n---\n\n## TLDR\ntest [raw §A]\n",
+            a_defects=mixed, b_defects=[],
+            raw_text="raw content", golden_sample_text="",
+            failures_path="/tmp/_failures.jsonl", mock_route_llm=mock_route,
+        )
+        assert result["converged"] is False, "A3 锚点真实混合 → hard_fail fail-closed"
+        assert not llm_called, "A3 hard_fail 不应调 LLM（不写入 repair instruction）"
+        assert "a4" in str(result.get("error_class", "")) or "a4" in str(result.get("failure_signature", ""))
+
+    def test_f2_taxonomy_sg_mechanism_fake_anchor_hard_fail(self):
+        """§0.2/F2-taxonomy：SG-mechanism-edge-evidence 伪 anchor → hard_fail。"""
+        from src.akb2.quality.repair import Defect, _classify_defect_schema
+
+        d = Defect(
+            dimension="SG-mechanism-edge-evidence",
+            location="正文.机制组件与因果边证据.edges[1]",
+            defect="eligible 边 evidence_anchor §Z 无对应 [raw §Z] 锚点（伪/合成 anchor 不计 eligible）",
+            suggestion="evidence_anchor 须指向真实 raw §-anchor",
+        )
+        schema = _classify_defect_schema(d)
+        assert schema["repairability"] == "hard_fail", (
+            "SG 伪/合成 anchor 缺陷须 hard_fail（不进 repair，防 LLM 洗伪引用）"
+        )
+
+    def test_f2_taxonomy_sg_mechanism_missing_render_repairable(self):
+        """§0.2/F2-taxonomy：SG-mechanism-edge-evidence 漏渲染（非伪 anchor）→ repairable（不一刀切）。"""
+        from src.akb2.quality.repair import Defect, _classify_defect_schema
+
+        d = Defect(
+            dimension="SG-mechanism-edge-evidence",
+            location="正文.机制组件与因果边证据",
+            defect="concept 候选缺机制组件与因果边证据节",
+            suggestion="渲染 ## 机制组件与因果边证据 两表",
+        )
+        schema = _classify_defect_schema(d)
+        assert schema["repairability"] != "hard_fail", (
+            "漏渲染（extract/raw 已支撑，非伪 anchor）应 repairable，不一刀切 hard_fail"
+        )

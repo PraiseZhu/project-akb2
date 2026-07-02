@@ -93,7 +93,7 @@ class TestLayer1Deterministic:
             for i in range(5)
         ]
         d = _concept_extract(extra)
-        r = evaluate_integrity_floor(d, "concept")
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_INTERPRETATION_TRACEABILITY not in r.failed_floors
         # 5/8 = 62.5% akb_interpretation，concept 车道不卡比例，只看 traces_to
 
@@ -101,7 +101,7 @@ class TestLayer1Deterministic:
         """无据飘浮读后感（akb_interpretation 缺 traces_to）→ 层① 拒。"""
         d = _concept_extract()
         d["claims"][2]["traces_to"] = []  # 解读缺 traces_to
-        r = evaluate_integrity_floor(d, "concept")
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_INTERPRETATION_TRACEABILITY in r.failed_floors
         assert not r.passed
 
@@ -109,7 +109,7 @@ class TestLayer1Deterministic:
         """traces_to 指向不存在的 anchor → 层① 拒（anchor 须在 grounded_anchors 真实存在）。"""
         d = _concept_extract()
         d["claims"][2]["traces_to"] = ["§Z"]  # §Z 不在 {§A, §B}
-        r = evaluate_integrity_floor(d, "concept")
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_INTERPRETATION_TRACEABILITY in r.failed_floors
 
     def test_argumentation_interpretation_also_checked(self):
@@ -119,7 +119,7 @@ class TestLayer1Deterministic:
             {"provenance": "akb_interpretation", "claim": "飘浮",
              "anchor": "§A", "traces_to": [], "evidence_gap": "未覆盖 X"}
         ]
-        r = evaluate_integrity_floor(d, "concept")
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_INTERPRETATION_TRACEABILITY in r.failed_floors
 
 
@@ -248,7 +248,7 @@ class TestProductionTracesTo:
         d["claims"][1]["traces_to"] = ["§A"]
         d["argumentation"][0]["traces_to"] = ["§A"]
         _validate_extract_output(d, content_lane="concept")  # schema 过（traces_to 现允许）
-        r = evaluate_integrity_floor(d, "concept")
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert r.passed, f"层① 应过（traces_to→§A）: {r.failed_floors}"
         assert FLOOR_INTERPRETATION_TRACEABILITY not in r.failed_floors
 
@@ -256,7 +256,7 @@ class TestProductionTracesTo:
         """concept extract 的 akb claim 不带 traces_to → layer① fail（生产层① 真判，非 fixture-only）。"""
         d = _valid_extract(n_akb=1, with_mechanism=True)
         # _valid_extract 的 akb claim 无 traces_to（默认）
-        r = evaluate_integrity_floor(d, "concept")
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_INTERPRETATION_TRACEABILITY in r.failed_floors
         assert not r.passed
 

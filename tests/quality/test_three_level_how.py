@@ -200,7 +200,7 @@ class TestConceptLaneExtractLLMPath:
             evaluate_integrity_floor,
         )
 
-        r = evaluate_integrity_floor(result.data, "concept")
+        r = evaluate_integrity_floor(result.data, "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_CORE_VALUE_F4 in r.failed_floors, "<3 组件应 floor F4 fail"
 
 

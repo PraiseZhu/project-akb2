@@ -97,7 +97,7 @@ def _run_judgment(extract: dict, grader_content: dict) -> tuple[bool, str]:
     Returns (overall_pass, reject_reason)。reject_reason 标明在哪一层拒（floor/grader/score）。
     """
     # 1. 完整性地板（任一成员 fail → 拒，加权分不算）
-    floor = evaluate_integrity_floor(extract, "concept")
+    floor = evaluate_integrity_floor(extract, "concept", raw_anchors={"§A", "§B"})
     if not floor.passed:
         return False, f"floor:{floor.failed_floors}"
 

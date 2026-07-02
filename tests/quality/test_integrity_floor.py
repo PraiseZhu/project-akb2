@@ -89,13 +89,13 @@ def _concept_pass_extract() -> dict:
 
 class TestClaimAnchorRate:
     def test_pass_all_grounded_have_anchor(self):
-        r = evaluate_integrity_floor(_concept_pass_extract(), "concept")
+        r = evaluate_integrity_floor(_concept_pass_extract(), "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_CLAIM_ANCHOR_RATE not in r.failed_floors
 
     def test_fail_missing_anchor(self):
         d = _concept_pass_extract()
         d["claims"][0]["anchor"] = ""  # 一条 grounded claim 缺 anchor
-        r = evaluate_integrity_floor(d, "concept")
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_CLAIM_ANCHOR_RATE in r.failed_floors
         assert not r.passed
 
@@ -103,7 +103,7 @@ class TestClaimAnchorRate:
         d = _concept_pass_extract()
         for c in d["claims"]:
             c["provenance"] = "akb_interpretation"
-        r = evaluate_integrity_floor(d, "concept")
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_CLAIM_ANCHOR_RATE in r.failed_floors
 
 
@@ -112,13 +112,13 @@ class TestClaimAnchorRate:
 
 class TestEvidenceHonesty:
     def test_pass_has_real_blind_spot(self):
-        r = evaluate_integrity_floor(_concept_pass_extract(), "concept")
+        r = evaluate_integrity_floor(_concept_pass_extract(), "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_EVIDENCE_HONESTY not in r.failed_floors
 
     def test_fail_no_gap(self):
         d = _concept_pass_extract()
         d["claims"][0]["evidence_gap"] = ""
-        r = evaluate_integrity_floor(d, "concept")
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_EVIDENCE_HONESTY in r.failed_floors
         assert not r.passed
 
@@ -127,7 +127,7 @@ class TestEvidenceHonesty:
         d = _concept_pass_extract()
         for c in d["claims"]:
             c["evidence_gap"] = "原文如此"
-        r = evaluate_integrity_floor(d, "concept")
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_EVIDENCE_HONESTY in r.failed_floors
 
 
@@ -136,14 +136,14 @@ class TestEvidenceHonesty:
 
 class TestInterpretationTraceability:
     def test_pass_traces_to_real_anchor(self):
-        r = evaluate_integrity_floor(_concept_pass_extract(), "concept")
+        r = evaluate_integrity_floor(_concept_pass_extract(), "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_INTERPRETATION_TRACEABILITY not in r.failed_floors
 
     def test_fail_no_traces_to(self):
         """无据飘浮读后感（akb_interpretation 缺 traces_to）→ fail。"""
         d = _concept_pass_extract()
         d["claims"][2]["traces_to"] = []
-        r = evaluate_integrity_floor(d, "concept")
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_INTERPRETATION_TRACEABILITY in r.failed_floors
         assert not r.passed
 
@@ -153,7 +153,7 @@ class TestInterpretationTraceability:
         本层① 只判「指向真实存在的 anchor」。这里 anchor 不存在于 grounded_anchors → 层① fail。"""
         d = _concept_pass_extract()
         d["claims"][2]["traces_to"] = ["§Z"]  # §Z 不在 grounded anchors {§A, §B}
-        r = evaluate_integrity_floor(d, "concept")
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_INTERPRETATION_TRACEABILITY in r.failed_floors
 
     def test_argumentation_interpretation_also_checked(self):
@@ -162,7 +162,7 @@ class TestInterpretationTraceability:
         d["argumentation"] = [
             {"provenance": "akb_interpretation", "claim": "飘浮解读", "traces_to": []}
         ]
-        r = evaluate_integrity_floor(d, "concept")
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_INTERPRETATION_TRACEABILITY in r.failed_floors
 
     def test_pass_empty_grounded_skips_traceability(self):
@@ -179,7 +179,7 @@ class TestInterpretationTraceability:
             c["provenance"] = "akb_interpretation"
             if "traces_to" not in c:
                 c["traces_to"] = ["§A"]
-        r = evaluate_integrity_floor(d, "concept")
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_INTERPRETATION_TRACEABILITY not in r.failed_floors, (
             "grounded_anchors 空时 traceability 应豁免（SC-5）"
         )
@@ -197,13 +197,13 @@ class TestCoreValueF4:
 
     def test_concept_pass_3_components_with_eligible_edges(self):
         """≥3 组件 + ≥1 eligible edge（source_causal 带 evidence+anchor）→ F4 pass。"""
-        r = evaluate_integrity_floor(_concept_pass_extract(), "concept")
+        r = evaluate_integrity_floor(_concept_pass_extract(), "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_CORE_VALUE_F4 not in r.failed_floors
 
     def test_concept_fail_too_few_components(self):
         d = _concept_pass_extract()
         d["mechanism_components"] = d["mechanism_components"][:2]  # 只 2 个
-        r = evaluate_integrity_floor(d, "concept")
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_CORE_VALUE_F4 in r.failed_floors
         assert not r.passed
 
@@ -211,7 +211,7 @@ class TestCoreValueF4:
         """0 边 → 0 eligible → F4 fail（机制未讲清）。"""
         d = _concept_pass_extract()
         d["causal_edges"] = []
-        r = evaluate_integrity_floor(d, "concept")
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_CORE_VALUE_F4 in r.failed_floors
 
     def test_concept_fail_only_inferred_weak_edges(self):
@@ -227,7 +227,7 @@ class TestCoreValueF4:
                 "evidence_anchor": "",
             }
         ]
-        r = evaluate_integrity_floor(d, "concept")
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_CORE_VALUE_F4 in r.failed_floors, "inferred 弱边不计 F4 → 0 eligible 仍 fail"
 
     def test_concept_fail_edges_missing_evidence_anchor(self):
@@ -243,7 +243,7 @@ class TestCoreValueF4:
                 "evidence_anchor": "",  # 缺 anchor → 非 eligible
             }
         ]
-        r = evaluate_integrity_floor(d, "concept")
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_CORE_VALUE_F4 in r.failed_floors, "缺 evidence_anchor → 非 eligible"
 
     def test_concept_fail_edges_missing_evidence(self):
@@ -259,7 +259,7 @@ class TestCoreValueF4:
                 "evidence_anchor": "§A",
             }
         ]
-        r = evaluate_integrity_floor(d, "concept")
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_CORE_VALUE_F4 in r.failed_floors
 
     def test_concept_pass_llm_evidence_eligible_edge(self):
@@ -275,7 +275,7 @@ class TestCoreValueF4:
                 "evidence_anchor": "§A",
             }
         ]
-        r = evaluate_integrity_floor(d, "concept")
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_CORE_VALUE_F4 not in r.failed_floors
 
     def test_concept_pass_isolated_component_with_eligible_edge(self):
@@ -296,7 +296,7 @@ class TestCoreValueF4:
                 "evidence_anchor": "§A",
             }
         ]
-        r = evaluate_integrity_floor(d, "concept")
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_CORE_VALUE_F4 not in r.failed_floors, (
             "D1：≥1 eligible edge 即过 F4，组件C 孤立不再整篇拒"
         )
@@ -319,7 +319,7 @@ class TestCoreValueF4:
                 "evidence_anchor": "§A",
             }
         ]
-        r = evaluate_integrity_floor(d, "concept")
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_CORE_VALUE_F4 in r.failed_floors
         assert not r.passed
 
@@ -345,7 +345,7 @@ class TestCoreValueF4:
 
 class TestEvaluateIntegrityFloor:
     def test_all_pass(self):
-        r = evaluate_integrity_floor(_concept_pass_extract(), "concept")
+        r = evaluate_integrity_floor(_concept_pass_extract(), "concept", raw_anchors={"§A", "§B"})
         assert r.passed is True
         assert r.failed_floors == []
         assert r.reason == ""
@@ -354,7 +354,7 @@ class TestEvaluateIntegrityFloor:
     def test_one_fail_makes_not_passed(self):
         d = _concept_pass_extract()
         d["mechanism_components"] = []  # 触发 F4 fail
-        r = evaluate_integrity_floor(d, "concept")
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert r.passed is False
         assert FLOOR_CORE_VALUE_F4 in r.failed_floors
         assert CONCEPT_MIN_MECHANISM_COMPONENTS == 3
@@ -365,7 +365,7 @@ class TestEvaluateIntegrityFloor:
         d = _concept_pass_extract()
         d["mechanism_components"] = []  # F4 fail
         # 其它三成员都 pass（claims/argumentation 完整）
-        r = evaluate_integrity_floor(d, "concept")
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert r.passed is False
         assert FLOOR_CORE_VALUE_F4 in r.failed_floors
         # 不可补偿：即使 claim_anchor_rate/evidence_honesty/traceability 都 pass，
@@ -477,7 +477,7 @@ class TestF1EligibleEdgeAnchorValidation:
             {"from": "A", "to": "B", "relation": "r", "edge_kind": "source_causal",
              "evidence": "A feeds B", "evidence_anchor": "§A"},
         ])
-        r = evaluate_integrity_floor(d, "concept")
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_CORE_VALUE_F4 not in r.failed_floors, "真实 §A anchor 应 eligible"
 
     def test_fake_anchor_z_not_eligible(self):
@@ -486,7 +486,7 @@ class TestF1EligibleEdgeAnchorValidation:
             {"from": "A", "to": "B", "relation": "r", "edge_kind": "source_causal",
              "evidence": "A feeds B", "evidence_anchor": "§Z"},  # 伪 §Z
         ])
-        r = evaluate_integrity_floor(d, "concept")
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_CORE_VALUE_F4 in r.failed_floors, "伪 §Z 不应计 eligible"
 
     def test_synthetic_raw_anchor_not_eligible(self):
@@ -495,7 +495,7 @@ class TestF1EligibleEdgeAnchorValidation:
             {"from": "A", "to": "B", "relation": "r", "edge_kind": "source_causal",
              "evidence": "A feeds B", "evidence_anchor": "§raw"},  # 合成 §raw
         ])
-        r = evaluate_integrity_floor(d, "concept")
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_CORE_VALUE_F4 in r.failed_floors, "合成 §raw 不应计 eligible"
 
     def test_zero_eligible_with_components_triggers_retake_signal(self):
@@ -504,7 +504,7 @@ class TestF1EligibleEdgeAnchorValidation:
             {"from": "A", "to": "B", "relation": "r", "edge_kind": "source_causal",
              "evidence": "", "evidence_anchor": ""},  # 缺字段 → 0 eligible
         ])
-        r = evaluate_integrity_floor(d, "concept")
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_CORE_VALUE_F4 in r.failed_floors, "0 eligible 仍 F4 fail"
         assert r.meta.get("needs_causal_edge_retake") is True, (
             "0 eligible + 组件≥3 应标 needs_causal_edge_retake（runner 补抽）"
@@ -514,7 +514,7 @@ class TestF1EligibleEdgeAnchorValidation:
         """<3 组件 → F4 fail 但不标 retake（retake 只救 0 eligible，不救 <3 组件）。"""
         d = _f1_extract([], claims_anchors=("§A",))
         d["mechanism_components"] = [{"name": "A", "role": "r"}]
-        r = evaluate_integrity_floor(d, "concept")
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_CORE_VALUE_F4 in r.failed_floors
         assert not r.meta.get("needs_causal_edge_retake"), "<3 组件不应标 retake"
 
@@ -595,12 +595,35 @@ class TestF1FollowupRawAnchorUniverse:
         r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_CORE_VALUE_F4 in r.failed_floors, "inferred 弱边不计 eligible → 0 eligible fail"
 
-    def test_legacy_no_raw_anchors_falls_back_to_claims(self):
-        """无 raw_anchors 时回落 grounded claims anchors（兼容旧调用）。"""
+    def test_no_raw_anchors_fail_closed_no_claims_fallback(self):
+        """§0.2/F1-regex 根治：无 raw_anchors → 不回落 claims → §A 即使在 claims 也不 trusted → F4 fail。
+
+        codex 反方向放水缝：若 trusted 回落 claims，LLM 把 §Z 同时写进 claim+edge → §Z 进
+        trusted → 伪边计 eligible 混过 F4。根治：trusted 只认 raw 真实声明全集，不回落 claims。
+        """
         d = _f1_extract([
             {"from": "A", "to": "B", "relation": "r", "edge_kind": "source_causal",
-             "evidence": "A feeds B", "evidence_anchor": "§A"},  # §A ∈ claims
+             "evidence": "A feeds B", "evidence_anchor": "§A"},  # §A ∈ claims 但 raw_anchors 未提供
         ])
-        # 不传 raw_anchors → 回落 claims anchors = {§A, §B} → §A trusted
+        # 不传 raw_anchors → trusted=空集 → §A 不 trusted → 0 eligible → F4 fail（不回落 claims）
         r = evaluate_integrity_floor(d, "concept")
-        assert FLOOR_CORE_VALUE_F4 not in r.failed_floors, "回落口径：§A ∈ claims → eligible"
+        assert FLOOR_CORE_VALUE_F4 in r.failed_floors, (
+            "无 raw_anchors → 不回落 claims → §A 不 trusted → F4 fail（codex 根治放水缝）"
+        )
+
+    def test_forged_z_in_claim_and_edge_still_fail(self):
+        """§0.2/F1-regex 根治硬证据：raw 无 §Z，但 grounded claim 和 edge 都写 §Z → F4 仍 fail。
+
+        LLM 伪造 §Z 同时写进 source_grounded claim（过 anchor_rate 格式校验）和 edge 的
+        evidence_anchor → 旧 claims 回落口径会让 §Z 进 trusted → 伪边 eligible 混过 F4。
+        根治后：trusted=raw 全集，§Z 不在 raw → 不 trusted → 不计 eligible → F4 fail。
+        """
+        d = _f1_extract([
+            {"from": "A", "to": "B", "relation": "r", "edge_kind": "source_causal",
+             "evidence": "A feeds B", "evidence_anchor": "§Z"},  # 伪造 §Z
+        ], claims_anchors=("§Z",))  # claim 也写 §Z（过 anchor_rate 格式校验）
+        # raw_anchors 不含 §Z（raw 无 §Z）
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
+        assert FLOOR_CORE_VALUE_F4 in r.failed_floors, (
+            "raw 无 §Z → 即使 claim+edge 都写 §Z 也不 trusted → F4 fail（根治反方向放水缝）"
+        )

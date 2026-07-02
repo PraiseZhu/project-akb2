@@ -973,9 +973,10 @@ def _classify_defect_schema(defect: Defect) -> dict[str, str]:
     entailment false）不进可通过 repair。
     """
     repairable = _is_deterministic_repair_defect(defect)
-    # §0.2/D3 + §0.2/F2 底线白名单：硬 fail 不进 repair（任一 hard_fail 剩余即 fail-closed）。
-    # claim_anchor_rate / evidence_honesty / traceability / poisoned_trace / entailment false /
-    # F4 0 eligible / no_mechanism / 编造 均不可 patch（raw 不支撑，不可凭空造）。
+    # §0.2/D3 + §0.2/F2 + §0.2/F2-taxonomy 底线白名单：硬 fail 不进 repair（任一 hard_fail
+    # 剩余即 fail-closed）。claim_anchor_rate / evidence_honesty / traceability / poisoned_trace /
+    # entailment false / F4 0 eligible / no_mechanism / 编造 / **A3-锚点真实 / SG 伪合成 anchor**
+    # 均不可 patch（raw 不支撑，不可凭空造；防 LLM"猜一个可用 anchor"洗掉伪引用）。
     # 注：SG-provenance-ratio 虽与 evidence_honesty 相关，但 _is_deterministic_repair_defect
     # 允许 rebalance，故归 repairable（不在此 hard_fail 列表）。
     hard_fail_dims = {
@@ -983,6 +984,7 @@ def _classify_defect_schema(defect: Defect) -> dict[str, str]:
         "SG-evidence-honesty",  # evidence_honesty 底线
         "SG-interpretation-traceability",  # traceability 底线
         "interpretation_entailment",  # entailment false 硬门
+        "A3-锚点真实",  # §0.2/F2-taxonomy：引用锚点 raw 不存在（伪 anchor）
     }
     hard_fail_keywords = (
         "no_mechanism_signal", "integrity_floor", "0 eligible",
@@ -994,6 +996,16 @@ def _classify_defect_schema(defect: Defect) -> dict[str, str]:
         defect.dimension in hard_fail_dims
         or any(kw.lower() in defect_text for kw in hard_fail_keywords)
     )
+    # §0.2/F2-taxonomy：SG-mechanism-edge-evidence 中只把真实性缺陷（伪/合成 anchor、
+    # 无对应 [raw §X]、raw 不存在）列 hard_fail；保留"漏渲染/缺字段但 extract/raw 已支撑"
+    # 为 repairable（不能一刀切）。
+    if (
+        not is_hard_fail
+        and defect.dimension == "SG-mechanism-edge-evidence"
+    ):
+        sg_truth_keywords = ("伪", "合成", "无对应 [raw", "raw 不存在", "不计 eligible")
+        if any(kw in defect.defect for kw in sg_truth_keywords):
+            is_hard_fail = True
     if is_hard_fail:
         repairable = False
     return {
