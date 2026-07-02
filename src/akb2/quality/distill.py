@@ -5578,6 +5578,31 @@ def _map_span_to_declared_anchor(
     return chosen
 
 
+def _inject_missing_must_cover(
+    section_text: str,
+    items: list[Any],
+    inject_prefix: str = "- ",
+) -> str:
+    """F6-C: 检查 must_cover 字面量是否在 section_text 中(归一化比对,与 SG-must-cover
+    同口径 _normalize_must_cover_text);缺失→逐字注入(含链接语法,不意译)。
+
+    must_cover 项空/超长>500→跳过(现有 fail 路径不变)。
+    """
+    if not items:
+        return section_text
+    from src.akb2.quality.checks_structural import _normalize_must_cover_text
+
+    norm_section = _normalize_must_cover_text(section_text)
+    for item in items:
+        literal = str(getattr(item, "literal", "") or "").strip()
+        if not literal or len(literal) > 500:
+            continue
+        if _normalize_must_cover_text(literal) not in norm_section:
+            section_text = f"{section_text}\n{inject_prefix}{literal}"
+            norm_section = _normalize_must_cover_text(section_text)
+    return section_text
+
+
 def _sanitize_must_cover_literal_for_command(literal: str) -> str:
     """Strip backticks/newlines so a literal can sit inside a `code` span.
 
@@ -5970,6 +5995,8 @@ def _build_body(
     mc_tldr_text = _render_must_cover_conclusions(must_cover_concls, raw_content)
     if mc_tldr_text:
         tldr = f"{mc_tldr_text} {tldr}".strip() if tldr else mc_tldr_text
+    # F6-C: must_cover conclusion 字面量注入(tldr 节)
+    tldr = _inject_missing_must_cover(tldr, must_cover_concls, inject_prefix="")
 
     # 论证与解释：argumentation 字段逐条展开。
     # source_grounded 条目回到 claim 文本本身，避免把 LLM 的归纳解释伪装成来源事实。
@@ -6033,6 +6060,9 @@ def _build_body(
             how_text = _render_concept_mechanism_walkthrough(extract_data, raw_content)
         else:
             how_text = "（原文无可安全锚定的操作步骤；候选阶段不强行生成 AKB 操作化步骤。）"
+    # F6-C: must_cover 字面量注入——检查每条 source_operation 字面量是否在 how_text
+    # (归一化比对,与 SG-must-cover 同口径);缺失→逐字注入(含链接语法)
+    how_text = _inject_missing_must_cover(how_text, must_cover_ops)
     params = extract_data.get("params") or {}
     if isinstance(params, dict) and params:
         how_text = f"{how_text}\n\n配置示例：\n{_build_params_example(params)}"
@@ -6133,6 +6163,8 @@ def _build_body(
         boundary_text = (
             f"{mc_boundary_text}\n{boundary_text}" if boundary_text else mc_boundary_text
         )
+    # F6-C: must_cover boundary 字面量注入(适用边界节)
+    boundary_text = _inject_missing_must_cover(boundary_text, must_cover_bounds)
 
     from datetime import UTC, datetime
 
