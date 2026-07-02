@@ -1,0 +1,29 @@
+=== §4 + F1 + F1-followup mini e2e (raw 真实 anchor 全集口径) ===
+raw_anchors: {'§D', '§A', '§B'} claims_anchors: {'§C', '§A', '§B'}
+{
+  "golden_real_anchor": {
+    "f4_pass_1": true,
+    "needs_retake": false
+  },
+  "anchor_in_raw_not_in_claims": {
+    "f4_pass_1": true,
+    "needs_retake": false
+  },
+  "fake_z": {
+    "f4_pass_1": false,
+    "needs_retake": true,
+    "f4_pass_after_retake": true
+  },
+  "synthetic_raw": {
+    "f4_pass_1": false,
+    "needs_retake": true,
+    "f4_pass_after_retake": true
+  },
+  "retake_then_raw_anchor": {
+    "f4_pass_1": false,
+    "needs_retake": true,
+    "f4_pass_after_retake": true
+  }
+}
+
+=== F1-followup 硬证据：raw 真实 anchor 全集口径，golden/§D/retake 全过，伪 anchor 仍不过 ===

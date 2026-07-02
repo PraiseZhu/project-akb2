@@ -641,6 +641,20 @@ def _run_admission_segment(
     return result.passed, result.reason, result.checks, result.content_lane, result.lane_reason
 
 
+def _raw_anchor_set(raw_content: str) -> set[str]:
+    """§0.2/F1-followup：raw 真实 §-anchor 全集（与 distill._raw_anchor_positions 同源）。
+
+    F4 eligible edge 的 evidence_anchor 须 ∈ 此集（不只 grounded claims），防 needs_retake
+    补抽的真边（anchor 来自 raw 但未被 claim 引用）被误杀。
+    """
+    if not raw_content:
+        return set()
+    return {
+        m.group(1)
+        for m in re.finditer(r"(?m)^#\s*(§[A-Z0-9_]+)", raw_content)
+    }
+
+
 def _compute_mechanism_rendering(
     extract_data: dict[str, Any], candidate_text: str
 ) -> dict[str, Any]:
@@ -737,7 +751,13 @@ def _run_distill_segment(
     # 破坏既有 5 元组解包的存量调用方/测试）；评分段先看本结果 early-return（加权分不算）。
     from src.akb2.quality.integrity_floor import evaluate_integrity_floor
 
-    floor_result = evaluate_integrity_floor(extract_result.data, content_lane)
+    # §0.2/F1-followup：raw 真实 §-anchor 全集——F4 eligible edge 的 evidence_anchor 须
+    # ∈ 此集（不只 grounded claims），防 needs_retake 补抽的真边被误杀（口径与
+    # _build_real_causal_edges 的 _nearest_preceding_anchor 一致）。
+    raw_anchor_set = _raw_anchor_set(raw_content)
+    floor_result = evaluate_integrity_floor(
+        extract_result.data, content_lane, raw_anchors=raw_anchor_set
+    )
 
     # §0.2/F1 太脆：concept primary success 但 0 eligible edge（LLM 漏 edge_kind/anchor
     # 字段）→ floor 标 needs_causal_edge_retake。runner 用确定性 _build_real_causal_edges
@@ -760,7 +780,11 @@ def _run_distill_segment(
                 if (e.get("from"), e.get("to")) not in existing_pairs:
                     existing.append(e)
             extract_result.data["causal_edges"] = existing
-            floor_result = evaluate_integrity_floor(extract_result.data, content_lane)
+            # §0.2/F1-followup：重评也传 raw_anchor_set（补抽边 anchor 来自 raw，
+            # 须用 raw 全集判 trusted）
+            floor_result = evaluate_integrity_floor(
+                extract_result.data, content_lane, raw_anchors=raw_anchor_set
+            )
             floor_result.meta["causal_edge_retake_applied"] = True
 
     # 段 2: 成稿

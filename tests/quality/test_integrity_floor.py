@@ -517,3 +517,90 @@ class TestF1EligibleEdgeAnchorValidation:
         r = evaluate_integrity_floor(d, "concept")
         assert FLOOR_CORE_VALUE_F4 in r.failed_floors
         assert not r.meta.get("needs_causal_edge_retake"), "<3 组件不应标 retake"
+
+
+# ---------------------------------------------------------------------------
+# §0.2/F1-followup：trusted anchor 集扩到 raw 真实 anchor 全集
+# ---------------------------------------------------------------------------
+
+
+class TestF1FollowupRawAnchorUniverse:
+    """§0.2/F1-followup：eligible edge evidence_anchor 须 ∈ raw 真实 anchor 全集
+    （不只 grounded claims）。防 needs_retake 补抽的真边 / LLM primary 真边被误杀。
+    """
+
+    def test_a_anchor_in_raw_not_in_claims_counts_eligible(self):
+        """(a) anchor ∈ raw 真实但 ∉ grounded claims → eligible + F4 pass。"""
+        d = _f1_extract([
+            {"from": "A", "to": "B", "relation": "r", "edge_kind": "source_causal",
+             "evidence": "A feeds B", "evidence_anchor": "§D"},  # §D 不在 claims(§A,§B)
+        ], claims_anchors=("§A", "§B"))
+        # raw_anchors 含 §D（raw 真实 anchor，未被 claim 引用）
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B", "§D"})
+        assert FLOOR_CORE_VALUE_F4 not in r.failed_floors, (
+            "§D ∈ raw 真实 anchor 集 → 应 eligible（不只 grounded claims）"
+        )
+
+    def test_b_needs_retake_edge_from_raw_repasses_f4(self):
+        """(b) needs_retake 补抽边（anchor 来自 raw）→ 重评 F4 pass。"""
+        # 初始：0 eligible（LLM 边缺 anchor）→ needs_retake
+        d = _f1_extract([
+            {"from": "A", "to": "B", "relation": "r", "edge_kind": "source_causal",
+             "evidence": "A feeds B", "evidence_anchor": ""},  # 缺 anchor
+        ])
+        r1 = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
+        assert r1.meta.get("needs_causal_edge_retake") is True
+        # retake 补抽边 anchor=§B（来自 raw，∈ raw_anchors）
+        d["causal_edges"] = [
+            {"from": "A", "to": "B", "relation": "r", "edge_kind": "source_causal",
+             "evidence": "A feeds B (retake)", "evidence_anchor": "§B"},
+        ]
+        r2 = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
+        assert FLOOR_CORE_VALUE_F4 not in r2.failed_floors, (
+            "retake 补抽边（anchor §B ∈ raw）→ 重评应 F4 pass"
+        )
+
+    def test_c_fake_anchor_still_fail_with_raw_anchors(self):
+        """(c) 伪 §Z 仍不计 eligible → F4 fail（防伪不破，即使用 raw_anchors）。"""
+        d = _f1_extract([
+            {"from": "A", "to": "B", "relation": "r", "edge_kind": "source_causal",
+             "evidence": "A feeds B", "evidence_anchor": "§Z"},  # 伪 §Z
+        ])
+        # raw_anchors 不含 §Z（§Z 不在 raw）
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
+        assert FLOOR_CORE_VALUE_F4 in r.failed_floors, "伪 §Z 不在 raw 真实集 → 仍 fail"
+
+    def test_c_synthetic_raw_anchor_still_fail(self):
+        """(c) 合成 §raw 仍不计 eligible → F4 fail（§raw 不在 raw 真实 §-anchor 集）。"""
+        d = _f1_extract([
+            {"from": "A", "to": "B", "relation": "r", "edge_kind": "source_causal",
+             "evidence": "A feeds B", "evidence_anchor": "§raw"},
+        ])
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
+        assert FLOOR_CORE_VALUE_F4 in r.failed_floors, "合成 §raw 不在 raw 集红 → 仍 fail"
+
+    def test_d_too_few_components_still_fail_with_raw_anchors(self):
+        """(d) <3 组件 → F4 fail（不回归，raw_anchors 不救 <3 组件）。"""
+        d = _f1_extract([], claims_anchors=("§A",))
+        d["mechanism_components"] = [{"name": "A", "role": "r"}]
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A"})
+        assert FLOOR_CORE_VALUE_F4 in r.failed_floors
+
+    def test_d_inferred_weak_edges_still_not_counted(self):
+        """(d) inferred_from_structure 弱边仍不计 eligible（不回归）。"""
+        d = _f1_extract([
+            {"from": "A", "to": "B", "relation": "r", "edge_kind": "inferred_from_structure",
+             "evidence": "", "evidence_anchor": ""},
+        ])
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
+        assert FLOOR_CORE_VALUE_F4 in r.failed_floors, "inferred 弱边不计 eligible → 0 eligible fail"
+
+    def test_legacy_no_raw_anchors_falls_back_to_claims(self):
+        """无 raw_anchors 时回落 grounded claims anchors（兼容旧调用）。"""
+        d = _f1_extract([
+            {"from": "A", "to": "B", "relation": "r", "edge_kind": "source_causal",
+             "evidence": "A feeds B", "evidence_anchor": "§A"},  # §A ∈ claims
+        ])
+        # 不传 raw_anchors → 回落 claims anchors = {§A, §B} → §A trusted
+        r = evaluate_integrity_floor(d, "concept")
+        assert FLOOR_CORE_VALUE_F4 not in r.failed_floors, "回落口径：§A ∈ claims → eligible"

@@ -174,13 +174,24 @@ def _interpretation_traceability_failed(extract_data: dict) -> tuple[bool, str, 
     return False, "", skipped_no_grounded
 
 
-def _trusted_raw_anchors(extract_data: dict) -> set[str]:
-    """§0.2/F1：可信 raw anchor 集——source_grounded claims 的 §X anchor。
+def _trusted_raw_anchors(
+    extract_data: dict, raw_anchors: set[str] | None = None
+) -> set[str]:
+    """§0.2/F1 + F1-followup：可信 raw anchor 集——raw 真实 §-anchor 全集。
+
+    优先用 raw_anchors（runner 从 raw_content 解析的真实 §X 全集，覆盖所有 raw anchor，
+    不只 grounded claims 引用的）；raw_anchors 未提供时回落 grounded claims 的 §X anchor
+    （兼容旧调用/无 raw 场景）。
 
     eligible edge 的 evidence_anchor 必须在此集内（防伪 §Z / 合成 §raw 把伪边计入 F4，
-    破坏 traceability）。grounded claims 的 anchor 经 _claim_anchor_rate_failed 校验为
-    真实 §X 格式，故可信。akb_interpretation claims 的 anchor 不入此集（解读非源锚）。
+    破坏 traceability）。伪 §Z/§raw 不在 raw 真实 anchor 集 → 仍不计 eligible（防伪不破）；
+    raw 真实存在的 anchor（无论是否被 claim 引用）对应的 source_causal/llm_evidence 边计
+    eligible（修 F1-followup：LLM primary 真边 + needs_retake 补抽边不被误杀）。
     """
+    if raw_anchors:
+        # raw 真实 anchor 全集（最宽可信口径，仍防伪：伪 §Z/§raw 不在 raw 里）
+        return set(raw_anchors)
+    # 回落：raw 未提供时用 grounded claims anchors（兼容旧测试/无 raw 场景）
     anchors: set[str] = set()
     for c in extract_data.get("claims", []) or []:
         if not isinstance(c, dict):
@@ -193,7 +204,11 @@ def _trusted_raw_anchors(extract_data: dict) -> set[str]:
     return anchors
 
 
-def _core_value_f4_failed(extract_data: dict, content_lane: str) -> tuple[bool, str]:
+def _core_value_f4_failed(
+    extract_data: dict,
+    content_lane: str,
+    raw_anchors: set[str] | None = None,
+) -> tuple[bool, str]:
     """④ 车道核心价值（F4）。
 
     §0.2/D1 + §0.2/F1：F4 只认 eligible edge = ``edge_kind ∈ {source_causal, llm_evidence}``
@@ -221,9 +236,10 @@ def _core_value_f4_failed(extract_data: dict, content_lane: str) -> tuple[bool, 
                 f"（输入 {len(named)} 条，去重后 {len(named_set)}）"
             )
         edges = extract_data.get("causal_edges", []) or []
-        # §0.2/D1 + F1：统计 eligible edge（弱边不计；evidence_anchor 须 ∈ 可信 anchor 集）
+        # §0.2/D1 + F1 + F1-followup：统计 eligible edge（弱边不计；
+        # evidence_anchor 须 ∈ raw 真实 anchor 全集，不只 grounded claims）
         eligible_kinds = {"source_causal", "llm_evidence"}
-        trusted_anchors = _trusted_raw_anchors(extract_data)
+        trusted_anchors = _trusted_raw_anchors(extract_data, raw_anchors)
         eligible_count = 0
         weak_count = 0
         untrusted_anchor_count = 0
@@ -268,7 +284,11 @@ def _core_value_f4_failed(extract_data: dict, content_lane: str) -> tuple[bool, 
     return False, ""
 
 
-def evaluate_integrity_floor(extract_data: dict, content_lane: str = "") -> FloorResult:
+def evaluate_integrity_floor(
+    extract_data: dict,
+    content_lane: str = "",
+    raw_anchors: set[str] | None = None,
+) -> FloorResult:
     """评估完整性地板四成员（concept）/ 对应 procedural 成员。
 
     任一成员 fail → passed=False；runner 评分段须先看本结果 early-return。
@@ -277,6 +297,9 @@ def evaluate_integrity_floor(extract_data: dict, content_lane: str = "") -> Floo
         extract_data: 结构化 extract 输出（claims/argumentation/mechanism_components/
             causal_edges/how_steps）。
         content_lane: 内容车道（concept/procedural，默认 procedural 兼容）。
+        raw_anchors: §0.2/F1-followup：raw 真实 §-anchor 全集（runner 从 raw_content 解析）。
+            F4 eligible edge 的 evidence_anchor 须在此集内（不只 grounded claims）；
+            None 时回落 grounded claims anchors（兼容旧测试）。
 
     Returns:
         FloorResult: 二值 passed + failed_floors + reason。
@@ -305,7 +328,9 @@ def evaluate_integrity_floor(extract_data: dict, content_lane: str = "") -> Floo
         # SC-5：traceability 因 grounded 空被豁免——写可见 meta，治诊断变弱
         trace_meta["traceability_skipped_no_grounded_anchor"] = True
 
-    f4_failed, f4_reason = _core_value_f4_failed(extract_data, content_lane)
+    f4_failed, f4_reason = _core_value_f4_failed(
+        extract_data, content_lane, raw_anchors=raw_anchors
+    )
     if f4_failed:
         failed.append(FLOOR_CORE_VALUE_F4)
         reasons.append(f4_reason)
