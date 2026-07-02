@@ -43,6 +43,8 @@ DISTILL_TIMEOUT_S: float = 60.0
 DISTILL_MAX_RETRIES: int = 0
 DISTILL_EXTRACT_WORKER_TIMEOUT_S: float = 210.0
 DISTILL_EXTRACT_WORKER_KILL_GRACE_S: float = 2.0
+# F2-B: traceability retake 子进程超时(distill 内部 60s + 子进程外层缓冲)
+TRACEABILITY_RETAKE_WORKER_TIMEOUT_S: float = 90.0
 DISTILL_EXTRACT_WORKER_MODULE: str = "src.akb2.quality.distill_worker"
 
 # 避让窗口定义：三链路 launchd 触发时刻 (UTC hour, UTC minute)
@@ -784,6 +786,32 @@ def _run_distill_segment(
             )
             floor_result.meta["causal_edge_retake_applied"] = True
 
+    # F2-B: traceability 有界 retake — floor 仅因 traceability fail(其余 floor 全过)时,
+    # 重发 interpretation + grounded anchors 给 LLM 补 traces_to/改判 provenance,重评 floor。
+    # TRACEABILITY_RETAKE_MAX=1(具名,有界);不放宽 floor;retake 后仍 fail → fail-closed。
+    from src.akb2.quality.integrity_floor import FLOOR_INTERPRETATION_TRACEABILITY
+
+    if (
+        str(content_lane).lower() == "concept"
+        and extract_result.success
+        and floor_result.failed_floors == [FLOOR_INTERPRETATION_TRACEABILITY]
+        and not floor_result.meta.get("traceability_retake_applied")
+    ):
+        retaken = _run_traceability_retake_worker(
+            extract_result.data, raw_content, content_lane
+        )
+        if isinstance(retaken, dict):
+            extract_result.data = retaken
+            floor_result = evaluate_integrity_floor(
+                extract_result.data, content_lane, raw_anchors=raw_anchor_set
+            )
+            floor_result.meta["traceability_retake_applied"] = True
+            _log_event(
+                config, "distill_extract", "traceability_retake",
+                _compute_raw_hash(raw_path),
+                {"applied": True, "passed_after": floor_result.passed},
+            )
+
     # 段 2: 成稿
     ts = _now().strftime("%Y-%m-%d-%H%M%S")
     batch_id = f"{ts}"
@@ -935,6 +963,56 @@ def _run_extract_claims_worker(raw_content: str, content_lane: str = "") -> Any:
         retries_used=int(payload.get("retries_used") or 0),
         error=str(payload.get("error") or ""),
     )
+
+
+def _run_traceability_retake_worker(
+    extract_data: dict[str, Any], raw_content: str, content_lane: str = ""
+) -> dict[str, Any] | None:
+    """F2-B: traceability retake 子进程(加载 route_llm,调 distill.retake_traceability)。
+
+    floor 仅因 traceability fail 时 caller 触发。子进程内 retake_traceability 重发
+    interpretation + grounded anchors 给 LLM,补 traces_to/改判 provenance。
+    返回更新后的 extract_data;None 表示无改动/失败(caller 维持原状 fail-closed)。
+    """
+    cmd = [sys.executable, "-m", DISTILL_EXTRACT_WORKER_MODULE]
+    worker_input = json.dumps(
+        {
+            "mode": "traceability_retake",
+            "extract_data": extract_data,
+            "raw_content": raw_content,
+            "content_lane": content_lane,
+        },
+        ensure_ascii=False,
+    )
+    proc: subprocess.Popen[str] | None = None
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            text=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        stdout, stderr = proc.communicate(
+            input=worker_input, timeout=TRACEABILITY_RETAKE_WORKER_TIMEOUT_S
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        if proc is not None:
+            _kill_process_group(proc, DISTILL_EXTRACT_WORKER_KILL_GRACE_S)
+        return None
+
+    stdout = (stdout or "").strip()
+    if proc.returncode != 0:
+        return None
+    try:
+        payload = json.loads(stdout)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(payload, dict) or not payload.get("success"):
+        return None
+    data = payload.get("data")
+    return data if isinstance(data, dict) else None
 
 
 def _kill_process_group(proc: subprocess.Popen[Any], grace_s: float) -> None:

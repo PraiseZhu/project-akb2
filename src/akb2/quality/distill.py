@@ -713,6 +713,196 @@ def extract_claims(
     )
 
 
+# ---------------------------------------------------------------------------
+# F2-B: traceability 有界 retake( floor 仅因 traceability fail 时触发一次)
+# ---------------------------------------------------------------------------
+
+TRACEABILITY_RETAKE_MAX: int = 1  # 具名常量:只 retake 一次(有界)
+TRACEABILITY_RETAKE_TIMEOUT_S: float = 60.0
+
+# retake 响应 schema:每条 interpretation claim 补 traces_to 或改判 provenance
+_TRACEABILITY_RETAKE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "retake": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "claim_index": {"type": "integer"},
+                    "traces_to": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "provenance": {
+                        "type": "string",
+                        "enum": ["akb_interpretation", "source_grounded"],
+                    },
+                },
+                "required": ["claim_index", "traces_to", "provenance"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["retake"],
+    "additionalProperties": False,
+}
+
+
+def _build_traceability_retake_messages(
+    interp_claims: list[dict[str, Any]],
+    grounded_anchors: list[str],
+    raw_snippet: str,
+) -> list[dict[str, str]]:
+    """F2-B: 构建 traceability retake prompt。
+
+    给 LLM 一批缺 traces_to 的 interpretation claims + grounded anchor 清单 + raw 摘要,
+    要求补 traces_to(指向 grounded anchor)或改判 provenance(若实为原文直述)。
+    """
+    import json as _json
+
+    interp_brief = [
+        {
+            "claim_index": int(c.get("_retake_index", 0)),
+            "text": str(c.get("text", ""))[:200],
+            "anchor": str(c.get("anchor", "")),
+        }
+        for c in interp_claims
+    ]
+    sys_msg = (
+        "你是 traceability 修复助手。给定一批 akb_interpretation claims(缺 traces_to 溯源)"
+        "与 raw 中已严格接地的 source_grounded anchor 清单,为每条 interpretation claim 补"
+        "traces_to(指向它所解读的 grounded anchor),或若该 claim 实际是原文直述则改判"
+        "source_grounded 并补对应 anchor。\n"
+        "硬约束:traces_to 必须从 grounded_anchors 里选,不可编造;不确定则保持"
+        " akb_interpretation 且 traces_to=[]。\n"
+        "只返回 JSON。"
+    )
+    user_msg = (
+        f"grounded_anchors: {_json.dumps(grounded_anchors, ensure_ascii=False)}\n\n"
+        f"interpretation_claims (claim_index 是在 claims 数组中的位置):\n"
+        f"{_json.dumps(interp_brief, ensure_ascii=False)}\n\n"
+        f"raw 摘要(供判断解读出处):\n{raw_snippet[:3000]}\n\n"
+        f"返回 {{\"retake\": [{{\"claim_index\": int, \"traces_to\": [\"§X\"], "
+        f"\"provenance\": \"akb_interpretation|source_grounded\"}}]}}"
+    )
+    return [
+        {"role": "system", "content": sys_msg},
+        {"role": "user", "content": user_msg},
+    ]
+
+
+def retake_traceability(
+    extract_data: dict[str, Any],
+    raw_content: str,
+    content_lane: str = "",
+) -> dict[str, Any] | None:
+    """F2-B: traceability 有界 retake(一次 LLM 调用,补 traces_to 或改判 provenance)。
+
+    caller(runner)在 floor 仅因 FLOOR_INTERPRETATION_TRACEABILITY fail 时触发本函数。
+    本函数不放宽 floor,只给 LLM 一次机会补 traces_to;retake 后 caller 重评 floor,
+    仍 fail → fail-closed。TRACEABILITY_RETAKE_MAX=1(具名,有界)。
+
+    Args:
+        extract_data: extract 产出的结构化 dict(本函数 in-place 更新 claims)。
+        raw_content: raw 全文(供 LLM 判断解读出处)。
+        content_lane: 车道(目前只 concept 触发)。
+    Returns:
+        更新后的 extract_data(若有改动);None 表示无可 retake / LLM 失败(caller 维持原状)。
+    """
+    claims = extract_data.get("claims")
+    if not isinstance(claims, list) or not claims:
+        return None
+    # 收集 grounded anchors(source_grounded claims 的 anchor,去重保序)
+    grounded_anchors: list[str] = []
+    seen: set[str] = set()
+    for c in claims:
+        if (
+            isinstance(c, dict)
+            and str(c.get("provenance", "")).strip() == "source_grounded"
+            and c.get("anchor")
+        ):
+            a = str(c["anchor"]).strip()
+            if a and a not in seen:
+                seen.add(a)
+                grounded_anchors.append(a)
+    if not grounded_anchors:
+        return None  # 无 grounded anchor → retake 无处指(维持原状 fail-closed)
+    # 收集需 retake 的 interpretation claims(缺 traces_to)
+    interp: list[dict[str, Any]] = []
+    for i, c in enumerate(claims):
+        if not isinstance(c, dict):
+            continue
+        if str(c.get("provenance", "")).strip() != "akb_interpretation":
+            continue
+        tt = c.get("traces_to")
+        if not tt:  # 缺 traces_to
+            c["_retake_index"] = i
+            interp.append(c)
+    if not interp:
+        return None  # 无缺 traces_to 的 interpretation → 无需 retake
+    # 调 LLM
+    from src.akb2.quality.llm_router import route_llm as _default
+
+    messages = _build_traceability_retake_messages(
+        interp, grounded_anchors, raw_content or ""
+    )
+    try:
+        with _distill_attempt_deadline(TRACEABILITY_RETAKE_TIMEOUT_S):
+            response = _default(
+                DISTILL_MODEL_FAMILY,
+                messages,
+                response_schema=_TRACEABILITY_RETAKE_SCHEMA,
+                timeout_s=TRACEABILITY_RETAKE_TIMEOUT_S,
+                max_retries=DISTILL_MAX_RETRIES,
+                reasoning_effort=None,
+                strict_schema=True,
+                extra_body={"enable_thinking": False} if DISTILL_DISABLE_THINKING else None,
+            )
+    except Exception:
+        return None  # LLM 失败 → 维持原状(caller fail-closed)
+    parsed = _coerce_json_dict(response.content)
+    retake_items = parsed.get("retake") if isinstance(parsed, dict) else None
+    if not isinstance(retake_items, list):
+        return None
+    # 更新 claims(只接受 traces_to ⊆ grounded_anchors 的;防 LLM 编造)
+    grounded_set = set(grounded_anchors)
+    changed = False
+    for item in retake_items:
+        if not isinstance(item, dict):
+            continue
+        idx = item.get("claim_index")
+        if not isinstance(idx, int) or idx < 0 or idx >= len(claims):
+            continue
+        claim = claims[idx]
+        if not isinstance(claim, dict):
+            continue
+        tt = item.get("traces_to")
+        if isinstance(tt, list):
+            # 只接受 grounded_anchors 里的(防 LLM 编造 §Z)
+            clean_tt = [
+                str(a).strip() for a in tt
+                if isinstance(a, str) and str(a).strip() in grounded_set
+            ]
+            if clean_tt and clean_tt != claim.get("traces_to"):
+                claim["traces_to"] = clean_tt
+                changed = True
+        prov = str(item.get("provenance", "")).strip()
+        if prov in ("akb_interpretation", "source_grounded") and prov != claim.get("provenance"):
+            # 改判 source_grounded 须同时有 grounded anchor
+            if prov == "source_grounded" and claim.get("anchor") in grounded_set:
+                claim["provenance"] = "source_grounded"
+                changed = True
+            elif prov == "akb_interpretation":
+                claim["provenance"] = "akb_interpretation"
+                changed = True
+    # 清理临时 _retake_index
+    for c in claims:
+        if isinstance(c, dict):
+            c.pop("_retake_index", None)
+    return extract_data if changed else None
+
+
 def _build_extract_segment_messages(
     segment_name: str,
     content_snippet: str,
