@@ -44,6 +44,25 @@ class TestIsPlainTitleComponent:
                      "Manage CLAUDE.md for large teams", "Troubleshoot memory issues"):
             assert not _is_plain_title_component(name), f"{name!r} 应被拒(句子)"
 
+    def test_f5c_imperative_words_rejected(self):
+        """F5-C: 祈使词 Invoke/Disable/Debug 开头 → 拒(probe-p4 'Invoke subagents explicitly')。"""
+        for name in ("Invoke subagents explicitly", "Disable auto memory",
+                     "Debug memory issues"):
+            assert not _is_plain_title_component(name), f"{name!r} 应被拒(祈使句)"
+
+    def test_f5c_generic_section_names_rejected(self):
+        """F5-C: 泛节名 Quick Start/Getting Started/Next Steps 等 → 拒(probe-p4 'Quick Start')。"""
+        for name in ("Quick Start", "Getting Started", "Get started",
+                     "Next Steps", "Prerequisites", "Examples", "Usage",
+                     "Installation", "Troubleshooting", "See also", "Learn more"):
+            assert not _is_plain_title_component(name), f"{name!r} 应被拒(泛节名)"
+
+    def test_f5c_real_component_not_killed(self):
+        """F5-C: 真组件 'Task Graph and Checkpointing' 含动名词但非祈使起头 → 不误杀。"""
+        assert _is_plain_title_component("Task Graph and Checkpointing")
+        assert _is_plain_title_component("Executor Pool")
+        assert _is_plain_title_component("Multi-Step Loop")
+
     def test_contraction_rejected(self):
         """含收缩词(isn't/it's,含 curly ')→ 拒。"""
         assert not _is_plain_title_component("Claude isn't following my CLAUDE.md")

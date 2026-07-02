@@ -2663,6 +2663,10 @@ _GENERIC_PLAIN_TITLE_NAMES: frozenset[str] = frozenset({
     "references", "related work", "appendix", "preface", "tldr", "intro",
     "outro", "abstract", "changelog", "credits", "table of contents",
     "further reading",
+    # F5-C: 补常见文档泛节名(probe-p4 "Quick Start" 成了边端点)
+    "quick start", "getting started", "get started", "next steps",
+    "prerequisites", "examples", "usage", "installation",
+    "troubleshooting", "see also", "learn more",
 })
 # 句子起始词(动词/疑问词):以这些词开头的标题是祈使句/疑问句,非命名短语
 _SENTENCE_STARTER_WORDS: frozenset[str] = frozenset({
@@ -2672,6 +2676,8 @@ _SENTENCE_STARTER_WORDS: frozenset[str] = frozenset({
     "run", "check", "verify", "understand", "learn", "getting", "started",
     "read", "download", "update", "delete", "remove", "start", "stop",
     "test", "deploy", "commit", "push", "pull", "merge", "see",
+    # F5-C: 补常见文档祈使词(probe-p4 "Invoke subagents explicitly" 成了边端点)
+    "invoke", "disable", "debug",
 })
 # 小写助动词(出现则标题是句子而非命名短语):is/are/seem/has/do/can/will...
 _AUX_VERB_WORDS: frozenset[str] = frozenset({
