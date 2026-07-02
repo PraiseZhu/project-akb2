@@ -2407,15 +2407,112 @@ def _nearest_preceding_anchor(
     return nearest_preceding_anchor(None, sent_pos, decls)
 
 
+# P1b-3: 组件匹配变体 domain stoplist([N1] b:泛词单独不作 variant)
+_COMPONENT_VARIANT_STOPLIST: frozenset[str] = frozenset({
+    "agent", "context", "model", "queue", "task", "worker", "system",
+    "pool", "layer", "stage", "service", "module", "engine", "manager",
+    "controller", "handler", "runtime", "cache", "scheduler", "broker",
+})
+# P1b-3 [N1]: 跨句上限(保守,有界预算)
+_CROSS_SENTENCE_MAX_EDGES: int = 3
+
+
+def _generate_component_variants(name: str) -> list[str]:
+    """生成组件名匹配变体:归一全名 + 朴素单复数 + 多词名长 token(len≥5)+ 其单复数。"""
+    norm = re.sub(r"^(?:A|An|The)\s+", "", name.strip(), flags=re.I).lower().strip()
+    if not norm:
+        return []
+    variants: list[str] = []
+    seen: set[str] = set()
+
+    def _add(v: str) -> None:
+        v = v.strip()
+        if v and v not in seen:
+            seen.add(v)
+            variants.append(v)
+
+    _add(norm)
+    # 朴素单复数
+    if norm.endswith("s"):
+        _add(norm[:-1])
+    else:
+        _add(norm + "s")
+    # 多词名长 token(len≥5,非 stoplist)+ 其单复数
+    for t in re.findall(r"[A-Za-z0-9]+", norm):
+        if len(t) >= 5 and t not in _COMPONENT_VARIANT_STOPLIST:
+            _add(t)
+            if t.endswith("s"):
+                _add(t[:-1])
+            else:
+                _add(t + "s")
+    return variants
+
+
+def _component_match_variants(components: list[dict[str, str]]) -> dict[str, str]:
+    """variant(lowercase) → 唯一 claim 的组件原名。
+
+    [N1] 双护栏:
+    - (a) variant 被 ≥2 组件认领 → 弃用(歧义,如 "pool" 同被 Executor Pool/Task Pool 认领)
+    - (b) 单个 domain stoplist 泛词(agent/context/model/queue/pool/...)不作 variant
+    返回 {variant: orig_name},供英文 \b 词界最长匹配。
+    """
+    claims: dict[str, list[str]] = {}
+    for c in components:
+        orig = c["name"]
+        for v in _generate_component_variants(orig):
+            claims.setdefault(v, []).append(orig)
+    result: dict[str, str] = {}
+    for v, claimants in claims.items():
+        if len(claimants) > 1:
+            continue  # [N1] a 歧义弃用
+        if v in _COMPONENT_VARIANT_STOPLIST:
+            continue  # [N1] b 单泛词弃用
+        result[v] = claimants[0]
+    return result
+
+
+def _compile_component_match_pattern(
+    variant_map: dict[str, str]
+) -> re.Pattern[str] | None:
+    """编译 variant 匹配 regex(英文 \\b 词界,长度降序最长匹配)。无 variant 返 None。"""
+    if not variant_map:
+        return None
+    variants_sorted = sorted(variant_map.keys(), key=len, reverse=True)
+    escaped = "|".join(re.escape(v) for v in variants_sorted)
+    return re.compile(rf"\b(?:{escaped})\b", re.IGNORECASE)
+
+
+def _find_components_in_text(
+    text: str,
+    pattern: re.Pattern[str] | None,
+    variant_map: dict[str, str],
+) -> list[str]:
+    """用 variant pattern 找 text 中出现的组件原名(去重保序)。"""
+    if not pattern:
+        return []
+    found: list[str] = []
+    for m in pattern.finditer(text):
+        orig = variant_map.get(m.group(0).lower())
+        if orig and orig not in found:
+            found.append(orig)
+    return found
+
+
 def _build_real_causal_edges(
     components: list[dict[str, str]], raw_content: str
 ) -> list[dict[str, Any]]:
-    """§0.2/D2/M1 + §0.2/F1：从 raw 真实因果语言建 eligible 边 + 相邻组件结构推断弱边。
+    """§0.2/D2/M1 + §0.2/F1 + P1b-3：从 raw 真实因果语言建 eligible 边 + 相邻组件结构推断弱边。
 
     - 真因果/依赖/触发语言句 + ≥2 组件共现 → edge_kind="source_causal"（带 evidence
       句 + evidence_anchor **映射到真实 raw §-anchor**，计入 F4 eligible edge）
-    - 同编号段相邻组件 → edge_kind="inferred_from_structure"（无 evidence，不计 F4，
-      只渲染进正文表 + 交 grader H3 审语义；§0.2 D1 弱边不救 F4）
+    - P1b-3: 组件共现用 _component_match_variants(alias + 朴素单复数 + 多词名长 token,
+      [N1] 双护栏:歧义 variant 弃用 + domain stoplist 泛词弃用),解决 "Executor Pool"
+      vs "executors" 抽不出的问题
+    - P1b-3 跨句(保守):仅当单句 pass 产 0 条时启用一轮;窗口=相邻句对;[N1] 加严:
+      合并句对必须有定向连接词 + 两端组件各自唯一匹配 + 两句 nearest_preceding_anchor
+      相同(同 §-anchor block);evidence 写两句;上限 3 条
+    - 同编号段相邻组件 → edge_kind="inferred_from_structure"（无 evidence,不计 F4,
+      只渲染进正文表 + 交 grader H3 审语义;§0.2 D1 弱边不救 F4）
     无真实因果 / 因果句不在 §-anchor block 下 → 0 eligible edge → fallback fail-closed。
 
     §0.2/F1：**不得合成 ``§raw``**——evidence_anchor 必须映射 evidence sentence 到真实
@@ -2423,26 +2520,17 @@ def _build_real_causal_edges(
     """
     if not components or not raw_content:
         return []
-    # 组件名归一化（去首冠词，小写）→ 原名映射
-    comp_norm: list[tuple[str, str]] = []  # (norm, orig)
-    for c in components:
-        name = c["name"]
-        norm = re.sub(r"^(?:A|An|The)\s+", "", name.strip(), flags=re.I).lower().strip()
-        if norm:
-            comp_norm.append((norm, name))
+    variant_map = _component_match_variants(components)
+    pattern = _compile_component_match_pattern(variant_map)
     anchor_positions = _raw_anchor_positions(raw_content)
     edges: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     search_pos = 0
-    # 1. source_causal edges：含因果连接词的句 + ≥2 组件共现 + 真实 §-anchor → eligible edge
+    # 1. source_causal edges:含因果连接词的句 + ≥2 组件共现(P1b-3 variant 匹配)+ 真实 §-anchor
     for sent in re.split(r"[。\n.!?]", raw_content):
         if not _CAUSAL_CONNECTOR_RE.search(sent):
             continue
-        sent_lower = sent.lower()
-        found_orig: list[str] = []
-        for norm, orig in comp_norm:
-            if norm in sent_lower and orig not in found_orig:
-                found_orig.append(orig)
+        found_orig = _find_components_in_text(sent, pattern, variant_map)
         if len(found_orig) < 2:
             continue
         # §0.2/F1：映射 evidence sentence 到真实 raw §-anchor（不合成 §raw）
@@ -2470,6 +2558,45 @@ def _build_real_causal_edges(
                             "evidence_anchor": anchor,
                         }
                     )
+    # 1.5 P1b-3 跨句(保守):仅单句 pass 产 0 eligible edge 时启用
+    if not edges:
+        sentences = [s.strip() for s in re.split(r"[。\n.!?]", raw_content) if s.strip()]
+        cross_search_pos = 0
+        for i in range(len(sentences) - 1):
+            if len(edges) >= _CROSS_SENTENCE_MAX_EDGES:
+                break
+            s1, s2 = sentences[i], sentences[i + 1]
+            pair_text = s1 + " " + s2
+            # [N1] 加严:合并句对中必须存在明确定向连接词
+            if not _CAUSAL_CONNECTOR_RE.search(pair_text):
+                continue
+            found_orig = _find_components_in_text(pair_text, pattern, variant_map)
+            if len(found_orig) < 2:
+                continue
+            # 两句 nearest_preceding_anchor 必须相同(同 §-anchor block)
+            p1 = raw_content.find(s1, cross_search_pos)
+            p2 = raw_content.find(s2, p1 + 1) if p1 >= 0 else -1
+            if p1 < 0 or p2 < 0:
+                continue
+            cross_search_pos = p1 + 1
+            a1 = _nearest_preceding_anchor(p1, anchor_positions)
+            a2 = _nearest_preceding_anchor(p2, anchor_positions)
+            if not a1 or a1 != a2:
+                continue  # 不同 block → 不连
+            # 两端组件各自唯一匹配(variant_map 保证 unique claim;取前两个建一条边)
+            a, b = found_orig[0], found_orig[1]
+            if (a, b) not in seen:
+                seen.add((a, b))
+                edges.append(
+                    {
+                        "from": a,
+                        "to": b,
+                        "relation": "raw_causal",
+                        "edge_kind": "source_causal",
+                        "evidence": pair_text.strip()[:200],
+                        "evidence_anchor": a1,
+                    }
+                )
     # 2. inferred_from_structure edges：相邻组件顺序推断（不计 F4，供 grader H3）
     for i in range(len(components) - 1):
         a = components[i]["name"]
