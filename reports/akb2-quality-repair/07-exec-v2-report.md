@@ -205,3 +205,38 @@ mini e2e 硬证据（`reports/akb2-quality-repair/_tmp/mini-e2e-v2-section4.txt`
 - 本轮已让 30% pass 在 `--acceptance-mode quality-repair` 下 exit 0（D5）。
 - 但 30% 实际 pass_rate 取决于 §4（step 8）+ D8（step 6b）+ C1（step 5）——这三个是率的主体来源。仅靠当前 7 commit，fallback 路径（explicit causal raw）能过，但 LLM 路径（散文因果）仍 0 eligible edge（prompt 没要求 edge_kind/evidence_anchor）。
 - **建议后续优先级**：step 8（§4）> step 6b（D8）> step 5（C1）> step 7（D3）> step 9b（D4/D12）> step 4b（G1/D11）。
+
+## R4 真机 0% 根因修复（commits 3083e55 + 7e7740f）
+
+真机 full e2e（20 条 corpus, AUTO_PROMOTE=0）：positive_pass_rate=0.0, negative_reject_rate=1.0。
+mock mini e2e 全绿但真机 0%——按真机 report 逐条根因修：
+
+### F5（最高价值，卡 7 条 compose_failed）— SG 与 F4 eligible anchor 口径统一
+- SG-mechanism-edge-evidence eligible edge 的 evidence_anchor 改为 ∈ raw 声明全集（复用
+  _extract_raw_anchors），**不再要求正文额外渲染 [raw §X]**。旧口径要求 body 有 [raw §X]
+  （只来自 claims，不覆盖所有 raw anchor）→ F4 认可的真边被 SG 拒。统一为 raw 全集。
+- **真机预期**：7 条 F4 已 pass 的 compose_failed 救回（positive 0%→~39%）。
+
+### F6（floor_failed 3）— §4 LLM 产 edge anchor 校正
+- _correct_edge_anchors_to_raw：LLM 产 edge 的 evidence_anchor 不在 raw 声明集时，用 evidence
+  sentence 在 raw 定位 + _nearest_preceding_anchor 映射真实 anchor；映射不到 → 不计 eligible。
+- **真机预期**：LLM 编 anchor 不 ∈ raw 的 3 条 floor_failed 救回（evidence 能定位到真实 anchor）。
+
+### F7（extract_failed 3，含 ag2）— fallback scanner + 连接词增强
+- _CAUSAL_CONNECTOR_RE 扩展（dispatch/collect/register/spawn/route/forward/return 等）；
+  _scan_real_mechanism_components 增 _SECTION_ANCHOR_COMPONENT_RE 认 ## §A Captain §-anchor 标题。
+- **真机预期**：ag2 等 §-anchor 格式 raw fallback 抽出 ≥3 组件 + ≥1 source_causal eligible。
+
+### F8（admission_reject 5）— 长正文走 LLM 窄仲裁
+- _check_mechanism_signal deterministic fail 加 body_length < 500 条件；长文 total==0 走 LLM。
+- **真机预期**：long-running-agents 等长机制散文不再被 no_mechanism_signal 误拒；负样本仍拒。
+
+### F9（D12 funnel scoped_total=0）— scope 字段修
+- _compute_repair_quality_funnel scope 读 e.get("mechanism_present")（顶层），非 audit.mechanism_present。
+- **真机预期**：D12 counters 真统计（old_no_mechanism/distill_f4_precompose/a2_cold_start/hidden 全 0 可验）。
+
+### codex 非阻塞项
+- integrity_floor docstring ④ F4 陈旧 → 改 eligible edge 口径；argparse --help 实测不崩；repairability 命名一致。
+
+**需真机 e2e 复验**（worker env 无 DEEPSEEK/NLM key）：F5-F9 真机预期如上；lead 阶段4 跑后核查
+positive_pass_rate / D12 counters 全 0 / §4 LLM 遵守度 / fallback ag2 抽 eligible。
