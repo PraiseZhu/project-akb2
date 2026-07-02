@@ -725,6 +725,8 @@ TRACEABILITY_RETAKE_MAX: int = 1  # 具名常量:只 retake 一次(有界)
 TRACEABILITY_RETAKE_TIMEOUT_S: float = 60.0
 
 # retake 响应 schema:每条 interpretation claim 补 traces_to 或改判 provenance
+# F4-B: 扩展 new_grounded_claim(verbatim 引文)路径——LLM 可返回该出处锚的逐字原文,
+# 代码 B1 强校验后作新 source_grounded claim 追加(不造假溯源)
 _TRACEABILITY_RETAKE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -741,6 +743,15 @@ _TRACEABILITY_RETAKE_SCHEMA: dict[str, Any] = {
                     "provenance": {
                         "type": "string",
                         "enum": ["akb_interpretation", "source_grounded"],
+                    },
+                    "new_grounded_claim": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string"},
+                            "anchor": {"type": "string"},
+                        },
+                        "required": ["text", "anchor"],
+                        "additionalProperties": False,
                     },
                 },
                 "required": ["claim_index", "traces_to", "provenance"],
@@ -780,6 +791,10 @@ def _build_traceability_retake_messages(
         "source_grounded 并补对应 anchor。\n"
         "硬约束:traces_to 必须从 grounded_anchors 里选,不可编造;不确定则保持"
         " akb_interpretation 且 traces_to=[]。\n"
+        "F4-B:若 interpretation 的真实出处锚(在 raw 里)不在 grounded_anchors 里(该处无"
+        " grounded claim),你可返回 new_grounded_claim={text, anchor}:text 须是该锚位置的"
+        " **逐字原文引文**(verbatim,不可改写),anchor 是该出处的 raw 锚(可在 grounded_anchors"
+        " 之外,但须是 raw 真实锚)。代码会 B1 强校验 text 逐字在 raw 该锚 block 内才接受。\n"
         "只返回 JSON。"
     )
     user_msg = (
@@ -827,6 +842,11 @@ def retake_traceability(
         "items_returned": 0,
         "accepted_count": 0,
         "reject_reason": "",
+        # F4-B: 两路径分别计数 + LLM 返回摘要(截断 80 字符,便于下轮 debug)
+        "accepted_traces_to": 0,
+        "accepted_new_claim": 0,
+        "rejected_new_claim": 0,
+        "llm_return_summary": "",
     }
     claims = extract_data.get("claims")
     if not isinstance(claims, list) or not claims:
@@ -903,6 +923,15 @@ def retake_traceability(
                 c.pop("_retake_index", None)
         return {"changed": False, "data": extract_data, "diagnostics": diag}
     diag["items_returned"] = len(retake_items)
+    # F4-B: LLM 返回摘要(截断 80 字符,便于下轮 debug)
+    try:
+        import json as _json
+        diag["llm_return_summary"] = _json.dumps(retake_items, ensure_ascii=False)[:80]
+    except Exception:
+        diag["llm_return_summary"] = str(retake_items)[:80]
+    # F4-B: raw 声明集 + anchor blocks(供 new_grounded_claim 的 anchor resolve + B1 verbatim 校验)
+    raw_decl_set = declared_anchor_set(raw_content) if raw_content else set()
+    anchor_blocks = _extract_anchor_blocks(raw_content) if raw_content else {}
     # F3-A 接受逻辑:对每个 LLM 返回的锚过 resolve_anchor_ref 唯一前缀解析(目标集=grounded_set),
     # 解析不了才拒(防 LLM 编造 §Z;但接受 LLM 返单字母 §E → 解析为全名 §E_CLAIMS)。
     changed = False
@@ -916,6 +945,7 @@ def retake_traceability(
         claim = claims[idx]
         if not isinstance(claim, dict):
             continue
+        # F3-A 路径:traces_to 重指(grounded 集)
         tt = item.get("traces_to")
         if isinstance(tt, list):
             clean_tt: list[str] = []
@@ -935,6 +965,39 @@ def retake_traceability(
                 claim["traces_to"] = clean_tt
                 changed = True
                 accepted += 1
+                diag["accepted_traces_to"] += 1
+        # F4-B 路径:new_grounded_claim(verbatim 引文)——anchor ∈ raw 声明集(resolve 后)+
+        # text B1 强匹配(连续覆盖 ≥60%)在 raw 该锚 block 内 → 追加新 source_grounded claim
+        ngc = item.get("new_grounded_claim")
+        if isinstance(ngc, dict) and ngc.get("text") and ngc.get("anchor"):
+            ngc_anchor = str(ngc["anchor"]).strip()
+            ngc_text = str(ngc["text"]).strip()
+            # anchor resolve 到 raw 声明集(canonicalize + 唯一前缀)
+            resolved_anchor = _resolve_grounded_anchor(ngc_anchor, raw_decl_set)
+            if not resolved_anchor:
+                diag["rejected_new_claim"] += 1
+                continue
+            block = anchor_blocks.get(resolved_anchor, "")
+            if not block:
+                diag["rejected_new_claim"] += 1
+                continue
+            # B1 强匹配:text 连续覆盖 ≥60% in block(verbatim 引文)
+            coverage = _verbatim_coverage_in_block(ngc_text, block)
+            if coverage < _GROUND_STRONG_COVERAGE:
+                diag["rejected_new_claim"] += 1
+                continue
+            # 通过 → 追加新 source_grounded claim,interpretation.traces_to 指向它
+            new_claim = {
+                "text": ngc_text,
+                "anchor": resolved_anchor,
+                "provenance": "source_grounded",
+                "evidence_gap": "未提供 verbatim 校验细节",
+            }
+            claims.append(new_claim)
+            claim["traces_to"] = [resolved_anchor]
+            changed = True
+            accepted += 1
+            diag["accepted_new_claim"] += 1
         prov = str(item.get("provenance", "")).strip()
         if prov in ("akb_interpretation", "source_grounded") and prov != claim.get("provenance"):
             if prov == "source_grounded" and claim.get("anchor") in grounded_set:
@@ -972,6 +1035,21 @@ def _resolve_grounded_anchor(ref: str, grounded_set: set[str]) -> str | None:
         return ref
     resolved = resolve_anchor_ref(canon, grounded_set)
     return resolved
+
+
+def _verbatim_coverage_in_block(claim_text: str, block_text: str) -> float:
+    """F4-B: claim_text 在 block_text 中的最长连续片段覆盖比例(B1 强匹配标准)。
+
+    用 difflib.find_longest_match 找最长连续公共子串,返回 size / len(claim_norm)。
+    ≥0.60 才算 verbatim 引文(近全文转写),改写/paraphrase 不达 60% → 拒(fail-closed)。
+    """
+    claim_norm = _normalize_for_grounding(claim_text)
+    block_norm = _normalize_for_grounding(block_text)
+    if not claim_norm or not block_norm:
+        return 0.0
+    sm = difflib.SequenceMatcher(None, claim_norm, block_norm, autojunk=False)
+    m = sm.find_longest_match(0, len(claim_norm), 0, len(block_norm))
+    return m.size / len(claim_norm) if claim_norm else 0.0
 
 
 def _build_extract_segment_messages(
