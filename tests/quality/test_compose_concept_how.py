@@ -12,11 +12,9 @@ from __future__ import annotations
 from src.akb2.quality.checks_structural import (
     FORBIDDEN_HOW_FALLBACK_MARKERS,
     TEMPLATE_RESIDUE_MARKERS,
-    run_candidate_self_gate,
 )
 from src.akb2.quality.distill import _render_concept_mechanism_walkthrough
 from src.akb2.quality.raw_anchors import declared_anchor_set
-
 
 _RAW = """\
 ## 锚点目录
@@ -73,8 +71,11 @@ def _extract_zero_eligible() -> dict:
 class TestRenderConceptMechanismWalkthrough:
     def test_concept_empty_how_walkthrough_no_sg_defect(self):
         """concept 空 how → walkthrough 无 SG-how-executability defect。"""
-        from src.akb2.quality.distill import _build_body
-        from src.akb2.quality.distill import ExtractResult, compose_candidate  # noqa: F401
+        from src.akb2.quality.distill import (  # noqa: F401
+            ExtractResult,
+            _build_body,
+            compose_candidate,
+        )
 
         # 直接调 _build_body 验证 how 节内容
         data = _extract_with_eligible_edges()
