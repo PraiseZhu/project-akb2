@@ -317,6 +317,19 @@ def _process_corpus_entry(
     # 故同正文不同 fetched_at 必去重为 1（不复用 runner._compute_raw_hash 的路径 hash）。
     result["raw_content_sha256"] = _compute_raw_content_sha256(raw_content)
 
+    # P0：raw 留存（live + fixture）供失败样本离线复放 + 救率账审计。
+    # [N4] raw_content_sha256 是 chrome-stripped body hash（去重用），非落盘文件 digest；
+    # 落盘文件完整性校验另存 raw_file_sha256。OSError 不阻断管线（只记 raw_store_error）。
+    _raw_path, _raw_file_sha, _raw_err = _persist_raw_content(
+        raw_content, result["raw_content_sha256"], config.get("raw_store_dir")
+    )
+    if _raw_path:
+        result["raw_store_path"] = _raw_path
+    if _raw_file_sha:
+        result["raw_file_sha256"] = _raw_file_sha
+    if _raw_err:
+        result["raw_store_error"] = _raw_err
+
     # --- 运行七段管道 ---
     pipeline_result = _run_pipeline_segments(
         raw_path=raw_path,
@@ -666,6 +679,50 @@ def _compute_raw_content_sha256(raw_content: str | None) -> str | None:
     if not body:
         return None
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _resolve_raw_store_dir(report_out: str, persist_raw: bool) -> str | None:
+    """解析 raw 留存目录：<report_out 同级>/raw-store；persist_raw=False 或无 report_out → None。
+
+    P0：live 与 fixture 都留存，供失败样本离线复放（去网络抖动）+ 救率账审计。
+    """
+    if not persist_raw or not report_out:
+        return None
+    return str(Path(report_out).parent / "raw-store")
+
+
+def _persist_raw_content(
+    raw_content: str | None,
+    sha: str | None,
+    raw_store_dir: str | None,
+) -> tuple[str | None, str | None, str | None]:
+    """把 raw_content 落盘到 <raw_store_dir>/<sha>.md 供离线复盘/审计。
+
+    [N4] sha 语义：传入的 ``sha`` 即 ``raw_content_sha256``——它是 chrome-stripped
+    **body hash**（见 ``_compute_raw_content_sha256``：去 frontmatter/TOC/锚点声明行/
+    volatile fetched_at/chrome 后的正文哈希，用于去重 funnel key），**不是**落盘文件
+    的 digest。落盘文件含完整 raw（frontmatter+TOC+锚点+正文），其文件级 digest 另存为
+    返回的 ``raw_file_sha256``，供审计校验落盘文件完整性（区别于 body hash 的去重用途）。
+
+    Returns:
+        (path, raw_file_sha256, error)
+        - 无 raw_content/sha/dir → (None, None, None)
+        - sha 幂等跳过（文件已存在）→ (path, None, None)（不重写、不重算 file hash）
+        - 写成功 → (path, raw_file_sha256, None)
+        - OSError 不致命 → (None, None, error_str)（管线继续，caller 记 raw_store_error）
+    """
+    if not raw_content or not sha or not raw_store_dir:
+        return None, None, None
+    out_path = Path(raw_store_dir) / f"{sha}.md"
+    if out_path.exists():
+        return str(out_path), None, None  # sha 幂等跳过
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(raw_content, encoding="utf-8")
+    except OSError as exc:
+        return None, None, f"{type(exc).__name__}: {exc}"
+    raw_file_sha = hashlib.sha256(raw_content.encode("utf-8")).hexdigest()
+    return str(out_path), raw_file_sha, None
 
 
 def _classify_failure_class_chain(result: dict[str, Any]) -> str:
@@ -1122,6 +1179,7 @@ def run_calibration(
     report_out: str,
     config: dict[str, Any] | None = None,
     live_sample: int = 0,
+    persist_raw: bool = True,
 ) -> dict[str, Any]:
     """校准核心：逐条跑语料 → 统计报告 → 出厂判定。
 
@@ -1130,12 +1188,16 @@ def run_calibration(
         report_out: 输出报告 JSON 路径。
         config: 运行配置。
         live_sample: >0 时从 sources-ledger 取样实抓。
+        persist_raw: True 时写 <report_out 同级>/raw-store/<sha>.md 留存 raw 供离线复放
+            （P0，默认开）；False 关闭（CLI --no-raw-store）。
 
     Returns:
         完整报告 dict。
     """
     if config is None:
         config = _default_config()
+    # P0：raw 留存目录（<report_out 同级>/raw-store）；persist_raw=False 关闭。
+    config["raw_store_dir"] = _resolve_raw_store_dir(report_out, persist_raw)
 
     entries: list[dict[str, Any]] = []
 
@@ -1363,6 +1425,15 @@ def main(argv: list[str] | None = None) -> int:
             "用于 quality-repair 验收避免 30% 仍 exit 1）"
         ),
     )
+    parser.add_argument(
+        "--no-raw-store",
+        action="store_true",
+        default=False,
+        help=(
+            "禁用 raw 留存（默认开启：写 <report_out 同级>/raw-store/<sha>.md "
+            "供失败样本离线复放 + 救率账审计）"
+        ),
+    )
 
     args = parser.parse_args(argv)
 
@@ -1380,6 +1451,7 @@ def main(argv: list[str] | None = None) -> int:
             report_out=args.report_out,
             config=config,
             live_sample=args.live_sample,
+            persist_raw=not args.no_raw_store,
         )
     except Exception as exc:
         print(f"ERROR: 校准失败: {exc}", file=sys.stderr)
