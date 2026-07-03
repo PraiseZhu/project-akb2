@@ -1342,18 +1342,20 @@ def _deterministic_backfill_grounded_claim(
     raw_content: str,
 ) -> dict[str, str] | None:
     """F5-B: 确定性补 grounded claim——从 raw 该锚 block 挑与 interpretation 文本
-    token 重合度最高的一句,原样摘句作 source_grounded claim。
+    verbatim 覆盖最高的一句,原样摘句作 source_grounded claim。
 
-    去 LLM 化:raw 原文天然 verbatim,无造假空间。挑不出合格句 → 返 None(留给 LLM retake)。
+    F12-A(probe-p9b poisoned_trace_entailment):旧版阈值"≥2 长 token 重合"过弱——
+    token 重合≠语义蕴含(interp 是 paraphrase 时,raw 句不 entail 它)→ grader 判
+    poisoned。修:接受阈值提到 B1 强匹配级(_GROUND_STRONG_COVERAGE=0.60,与
+    _strong_match_pos/_verbatim_coverage_in_block 同口径),只挑 interp 近全文转写
+    的 raw 句。弱重合→返 None→走 LLM retake / F6-B 丢弃(fail-closed:弱 trace 变少,
+    要么真 trace 要么丢弃,不绕 entailment 门)。
     - target_anchor 有值 → block = anchor_blocks[target_anchor]
-    - target_anchor 空 → 在所有 anchor_blocks 里找最高重合 block
+    - target_anchor 空 → 在所有 anchor_blocks 里找最高覆盖 block
     - 句分割:re.split 句号/换行;排除标题行(#)/表格行(|)/空行
-    - 合格句:≥2 长 token(len≥5 非停用词)与 interp_text 重合 + 长度 20-300 字符
+    - 合格句:interp_text 在该句 verbatim 覆盖 ≥0.60 + 长度 20-300 字符
     """
     if not interp_text or not raw_content:
-        return None
-    interp_tokens = set(_tokenize_long_tokens(interp_text))
-    if not interp_tokens:
         return None
     # 候选 block
     candidates: list[tuple[str, str]] = []  # (anchor, block_text)
@@ -1368,7 +1370,7 @@ def _deterministic_backfill_grounded_claim(
     if not candidates:
         return None
     best: dict[str, str] | None = None
-    best_overlap = 0
+    best_coverage = 0.0
     for anchor, block in candidates:
         for sent in re.split(r"[。\n.!?]", block):
             sent = sent.strip()
@@ -1376,10 +1378,10 @@ def _deterministic_backfill_grounded_claim(
                 continue
             if sent.startswith("#") or sent.startswith("|"):
                 continue  # 排除标题/表格行
-            sent_tokens = set(_tokenize_long_tokens(sent))
-            overlap = len(interp_tokens & sent_tokens)
-            if overlap >= 2 and overlap > best_overlap:
-                best_overlap = overlap
+            # F12-A: verbatim 覆盖(B1 强匹配 0.60),替代旧 2-token 重合
+            coverage = _verbatim_coverage_in_block(interp_text, sent)
+            if coverage >= _GROUND_STRONG_COVERAGE and coverage > best_coverage:
+                best_coverage = coverage
                 best = {"text": sent, "anchor": anchor}
     return best
 
