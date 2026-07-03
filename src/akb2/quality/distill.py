@@ -667,6 +667,12 @@ def extract_claims(
                         )
                     parsed_segments[segment_name] = segment_data
             merged = _merge_extract_segments(parsed_segments)
+            # F8-C: 组件表垃圾条目全源头过滤——对所有来源(含 LLM 产)的
+            # mechanism_components 过 _is_garbage_component_name 同族黑名单(祈使句/
+            # 泛节名/收缩词/助动词/超长)。probe-p6 crewai 'Navigate to the directory...'
+            # /'Crew Attributes' 被滤。护栏:只滤明确黑名单形态;滤后 <3 → 既有
+            # fail-closed/enrichment 接手。diag 透传 ExtractResult.diagnostics 供 ledger。
+            _f8c_filtered = _filter_llm_component_names(merged)
             # F3-B: how_steps command 确定性校验——command 必须在 raw 原文存在(与
             # SG-command-recheck 同口径),编造的(如全角分号垃圾片段)在 distill 侧就剥,
             # 不让进 body;procedural 跌破 HOW_STEPS_MIN_EXECUTABLE → 既有 fail-closed 接手。
@@ -723,6 +729,7 @@ def extract_claims(
             diagnostics={
                 "components_evidence_backfilled": _f6d_diag.get("backfilled", 0),
                 "components_evidence_unlocated": _f6d_diag.get("unlocated", 0),
+                "components_filtered": _f8c_filtered,
             },
         )
 
@@ -2815,6 +2822,10 @@ _GENERIC_PLAIN_TITLE_NAMES: frozenset[str] = frozenset({
     "quick start", "getting started", "get started", "next steps",
     "prerequisites", "examples", "usage", "installation",
     "troubleshooting", "see also", "learn more",
+    # F8-C: 补 LLM 产泛节名/配置节(probe-p6 crewai "Crew Attributes" 成了组件)
+    "crew attributes", "crew properties", "attributes", "properties",
+    "configuration", "config", "settings", "options", "parameters",
+    "defaults", "environment variables", "fields", "metadata",
 })
 # 句子起始词(动词/疑问词):以这些词开头的标题是祈使句/疑问句,非命名短语
 _SENTENCE_STARTER_WORDS: frozenset[str] = frozenset({
@@ -2826,6 +2837,10 @@ _SENTENCE_STARTER_WORDS: frozenset[str] = frozenset({
     "test", "deploy", "commit", "push", "pull", "merge", "see",
     # F5-C: 补常见文档祈使词(probe-p4 "Invoke subagents explicitly" 成了边端点)
     "invoke", "disable", "debug",
+    # F8-C: 补 LLM 产祈使句首词(probe-p6 crewai "Navigate to the directory..." 成了组件)
+    "navigate", "open", "click", "select", "enter", "copy", "paste", "follow",
+    "ensure", "avoid", "keep", "try", "consider", "review", "remember", "go",
+    "locate", "find", "replace", "rename", "generate", "execute", "apply",
 })
 # 小写助动词(出现则标题是句子而非命名短语):is/are/seem/has/do/can/will...
 _AUX_VERB_WORDS: frozenset[str] = frozenset({
@@ -2881,6 +2896,67 @@ def _is_plain_title_component(title: str) -> bool:
     if any(w.lower() in _AUX_VERB_WORDS for w in words):
         return False  # 小写助动词 = 句子
     return True
+
+
+def _is_garbage_component_name(name: str) -> bool:
+    """F8-C: 组件名是否命中黑名单形态(祈使句/泛节名/收缩词/助动词/超长/空)。
+
+    复用 _is_plain_title_component 同族黑名单(_GENERIC_PLAIN_TITLE_NAMES/
+    _SENTENCE_STARTER_WORDS/_APOSTROPHE_CHARS/_AUX_VERB_WORDS),但不要求 title-case
+    或 entity keyword——LLM 组件名可能小写或无 entity 词,只要是命名短语就保留;
+    只滤明确命中黑名单形态的(lead 护栏:不做激进语义判断)。滤后 <3 组件 →
+    既有 fail-closed/enrichment 接手。
+    """
+    t = name.strip()
+    if not t:
+        return True  # 空名是垃圾
+    low = t.lower()
+    if low in _GENERIC_PLAIN_TITLE_NAMES:
+        return True  # 泛节名/配置节
+    words = t.split()
+    # 祈使句/疑问句首词(大写开头,lowercase 后在 starter 词表)
+    if words and words[0][:1].isupper() and words[0].lower() in _SENTENCE_STARTER_WORDS:
+        return True
+    # 收缩词(isn't/it's)= 句子
+    if any(any(c in _APOSTROPHE_CHARS for c in w) for w in words):
+        return True
+    # 小写助动词(is/are/seem/...)= 句子
+    if any(w.lower() in _AUX_VERB_WORDS for w in words):
+        return True
+    # 超长(>6 词)= likely 句子而非命名短语
+    if len(words) > 6:
+        return True
+    return False
+
+
+def _filter_llm_component_names(extract_data: dict[str, Any]) -> int:
+    """F8-C: 对所有来源的 mechanism_components 过黑名单形态过滤(extract 归一化处)。
+
+    probe-p6 crewai 缺陷:LLM 产组件混入祈使句('Navigate to the directory...')/泛节名
+    ('Crew Attributes')。F5-C 只过滤确定性 plain-title 扫描,LLM 组件没过滤。本函数在
+    extract 归一化处统一过滤所有来源组件(复用 _is_garbage_component_name 同族黑名单)。
+    护栏:只滤明确命中黑名单形态;滤后 <3 → 既有 fail-closed/_validate_extract_output/
+    enrichment 接手(不在此救)。Returns filtered count(供 diag components_filtered)。
+    """
+    components = extract_data.get("mechanism_components", []) or []
+    if not components:
+        return 0
+    kept: list[dict[str, Any]] = []
+    filtered = 0
+    for comp in components:
+        if not isinstance(comp, dict):
+            kept.append(comp)
+            continue
+        name = str(comp.get("name", "")).strip()
+        if not name:
+            kept.append(comp)  # 空名留给 _validate_extract_output 处理,不在此滤
+            continue
+        if _is_garbage_component_name(name):
+            filtered += 1  # 命中黑名单形态,滤
+        else:
+            kept.append(comp)  # 命名短语,保留
+    extract_data["mechanism_components"] = kept
+    return filtered
 
 
 def _scan_plain_title_components(raw_content: str) -> list[str]:

@@ -899,6 +899,10 @@ def _run_distill_segment(
             "components_evidence_unlocated": extract_result.diagnostics.get(
                 "components_evidence_unlocated", 0
             ),
+            # F8-C fail-visible:组件表垃圾条目过滤计数(祈使句/泛节名被滤)
+            "components_filtered": extract_result.diagnostics.get(
+                "components_filtered", 0
+            ),
         },
     )
 
@@ -1605,6 +1609,8 @@ def _run_pipeline_segments(
                 "components_evidence_unlocated": distill_meta.get(
                     "components_evidence_unlocated", 0
                 ),
+                # F8-C fail-visible:组件表垃圾条目过滤计数
+                "components_filtered": distill_meta.get("components_filtered", 0),
                 **(
                     {"maker_primary_error": distill_meta.get("maker_primary_error")}
                     if distill_meta.get("maker_primary_error")
