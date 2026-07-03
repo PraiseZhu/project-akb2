@@ -248,7 +248,14 @@ def run_admission(
     # 不下传 distill 硬填模板（D8 maker fallback 造假机制源头）。procedural 不受此门
     # （F4 H1 判）；lane_failed/reject 时已拒收，不跑。
     if content_lane == LANE_CONCEPT and not lane_failed and not lane_rejected:
-        checks.append(_check_mechanism_signal(body, route_llm_fn))
+        # F13-fix（reviewer blocking P1）：经 D11 reject-recheck 降级回 concept 的样本,
+        # 禁用强密度确定性短路——lane LLM 已判过一次"非知识",撤销该判定的样本必须
+        # 保留 mechanism LLM 的否决机会,不得再被词面密度确定性放行(营销编号清单后门)。
+        checks.append(
+            _check_mechanism_signal(
+                body, route_llm_fn, allow_dense_shortcut=not lane_reject_recheck
+            )
+        )
 
     # how_tendency 路由化（spec FR-003）：concept 车道下其 fail 不使 passed=False。
     # 纯概念内容（无命令）天然 how_tendency=fail，旧逻辑会误拒——本改动让 how_tendency
@@ -894,6 +901,9 @@ MECHANISM_LONG_PROSE_THRESHOLD: int = 500
 # 负样本安全：新闻/洗稿 recap 的 causal/steps 计数远低于此双阈值（test_admission_negative 全量锁）。
 MECHANISM_CAUSAL_DENSE_MIN: int = 5
 MECHANISM_STEPS_DENSE_MIN: int = 5
+# F13-fix（reviewer blocking P1）：强密度短路的结构证据下限——除词面密度外须 ≥N 个
+# 普通 H2/H3 小节标题（营销 numbered-benefits 无结构不满足;机制长文如 lilian 13 个满足）。
+MECHANISM_DENSE_WEAK_HEADINGS_MIN: int = 3
 
 # 命名组件候选（strong）：编号 H2/H3/H4 标题（### 1. Captain / ## 2. Executor Pool / ### Step 1）
 _MECHANISM_COMPONENT_RE = re.compile(r"(?m)^#{2,4}\s+\d+[\.\)]\s+\S+")
@@ -939,13 +949,20 @@ def _scan_mechanism_signals(body: str) -> dict[str, int]:
     }
 
 
-def _check_mechanism_signal(body: str, route_llm_fn: Any) -> AdmissionCheck:
+def _check_mechanism_signal(
+    body: str, route_llm_fn: Any, allow_dense_shortcut: bool = True
+) -> AdmissionCheck:
     """WP-2/D2：concept 候选机制信号准入门（确定性为主 + LLM 窄仲裁）。
 
     - 确定性 **强信号 PASS**：≥3 命名组件候选 / (≥1 组件 + ≥1 因果边) / (≥3 编号步 + code)
     - 确定性 **强反信号 FAIL**：全信号 = 0（纯散文，无组件/因果/编号/code/ops）
       → ``no_mechanism_signal``，**LLM 不得绕过**（确定性反信号优先）。
     - 模糊（部分信号未达强信号）→ LLM 窄仲裁；LLM 不可用 → fail-closed 拒收。
+
+    Args:
+        allow_dense_shortcut: F13-fix（reviewer blocking P1）——False 时禁用强密度
+            确定性短路（D11 reject-recheck 降级样本必须保留 mechanism LLM 否决机会，
+            防"lane 判 reject 的营销编号清单被词面密度确定性放行"后门）。
 
     返回 AdmissionCheck(name="mechanism_signal")；失败时 reason 以
     ``no_mechanism_signal`` 开头，runner 据此映射 error_class。
@@ -975,12 +992,26 @@ def _check_mechanism_signal(body: str, route_llm_fn: Any) -> AdmissionCheck:
             name="mechanism_signal", passed=True,
             reason=f"确定性机制信号: {steps} 编号步 + code 块",
         )
-    # F13：强密度短路（causal 与 steps 双高）——覆盖"强因果+编号步但无命名组件"盲区
-    # （idx8 lilian: causal=14/steps=8/comp=0 落 LLM 仲裁被误判 no_mechanism）。
-    if causal >= MECHANISM_CAUSAL_DENSE_MIN and steps >= MECHANISM_STEPS_DENSE_MIN:
+    # F13：强密度短路（causal 与 steps 双高 + 结构证据）——覆盖"强因果+编号步但无
+    # 命名组件"盲区（idx8 lilian: causal=14/steps=8/weak_comp=13/comp=0 落 LLM 仲裁
+    # 被误判 no_mechanism）。F13-fix（reviewer blocking P1）双护栏:
+    # (a) allow_dense_shortcut=False（D11 reject-recheck 降级样本）不适用——lane 已判过
+    #     "非知识"的样本必须过 mechanism LLM,词面密度不得确定性放行;
+    # (b) 追加结构证据 weak_comp≥MECHANISM_DENSE_WEAK_HEADINGS_MIN——营销编号清单
+    #     （堆 causal 连接词的 numbered-benefits,无任何 H2/H3 结构）不满足,机制长文
+    #     （lilian: 13 个小节标题）满足。纯词面密度不再单独构成短路。
+    if (
+        allow_dense_shortcut
+        and causal >= MECHANISM_CAUSAL_DENSE_MIN
+        and steps >= MECHANISM_STEPS_DENSE_MIN
+        and weak_comp >= MECHANISM_DENSE_WEAK_HEADINGS_MIN
+    ):
         return AdmissionCheck(
             name="mechanism_signal", passed=True,
-            reason=f"确定性机制信号: {causal} 因果边 + {steps} 编号步（强密度短路）",
+            reason=(
+                f"确定性机制信号: {causal} 因果边 + {steps} 编号步 + "
+                f"{weak_comp} 小节标题（强密度短路）"
+            ),
         )
 
     # 确定性 FAIL：全无信号 + 正文短（纯短散文/新闻 recap）—— LLM 不可绕过此强反信号

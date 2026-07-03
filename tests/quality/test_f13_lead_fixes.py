@@ -18,9 +18,11 @@ from typing import Any
 
 from src.akb2.quality.admission import (
     MECHANISM_CAUSAL_DENSE_MIN,
+    MECHANISM_DENSE_WEAK_HEADINGS_MIN,
     MECHANISM_STEPS_DENSE_MIN,
     _check_mechanism_signal,
     _scan_mechanism_signals,
+    run_admission,
 )
 from src.akb2.quality.grader import _load_rubric_spec
 from src.akb2.quality.llm_router import LLMResponse
@@ -29,16 +31,33 @@ from src.akb2.quality.llm_router import LLMResponse
 # F13-1 admission 强密度短路
 # ---------------------------------------------------------------------------
 
-# 推理机制文形态:无命名组件(编号标题),但因果连接词与编号步双高(idx8 lilian 形态)
+# 推理机制文形态:无命名组件(编号标题),但因果连接词/编号步双高 + 小节标题结构
+# (idx8 lilian 形态: causal=14/steps=8/weak_comp=13/comp=0)
 _DENSE_BODY = "\n".join(
     [
+        "## Test-Time Compute",
         "Reasoning at inference time leads to better answers because of test-time compute.",
         "1. Sampling multiple chains produces diverse candidates.",
         "2. Self-consistency voting results in robust selection.",
+        "## Verification",
         "3. Verification enables error pruning and therefore higher accuracy.",
         "4. Reflection triggers revision when the verifier implies a fault.",
+        "## Budget Control",
         "5. Budget control prevents runaway loops and produces bounded latency.",
         "6. Reranking causes the final answer to improve.",
+    ]
+)
+
+# 营销 numbered-benefits 形态(reviewer blocking P1 反例):词面 causal/steps 双高,
+# 但零结构标题、零机制——短路不得放行
+_MARKETING_BODY = "\n".join(
+    [
+        "Our new product launch results in huge gains and enables your team to win.",
+        "1. Faster onboarding leads to happier customers and therefore more revenue.",
+        "2. Smart sync enables seamless flows and produces instant results.",
+        "3. One-click setup prevents errors because of our magic engine.",
+        "4. Premium support triggers faster resolution and results in loyalty.",
+        "5. New pricing enables savings and therefore produces value.",
     ]
 )
 
@@ -54,14 +73,69 @@ def _llm_says_no(*_a: Any, **_k: Any) -> LLMResponse:
 
 
 def test_dense_causal_steps_deterministic_pass() -> None:
-    """causal≥5 && steps≥5 → 确定性 PASS,LLM 不被调用(盲区短路)。"""
+    """causal≥5 && steps≥5 && 小节标题≥3 → 确定性 PASS,LLM 不被调用(盲区短路)。"""
     sig = _scan_mechanism_signals(_DENSE_BODY)
     assert sig["causal"] >= MECHANISM_CAUSAL_DENSE_MIN
     assert sig["numbered_steps"] >= MECHANISM_STEPS_DENSE_MIN
+    assert sig["weak_components"] >= MECHANISM_DENSE_WEAK_HEADINGS_MIN
     assert sig["components"] == 0  # 无命名组件——正是旧短路的盲区
     check = _check_mechanism_signal(_DENSE_BODY, _llm_must_not_be_called)
     assert check.passed is True
     assert "强密度短路" in check.reason
+
+
+def test_marketing_numbered_benefits_no_shortcut() -> None:
+    """[reviewer blocking P1] 营销编号清单:词面密度双高但零结构标题 →
+    短路不触发,落 LLM 仲裁且可被否决。"""
+    sig = _scan_mechanism_signals(_MARKETING_BODY)
+    assert sig["causal"] >= MECHANISM_CAUSAL_DENSE_MIN
+    assert sig["numbered_steps"] >= MECHANISM_STEPS_DENSE_MIN
+    assert sig["weak_components"] < MECHANISM_DENSE_WEAK_HEADINGS_MIN
+    check = _check_mechanism_signal(_MARKETING_BODY, _llm_says_no)
+    assert check.passed is False  # LLM 否决权保留
+
+
+def test_reject_recheck_disables_dense_shortcut() -> None:
+    """[reviewer blocking P1] D11 reject-recheck 降级样本禁用短路:即便结构+密度
+    双满足,allow_dense_shortcut=False 时仍走 LLM 仲裁(否决权保留)。"""
+    check = _check_mechanism_signal(
+        _DENSE_BODY, _llm_says_no, allow_dense_shortcut=False
+    )
+    assert check.passed is False
+
+
+def test_run_admission_marketing_reject_not_resurrected(tmp_path: Any) -> None:
+    """[reviewer blocking P1 全路径回归] lane 判 reject 的营销文经 D11 降级后,
+    mechanism LLM 保留否决权 → 整体拒收(后门闭合)。"""
+
+    def mock_llm(_model: Any, messages: list, **kwargs: Any) -> LLMResponse:
+        schema = kwargs.get("response_schema") or {}
+        if "content_lane" in (schema.get("properties") or {}):
+            return LLMResponse(
+                content='{"content_lane": "reject", "reason": "营销软文"}',
+                model_used="mock",
+            )
+        system = str(messages[0].get("content", "")) if messages else ""
+        if "机制" in system:
+            return LLMResponse(
+                content='{"pass": false, "reason": "无可复用机制"}', model_used="mock"
+            )
+        return LLMResponse(
+            content='{"pass": true, "reason": "mock pass"}', model_used="mock"
+        )
+
+    result = run_admission(
+        raw_path="mock.md",
+        raw_content=_MARKETING_BODY,
+        ledger_path=str(tmp_path / "ledger.jsonl"),
+        wiki_references=None,
+        route_llm_fn=mock_llm,
+    )
+    assert result.passed is False
+    mech = [c for c in result.checks if c.name == "mechanism_signal"]
+    if mech:  # 若 D11 降级发生,mechanism 必须被真实仲裁且否决,不得是短路 PASS
+        assert "强密度短路" not in mech[0].reason
+        assert mech[0].passed is False
 
 
 def test_dense_shortcut_below_threshold_falls_to_llm() -> None:
