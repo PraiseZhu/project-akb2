@@ -122,11 +122,14 @@ class TestF8DItem2MechanismNarrative:
             assert a in decl, f"锚 {a} 不在声明集"
 
     def test_narrative_uses_causal_phrasing(self):
-        """叙述用 'A 通过 relation 导致 B' 因果句式(非纯罗列)。"""
+        """叙述用 relation 动词 + 证据句式(非 'A raw_causal B' 机器味,F10-C 改)。"""
         narrative = _render_mechanism_narrative(self._data(), _RAW)
-        assert "通过" in narrative
-        assert "导致" in narrative
         assert "证据" in narrative
+        assert "raw_causal" not in narrative  # F10-C: 不再输出 raw_causal 机器形态
+        # 含具体因果动词(dispatches/feeds)
+        assert any(v in narrative for v in ("dispatches", "feeds", "collects", "spawn")), (
+            f"叙述无具体因果动词: {narrative}"
+        )
 
     def test_narrative_sorted_by_anchor_position(self):
         """叙述按 anchor 在 raw 中出现顺序排序(§A 在 §B 前)。"""
@@ -139,8 +142,9 @@ class TestF8DItem2MechanismNarrative:
         """inferred_from_structure 边不计入叙述(无 evidence/anchor)。"""
         narrative = _render_mechanism_narrative(self._data(), _RAW)
         # Captain→Task Graph 是 inferred,不应作为独立因果句
-        # (Captain 出现在 §A 句,但 'Task Graph' 在 §B 句;inferred 边没单独句)
-        assert narrative.count("通过") == 2  # 只 2 条 eligible
+        # 每条 eligible 边产 1 个 '（证据' 句;inferred 不产。F10-C 后模板无 '通过',
+        # 改计 '（证据' 出现次数(== eligible 边数)。
+        assert narrative.count("（证据") == 2  # 只 2 条 eligible
 
     def test_narrative_no_eligible_returns_empty(self):
         """无 eligible 边 → 空串(不硬凑)。"""
