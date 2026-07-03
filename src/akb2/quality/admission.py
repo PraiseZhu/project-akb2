@@ -892,6 +892,11 @@ MECHANISM_COMPONENT_MIN: int = 3
 # §0.2/F8：长正文阈值——total==0 但 body_length ≥ 此值时走 LLM 窄仲裁（不 deterministic fail），
 # 救 long-running-agents 等长机制散文（无标题/连接词/code 但有机制内容）。短正文 total==0 仍 fail。
 MECHANISM_LONG_PROSE_THRESHOLD: int = 500
+# F14-B: mechanism 仲裁双次取或——首次 fail 再仲裁一次,任一 pass 即 pass(共 2 票)。
+# LLM 仍是本门唯一放行人,这是有界方差对冲(同 retry 哲学);强反信号(全0+短正文)
+# 已在前 deterministic fail,不可绕过。营销安全由证据 prompt(fix4 标题原文自证)+
+# lane/novelty/强反信号多层兜底。
+MECHANISM_ARBITRATION_MAX_VOTES: int = 2
 # F13-fix3（reviewer 三轮 blocking 定论）：词面/结构计数在确定性层面分不开"机制文"与
 # "营销文"（dense 密度 / weak_comp 结构 / `## 1. X` 编号标题伪装 comp>=3——三轮反例
 # 全部实证可伪造）。故 mechanism 门 **无任何确定性 PASS 分支**;全部信号计数降级为
@@ -1061,19 +1066,47 @@ def _check_mechanism_signal(body: str, route_llm_fn: Any) -> AdmissionCheck:
             ),
         },
     ]
-    try:
-        response = route_llm_fn(
-            ADMISSION_MODEL, messages, response_schema=_ADMISSION_CHECK_SCHEMA,
-        )
-    except (RouterConfigError, RuntimeError) as exc:
-        # 信号识别不可用 → fail-closed 拒收
+    # F14-B: 双次取或——首次 fail 再仲裁一次(MECHANISM_ARBITRATION_MAX_VOTES=2),
+    # 任一 pass 即 pass;两次 fail 才 fail。LLM 仍唯一放行人,有界方差对冲。首次 pass
+    # 不发第二次(省调用)。强反信号(全0+短正文)已在前 deterministic fail,不可绕过。
+    votes: list[bool] = []
+    vote_reasons: list[str] = []
+    for _vote_i in range(MECHANISM_ARBITRATION_MAX_VOTES):
+        try:
+            response = route_llm_fn(
+                ADMISSION_MODEL, messages, response_schema=_ADMISSION_CHECK_SCHEMA,
+            )
+        except (RouterConfigError, RuntimeError) as exc:
+            # 信号识别不可用 → fail-closed(配置/超时错误不重试,直接拒)
+            return AdmissionCheck(
+                name="mechanism_signal", passed=False,
+                reason=f"no_mechanism_signal: 机制信号识别不可用 fail-closed: {exc}",
+            )
+        result = _validate_and_normalize(response.content, "mechanism_signal")
+        votes.append(bool(result["pass"]))
+        vote_reasons.append(str(result["reason"])[:80])
+        if result["pass"]:
+            break  # 任一 pass 即 pass,省第二次调用
+    passed = any(votes)
+    vote_summary = "/".join(
+        f"v{i+1}={'pass' if v else 'fail'}" for i, v in enumerate(votes)
+    )
+    if passed:
+        first_pass = votes.index(True)
+        base_reason = vote_reasons[first_pass]
         return AdmissionCheck(
-            name="mechanism_signal", passed=False,
-            reason=f"no_mechanism_signal: 机制信号识别不可用 fail-closed: {exc}",
+            name="mechanism_signal", passed=True,
+            reason=(
+                f"mechanism_signal: 仲裁 {vote_summary}({len(votes)}票,任一pass即pass);"
+                f" {base_reason}"
+            ),
         )
-    result = _validate_and_normalize(response.content, "mechanism_signal")
     return AdmissionCheck(
-        name="mechanism_signal", passed=result["pass"], reason=result["reason"],
+        name="mechanism_signal", passed=False,
+        reason=(
+            f"no_mechanism_signal: 仲裁 {vote_summary}({len(votes)}票全fail);"
+            f" {vote_reasons[-1]}"
+        ),
     )
 
 
