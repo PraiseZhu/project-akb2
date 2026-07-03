@@ -248,15 +248,10 @@ def run_admission(
     # 不下传 distill 硬填模板（D8 maker fallback 造假机制源头）。procedural 不受此门
     # （F4 H1 判）；lane_failed/reject 时已拒收，不跑。
     if content_lane == LANE_CONCEPT and not lane_failed and not lane_rejected:
-        # F13-fix2（reviewer 两轮 blocking 定论）：经 D11 reject-recheck 降级回 concept
-        # 的样本,禁用**全部**确定性 PASS 分支(force_llm_adjudication)——lane LLM 已判过
-        # 一次"非知识",撤销该判定 ≠ 确定性准入,必须过 mechanism LLM 仲裁(`## 1. X`
-        # 编号标题会被计成命名组件,任何确定性分支都是后门——reviewer 反例实证)。
-        checks.append(
-            _check_mechanism_signal(
-                body, route_llm_fn, force_llm_adjudication=lane_reject_recheck
-            )
-        )
+        # F13-fix3（reviewer 三轮 blocking 定论）：mechanism 门无任何确定性 PASS——
+        # 无论是否经 D11 recheck,mechanism LLM 都是唯一放行人(编号标题/密度/普通 H2
+        # 计数全部可被营销文伪造,三轮反例实证);确定性只保留强反信号 FAIL(fail-closed)。
+        checks.append(_check_mechanism_signal(body, route_llm_fn))
 
     # how_tendency 路由化（spec FR-003）：concept 车道下其 fail 不使 passed=False。
     # 纯概念内容（无命令）天然 how_tendency=fail，旧逻辑会误拒——本改动让 how_tendency
@@ -897,11 +892,11 @@ MECHANISM_COMPONENT_MIN: int = 3
 # §0.2/F8：长正文阈值——total==0 但 body_length ≥ 此值时走 LLM 窄仲裁（不 deterministic fail），
 # 救 long-running-agents 等长机制散文（无标题/连接词/code 但有机制内容）。短正文 total==0 仍 fail。
 MECHANISM_LONG_PROSE_THRESHOLD: int = 500
-# F13-fix2（reviewer 两轮 blocking 定论）：词面/结构计数在确定性层面分不开"机制文"与
-# "营销编号清单"（`## 1. Faster onboarding` 会被计成命名组件;普通 H2 分节营销文轻松凑
-# weak_comp≥3）。故 **不设任何密度类确定性 PASS 短路**;密度信号降级为仲裁证据——
-# `_check_mechanism_signal` 把确定性信号计数注入 mechanism LLM 仲裁 prompt,由 LLM
-# 拿证据判（idx8 lilian 类推理机制文靠证据增强争取,不开确定性后门）。
+# F13-fix3（reviewer 三轮 blocking 定论）：词面/结构计数在确定性层面分不开"机制文"与
+# "营销文"（dense 密度 / weak_comp 结构 / `## 1. X` 编号标题伪装 comp>=3——三轮反例
+# 全部实证可伪造）。故 mechanism 门 **无任何确定性 PASS 分支**;全部信号计数降级为
+# 仲裁证据注入 mechanism LLM prompt,LLM 是唯一放行人;确定性只保留强反信号 FAIL
+# (fail-closed 方向不变)。idx8 lilian 类推理机制文靠证据增强争取,不开确定性后门。
 
 # 命名组件候选（strong）：编号 H2/H3/H4 标题（### 1. Captain / ## 2. Executor Pool / ### Step 1）
 _MECHANISM_COMPONENT_RE = re.compile(r"(?m)^#{2,4}\s+\d+[\.\)]\s+\S+")
@@ -947,23 +942,18 @@ def _scan_mechanism_signals(body: str) -> dict[str, int]:
     }
 
 
-def _check_mechanism_signal(
-    body: str, route_llm_fn: Any, force_llm_adjudication: bool = False
-) -> AdmissionCheck:
-    """WP-2/D2：concept 候选机制信号准入门（确定性为主 + LLM 窄仲裁）。
+def _check_mechanism_signal(body: str, route_llm_fn: Any) -> AdmissionCheck:
+    """WP-2/D2：concept 候选机制信号准入门。
 
-    - 确定性 **强信号 PASS**：≥3 命名组件候选 / (≥1 组件 + ≥1 因果边) / (≥3 编号步 + code)
-    - 确定性 **强反信号 FAIL**：全信号 = 0（纯散文，无组件/因果/编号/code/ops）
-      → ``no_mechanism_signal``，**LLM 不得绕过**（确定性反信号优先）。
-    - 模糊（部分信号未达强信号）→ LLM 窄仲裁；LLM 不可用 → fail-closed 拒收。
-    - F13-fix2：仲裁 prompt 附确定性信号计数（密度是证据不是通行证,由 LLM 判）。
+    F13-fix3（reviewer 三轮 blocking 定论）：**无任何确定性 PASS 分支**——
+    `## 1. Faster onboarding` 类编号标题会被 `_MECHANISM_COMPONENT_RE` 计成"命名
+    组件",词面/结构计数在确定性层面分不开机制文与营销文（三轮反例实证:dense 密度 /
+    weak_comp 结构 / comp>=3 编号标题全部可被营销文伪造）。故:
 
-    Args:
-        force_llm_adjudication: F13-fix2（reviewer 两轮 blocking 定论）——True 时禁用
-            **全部**确定性 PASS 分支（强反信号 FAIL 保留），一律进 LLM 仲裁。用于
-            D11 reject-recheck 降级样本：lane 判过"非知识"的样本必须保留 mechanism
-            LLM 否决权,任何确定性放行都是后门（`## 1. Faster onboarding` 编号标题
-            会被计成命名组件——reviewer 反例实证）。
+    - 确定性 **强反信号 FAIL** 保留：全信号 = 0 且正文短（纯短散文/新闻 recap）
+      → ``no_mechanism_signal``，**LLM 不得绕过**（fail-closed 方向不变）。
+    - 其余一律 **LLM 仲裁**：mechanism LLM 是本门唯一放行人;确定性信号计数注入
+      仲裁 prompt 作证据（密度/组件数是证据不是通行证）。LLM 不可用 → fail-closed。
 
     返回 AdmissionCheck(name="mechanism_signal")；失败时 reason 以
     ``no_mechanism_signal`` 开头，runner 据此映射 error_class。
@@ -975,26 +965,6 @@ def _check_mechanism_signal(
     steps = signals["numbered_steps"]
     code = signals["code_blocks"]
     src_ops = signals["source_operations"]
-
-    # 确定性 PASS：强机制信号（§0.2/C4：仅 strong 信号触发 deterministic pass；
-    # weak_components 不触发，3 泛技术标题观点稿不绕过 LLM 仲裁）。
-    # F13-fix2：force_llm_adjudication=True（D11 recheck 样本）禁用全部确定性 PASS。
-    if not force_llm_adjudication:
-        if comp >= MECHANISM_COMPONENT_MIN:
-            return AdmissionCheck(
-                name="mechanism_signal", passed=True,
-                reason=f"确定性机制信号: {comp} 命名组件候选",
-            )
-        if comp >= 1 and causal >= 1:
-            return AdmissionCheck(
-                name="mechanism_signal", passed=True,
-                reason=f"确定性机制信号: {comp} 组件 + {causal} 因果边",
-            )
-        if steps >= MECHANISM_COMPONENT_MIN and code >= 1:
-            return AdmissionCheck(
-                name="mechanism_signal", passed=True,
-                reason=f"确定性机制信号: {steps} 编号步 + code 块",
-            )
 
     # 确定性 FAIL：全无信号 + 正文短（纯短散文/新闻 recap）—— LLM 不可绕过此强反信号
     # §0.2/G2：weak_components（普通 H2/H3）计入 total，避免普通标题机制文被误拒

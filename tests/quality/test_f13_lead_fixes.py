@@ -139,20 +139,59 @@ def test_marketing_sectioned_llm_veto() -> None:
     assert not check.reason.startswith("确定性机制信号")
 
 
-def test_force_llm_adjudication_disables_all_deterministic_pass() -> None:
-    """[fix2 核心] force_llm_adjudication=True:连 comp>=3 确定性分支也被禁,
-    `## 1. X` 编号标题营销文(被计成 3 命名组件)仍被 LLM 否决。"""
+def test_numbered_heading_marketing_no_deterministic_pass() -> None:
+    """[fix3 核心] mechanism 门无任何确定性 PASS:`## 1. X` 编号标题营销文
+    (被计成 3 命名组件)也必须走 LLM 仲裁且可被否决——非 recheck 路径同样成立。"""
     sig = _scan_mechanism_signals(_MARKETING_NUMBERED_HEADINGS)
     assert sig["components"] >= 3  # reviewer 反例:编号 H2 被计成命名组件
     captured: list = []
     check = _check_mechanism_signal(
-        _MARKETING_NUMBERED_HEADINGS,
-        _make_capturing_no(captured),
-        force_llm_adjudication=True,
+        _MARKETING_NUMBERED_HEADINGS, _make_capturing_no(captured)
     )
-    assert captured, "recheck 样本必须调用 LLM 仲裁"
+    assert captured, "无确定性 PASS——必须调用 LLM 仲裁"
     assert check.passed is False
     assert not check.reason.startswith("确定性机制信号")
+
+
+def test_run_admission_numbered_heading_lane_concept_still_vetoed(
+    tmp_path: Any,
+) -> None:
+    """[reviewer 三轮验收·全路径] `## 1/2/3` 编号标题营销文 + mock lane=concept
+    (非 recheck 路径,lane LLM 方差误判):mechanism **必须被调用**且否决 →
+    整体 rejected,reason 非确定性。"""
+    calls: list = []
+
+    def mock_llm(_model: Any, messages: list, **kwargs: Any) -> LLMResponse:
+        schema = kwargs.get("response_schema") or {}
+        if "content_lane" in (schema.get("properties") or {}):
+            calls.append("lane")
+            return LLMResponse(
+                content='{"content_lane": "concept", "reason": "误判"}',
+                model_used="mock",
+            )
+        system = str(messages[0].get("content", "")) if messages else ""
+        if "机制" in system:
+            calls.append("mechanism")
+            return LLMResponse(
+                content='{"pass": false, "reason": "无可复用机制"}', model_used="mock"
+            )
+        calls.append("other")
+        return LLMResponse(
+            content='{"pass": true, "reason": "mock pass"}', model_used="mock"
+        )
+
+    result = run_admission(
+        raw_path="mock.md",
+        raw_content=_MARKETING_NUMBERED_HEADINGS,
+        ledger_path=str(tmp_path / "ledger.jsonl"),
+        wiki_references=None,
+        route_llm_fn=mock_llm,
+    )
+    assert result.passed is False
+    assert "mechanism" in calls, "非 recheck 路径 mechanism 也必须被真实仲裁"
+    mech = [c for c in result.checks if c.name == "mechanism_signal"]
+    assert mech and mech[0].passed is False
+    assert not mech[0].reason.startswith("确定性机制信号")
 
 
 def _mock_reject_lane_no_mechanism(calls: list) -> Any:

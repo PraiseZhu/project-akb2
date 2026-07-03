@@ -184,7 +184,11 @@ class TestMechanismSignalGate:
         assert mech.reason.startswith("no_mechanism_signal")
 
     def test_mechanism_source_passes(self, tmp_path: Path):
-        """有机制源（4 命名组件）→ mechanism_signal 确定性 pass，准入通过。"""
+        """有机制源（4 命名组件）→ mechanism LLM 仲裁 pass，准入通过。
+
+        F13-fix3：mechanism 门无确定性 PASS（编号标题可伪装组件,reviewer 三轮反例
+        定论）——真机制源同样走 LLM 仲裁,信号计数作仲裁证据,LLM 判 pass 即过。
+        """
         result = run_admission(
             raw_path="raw/ag2-captain--raw--2026-06-29.md",
             raw_content=_MECHANISM_SOURCE,
@@ -194,7 +198,8 @@ class TestMechanismSignalGate:
         assert result.passed is True, f"有机制源应通过准入: {result.reason}"
         mech = next(c for c in result.checks if c.name == "mechanism_signal")
         assert mech.passed is True
-        assert "确定性机制信号" in mech.reason
+        # F13-fix3：不再是确定性放行——reason 来自 LLM 仲裁,非"确定性机制信号"前缀
+        assert not mech.reason.startswith("确定性机制信号")
 
     def test_procedural_not_gated_by_mechanism_signal(self, tmp_path: Path):
         """procedural 候选不受 mechanism_signal 门（checks=3 无 mech），how_tendency 不误拒。"""
@@ -273,9 +278,8 @@ class TestMultiRejectCalibration:
             route_llm_fn=_make_mock(lane=LANE_CONCEPT, pass_response=False),
         )
         assert result.passed is False
-        # mech 过（确定性），novelty 拒
-        mech = next(c for c in result.checks if c.name == "mechanism_signal")
-        assert mech.passed is True
+        # F13-fix3：mechanism 无确定性 PASS,mock pass_response=False 下 mech 也由
+        # LLM 判否——本测试关注点是 novelty 拒收路径仍成立
         novelty = next(c for c in result.checks if c.name == "novelty")
         assert novelty.passed is False
         assert "novelty" in result.reason
