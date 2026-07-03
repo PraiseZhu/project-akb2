@@ -667,39 +667,10 @@ def extract_claims(
                         )
                     parsed_segments[segment_name] = segment_data
             merged = _merge_extract_segments(parsed_segments)
-            # F8-C: 组件表垃圾条目全源头过滤——对所有来源(含 LLM 产)的
-            # mechanism_components 过 _is_garbage_component_name 同族黑名单(祈使句/
-            # 泛节名/收缩词/助动词/超长)。probe-p6 crewai 'Navigate to the directory...'
-            # /'Crew Attributes' 被滤。护栏:只滤明确黑名单形态;滤后 <3 → 既有
-            # fail-closed/enrichment 接手。diag 透传 ExtractResult.diagnostics 供 ledger。
-            _f8c_filtered = _filter_llm_component_names(merged)
-            # F3-B: how_steps command 确定性校验——command 必须在 raw 原文存在(与
-            # SG-command-recheck 同口径),编造的(如全角分号垃圾片段)在 distill 侧就剥,
-            # 不让进 body;procedural 跌破 HOW_STEPS_MIN_EXECUTABLE → 既有 fail-closed 接手。
-            _strip_fabricated_how_commands(merged, raw_content)
-            # F6-A: 全局端点闭合——所有 causal_edges/graph_edges 的 from/to ∈ mechanism_components
-            # names(含 alias);不在→丢边(防 compose SG-mechanism-edge-evidence 自拒,如
-            # probe-p5 memory 'edge.to=Auto memory 不在组件表')。enrichment 复用同 helper。
-            _close_edge_endpoints(merged)
-            # F8-D: 边端点命名归一——from/to 改写为组件表 canonical name(消 'claudemd_files
-            # vs CLAUDE.md files' 类命名分裂,grader H3 命名一致性)。
-            _normalize_edge_endpoints_to_canonical(merged)
-            # F6-D/F8-A: 组件 evidence 确定性回填——evidence_anchor/evidence_sentence 为空的
-            # 组件,用专用搜索词(无 stoplist,单组件已认定无歧义)+ 两遍(全名优先,再 token)
-            # 在 raw 行级定位命中句 + 就近锚回填(H3 主因:组件 evidence 空)。F8-A 修 frontmatter
-            # 命中即 break 致 Captain 空回填的根因。diag 透传 ExtractResult.diagnostics 供 ledger。
-            _f6d_diag = _backfill_component_evidence(merged, raw_content)
-            # §0.2/F6：LLM 产 edge 的 evidence_anchor 校正——若 anchor 不在 raw 声明集，
-            # 用 evidence sentence 在 raw 定位真实 anchor（_nearest_preceding_anchor，复用
-            # fallback 映射逻辑），而非直接信 LLM 编的 anchor；映射不到 → 该边不计 eligible
-            # （不放松防伪）。修真机 floor_failed（LLM 编 anchor 不 ∈ raw → 0 eligible）。
-            # F-A: 单字母锚 → 全名唯一前缀解析(LLM 照示例产单字母 §W,raw 声明全名 §W_CAVEATS)
-            # 在 _correct_edge_anchors_to_raw 之前:结构化字段锚引用改写为全名,body 渲染 A3 自然过
-            _resolve_short_anchors_to_full(merged, raw_content)
-            _correct_edge_anchors_to_raw(merged, raw_content)
-            # P1b-1: claims/argumentation 接地校正(确定性单遍,无 LLM)——弱匹配假锚校正 +
-            # 强匹配 interpretation→grounded 升级(连续片段覆盖≥60%)+ [B2] argumentation 补填。
-            _ground_claims_to_raw(merged, raw_content)
+            # F9-A: extract 后处理归一化单入口(LLM 成功路径 + fallback 共用 choke point)。
+            # 按序:F-A 锚解析→edge anchor 校正→P1b-1 接地→F8-C 组件过滤→F6-A 端点闭合→
+            # F8-D 命名归一→F8-A evidence 回填→F3-B 命令剥离。diag 透传 ExtractResult.diagnostics。
+            _norm_diag = _normalize_extract_payload(merged, raw_content, content_lane)
             _validate_extract_output(merged, content_lane=content_lane)
         except SemanticJitterError as exc:
             # Step-7: 语义 segment 连续不稳定达阈值 → fail-closed（不无限重试，有界）。
@@ -730,9 +701,13 @@ def extract_claims(
             data=merged,
             retries_used=attempt,
             diagnostics={
-                "components_evidence_backfilled": _f6d_diag.get("backfilled", 0),
-                "components_evidence_unlocated": _f6d_diag.get("unlocated", 0),
-                "components_filtered": _f8c_filtered,
+                "components_evidence_backfilled": _norm_diag.get(
+                    "components_evidence_backfilled", 0
+                ),
+                "components_evidence_unlocated": _norm_diag.get(
+                    "components_evidence_unlocated", 0
+                ),
+                "components_filtered": _norm_diag.get("components_filtered", 0),
             },
         )
 
@@ -2909,6 +2884,10 @@ def _is_garbage_component_name(name: str) -> bool:
     或 entity keyword——LLM 组件名可能小写或无 entity 词,只要是命名短语就保留;
     只滤明确命中黑名单形态的(lead 护栏:不做激进语义判断)。滤后 <3 组件 →
     既有 fail-closed/enrichment 接手。
+
+    F9-A 修:剥括号示例后再数词(同 _generate_component_variants P1b-3)——否则
+    'A work unit selector (read ledger, pick next item)' 被 paren 撑到 9 词 >6 误滤
+    (它是 valid 组件,含 selector 实体)。
     """
     t = name.strip()
     if not t:
@@ -2916,7 +2895,9 @@ def _is_garbage_component_name(name: str) -> bool:
     low = t.lower()
     if low in _GENERIC_PLAIN_TITLE_NAMES:
         return True  # 泛节名/配置节
-    words = t.split()
+    # F9-A: 剥括号示例后数词(防 paren 撑高词数误滤 valid 组件)
+    name_clean = re.sub(r"\([^)]*\)", "", t).strip()
+    words = name_clean.split()
     # 祈使句/疑问句首词(大写开头,lowercase 后在 starter 词表)
     if words and words[0][:1].isupper() and words[0].lower() in _SENTENCE_STARTER_WORDS:
         return True
@@ -2926,7 +2907,7 @@ def _is_garbage_component_name(name: str) -> bool:
     # 小写助动词(is/are/seem/...)= 句子
     if any(w.lower() in _AUX_VERB_WORDS for w in words):
         return True
-    # 超长(>6 词)= likely 句子而非命名短语
+    # 超长(>6 词,剥 paren 后)= likely 句子而非命名短语
     if len(words) > 6:
         return True
     return False
@@ -3642,6 +3623,64 @@ def _backfill_component_evidence(
     return diag
 
 
+def _normalize_extract_payload(
+    data: dict[str, Any], raw_content: str | None, content_lane: str = "",
+    *, is_fallback: bool = False,
+) -> dict[str, Any]:
+    """F9-A: extract 后处理归一化单入口(LLM 成功路径 + deterministic fallback 共用 choke point)。
+
+    probe-p7 定位:ag2 primary 抽取失败("how_params 分段未返回")走 fallback,但
+    `build_deterministic_extract_result` 只 `_validate_extract_output`,跳过全部归一化
+    (F8-A 回填/F8-C 过滤/F8-D 命名归一/F-A 锚解析/P1b-1 接地/F3-B 命令剥离/F6-A 闭合)
+    → fallback 组件 evidence 空(components_evidence_backfilled=0)→ H3 残留 6 项原话不变。
+    本函数把后处理收敛成单入口,两路径都过,按序(lead F9-A 指定):
+      1. F-A 单字母锚解析(_resolve_short_anchors_to_full)
+      2. edge evidence_anchor 校正(_correct_edge_anchors_to_raw)
+      3. P1b-1 claims/argumentation 接地校正(_ground_claims_to_raw)
+      4. F8-C 组件垃圾过滤(_filter_llm_component_names)
+      5. F6-A 边端点闭合(_close_edge_endpoints)
+      6. F8-D 端点命名归一(_normalize_edge_endpoints_to_canonical)
+      7. F8-A 组件 evidence 回填(_backfill_component_evidence)
+      8. F3-B 编造命令剥离(_strip_fabricated_how_commands)
+    Returns diagnostics {components_filtered, components_evidence_backfilled,
+    components_evidence_unlocated}(两路径统一进 ledger,ExtractResult.diagnostics)。
+
+    is_fallback(lead F9-A 同一入口,fallback 路径标记):F3-B 在 fallback 跳过——fallback
+    的 how_steps 命令是 AKB 合成占位(_build_deterministic_extract_data 硬编码,非 raw 来源),
+    由 render-time ``_ground_how_step_commands_in_raw`` 统一在渲染层剥(不接地→降级 executable=False,
+    SG-how-density fail-closed)。extract 时 F3-B 剥会破 procedural validate(≥3 executable 阈值不动)。
+    其余 7 步两路径一致(fallback 收 F8-A 回填/F8-C 过滤/F8-D 命名归一/F-A/P1b-1 等收益)。
+    """
+    diag = {
+        "components_filtered": 0,
+        "components_evidence_backfilled": 0,
+        "components_evidence_unlocated": 0,
+    }
+    if not raw_content or not isinstance(data, dict):
+        return diag
+    # 1. F-A 单字母锚 → 全名唯一前缀解析(在 edge anchor 校正之前)
+    _resolve_short_anchors_to_full(data, raw_content)
+    # 2. edge evidence_anchor 校正(LLM 编的 anchor → raw 真实 anchor,不放松防伪)
+    _correct_edge_anchors_to_raw(data, raw_content)
+    # 3. P1b-1 claims/argumentation 接地校正(弱匹配假锚校正 + interpretation→grounded 升级)
+    _ground_claims_to_raw(data, raw_content)
+    # 4. F8-C 组件垃圾过滤(祈使句/泛节名/收缩词/助动词/超长)— 清组件表后再做边活
+    diag["components_filtered"] = _filter_llm_component_names(data)
+    # 5. F6-A 边端点闭合(端点不在组件表 → 丢边)
+    _close_edge_endpoints(data)
+    # 6. F8-D 端点命名归一(from/to → canonical name,消命名分裂)
+    _normalize_edge_endpoints_to_canonical(data)
+    # 7. F8-A 组件 evidence 回填(空 evidence → raw 命中句 + 就近锚)
+    bf = _backfill_component_evidence(data, raw_content)
+    diag["components_evidence_backfilled"] = bf.get("backfilled", 0)
+    diag["components_evidence_unlocated"] = bf.get("unlocated", 0)
+    # 8. F3-B 编造命令剥离(how_steps command 不在 raw → 剥反引号)。
+    # fallback 跳过(合成占位命令由 render-time _ground_how_step_commands_in_raw 处理)。
+    if not is_fallback:
+        _strip_fabricated_how_commands(data, raw_content)
+    return diag
+
+
 def _enrich_zero_eligible_with_deterministic(
     extract_data: dict[str, Any], raw_content: str | None
 ) -> dict[str, Any]:
@@ -3767,6 +3806,14 @@ def build_deterministic_extract_result(
         data = _build_deterministic_extract_data(
             raw_content, raw_path, content_lane=content_lane
         )
+        # F9-A: fallback 路径也过归一化单入口(probe-p7:ag2 primary 抽取失败走 fallback,
+        # 但旧版 fallback 只 validate 跳过归一化 → 组件 evidence 空、命名不归一、垃圾未滤。
+        # 与 LLM 成功路径同 choke point,diag 统一进 ledger。is_fallback=True:F3-B 跳过
+        # (合成占位命令由 render-time _ground_how_step_commands_in_raw 处理,extract 剥会破
+        # procedural validate ≥3 executable 阈值不动)。
+        _norm_diag = _normalize_extract_payload(
+            data, raw_content, content_lane, is_fallback=True
+        )
         _validate_extract_output(data, content_lane=content_lane)
     except Exception as exc:
         return ExtractResult(
@@ -3795,7 +3842,20 @@ def build_deterministic_extract_result(
                     f"§0.2 D1；inferred 弱边不计）"
                 ),
             )
-    return ExtractResult(success=True, data=data, retries_used=0)
+    return ExtractResult(
+        success=True,
+        data=data,
+        retries_used=0,
+        diagnostics={
+            "components_evidence_backfilled": _norm_diag.get(
+                "components_evidence_backfilled", 0
+            ),
+            "components_evidence_unlocated": _norm_diag.get(
+                "components_evidence_unlocated", 0
+            ),
+            "components_filtered": _norm_diag.get("components_filtered", 0),
+        },
+    )
 
 
 def _build_fallback_quality_basis(data: dict[str, Any]) -> dict[str, Any]:
