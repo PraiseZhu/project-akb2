@@ -728,6 +728,8 @@ TRACEABILITY_RETAKE_TIMEOUT_S: float = 60.0
 # retake 响应 schema:每条 interpretation claim 补 traces_to 或改判 provenance
 # F4-B: 扩展 new_grounded_claim(verbatim 引文)路径——LLM 可返回该出处锚的逐字原文,
 # 代码 B1 强校验后作新 source_grounded claim 追加(不造假溯源)
+# F9-B: 扩展 argumentation_retake——argumentation 条目(provenance=akb_interpretation
+# 缺 traces_to)同样走 LLM retake(arg_index 标识在 argumentation 数组中位置)
 _TRACEABILITY_RETAKE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -758,7 +760,36 @@ _TRACEABILITY_RETAKE_SCHEMA: dict[str, Any] = {
                 "required": ["claim_index", "traces_to", "provenance"],
                 "additionalProperties": False,
             },
-        }
+        },
+        # F9-B: argumentation 条目 retake(arg_index 在 argumentation 数组中位置)
+        "argumentation_retake": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "arg_index": {"type": "integer"},
+                    "traces_to": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "provenance": {
+                        "type": "string",
+                        "enum": ["akb_interpretation", "source_grounded"],
+                    },
+                    "new_grounded_claim": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string"},
+                            "anchor": {"type": "string"},
+                        },
+                        "required": ["text", "anchor"],
+                        "additionalProperties": False,
+                    },
+                },
+                "required": ["arg_index", "traces_to", "provenance"],
+                "additionalProperties": False,
+            },
+        },
     },
     "required": ["retake"],
     "additionalProperties": False,
@@ -769,11 +800,15 @@ def _build_traceability_retake_messages(
     interp_claims: list[dict[str, Any]],
     grounded_anchors: list[str],
     raw_snippet: str,
+    interp_argumentation: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
     """F2-B: 构建 traceability retake prompt。
 
     给 LLM 一批缺 traces_to 的 interpretation claims + grounded anchor 清单 + raw 摘要,
     要求补 traces_to(指向 grounded anchor)或改判 provenance(若实为原文直述)。
+
+    F9-B: 扩展 interp_argumentation——argumentation 条目(provenance=akb_interpretation
+    缺 traces_to)同样送 LLM,返回 argumentation_retake(arg_index 标识)。
     """
     import json as _json
 
@@ -784,6 +819,14 @@ def _build_traceability_retake_messages(
             "anchor": str(c.get("anchor", "")),
         }
         for c in interp_claims
+    ]
+    arg_brief = [
+        {
+            "arg_index": int(a.get("_retake_index", 0)),
+            "explanation": str(a.get("explanation", ""))[:200],
+            "claim_anchor": str(a.get("claim_anchor", "")),
+        }
+        for a in (interp_argumentation or [])
     ]
     sys_msg = (
         "你是 traceability 修复助手。给定一批 akb_interpretation claims(缺 traces_to 溯源)"
@@ -796,16 +839,32 @@ def _build_traceability_retake_messages(
         " grounded claim),你可返回 new_grounded_claim={text, anchor}:text 须是该锚位置的"
         " **逐字原文引文**(verbatim,不可改写),anchor 是该出处的 raw 锚(可在 grounded_anchors"
         " 之外,但须是 raw 真实锚)。代码会 B1 强校验 text 逐字在 raw 该锚 block 内才接受。\n"
+        "F9-B:argumentation 条目(provenance=akb_interpretation 缺 traces_to)同样需补——"
+        "返回 argumentation_retake(arg_index 在 argumentation 数组中位置),字段同 retake"
+        "(traces_to/provenance/new_grounded_claim),traces_to 指向 grounded anchor。\n"
         "只返回 JSON。"
     )
     user_msg = (
         f"grounded_anchors: {_json.dumps(grounded_anchors, ensure_ascii=False)}\n\n"
         f"interpretation_claims (claim_index 是在 claims 数组中的位置):\n"
         f"{_json.dumps(interp_brief, ensure_ascii=False)}\n\n"
+    )
+    if arg_brief:
+        user_msg += (
+            f"interpretation_argumentation (arg_index 是在 argumentation 数组中的位置):\n"
+            f"{_json.dumps(arg_brief, ensure_ascii=False)}\n\n"
+        )
+    user_msg += (
         f"raw 摘要(供判断解读出处):\n{raw_snippet[:3000]}\n\n"
         f"返回 {{\"retake\": [{{\"claim_index\": int, \"traces_to\": [\"§X\"], "
-        f"\"provenance\": \"akb_interpretation|source_grounded\"}}]}}"
+        f"\"provenance\": \"akb_interpretation|source_grounded\"}}]"
     )
+    if arg_brief:
+        user_msg += (
+            f", \"argumentation_retake\": [{{\"arg_index\": int, \"traces_to\": [\"§X\"], "
+            f"\"provenance\": \"akb_interpretation|source_grounded\"}}]"
+        )
+    user_msg += "}"
     return [
         {"role": "system", "content": sys_msg},
         {"role": "user", "content": user_msg},
@@ -850,8 +909,14 @@ def retake_traceability(
         "llm_return_summary": "",
         # F5-B: 确定性补 grounded claim 计数(去 LLM 化)
         "deterministic_backfill_count": 0,
-        # F6-B: 飘浮 interpretation 丢弃计数
+        # F6-B: 飘浮 interpretation 丢弃计数(claims 侧)
         "dropped_floating_interpretations": 0,
+        # F9-B: argumentation 救济链覆盖(probe-p7 memory/crewai 死因:akb_interpretation[N]
+        # 缺 traces_to 指的是 argumentation 条目,旧版只救 claims 侧)
+        "interp_arg_count": 0,
+        "arg_deterministic_backfill_count": 0,
+        "arg_accepted_count": 0,
+        "dropped_floating_argumentation": 0,
     }
     claims = extract_data.get("claims")
     if not isinstance(claims, list) or not claims:
@@ -891,7 +956,28 @@ def retake_traceability(
             c["_retake_index"] = i
             interp.append(c)
     diag["interp_count"] = len(interp)
-    if not interp:
+    # F9-B: 收需 retake 的 interpretation argumentation(provenance=akb_interpretation,
+    # traces_to 空 OR 指错)——同 claims 口径。probe-p7 memory/crewai 死因:floor 检查
+    # claims+argumentation 合并,但旧 retake 只救 claims 侧,argumentation 飘浮无人救。
+    argumentation = extract_data.get("argumentation")
+    if not isinstance(argumentation, list):
+        argumentation = []
+    interp_args: list[dict[str, Any]] = []
+    for i, a in enumerate(argumentation):
+        if not isinstance(a, dict):
+            continue
+        if str(a.get("provenance", "")).strip() != "akb_interpretation":
+            continue
+        tt = a.get("traces_to")
+        tt_set = (
+            {str(x).strip() for x in tt if isinstance(x, str) and str(x).strip()}
+            if isinstance(tt, list) else set()
+        )
+        if not tt_set or not (tt_set & grounded_set):
+            a["_retake_index"] = i
+            interp_args.append(a)
+    diag["interp_arg_count"] = len(interp_args)
+    if not interp and not interp_args:
         diag["reject_reason"] = "no_interp"
         return {"changed": False, "data": extract_data, "diagnostics": diag}
     # F5-B: 确定性优先——先走纯代码路径补 grounded claim(去 LLM 化,raw 原文天然 verbatim)
@@ -930,19 +1016,62 @@ def retake_traceability(
         else:
             remaining_interp.append(c)  # 留给 LLM retake
     diag["deterministic_backfill_count"] = det_backfill_count
+    # F9-B: argumentation 确定性回填(同 claims 口径,interp_text=explanation,
+    # target_anchor=claim_anchor 或 traces_to)。回填 → 追加 grounded claim + arg.traces_to。
+    arg_det_backfill = 0
+    remaining_args: list[dict[str, Any]] = []
+    for a in interp_args:
+        interp_text = str(a.get("explanation", "") or a.get("claim", "") or "")
+        tt = a.get("traces_to")
+        target_anchor = ""
+        if isinstance(tt, list) and tt:
+            for x in tt:
+                if isinstance(x, str) and x.strip():
+                    resolved = _resolve_grounded_anchor(x.strip(), raw_decl_set)
+                    if resolved:
+                        target_anchor = resolved
+                        break
+        if not target_anchor:
+            # arg.claim_anchor 作 target fallback
+            ca = str(a.get("claim_anchor", "")).strip()
+            if ca:
+                resolved = _resolve_grounded_anchor(ca, raw_decl_set)
+                if resolved:
+                    target_anchor = resolved
+        backfill = _deterministic_backfill_grounded_claim(
+            interp_text, target_anchor, anchor_blocks, raw_content or ""
+        )
+        if backfill:
+            new_claim = {
+                "text": backfill["text"],
+                "anchor": backfill["anchor"],
+                "provenance": "source_grounded",
+                "evidence_gap": "未提供 verbatim 校验细节",
+            }
+            claims.append(new_claim)
+            a["traces_to"] = [backfill["anchor"]]
+            arg_det_backfill += 1
+            changed = True
+        else:
+            remaining_args.append(a)
+    diag["arg_deterministic_backfill_count"] = arg_det_backfill
     # 全部确定性补了 → 不调 LLM(去 LLM 化,省一次调用)
-    if not remaining_interp:
+    if not remaining_interp and not remaining_args:
         diag["llm_called"] = False
-        # 清理临时 _retake_index
+        # 清理临时 _retake_index(claims + argumentation)
         for c in claims:
             if isinstance(c, dict):
                 c.pop("_retake_index", None)
+        for a in argumentation:
+            if isinstance(a, dict):
+                a.pop("_retake_index", None)
         return {"changed": changed, "data": extract_data, "diagnostics": diag}
-    # 仍有未补的 → 走 LLM retake(用 remaining_interp)
+    # 仍有未补的 → 走 LLM retake(claims + argumentation 一起送)
     from src.akb2.quality.llm_router import route_llm as _default
 
     messages = _build_traceability_retake_messages(
-        remaining_interp, grounded_anchors, raw_content or ""
+        remaining_interp, grounded_anchors, raw_content or "",
+        interp_argumentation=remaining_args,
     )
     try:
         with _distill_attempt_deadline(TRACEABILITY_RETAKE_TIMEOUT_S):
@@ -961,6 +1090,9 @@ def retake_traceability(
         for c in claims:
             if isinstance(c, dict):
                 c.pop("_retake_index", None)
+        for a in argumentation:
+            if isinstance(a, dict):
+                a.pop("_retake_index", None)
         return {"changed": False, "data": extract_data, "diagnostics": diag}
     diag["llm_called"] = True
     parsed = _coerce_json_dict(response.content)
@@ -970,6 +1102,9 @@ def retake_traceability(
         for c in claims:
             if isinstance(c, dict):
                 c.pop("_retake_index", None)
+        for a in argumentation:
+            if isinstance(a, dict):
+                a.pop("_retake_index", None)
         return {"changed": False, "data": extract_data, "diagnostics": diag}
     diag["items_returned"] = len(retake_items)
     # F4-B: LLM 返回摘要(截断 80 字符,便于下轮 debug)
@@ -1055,6 +1190,78 @@ def retake_traceability(
                 changed = True
                 accepted += 1
     diag["accepted_count"] = accepted
+    # F9-B: 处理 argumentation_retake LLM 项(同 claims 逻辑:traces_to 重指 +
+    # new_grounded_claim verbatim + provenance 改判)。arg_index 标识在 argumentation 数组位置。
+    arg_items = parsed.get("argumentation_retake") if isinstance(parsed, dict) else None
+    if isinstance(arg_items, list):
+        arg_accepted = 0
+        for item in arg_items:
+            if not isinstance(item, dict):
+                continue
+            idx = item.get("arg_index")
+            if not isinstance(idx, int) or idx < 0 or idx >= len(argumentation):
+                continue
+            arg = argumentation[idx]
+            if not isinstance(arg, dict):
+                continue
+            # traces_to 重指(grounded 集)
+            tt = item.get("traces_to")
+            if isinstance(tt, list):
+                clean_tt: list[str] = []
+                for a in tt:
+                    if not isinstance(a, str):
+                        continue
+                    ref = a.strip()
+                    if not ref:
+                        continue
+                    resolved = _resolve_grounded_anchor(ref, grounded_set)
+                    if resolved:
+                        clean_tt.append(resolved)
+                if clean_tt and clean_tt != (
+                    arg.get("traces_to") if isinstance(arg.get("traces_to"), list) else []
+                ):
+                    arg["traces_to"] = clean_tt
+                    changed = True
+                    arg_accepted += 1
+            # new_grounded_claim(verbatim 引文)— 同 claims B1 强校验
+            ngc = item.get("new_grounded_claim")
+            if isinstance(ngc, dict) and ngc.get("text") and ngc.get("anchor"):
+                ngc_anchor = str(ngc["anchor"]).strip()
+                ngc_text = str(ngc["text"]).strip()
+                resolved_anchor = _resolve_grounded_anchor(ngc_anchor, raw_decl_set)
+                if not resolved_anchor:
+                    diag["rejected_new_claim"] += 1
+                    continue
+                block = anchor_blocks.get(resolved_anchor, "")
+                if not block:
+                    diag["rejected_new_claim"] += 1
+                    continue
+                coverage = _verbatim_coverage_in_block(ngc_text, block)
+                if coverage < _GROUND_STRONG_COVERAGE:
+                    diag["rejected_new_claim"] += 1
+                    continue
+                new_claim = {
+                    "text": ngc_text,
+                    "anchor": resolved_anchor,
+                    "provenance": "source_grounded",
+                    "evidence_gap": "未提供 verbatim 校验细节",
+                }
+                claims.append(new_claim)
+                arg["traces_to"] = [resolved_anchor]
+                changed = True
+                arg_accepted += 1
+                diag["accepted_new_claim"] += 1
+            prov = str(item.get("provenance", "")).strip()
+            if prov in ("akb_interpretation", "source_grounded") and prov != arg.get("provenance"):
+                if prov == "source_grounded" and arg.get("claim_anchor") in grounded_set:
+                    arg["provenance"] = "source_grounded"
+                    changed = True
+                    arg_accepted += 1
+                elif prov == "akb_interpretation":
+                    arg["provenance"] = "akb_interpretation"
+                    changed = True
+                    arg_accepted += 1
+        diag["arg_accepted_count"] = arg_accepted
     if not changed:
         diag["reject_reason"] = "no_accept"
     # F6-B/F7-A: 飘浮 interpretation 有界丢弃——确定性 backfill + LLM retake 都救不回的
@@ -1095,10 +1302,36 @@ def retake_traceability(
         extract_data["claims"] = remaining_claims
         changed = True  # 数据变了(caller 须重评 floor)
     diag["dropped_floating_interpretations"] = dropped_floating
-    # 清理临时 _retake_index
+    # F9-B: argumentation 飘浮丢弃——确定性 backfill + LLM retake 都救不回的 argumentation
+    # (provenance=akb_interpretation,仍无 traces_to 或指向非 grounded)从 argumentation 移除。
+    # 同 claims F7-A 条件:not tt_set or not (tt_set & current_grounded)。diag 单独计数。
+    dropped_arg = 0
+    remaining_args: list[dict[str, Any]] = []
+    for a in argumentation:
+        if not isinstance(a, dict):
+            remaining_args.append(a)
+            continue
+        if str(a.get("provenance", "")).strip() == "akb_interpretation":
+            tt = a.get("traces_to")
+            tt_set = (
+                {str(x).strip() for x in tt if isinstance(x, str) and str(x).strip()}
+                if isinstance(tt, list) else set()
+            )
+            if not tt_set or not (tt_set & current_grounded):
+                dropped_arg += 1
+                continue
+        remaining_args.append(a)
+    if dropped_arg > 0:
+        extract_data["argumentation"] = remaining_args
+        changed = True
+    diag["dropped_floating_argumentation"] = dropped_arg
+    # 清理临时 _retake_index(claims + argumentation)
     for c in claims:
         if isinstance(c, dict):
             c.pop("_retake_index", None)
+    for a in argumentation:
+        if isinstance(a, dict):
+            a.pop("_retake_index", None)
     return {"changed": changed, "data": extract_data, "diagnostics": diag}
 
 
