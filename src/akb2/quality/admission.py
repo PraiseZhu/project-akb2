@@ -329,7 +329,7 @@ _TOC_BLOCK_RE = re.compile(
     # 有 intake 加的 ## 锚点目录 但无 --- 分隔、body 是普通 ## H2 → 旧正则只停 ---
     # 或 ## §X. → 从 ## 锚点目录 吃到 \Z,只剩 frontmatter → mechanism snippet=325
     # 字符 → LLM 收空 body 误判 no_mechanism_signal。加 H2 停边界正确界定 TOC 块。
-    rf"(?ms)^##\s*锚点目录\s*\n.*?(?=^---\s*$|^##\s+\S|\Z)"
+    r"(?ms)^##\s*锚点目录\s*\n.*?(?=^---\s*$|^##\s+\S|\Z)"
 )
 
 
@@ -774,6 +774,9 @@ def _check_novelty(
                 "你判断新内容是否对既有知识库提供增量信息（新颖度）。"
                 "如果新内容基本重复既有知识（洗稿），输出 pass=false。"
                 "如果新内容提供新视角、新方法、新代码、新数据，输出 pass=true。"
+                "注意：相关主题但核心概念不同（如同一作者的相邻主题、上下游概念、"
+                "同领域不同机制）属于增量，输出 pass=true——相关≠重复；"
+                "仅当核心论点与既有条目基本重合（洗稿/转述）才 pass=false。"
                 "输出 JSON: {\"pass\": true/false, \"reason\": \"...\"}。"
                 "reason 最多 150 字符。"
             ),
@@ -886,6 +889,11 @@ MECHANISM_COMPONENT_MIN: int = 3
 # §0.2/F8：长正文阈值——total==0 但 body_length ≥ 此值时走 LLM 窄仲裁（不 deterministic fail），
 # 救 long-running-agents 等长机制散文（无标题/连接词/code 但有机制内容）。短正文 total==0 仍 fail。
 MECHANISM_LONG_PROSE_THRESHOLD: int = 500
+# F13（lead 裁决，idx8 lilian 实证 causal=14/steps=8 被 LLM 仲裁误拒）：强密度确定性短路——
+# 因果连接词与编号步双高（无命名组件时也成立，如推理机制文）→ 确定性 PASS，不落 LLM 仲裁。
+# 负样本安全：新闻/洗稿 recap 的 causal/steps 计数远低于此双阈值（test_admission_negative 全量锁）。
+MECHANISM_CAUSAL_DENSE_MIN: int = 5
+MECHANISM_STEPS_DENSE_MIN: int = 5
 
 # 命名组件候选（strong）：编号 H2/H3/H4 标题（### 1. Captain / ## 2. Executor Pool / ### Step 1）
 _MECHANISM_COMPONENT_RE = re.compile(r"(?m)^#{2,4}\s+\d+[\.\)]\s+\S+")
@@ -966,6 +974,13 @@ def _check_mechanism_signal(body: str, route_llm_fn: Any) -> AdmissionCheck:
         return AdmissionCheck(
             name="mechanism_signal", passed=True,
             reason=f"确定性机制信号: {steps} 编号步 + code 块",
+        )
+    # F13：强密度短路（causal 与 steps 双高）——覆盖"强因果+编号步但无命名组件"盲区
+    # （idx8 lilian: causal=14/steps=8/comp=0 落 LLM 仲裁被误判 no_mechanism）。
+    if causal >= MECHANISM_CAUSAL_DENSE_MIN and steps >= MECHANISM_STEPS_DENSE_MIN:
+        return AdmissionCheck(
+            name="mechanism_signal", passed=True,
+            reason=f"确定性机制信号: {causal} 因果边 + {steps} 编号步（强密度短路）",
         )
 
     # 确定性 FAIL：全无信号 + 正文短（纯短散文/新闻 recap）—— LLM 不可绕过此强反信号
@@ -1058,7 +1073,9 @@ def _classify_content_lane(
                 "概念型(concept): 主旨是阐述机制/架构/设计原则/模型，讲清「为什么/是什么」；"
                 "即便夹有示例代码、API 名或编号机制点，只要它们是为例证概念、"
                 "不是教操作，仍判 concept。"
-                "操作型(procedural): 主旨是教「怎么做」——可执行步骤、命令、配置、工作流是内容主线。"
+                "操作型(procedural): 主旨是教「怎么做」——可执行步骤、命令、配置、工作流是内容主线；"
+                "实操案例/项目移植记录/工具使用 walkthrough（叙述「我用 X 工具做成了 Y」"
+                "的过程、决策与步骤）即使夹叙夹议、无显式编号步骤，也判 procedural。"
                 "非知识(reject): 新闻播报/产品发布公告/会议 recap/融资动态/营销软文/纯观点抒发，"
                 "既不阐述可复用机制、也不教可执行操作 → 输出 reject；不得为二选一硬塞 concept。"
                 "按主要意图判，不要因出现代码就判 procedural。"

@@ -34,10 +34,12 @@ from src.akb2.quality.distill import (
 # 包 A step-2 合法升 rubric v1.0.0→v1.1.0（加注释+版本号），hash 同步到 v1.1.0 锚定值。
 # p0-1（SC-1 授权 concept threshold 6.0 + rubric_version 1.2.0）：版本头同步 1.2.0，
 # hash 同步到 v1.2.0 锚定值（ad9d167d…）。
+# F13（lead 裁决 2026-07-03,合法升 1.3.0）：图谱可调用性/新颖增量冷启动校准判据——
+# 维度集/权重/阈值不动,仅冷启动情形判据措辞；hash 同步到 v1.3.0 锚定值（46d40baa…）。
 # 后续任何再改 10-dimensions.md 的 step 必须同步更新此常量，否则本守护 fail-closed。
 _RUBRIC_PATH = "skillpack/quality/rubric/10-dimensions.md"
 _KNOWN_RUBRIC_HASH = (
-    "ad9d167d370bb244918a1c9b0d50dd6eadd4c53d131632f5e20d96f570bda130"
+    "46d40baaa8c436a60935f7d88184ca4e873e2b33a43012815459ec1ae99047dd"
 )
 
 

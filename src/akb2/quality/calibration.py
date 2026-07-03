@@ -70,6 +70,10 @@ LIVE_POSITIVE_PASS_FLOOR: float = 0.9  # live 正样本通过率下限
 # 拆成独立字段，不与本轮 repair gate 口径混淆。
 QUALITY_REPAIR_ACCEPTANCE_FLOOR: float = 0.30
 
+# F13（lead 裁决）：失败正样本有界重试硬上限（宪法 P1 有界自动化——每样本重试次数
+# 的绝对天花板，CLI 传更大值也被钳制）。对策目标是 LLM 方差，重试走完整管线全部闸门。
+RETRY_FAILED_POSITIVES_MAX: int = 2
+
 # corpus fixtures 目录（_load_fixture_content 按 fixture:<name> 读取）
 _FIXTURES_DIR_DEFAULT = Path("evals/main-pipeline-quality/fixtures")
 
@@ -1282,6 +1286,42 @@ def run_calibration(
         passed = "PASS" if result["passed"] else "FAIL"
         print(f"    -> {status} ({passed}) rounds={result['repair_rounds']}", file=sys.stderr)
 
+    # F13（lead 裁决）：失败正样本有界重试（每样本至多 RETRY_FAILED_POSITIVES_MAX 次，
+    # 预算显式）。对策目标是 LLM 方差（同样本这轮过下轮死），非放宽标准：重试走完全相同
+    # 管线与全部闸门。fail-visible：entry 记 retry_attempted/first_attempt_failure_class，
+    # report 记 retry_policy 汇总（宪法 P4 部分失败明示）。默认 0 = 行为与旧版逐字节一致。
+    retry_n = int(config.get("retry_failed_positives", 0) or 0)
+    if retry_n > 0:
+        retried = 0
+        rescued = 0
+        for idx, prev in enumerate(report["entries"]):
+            if prev.get("expected") != "ingest" or prev.get("passed"):
+                continue
+            entry = entries[idx]
+            for attempt in range(min(retry_n, RETRY_FAILED_POSITIVES_MAX)):
+                retried += 1
+                print(
+                    f"  [retry {attempt + 1}] {entry.get('url', '?')[:80]}...",
+                    file=sys.stderr,
+                )
+                redo = _process_corpus_entry(entry, idx, config)
+                redo["retry_attempted"] = True
+                redo["first_attempt_failure_class"] = prev.get("failure_class")
+                if redo.get("passed"):
+                    rescued += 1
+                    report["entries"][idx] = redo
+                    print("    -> retry PASS", file=sys.stderr)
+                    break
+                # 重试仍败：保留首轮结果（首因归类稳定），只记重试痕迹
+                prev["retry_attempted"] = True
+                prev["retry_failure_class"] = redo.get("failure_class")
+                print("    -> retry FAIL", file=sys.stderr)
+        report["retry_policy"] = {
+            "retry_failed_positives": retry_n,
+            "retried_attempts": retried,
+            "rescued": rescued,
+        }
+
     # 计算统计
     report = _compute_statistics(report)
 
@@ -1485,6 +1525,16 @@ def main(argv: list[str] | None = None) -> int:
             "供失败样本离线复放 + 救率账审计）"
         ),
     )
+    parser.add_argument(
+        "--retry-failed-positives",
+        type=int,
+        default=0,
+        help=(
+            "失败正样本有界重试次数（默认 0=不重试，行为与旧版一致；"
+            f"硬上限 {RETRY_FAILED_POSITIVES_MAX}，宪法 P1 有界自动化）。"
+            "对策目标是 LLM 方差；重试走完整管线全部闸门，report 记 retry_policy 明示"
+        ),
+    )
 
     args = parser.parse_args(argv)
 
@@ -1495,6 +1545,10 @@ def main(argv: list[str] | None = None) -> int:
         config["raw_dir"] = os.path.join(args.vault_root, "raw")
     if args.preflight_report:
         config["preflight_report_path"] = args.preflight_report
+    if args.retry_failed_positives:
+        config["retry_failed_positives"] = max(
+            0, min(args.retry_failed_positives, RETRY_FAILED_POSITIVES_MAX)
+        )
 
     try:
         report = run_calibration(
