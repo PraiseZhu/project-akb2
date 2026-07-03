@@ -1063,10 +1063,22 @@ def retake_traceability(
     diag["accepted_count"] = accepted
     if not changed:
         diag["reject_reason"] = "no_accept"
-    # F6-B: 飘浮 interpretation 有界丢弃——确定性 backfill + LLM retake 都救不回的
-    # interpretation(仍无 traces_to)从 claims 移除(不发表无据解读)。护栏:只移除救济链
-    # 走完仍无据的;移除后若 interpretation 占比/总量归零导致其他检查 fail → 维持 fail-closed
-    # (caller 重评 floor,不在此处放行)。grader 仍裁内容深度(丢太多自然过不了,诚实代价)。
+    # F6-B/F7-A: 飘浮 interpretation 有界丢弃——确定性 backfill + LLM retake 都救不回的
+    # interpretation(仍无 traces_to 或 traces_to 仍指向非 grounded 锚)从 claims 移除。
+    # F7-A 修:原条件 `if not tt_set` 只丢空 traces_to 的 interp,漏了 traces_to 非空但
+    # 指向非 grounded 锚的 interp(probe-p6 vercel:§J_DISCUSSION 指向真实 raw 锚但该处
+    # 无 grounded claim,LLM 返空 traces_to 也没改 → drop 没执行)。条件改为与 F3-A 收集
+    # 条件一致:`not tt_set or not (tt_set & grounded_set)`。
+    # F7-A 修2:grounded_set 须重算(含 F4-B/F5-B 新追加的 grounded claim),否则新补的
+    # grounded claim 锚不在原 grounded_set → 误丢已救回的 interp(F4-B 测试暴露)。
+    current_grounded: set[str] = set()
+    for c in claims:
+        if (
+            isinstance(c, dict)
+            and str(c.get("provenance", "")).strip() == "source_grounded"
+            and c.get("anchor")
+        ):
+            current_grounded.add(str(c["anchor"]).strip())
     dropped_floating = 0
     remaining_claims: list[dict[str, Any]] = []
     for c in claims:
@@ -1079,8 +1091,9 @@ def retake_traceability(
                 {str(a).strip() for a in tt if isinstance(a, str) and str(a).strip()}
                 if isinstance(tt, list) else set()
             )
-            if not tt_set:
-                # 仍无 traces_to(漂浮)→ 丢弃
+            # F7-A:与 F3-A 收集条件一致——空 OR 指向非 grounded 锚(与 grounded 无交集)
+            # 用 current_grounded(含新追加的 grounded claim 锚)
+            if not tt_set or not (tt_set & current_grounded):
                 dropped_floating += 1
                 continue
         remaining_claims.append(c)

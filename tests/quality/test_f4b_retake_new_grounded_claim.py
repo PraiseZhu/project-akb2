@@ -105,7 +105,7 @@ class TestF4BNewGroundedClaim:
         assert FLOOR_INTERPRETATION_TRACEABILITY not in floor.failed_floors
 
     def test_paraphrased_quote_rejected(self, monkeypatch):
-        """改写引文(非 verbatim,覆盖 <60%)→ 拒(fail-closed 不造假)。"""
+        """改写引文(非 verbatim,覆盖 <60%)→ 拒;F7-A: interp 仍漂浮 → 丢弃。"""
         data = _extract_with_interp_pointing_wrong_anchor()
         _patch_route_llm(
             monkeypatch,
@@ -118,8 +118,10 @@ class TestF4BNewGroundedClaim:
             }]},
         )
         result = retake_traceability(data, _RAW, "concept")
-        assert result["changed"] is False  # 改写,拒
+        # F4-B 改写拒 + F7-A interp 漂浮(§E_CLAIMS 非 grounded)→ 丢弃
+        assert result["changed"] is True  # F7-A: interp 被丢弃 = 数据变
         assert result["diagnostics"]["rejected_new_claim"] == 1
+        assert result["diagnostics"]["dropped_floating_interpretations"] == 1
         # 无新 grounded claim 追加
         assert not any(
             c.get("provenance") == "source_grounded" and c.get("anchor") == "§E_CLAIMS"
@@ -127,7 +129,7 @@ class TestF4BNewGroundedClaim:
         )
 
     def test_fake_anchor_rejected(self, monkeypatch):
-        """假锚(不在 raw 声明集)→ 拒。"""
+        """假锚(不在 raw 声明集)→ 拒;F7-A: interp 仍漂浮 → 丢弃。"""
         data = _extract_with_interp_pointing_wrong_anchor()
         _patch_route_llm(
             monkeypatch,
@@ -140,8 +142,9 @@ class TestF4BNewGroundedClaim:
             }]},
         )
         result = retake_traceability(data, _RAW, "concept")
-        assert result["changed"] is False
+        assert result["changed"] is True  # F7-A: interp 漂浮 → 丢弃
         assert result["diagnostics"]["rejected_new_claim"] == 1
+        assert result["diagnostics"]["dropped_floating_interpretations"] == 1
 
     def test_single_letter_anchor_resolved_for_new_claim(self, monkeypatch):
         """new_grounded_claim 的 anchor 单字母 §E → resolve 为全名 §E_CLAIMS(同 F3-A 逻辑)。"""

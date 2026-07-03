@@ -103,3 +103,38 @@ class TestF6BFloatingInterpDrop:
         # claims 还有 source_grounded
         assert len(data["claims"]) == 1
         assert data["claims"][0]["provenance"] == "source_grounded"
+
+    def test_f7a_mispointed_traces_to_dropped(self, monkeypatch):
+        """F7-A: traces_to 非空但指向非 grounded 锚(§J_DISCUSSION)→ 救济链走完仍无据 → 丢弃。
+        probe-p6 vercel 死因:§J_DISCUSSION 指向真实 raw 锚但该处无 grounded claim,
+        LLM 返空 traces_to 也没改 → 原 F6-B 条件 `if not tt_set` 漏了(非空但指错)。"""
+        data = {
+            "claims": [
+                {"text": "grounded A", "anchor": "§A", "provenance": "source_grounded",
+                 "evidence_gap": "未提供 X"},
+                {"text": "interp about §J", "anchor": "§J_DISCUSSION",
+                 "provenance": "akb_interpretation", "evidence_gap": "未覆盖 Y",
+                 "traces_to": ["§J_DISCUSSION"]},  # 指向真实 raw 锚但非 grounded
+            ],
+            "argumentation": [],
+            "mechanism_components": [
+                {"name": "Comp A", "role": "x"}, {"name": "Comp B", "role": "y"},
+                {"name": "Comp C", "role": "z"},
+            ],
+            "causal_edges": [
+                {"from": "Comp A", "to": "Comp B", "relation": "r", "edge_kind": "source_causal",
+                 "evidence": "A feeds B", "evidence_anchor": "§A"},
+            ],
+            "how_steps": [],
+        }
+        # LLM 返空(救不回)
+        _patch_route_llm(monkeypatch, {"retake": [{"claim_index": 1, "traces_to": [], "provenance": "akb_interpretation"}]})
+        result = retake_traceability(data, _RAW, "concept")
+        # F7-A:traces_to 非空但指向非 grounded → 丢弃(原 F6-B 漏了,只丢空 traces_to)
+        assert result["diagnostics"]["dropped_floating_interpretations"] == 1
+        assert result["changed"] is True
+        assert len(data["claims"]) == 1  # interp 被移除
+        assert data["claims"][0]["provenance"] == "source_grounded"
+        # floor traceability 过(无 interp 需检查)
+        floor = evaluate_integrity_floor(data, "concept", raw_anchors={"§A"})
+        assert FLOOR_INTERPRETATION_TRACEABILITY not in floor.failed_floors
