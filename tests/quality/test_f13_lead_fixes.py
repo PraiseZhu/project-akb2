@@ -1,9 +1,12 @@
 """test_f13_lead_fixes.py — F13 lead 直改四刀的行为绑定测试。
 
-覆盖（lead 裁决,2026-07-03）:
-    - F13-1 admission 强密度确定性短路（causal≥5 && steps≥5 → PASS 不落 LLM 仲裁;
-      idx8 lilian 实证 causal=14/steps=8/comp=0 被 LLM 仲裁误拒的盲区）
-    - F13-1b 阈值下不触发短路（仍走 LLM 仲裁,不放宽）+ 新闻 recap 信号远低于双阈值
+覆盖（lead 裁决,2026-07-03;F13-fix2 采纳 reviewer 两轮 blocking 定论）:
+    - F13-1（fix2 版）:**无密度类确定性 PASS 短路**——密度信号降级为仲裁证据
+      （信号计数注入 mechanism 仲裁 prompt,由 LLM 判）;D11 reject-recheck 降级样本
+      force_llm_adjudication 禁用全部确定性 PASS（撤销 reject ≠ 确定性准入）
+    - reviewer 两个反例回归:营销 numbered-benefits（词面双高）/ 分节营销文
+      （3 普通 H2 + benefits）/ `## 1.` 编号标题营销文（会被计成命名组件）
+      → 全部保留 mechanism LLM 否决权,整体拒收
     - F13-2 rubric 1.3.0 冷启动校准落地（图谱可调用性/新颖增量 note 带冷启动条款;
       concept 7 维名逐字不变——维度集不动,只动判据措辞）
     - F13-3 calibration 失败正样本有界重试（默认 0 零行为变化 / retry=1 救回记账 /
@@ -17,9 +20,6 @@ from __future__ import annotations
 from typing import Any
 
 from src.akb2.quality.admission import (
-    MECHANISM_CAUSAL_DENSE_MIN,
-    MECHANISM_DENSE_WEAK_HEADINGS_MIN,
-    MECHANISM_STEPS_DENSE_MIN,
     _check_mechanism_signal,
     _scan_mechanism_signals,
     run_admission,
@@ -62,8 +62,35 @@ _MARKETING_BODY = "\n".join(
 )
 
 
-def _llm_must_not_be_called(*_a: Any, **_k: Any) -> LLMResponse:
-    raise AssertionError("强密度短路应确定性 PASS,不得调用 LLM 仲裁")
+# 分节营销文(reviewer 第二轮反例):3 个普通 H2 + numbered benefits——曾骗过 weak_comp≥3 护栏
+_MARKETING_SECTIONED = "\n".join(
+    [
+        "## Faster onboarding",
+        "Our launch results in huge gains and enables your team to win faster.",
+        "1. Faster onboarding leads to happier customers and therefore more revenue.",
+        "2. Smart sync enables seamless flows and produces instant results.",
+        "## Lower pilot cost",
+        "3. One-click setup prevents errors because of our magic engine.",
+        "4. Premium support triggers faster resolution and results in loyalty.",
+        "## Ecosystem reach",
+        "5. New pricing enables savings and therefore produces value.",
+    ]
+)
+
+# `## 1. X` 编号标题营销文(reviewer 第二轮反例):编号 H2 被 _MECHANISM_COMPONENT_RE
+# 计成"命名组件"——D11 recheck 后若不禁全部确定性 PASS,comp>=3 分支直接放行
+_MARKETING_NUMBERED_HEADINGS = "\n".join(
+    [
+        "## 1. Faster onboarding",
+        "Our launch results in huge gains and enables your team to win faster.",
+        "It leads to happier customers and therefore more revenue this quarter.",
+        "## 2. Smart sync",
+        "Smart sync enables seamless flows and produces instant results because of AI.",
+        "It triggers faster resolution and results in loyalty and enables savings.",
+        "## 3. Premium support",
+        "Premium support prevents churn and produces value and causes growth.",
+    ]
+)
 
 
 def _llm_says_no(*_a: Any, **_k: Any) -> LLMResponse:
@@ -72,99 +99,122 @@ def _llm_says_no(*_a: Any, **_k: Any) -> LLMResponse:
     )
 
 
-def test_dense_causal_steps_deterministic_pass() -> None:
-    """causal≥5 && steps≥5 && 小节标题≥3 → 确定性 PASS,LLM 不被调用(盲区短路)。"""
+def _make_capturing_no(captured: list) -> Any:
+    def _fn(_model: Any, messages: list, **_k: Any) -> LLMResponse:
+        captured.append(messages)
+        return LLMResponse(
+            content='{"pass": false, "reason": "no mechanism"}', model_used="mock"
+        )
+
+    return _fn
+
+
+def test_dense_body_goes_to_llm_with_signal_context() -> None:
+    """[fix2] 密度不再是通行证:lilian 形态(causal/steps/标题三高)也走 LLM 仲裁,
+    且仲裁 prompt 带确定性信号计数(证据增强)。"""
     sig = _scan_mechanism_signals(_DENSE_BODY)
-    assert sig["causal"] >= MECHANISM_CAUSAL_DENSE_MIN
-    assert sig["numbered_steps"] >= MECHANISM_STEPS_DENSE_MIN
-    assert sig["weak_components"] >= MECHANISM_DENSE_WEAK_HEADINGS_MIN
-    assert sig["components"] == 0  # 无命名组件——正是旧短路的盲区
-    check = _check_mechanism_signal(_DENSE_BODY, _llm_must_not_be_called)
-    assert check.passed is True
-    assert "强密度短路" in check.reason
+    assert sig["components"] == 0 and sig["causal"] >= 5 and sig["numbered_steps"] >= 5
+    captured: list = []
+    check = _check_mechanism_signal(_DENSE_BODY, _make_capturing_no(captured))
+    assert check.passed is False  # LLM 否决生效 = 确实走了仲裁
+    assert captured, "必须调用 LLM 仲裁"
+    user_msg = str(captured[0][-1]["content"])
+    assert "确定性信号计数" in user_msg
+    assert f"因果连接词={sig['causal']}" in user_msg
 
 
-def test_marketing_numbered_benefits_no_shortcut() -> None:
-    """[reviewer blocking P1] 营销编号清单:词面密度双高但零结构标题 →
-    短路不触发,落 LLM 仲裁且可被否决。"""
-    sig = _scan_mechanism_signals(_MARKETING_BODY)
-    assert sig["causal"] >= MECHANISM_CAUSAL_DENSE_MIN
-    assert sig["numbered_steps"] >= MECHANISM_STEPS_DENSE_MIN
-    assert sig["weak_components"] < MECHANISM_DENSE_WEAK_HEADINGS_MIN
+def test_marketing_numbered_benefits_llm_veto() -> None:
+    """[reviewer 反例1] 营销编号清单(词面双高):走 LLM 仲裁且可被否决,无确定性放行。"""
     check = _check_mechanism_signal(_MARKETING_BODY, _llm_says_no)
-    assert check.passed is False  # LLM 否决权保留
-
-
-def test_reject_recheck_disables_dense_shortcut() -> None:
-    """[reviewer blocking P1] D11 reject-recheck 降级样本禁用短路:即便结构+密度
-    双满足,allow_dense_shortcut=False 时仍走 LLM 仲裁(否决权保留)。"""
-    check = _check_mechanism_signal(
-        _DENSE_BODY, _llm_says_no, allow_dense_shortcut=False
-    )
     assert check.passed is False
+    assert not check.reason.startswith("确定性机制信号")
 
 
-def test_run_admission_marketing_reject_not_resurrected(tmp_path: Any) -> None:
-    """[reviewer blocking P1 全路径回归] lane 判 reject 的营销文经 D11 降级后,
-    mechanism LLM 保留否决权 → 整体拒收(后门闭合)。"""
+def test_marketing_sectioned_llm_veto() -> None:
+    """[reviewer 反例2] 分节营销文(3 普通 H2 + benefits):同样无确定性放行。"""
+    sig = _scan_mechanism_signals(_MARKETING_SECTIONED)
+    assert sig["weak_components"] >= 3  # 曾骗过旧 weak_comp 护栏的形态
+    check = _check_mechanism_signal(_MARKETING_SECTIONED, _llm_says_no)
+    assert check.passed is False
+    assert not check.reason.startswith("确定性机制信号")
 
+
+def test_force_llm_adjudication_disables_all_deterministic_pass() -> None:
+    """[fix2 核心] force_llm_adjudication=True:连 comp>=3 确定性分支也被禁,
+    `## 1. X` 编号标题营销文(被计成 3 命名组件)仍被 LLM 否决。"""
+    sig = _scan_mechanism_signals(_MARKETING_NUMBERED_HEADINGS)
+    assert sig["components"] >= 3  # reviewer 反例:编号 H2 被计成命名组件
+    captured: list = []
+    check = _check_mechanism_signal(
+        _MARKETING_NUMBERED_HEADINGS,
+        _make_capturing_no(captured),
+        force_llm_adjudication=True,
+    )
+    assert captured, "recheck 样本必须调用 LLM 仲裁"
+    assert check.passed is False
+    assert not check.reason.startswith("确定性机制信号")
+
+
+def _mock_reject_lane_no_mechanism(calls: list) -> Any:
     def mock_llm(_model: Any, messages: list, **kwargs: Any) -> LLMResponse:
         schema = kwargs.get("response_schema") or {}
         if "content_lane" in (schema.get("properties") or {}):
+            calls.append("lane")
             return LLMResponse(
                 content='{"content_lane": "reject", "reason": "营销软文"}',
                 model_used="mock",
             )
         system = str(messages[0].get("content", "")) if messages else ""
         if "机制" in system:
+            calls.append("mechanism")
             return LLMResponse(
                 content='{"pass": false, "reason": "无可复用机制"}', model_used="mock"
             )
+        calls.append("other")
         return LLMResponse(
             content='{"pass": true, "reason": "mock pass"}', model_used="mock"
         )
 
+    return mock_llm
+
+
+def test_run_admission_numbered_heading_marketing_not_resurrected(
+    tmp_path: Any,
+) -> None:
+    """[reviewer 验收·全路径] `## 1/2/3` 编号标题营销文:mock lane=reject →
+    D11 降级 → mechanism **必须被调用**且否决 → 整体 rejected,reason 非确定性。"""
+    calls: list = []
+    result = run_admission(
+        raw_path="mock.md",
+        raw_content=_MARKETING_NUMBERED_HEADINGS,
+        ledger_path=str(tmp_path / "ledger.jsonl"),
+        wiki_references=None,
+        route_llm_fn=_mock_reject_lane_no_mechanism(calls),
+    )
+    assert result.passed is False
+    if result.lane_reject_recheck:  # D11 降级发生时,mechanism 否决权必须行使
+        assert "mechanism" in calls
+        mech = [c for c in result.checks if c.name == "mechanism_signal"]
+        assert mech and mech[0].passed is False
+        assert not mech[0].reason.startswith("确定性机制信号")
+
+
+def test_run_admission_marketing_reject_not_resurrected(tmp_path: Any) -> None:
+    """[reviewer 反例1 全路径] lane 判 reject 的营销文经 D11 降级后,
+    mechanism LLM 保留否决权 → 整体拒收(后门闭合)。"""
+    calls: list = []
     result = run_admission(
         raw_path="mock.md",
         raw_content=_MARKETING_BODY,
         ledger_path=str(tmp_path / "ledger.jsonl"),
         wiki_references=None,
-        route_llm_fn=mock_llm,
+        route_llm_fn=_mock_reject_lane_no_mechanism(calls),
     )
     assert result.passed is False
     mech = [c for c in result.checks if c.name == "mechanism_signal"]
-    if mech:  # 若 D11 降级发生,mechanism 必须被真实仲裁且否决,不得是短路 PASS
-        assert "强密度短路" not in mech[0].reason
+    if mech:  # 若 D11 降级发生,mechanism 必须被真实仲裁且否决,不得确定性 PASS
+        assert not mech[0].reason.startswith("确定性机制信号")
         assert mech[0].passed is False
-
-
-def test_dense_shortcut_below_threshold_falls_to_llm() -> None:
-    """causal 达标但 steps 不足 → 不触发短路,仍走 LLM 仲裁(不放宽)。"""
-    body = "\n".join(
-        [
-            "Caching leads to speedups because of locality and therefore lower cost.",
-            "It results in fewer misses and enables prefetching, producing gains.",
-            "1. Measure baseline.",
-            "2. Enable cache.",
-        ]
-    )
-    sig = _scan_mechanism_signals(body)
-    assert sig["causal"] >= MECHANISM_CAUSAL_DENSE_MIN
-    assert sig["numbered_steps"] < MECHANISM_STEPS_DENSE_MIN
-    check = _check_mechanism_signal(body, _llm_says_no)
-    assert check.passed is False  # LLM 仲裁被走到且判否 → 证明短路未触发
-
-
-def test_news_recap_far_below_dense_thresholds() -> None:
-    """负样本安全:新闻 recap 的 causal/steps 计数远低于双阈值,短路不可能误放。"""
-    news = (
-        "Google I/O 2026 wrapped up today. The company announced new products. "
-        "Executives said the launch was exciting. Shares rose after the event. "
-        "Attendees enjoyed the keynote and the demos."
-    )
-    sig = _scan_mechanism_signals(news)
-    assert sig["causal"] < MECHANISM_CAUSAL_DENSE_MIN
-    assert sig["numbered_steps"] < MECHANISM_STEPS_DENSE_MIN
 
 
 # ---------------------------------------------------------------------------
