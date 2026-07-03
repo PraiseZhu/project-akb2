@@ -892,6 +892,13 @@ def _run_distill_segment(
             "mechanism_rendering": _compute_mechanism_rendering(
                 extract_result.data, candidate_text
             ),
+            # F8-A fail-visible:组件 evidence 回填诊断透传 ledger(确认 backfill 触发)。
+            "components_evidence_backfilled": extract_result.diagnostics.get(
+                "components_evidence_backfilled", 0
+            ),
+            "components_evidence_unlocated": extract_result.diagnostics.get(
+                "components_evidence_unlocated", 0
+            ),
         },
     )
 
@@ -1591,6 +1598,13 @@ def _run_pipeline_segments(
                "max_retries": DISTILL_MAX_RETRIES,
                "retries_used": distill_meta.get("retries_used", 0),
                 "maker_fallback_used": distill_meta.get("maker_fallback_used", False),
+                # F8-A fail-visible:组件 evidence 回填计数(确认 F6-D 触发 + 残留 unlocated)
+                "components_evidence_backfilled": distill_meta.get(
+                    "components_evidence_backfilled", 0
+                ),
+                "components_evidence_unlocated": distill_meta.get(
+                    "components_evidence_unlocated", 0
+                ),
                 **(
                     {"maker_primary_error": distill_meta.get("maker_primary_error")}
                     if distill_meta.get("maker_primary_error")

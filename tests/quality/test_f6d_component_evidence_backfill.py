@@ -37,8 +37,8 @@ class TestF6DComponentEvidenceBackfill:
     def test_empty_evidence_backfilled(self):
         """空 evidence 组件 → 回填 evidence_sentence(逐字在 raw)+ evidence_anchor(∈声明集)。"""
         data = {"mechanism_components": _comps("Executor Pool")}
-        backfilled = _backfill_component_evidence(data, _RAW)
-        assert backfilled == 1
+        result = _backfill_component_evidence(data, _RAW)
+        assert result["backfilled"] == 1
         comp = data["mechanism_components"][0]
         # evidence_sentence 逐字在 raw
         assert comp["evidence_sentence"] in _RAW
@@ -48,10 +48,11 @@ class TestF6DComponentEvidenceBackfill:
         assert comp["evidence_anchor"] in decl
 
     def test_not_found_leaves_empty(self):
-        """组件名不在 raw → 定位不到 → 留空(不造假)。"""
+        """组件名不在 raw → 定位不到 → 留空(不造假),计 unlocated。"""
         data = {"mechanism_components": _comps("Nonexistent Component")}
-        backfilled = _backfill_component_evidence(data, _RAW)
-        assert backfilled == 0
+        result = _backfill_component_evidence(data, _RAW)
+        assert result["backfilled"] == 0
+        assert result["unlocated"] == 1
         comp = data["mechanism_components"][0]
         assert not comp.get("evidence_sentence")
         assert not comp.get("evidence_anchor")
@@ -62,8 +63,8 @@ class TestF6DComponentEvidenceBackfill:
             {"name": "Executor Pool", "role": "x",
              "evidence_anchor": "§A", "evidence_sentence": "existing sentence."},
         ]}
-        backfilled = _backfill_component_evidence(data, _RAW)
-        assert backfilled == 0
+        result = _backfill_component_evidence(data, _RAW)
+        assert result["backfilled"] == 0
         comp = data["mechanism_components"][0]
         assert comp["evidence_sentence"] == "existing sentence."
         assert comp["evidence_anchor"] == "§A"
@@ -73,8 +74,8 @@ class TestF6DComponentEvidenceBackfill:
         data = {"mechanism_components": [
             {"name": "Executor Pool", "role": "x", "evidence_anchor": "§B"},
         ]}
-        backfilled = _backfill_component_evidence(data, _RAW)
-        assert backfilled == 1
+        result = _backfill_component_evidence(data, _RAW)
+        assert result["backfilled"] == 1
         comp = data["mechanism_components"][0]
         assert comp["evidence_anchor"] == "§B"  # 不覆盖
         assert comp["evidence_sentence"]  # 回填了

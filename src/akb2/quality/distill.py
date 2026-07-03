@@ -565,12 +565,15 @@ class ExtractResult:
     data: 抽取出的结构化数据（success=False 时为空 dict）。
     retries_used: 重试次数。
     error: 失败原因（success=False 时）。
+    diagnostics: F8-A fail-visible 诊断(仅 success 路径填)——如组件 evidence 回填
+        {components_evidence_backfilled, components_evidence_unlocated},供 runner ledger。
     """
 
     success: bool
     data: dict[str, Any] = field(default_factory=dict)
     retries_used: int = 0
     error: str = ""
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -672,9 +675,11 @@ def extract_claims(
             # names(含 alias);不在→丢边(防 compose SG-mechanism-edge-evidence 自拒,如
             # probe-p5 memory 'edge.to=Auto memory 不在组件表')。enrichment 复用同 helper。
             _close_edge_endpoints(merged)
-            # F6-D: 组件 evidence 确定性回填——evidence_anchor/evidence_sentence 为空的组件,
-            # 用 variants 在 raw 定位命中句 + 就近锚回填(H3 主因:9/16 缺陷是组件 evidence 空)
-            _backfill_component_evidence(merged, raw_content)
+            # F6-D/F8-A: 组件 evidence 确定性回填——evidence_anchor/evidence_sentence 为空的
+            # 组件,用专用搜索词(无 stoplist,单组件已认定无歧义)+ 两遍(全名优先,再 token)
+            # 在 raw 行级定位命中句 + 就近锚回填(H3 主因:组件 evidence 空)。F8-A 修 frontmatter
+            # 命中即 break 致 Captain 空回填的根因。diag 透传 ExtractResult.diagnostics 供 ledger。
+            _f6d_diag = _backfill_component_evidence(merged, raw_content)
             # §0.2/F6：LLM 产 edge 的 evidence_anchor 校正——若 anchor 不在 raw 声明集，
             # 用 evidence sentence 在 raw 定位真实 anchor（_nearest_preceding_anchor，复用
             # fallback 映射逻辑），而非直接信 LLM 编的 anchor；映射不到 → 该边不计 eligible
@@ -715,6 +720,10 @@ def extract_claims(
             success=True,
             data=merged,
             retries_used=attempt,
+            diagnostics={
+                "components_evidence_backfilled": _f6d_diag.get("backfilled", 0),
+                "components_evidence_unlocated": _f6d_diag.get("unlocated", 0),
+            },
         )
 
     return ExtractResult(
@@ -3367,25 +3376,123 @@ def _close_edge_endpoints(
     return dropped
 
 
+def _generate_backfill_search_terms(name: str, tokens: bool) -> list[str]:
+    """F8-A: 回填专用搜索词(无 stoplist/collision——单组件已认定,无歧义)。
+
+    lead F8-A 裁定:回填是给已认定组件找证据句,不是抽新组件,故 _component_match_variants
+    的 stoplist/collision 护栏不适用(它们是为防抽新组件时泛词歧义)。本函数生成:
+    - tokens=False:归一全名 + 朴素单复数(最具体,pass-1 优先)。
+    - tokens=True: 再加多词名长 token(len≥5)+ 其单复数(pass-2 兜底)。
+    len<3 不入(噪声);len 3-4 单字 token 不入 pass-2(如 pool/task/agent——泛词噪声大,
+    但全名含这些词时 pass-1 全名仍搜;组件名本身是单字泛词如 "Agent" 时 pass-1 "agent" 仍搜)。
+    """
+    name_clean = re.sub(r"\([^)]*\)", "", name).strip()
+    norm = re.sub(r"^(?:A|An|The)\s+", "", name_clean, flags=re.I).lower().strip()
+    if not norm:
+        return []
+    terms: list[str] = []
+    seen: set[str] = set()
+
+    def _add(v: str) -> None:
+        v = v.strip()
+        if v and len(v) >= 3 and v not in seen:
+            seen.add(v)
+            terms.append(v)
+
+    _add(norm)
+    if norm.endswith("s"):
+        _add(norm[:-1])
+    else:
+        _add(norm + "s")
+    if tokens:
+        for t in re.findall(r"[A-Za-z0-9]+", norm):
+            if len(t) >= 5:
+                _add(t)
+                if t.endswith("s"):
+                    _add(t[:-1])
+                else:
+                    _add(t + "s")
+    return terms
+
+
+def _compile_backfill_pattern(terms: list[str]) -> re.Pattern[str] | None:
+    """编译回填搜索词为英文 \\b 词界 regex(长度降序最长匹配)。无 terms 返 None。"""
+    if not terms:
+        return None
+    sorted_terms = sorted(terms, key=len, reverse=True)
+    escaped = "|".join(re.escape(t) for t in sorted_terms)
+    return re.compile(rf"\b(?:{escaped})\b", re.IGNORECASE)
+
+
+def _find_backfill_sentence(
+    raw_content: str,
+    terms_full: list[str],
+    terms_token: list[str],
+    anchor_positions: list[tuple[str, int]],
+    first_anchor_pos: int,
+) -> tuple[str, str] | None:
+    """F8-A: 两遍(全名优先,再 token 兜底)在 raw 找组件证据句。
+
+    行级迭代(跳标题/表格/代码栅栏/锚目录行);frontmatter(首声明锚前)跳过;
+    anchor 空 continue 不 break(修旧版 frontmatter 命中即 break 致 Captain 空回填)。
+    Returns (sentence, anchor) 或 None。
+    """
+    for terms in (terms_full, terms_token):
+        if not terms:
+            continue
+        pat = _compile_backfill_pattern(terms)
+        if not pat:
+            continue
+        for line in raw_content.splitlines():
+            stripped = line.strip()
+            if not stripped or len(stripped) < 20 or len(stripped) > 300:
+                continue
+            # 跳标题/表格/代码栅栏/锚声明行(§X_..)——这些非证据句
+            if stripped.startswith(("#", "|", "```", "§")):
+                continue
+            if not pat.search(stripped):
+                continue
+            pos = raw_content.find(stripped)
+            if pos < 0 or pos < first_anchor_pos:
+                continue  # frontmatter/锚目录(首锚前),跳过找下一句
+            anchor = _nearest_preceding_anchor(pos, anchor_positions)
+            if not anchor:
+                continue  # 仍无锚(兜底,理论上首锚后总有),跳过
+            return stripped, anchor
+    return None
+
+
 def _backfill_component_evidence(
     extract_data: dict[str, Any], raw_content: str | None
-) -> int:
-    """F6-D: 对 evidence_anchor/evidence_sentence 为空的组件做确定性回填。
+) -> dict[str, int]:
+    """F6-D/F8-A: 对 evidence_anchor/evidence_sentence 为空的组件做确定性回填。
 
-    H3 缺陷 9/16 是"mechanism_components 的 evidence_anchor/evidence_sentence 空,组件
-    不可追溯"(F2-C 诊断)。本函数用组件名 variants(_component_match_variants 同源)在 raw
-    定位首个词界命中句(20-300 字符,排除标题/表格行)→ evidence_sentence=该句原文,
-    evidence_anchor=就近声明锚(nearest_preceding_anchor)。定位不到→留空(不造假,grader 照裁)。
-    Returns backfilled count。
+    H3 缺陷主因:mechanism_components 的 evidence_anchor/evidence_sentence 空,组件不可追溯。
+
+    F8-A 修(probe-p6 ag2 Captain 空回填根因):
+    旧版用 _component_match_variants(走 stoplist/collision)+ 句级 split + break-on-first-match,
+    被 frontmatter 命中(§A 锚前)毒化——Captain 在 raw frontmatter source_title 先匹配,
+    nearest_preceding_anchor 返空(无锚在前)→ ``if anchor`` 失败 → 但已 break,不再找后面
+    §E_CLAIMS 的真实命中句 → Captain 回填 0。ag2 离线复现:旧版 3/4,Captain 空。
+
+    修:回填不走 stoplist(单组件已认定,无歧义,lead 裁定),改专用 _generate_backfill_search_terms
+    + 两遍(全名优先,再 token len≥5兜底)+ 行级迭代(跳标题/表格/代码/锚目录/frontmatter)
+    + anchor 空 continue 不 break。目标:ag2 4 组件(Captain/Executor Pool/Task Graph and
+    Checkpointing/Sub-Agent Lifecycle)离线全部回填(句子逐字在 raw + 锚∈声明集)。
+
+    Returns {"backfilled": int, "unlocated": int}——空 evidence 组件中成功/未定位计数;
+    已有 evidence 或空名的不计入(fail-closed,不造假 evidence)。
     """
+    diag = {"backfilled": 0, "unlocated": 0}
     if not raw_content:
-        return 0
+        return diag
     components = extract_data.get("mechanism_components", []) or []
     if not components:
-        return 0
-    # anchor positions(供就近映射)
+        return diag
     anchor_positions = _raw_anchor_positions(raw_content)
-    backfilled = 0
+    if not anchor_positions:
+        return diag  # 无声明锚 → 无法映射,不造假(fail-closed)
+    first_anchor_pos = min(p for _, p in anchor_positions)
     for comp in components:
         if not isinstance(comp, dict):
             continue
@@ -3395,34 +3502,23 @@ def _backfill_component_evidence(
             continue  # 已有,不覆盖
         name = str(comp.get("name", "")).strip()
         if not name:
+            continue  # 空名无 evidence 可填,不计 unlocated
+        terms_full = _generate_backfill_search_terms(name, tokens=False)
+        terms_token = _generate_backfill_search_terms(name, tokens=True)
+        found = _find_backfill_sentence(
+            raw_content, terms_full, terms_token,
+            anchor_positions, first_anchor_pos,
+        )
+        if found is None:
+            diag["unlocated"] += 1
             continue
-        # 用本组件的 variants 在 raw 找命中句(单组件无 collision)
-        variant_map = _component_match_variants([{"name": name, "role": "x"}])
-        pattern = _compile_component_match_pattern(variant_map)
-        if not pattern:
-            continue
-        found_sent = None
-        found_pos = -1
-        for sent in re.split(r"[。\n.!?]", raw_content):
-            sent = sent.strip()
-            if not sent or len(sent) < 20 or len(sent) > 300:
-                continue
-            if sent.startswith("#") or sent.startswith("|"):
-                continue
-            if pattern.search(sent):
-                found_sent = sent
-                found_pos = raw_content.find(sent)
-                if found_pos >= 0:
-                    break
-        if found_sent and found_pos >= 0:
-            anchor = _nearest_preceding_anchor(found_pos, anchor_positions)
-            if anchor:
-                if not es:
-                    comp["evidence_sentence"] = found_sent
-                if not ea:
-                    comp["evidence_anchor"] = anchor
-                backfilled += 1
-    return backfilled
+        sent, anchor = found
+        if not es:
+            comp["evidence_sentence"] = sent
+        if not ea:
+            comp["evidence_anchor"] = anchor
+        diag["backfilled"] += 1
+    return diag
 
 
 def _enrich_zero_eligible_with_deterministic(
@@ -3481,6 +3577,12 @@ def _enrich_zero_eligible_with_deterministic(
         diag["components_added"] += 1
     if added_comp:
         extract_data["mechanism_components"] = existing_comps
+        # F8-A: enrichment 补的 det 组件(来自 _scan_real_mechanism_components,无 evidence
+        # 字段)在 floor 重评时才加入——晚于 extract_claims 的 line-677 backfill,故此处再调
+        # 一次回填覆盖新组件集(if ea and es 守卫跳过已回填的 LLM 组件,不重复)。
+        bf_diag = _backfill_component_evidence(extract_data, raw_content)
+        diag["components_evidence_backfilled"] = bf_diag.get("backfilled", 0)
+        diag["components_evidence_unlocated"] = bf_diag.get("unlocated", 0)
     # 2. 确定性 source_causal 边——F4-A 修:双跑(det_components + 原始 LLM comps)分开抽边,
     # 避免 LLM slug(executor_pool)与确定性原名(Executor Pool)variant 碰撞致 'executor'
     # 被 [N1]a 歧义弃用(probe-p3 ag2 根因)。双跑各自只用自己的组件,无跨集 collision;
