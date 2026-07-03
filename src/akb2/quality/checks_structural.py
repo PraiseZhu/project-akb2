@@ -113,7 +113,7 @@ MIN_HOW_EXECUTABLE_STEPS: int = 3
 CONTENT_LANE_CONCEPT: str = "concept"
 # step-3 SC-3e：concept 图谱可调用性满分（边 resolve 到真实节点/pending 共指）/ 假边封顶。
 GRAPH_RESOLVE_FULL_SCORE: float = 2.0
-GRAPH_RESOLVE_UNRESOLVED_CAP: float = 0.5
+# F14-A: GRAPH_RESOLVE_UNRESOLVED_CAP(旧 0.5)是死常量无消费方,已删。
 # pending 队列共指阈值：边 target 未命中已有节点但 pending 中 ≥此数共指也算可 resolve。
 GRAPH_PENDING_COREF_MIN: int = 3
 
@@ -547,6 +547,20 @@ def _slug_normalize_variants(slug: str) -> set[str]:
     return variants
 
 
+def _target_in_proposed_nodes(target: str, proposed_ids: set[str]) -> bool:
+    """F14-A: target 是否 ∈ proposed_graph_nodes ids(归一化口径,_↔-/concept- 互认)。
+
+    proposed slug 用 _slugify_component_id(下划线),target 是原 concept 串(可能连字符)。
+    用 _slug_normalize_variants 两侧归一化后交集判定(同 F10-B 口径)。
+    """
+    if not target or not proposed_ids:
+        return False
+    tvars = _slug_normalize_variants(target)
+    if not tvars:
+        return False
+    return any(tvars & _slug_normalize_variants(pid) for pid in proposed_ids)
+
+
 def _resolve_graph_node(
     target: str,
     known_concepts: list[str] | None,
@@ -602,6 +616,18 @@ def check_a4_graph_edges(
         return defects
 
     resolve_enabled = _is_concept_lane(content_lane)
+    # F14-A: 冷启动 pending 边豁免——frontmatter graph_pending=true 且 target ∈
+    # proposed_graph_nodes ids 且 evidence 含 [raw §X](锚∈声明集由 compose 已确保)
+    # 的边,是 D8 proposal 语义(待 adjudication)不是假边,不报 A4-图谱resolve。
+    # 三条件缺一不可(防编造 target 借豁免放行)。
+    fm = _parse_frontmatter(text)
+    graph_pending = bool(fm.get("graph_pending", False))
+    proposed_node_ids: set[str] = set()
+    for pn in fm.get("proposed_graph_nodes", []) or []:
+        if isinstance(pn, dict):
+            slug = str(pn.get("slug", "")).strip()
+            if slug:
+                proposed_node_ids.add(slug)
 
     # 检测表格行: | target | relation | strength | provenance | evidence |
     # 在 图谱关系 节中查找表格
@@ -710,8 +736,20 @@ def check_a4_graph_edges(
                         )
                         # step-3 SC-3e/A3-8：concept 边 target 必须确定性 resolve（纯代码）。
                         # 未 resolve = 假边/悬空引用，报缺陷（weighted_score 据此把图谱分封顶）。
-                        if resolve_enabled and target and not _resolve_graph_node(
-                            target, known_concepts, pending_queue
+                        # F14-A: 冷启动 pending 边豁免——graph_pending=true 且 target ∈
+                        # proposed_graph_nodes ids(归一化口径)且 evidence 含 [raw §X](D8 proposal,非假边)。
+                        is_pending_exempt = (
+                            graph_pending
+                            and _target_in_proposed_nodes(target, proposed_node_ids)
+                            and bool(RAW_ANCHOR_RE.search(evidence))
+                        )
+                        if (
+                            resolve_enabled
+                            and target
+                            and not is_pending_exempt
+                            and not _resolve_graph_node(
+                                target, known_concepts, pending_queue
+                            )
                         ):
                             defects.append(
                                 Defect(
@@ -723,7 +761,9 @@ def check_a4_graph_edges(
                                     ),
                                     suggestion=(
                                         "把 target 指向已存在的概念页/源，"
-                                        "或在 pending 队列累积足量共指后再建边"
+                                        "或在 pending 队列累积足量共指后再建边，"
+                                        "或冷启动写 proposed_graph_nodes + graph_pending=true"
+                                        "（带真实 raw 锚证据的 pending 边豁免 A4）"
                                     ),
                                 )
                             )

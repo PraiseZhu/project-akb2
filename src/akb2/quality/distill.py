@@ -4790,6 +4790,10 @@ def _build_frontmatter(
                     "source_anchor": first_anchor,
                 }
             )
+    # F14-A: 写回 extract_data 供 _build_body 渲染 pending 边行(target ∈ proposed +
+    # evidence 带真实 raw 锚 的被丢边不再丢)。
+    extract_data["proposed_graph_nodes"] = proposed_graph_nodes
+    extract_data["graph_pending"] = graph_pending
 
     slug = _derive_slug(raw_path)
     source_title = str(raw_fm.get("source_title", "")).strip()
@@ -6482,7 +6486,7 @@ def _filter_resolvable_graph_edges(
     concepts: list[str],
     known_concepts: list[str] | None,
     pending_queue: list[str] | None,
-) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+) -> tuple[list[dict[str, Any]], list[str], list[str], list[dict[str, Any]]]:
     """SC-2b-b2：渲染前过滤 target 不在 known∪sources∪pending 的图谱边/概念引用。
 
     extraction LLM 可能发明 vault 里不存在的 slug（如 loop-engineering——既非概念也非
@@ -6493,12 +6497,15 @@ def _filter_resolvable_graph_edges(
     SC-2（worker round-4）：返回 dropped_targets 供 compose 写可见 meta，治静默失败
     （Karpathy #12——旧版 drop 边无日志，grader 看稀疏图谱不知何因）。
 
+    F14-A：返回 dropped_edges（被丢的完整 edge dict）供 compose 渲染 pending 边行
+    （target ∈ proposed_graph_nodes + evidence 带真实 raw 锚的 pending 边不再丢）。
+
     tradeoff（用户已接受）：生产 vault 概念全时几乎不过滤；校准薄种子库下引用未 seeded
     概念的边会被 drop，图谱可能偏稀疏——但候选不再被 self-gate 整篇拒。
     known/pending 均 None 时不过滤（兼容 _build_body 旧调用，默认不传）。
     """
     if known_concepts is None and pending_queue is None:
-        return graph_edges, concepts, []
+        return graph_edges, concepts, [], []
     from src.akb2.quality.checks_structural import _resolve_graph_node
 
     def _edge_target(e: dict[str, Any]) -> str:
@@ -6519,17 +6526,18 @@ def _filter_resolvable_graph_edges(
         c for c in concepts if _resolve_graph_node(str(c), known_concepts, pending_queue)
     ]
     # SC-2：记录被 drop 的 target（治静默失败——grader/ledger 能看到哪些边被删、为什么）
-    dropped = [
-        _edge_target(e)
+    dropped_edges = [
+        e
         for e in graph_edges
         if not _resolve_graph_node(_edge_target(e), known_concepts, pending_queue)
     ]
+    dropped = [_edge_target(e) for e in dropped_edges]
     dropped += [
         str(c)
         for c in concepts
         if not _resolve_graph_node(str(c), known_concepts, pending_queue)
     ]
-    return kept_edges, kept_concepts, dropped
+    return kept_edges, kept_concepts, dropped, dropped_edges
 
 
 def _edge_kind_label(kind: str) -> str:
@@ -6739,9 +6747,35 @@ def _build_body(
     # 发明的悬空 slug（如 loop-engineering）不进候选页，避免 A4/A5
     # fail-closed 整篇拒。known/pending 均 None 时不过滤（兼容旧调用）。
     # SC-2：dropped_graph_targets 供图谱节写可见 meta（治静默失败）。
-    graph_edges, concepts, dropped_graph_targets = _filter_resolvable_graph_edges(
+    # F14-A：dropped_edges 供 pending 边渲染（target ∈ proposed_graph_nodes + evidence
+    # 带真实 raw 锚 的 pending 边不再丢,渲染为 weak/akb_interpretation 行）。
+    graph_edges, concepts, dropped_graph_targets, dropped_edges = _filter_resolvable_graph_edges(
         graph_edges, concepts, known_concepts, pending_queue
     )
+    # F14-A: 冷启动 pending 边——被 resolve 丢弃但 target ∈ proposed_graph_nodes ids
+    # 且 evidence 带真实 raw 锚(∈声明集)的边,渲染为 pending 行(D8 proposal 语义落地)。
+    from src.akb2.quality.checks_structural import _target_in_proposed_nodes
+    proposed_node_ids = {
+        str(pn.get("slug", "")).strip()
+        for pn in (extract_data.get("proposed_graph_nodes") or [])
+        if isinstance(pn, dict) and str(pn.get("slug", "")).strip()
+    }
+    _decl_for_pending = declared_anchor_set(raw_content) if raw_content else set()
+
+    def _edge_target_str(e: dict[str, Any]) -> str:
+        return str(e.get("concept") or e.get("target") or e.get("target_id") or "")
+
+    def _edge_evidence_anchor(e: dict[str, Any]) -> str:
+        ev = str(e.get("evidence", "") or "")
+        m = re.search(r"\[raw\s+(§[A-Z0-9_]+)\]", ev)
+        return m.group(1) if m else ""
+
+    pending_edges = [
+        e for e in dropped_edges
+        if isinstance(e, dict)
+        and _target_in_proposed_nodes(_edge_target_str(e), proposed_node_ids)
+        and (a := _edge_evidence_anchor(e)) and (not _decl_for_pending or a in _decl_for_pending)
+    ]
 
     supported_how_steps = _supported_how_steps(how_steps, claims, raw_anchor_texts)
     if not supported_how_steps:
@@ -6931,6 +6965,26 @@ def _build_body(
         "| target | relation | strength | provenance | evidence |\n"
         "|--------|----------|----------|------------|----------|"
     )
+    # F14-A: pending 边行——target ∈ proposed_graph_nodes + evidence 带真实 raw 锚的
+    # 被丢边,渲染为 weak/akb_interpretation 行(D8 proposal 语义,冷启动不空图谱)。
+    # provenance=akb_interpretation(D8 提案非 grounded);evidence marker 同步替换为
+    # (akb_interpretation)(A7 要求 evidence marker 匹配 provenance 列)。
+    def _pending_evidence(e: dict[str, Any]) -> str:
+        ev = str(e.get("evidence", "") or "")
+        ev = ev.replace("(source_grounded)", "(akb_interpretation)")
+        return _sanitize_backticks(ev)
+
+    pending_rows = "\n".join(
+        f"| {_md_table_cell(_edge_target_str(e))} | "
+        f"{_md_table_cell(str(e.get('relation_type') or e.get('relation') or 'related'))} "
+        f"| weak | akb_interpretation | "
+        f"{_md_table_cell(_pending_evidence(e))} |"
+        for e in (_normalize_graph_edge(e) for e in pending_edges)
+    ) if pending_edges else ""
+    pending_section = (
+        f"{_GRAPH_TABLE_HEADER}\n{pending_rows}"
+        if pending_rows else ""
+    )
     if graph_edges:
         rows = "\n".join(
             f"| {_md_table_cell(edge['concept'])} | {_md_table_cell(edge['relation_type'])} "
@@ -6939,6 +6993,8 @@ def _build_body(
             for edge in (_normalize_graph_edge(e) for e in graph_edges)
         )
         graph_rows = f"{_GRAPH_TABLE_HEADER}\n{rows}"
+        if pending_section:
+            graph_rows += f"\n\n冷启动 pending 边（待 adjudication）:\n\n{pending_section}"
     elif concepts:
         # concept 来自 LLM referenced_concepts,可能含 | → 同样转义(altitude:所有插值 cell 一致转义)
         fallback_anchor = claims[0].get("anchor", "§A") if claims else "§A"
@@ -6952,11 +7008,26 @@ def _build_body(
             for c in concepts
         )
         graph_rows = f"{_GRAPH_TABLE_HEADER}\n{rows}"
+        if pending_section:
+            graph_rows += f"\n\n冷启动 pending 边（待 adjudication）:\n\n{pending_section}"
+    elif pending_section:
+        # F14-A: 无 kept 边但有 pending 边 → 渲染 pending 表(不空图谱),dropped 注释保留
+        dropped_note = ""
+        if dropped_graph_targets:
+            uniq = list(dict.fromkeys(dropped_graph_targets))[:8]
+            dropped_note = (
+                f"\n\n<!-- graph_edges_dropped: {uniq} — 未命中 known/pending 且非 proposed，"
+                "待图谱校准。 -->"
+            )
+        graph_rows = (
+            "冷启动 pending 边（引用概念未 resolve 但属本候选 proposed_graph_nodes，"
+            "带真实 raw 锚证据，待 adjudication）:\n\n"
+            + pending_section + dropped_note
+        )
     else:
-        # SC-2（worker round-4）：全过滤空时**不出占位符表格行**——A4 会把
-        # `| （无相关概念） |` 当 edge target 拒（compose_self_gate_failed，满仓 11/18
-        # 挂此）。改输出普通段落（非 table），A4 无 table 行可解析→不拒。dropped 可见
-        # meta 治静默失败（Karpathy #12——旧版 drop 边无日志，grader 不知何因）。
+        # SC-2（worker round-4）：全过滤空且无 pending 时**不出占位符表格行**——A4 会把
+        # `| （无相关概念） |` 当 edge target 拒（compose_self_gate_failed）。改输出普通段落
+        # （非 table），A4 无 table 行可解析→不拒。dropped 可见 meta 治静默失败。
         dropped_note = ""
         if dropped_graph_targets:
             uniq = list(dict.fromkeys(dropped_graph_targets))[:8]
