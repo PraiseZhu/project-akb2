@@ -228,3 +228,89 @@ def test_r16_still_flags_staging_candidate_with_wrong_directory_scope(monkeypatc
     assert any(f["rule_id"] == "TEMPLATE-DIRECTORY-MISMATCH" for f in findings), (
         "directory_scope 不匹配 expected 的 staging 候选应仍报 R16"
     )
+
+
+def test_r14_candidate_empty_related_not_flagged():
+    """F8-B(lead 裁决 1):R14 加 status=='active' 守卫——candidate(非 active)空 related
+    不再误报。冷启动 related 空是诚实状态(frontmatter 语义不失真,不硬塞 component 名)。
+
+    痛点:R14 规则名/docstring 都写明 active-only,但代码漏 status 守卫,对 candidate
+    误报 ACTIVE-MISSING-RELATED → F7-C 曾用"塞组件名进 related_concepts"保底绕过,
+    但保底失真 frontmatter 语义。守卫对齐后 candidate 不触发,保底可回退。
+    断言绑定可观测行为:candidate + 0 个 related_* → 0 findings。
+    """
+    from src.akb2.lint import akb2_lint
+
+    rule = akb2_lint.rule_r14_active_missing_related
+    fm_candidate = (
+        "template_type: concept\n"
+        "status: candidate\n"
+        "slug: test-concept\n"
+    )
+    ctx = {"template_type": "concept"}
+    path = Path("/tmp/akb2-r14-test/staging/candidate/batch/test.md")
+
+    assert rule(path, fm_candidate, "body", ctx) == [], (
+        "candidate(非 active)空 related 不应触发 R14(守卫对齐)"
+    )
+
+
+def test_r14_proposal_empty_related_not_flagged():
+    """F8-B:proposal 状态空 related 也不触发 R14(非 active)。"""
+    from src.akb2.lint import akb2_lint
+
+    rule = akb2_lint.rule_r14_active_missing_related
+    fm_proposal = (
+        "template_type: concept\n"
+        "status: proposal\n"
+        "slug: test-concept\n"
+    )
+    ctx = {"template_type": "concept"}
+    path = Path("/tmp/akb2-r14-test/staging/candidate/batch/test.md")
+
+    assert rule(path, fm_proposal, "body", ctx) == [], (
+        "proposal(非 active)空 related 不应触发 R14"
+    )
+
+
+def test_r14_active_empty_related_still_flagged():
+    """F8-B:active + 空 related → 仍触发 R14(规则本身行为对 active 不变)。
+
+    断言绑定可观测行为:active 0 个 related_* → 1 finding(守卫不放松 active 要求)。
+    """
+    from src.akb2.lint import akb2_lint
+
+    rule = akb2_lint.rule_r14_active_missing_related
+    fm_active = (
+        "template_type: concept\n"
+        "status: active\n"
+        "slug: test-concept\n"
+    )
+    ctx = {"template_type": "concept"}
+    path = Path("/tmp/akb2-r14-test/wiki/concepts/test-concept.md")
+
+    findings = rule(path, fm_active, "body", ctx)
+    assert any(f["rule_id"] == "ACTIVE-MISSING-RELATED" for f in findings), (
+        "active + 0 个 related_* 应仍报 R14(守卫不放松 active 要求)"
+    )
+
+
+def test_r14_active_with_related_not_flagged():
+    """F8-B:active + 非空 related → 不触发 R14(sanity,规则正常放行)。"""
+    from src.akb2.lint import akb2_lint
+
+    rule = akb2_lint.rule_r14_active_missing_related
+    fm_active_ok = (
+        "template_type: concept\n"
+        "status: active\n"
+        "slug: test-concept\n"
+        "related_concepts:\n"
+        "  - [[other-concept]]\n"
+    )
+    ctx = {"template_type": "concept"}
+    path = Path("/tmp/akb2-r14-test/wiki/concepts/test-concept.md")
+
+    assert rule(path, fm_active_ok, "body", ctx) == [], (
+        "active + 非空 related_concepts 应放行(规则正常)"
+    )
+
