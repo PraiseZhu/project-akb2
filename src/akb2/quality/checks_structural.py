@@ -509,7 +509,7 @@ _CONCEPT_PREFIX = "concept-"
 
 
 def _slug_normalize_variants(slug: str) -> set[str]:
-    """返回一个 slug 的归一化等价形式集合（裸名 + concept- 前缀互译）。
+    """返回一个 slug 的归一化等价形式集合（裸名 + concept- 前缀互译 + 下划线↔连字符互认）。
 
     vault 概念页命名规范为 concept-<name>（main-pipeline-golden-sample.md 回边
     concept-{harness-engineering,...}；wiki/concepts/ 文件名同前缀；现有概念页
@@ -520,15 +520,30 @@ def _slug_normalize_variants(slug: str) -> set[str]:
 
     非 concept- 开头的 slug 会额外生成 concept- 前缀形式参与匹配——若对方
     集合无该前缀项则自然不命中，不产生误报。
+
+    F10-B(probe-p8):下划线↔连字符互认——LLM/D8 产 loop_engineering(下划线 slug),
+    vault 文件名 loop-engineering(连字符),旧版精确匹配永远 miss → 4 样本图谱维度
+    全挂。本函数把 _ 与 - 互译加入等价集,两侧互认。只修口径,不放宽 resolve 语义
+    (真不存在的概念仍 miss:fake_concept 生成 fake_concept/fake-concept/...,
+    known 无任一形式仍 miss)。
     """
     s = slug.strip().lower()
     if not s:
         return set()
     variants = {s}
-    if s.startswith(_CONCEPT_PREFIX):
-        variants.add(s[len(_CONCEPT_PREFIX):])
-    else:
-        variants.add(f"{_CONCEPT_PREFIX}{s}")
+    # F10-B: 下划线↔连字符互认
+    if "_" in s:
+        variants.add(s.replace("_", "-"))
+    if "-" in s:
+        variants.add(s.replace("-", "_"))
+    # concept- 前缀互译(对每个变体都生成 concept- 前缀形式)
+    expanded: set[str] = set()
+    for v in variants:
+        if v.startswith(_CONCEPT_PREFIX):
+            expanded.add(v[len(_CONCEPT_PREFIX):])
+        else:
+            expanded.add(f"{_CONCEPT_PREFIX}{v}")
+    variants |= expanded
     return variants
 
 
