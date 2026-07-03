@@ -942,6 +942,46 @@ def _scan_mechanism_signals(body: str) -> dict[str, int]:
     }
 
 
+# F13-fix4（e2e v4 实证）：仲裁证据样本上限（具名,宪法 P4）——只给计数时 deepseek
+# 仲裁系统性把"参考文档式真机制文"(memory/crewai/skills)误判为无机制(v4 admission
+# 误拒 9 条,重试不救=系统性)。把实际组件名/因果句样本注入 prompt:真机制文亮出
+# "Captain/Executor Pool/hooks lifecycle",营销文只能亮出"Faster onboarding"——
+# 证据升级,门语义不变(LLM 仍是唯一放行人)。
+_MECHANISM_EVIDENCE_HEADINGS_MAX: int = 10
+_MECHANISM_EVIDENCE_CAUSAL_MAX: int = 3
+_MECHANISM_EVIDENCE_SENT_CHARS: int = 160
+
+
+def _collect_mechanism_evidence(body: str) -> str:
+    """收集机制仲裁的文本证据(标题原文 + 因果句样本),供 LLM 仲裁 prompt 使用。
+
+    纯确定性抽样,不判定;空 body 返回空串。
+    """
+    if not body:
+        return ""
+    lines: list[str] = []
+    headings: list[str] = []
+    for m in re.finditer(r"(?m)^#{2,4}\s+(.+)$", body):
+        t = m.group(1).strip()
+        if t and t not in headings:
+            headings.append(t)
+        if len(headings) >= _MECHANISM_EVIDENCE_HEADINGS_MAX:
+            break
+    if headings:
+        lines.append("小节标题原文: " + " | ".join(headings))
+    causal_sents: list[str] = []
+    for sent in re.split(r"(?<=[.!?。])\s+", body):
+        if len(causal_sents) >= _MECHANISM_EVIDENCE_CAUSAL_MAX:
+            break
+        if _CAUSAL_CONNECTOR_RE.search(sent):
+            s = " ".join(sent.split())[:_MECHANISM_EVIDENCE_SENT_CHARS]
+            if s:
+                causal_sents.append(s)
+    if causal_sents:
+        lines.append("因果句样本: " + " || ".join(causal_sents))
+    return "\n".join(lines)
+
+
 def _check_mechanism_signal(body: str, route_llm_fn: Any) -> AdmissionCheck:
     """WP-2/D2：concept 候选机制信号准入门。
 
@@ -994,6 +1034,9 @@ def _check_mechanism_signal(body: str, route_llm_fn: Any) -> AdmissionCheck:
         f"小节标题={weak_comp}, 因果连接词={causal}, 编号步={steps}, "
         f"code块={code}, source_ops={src_ops}"
     )
+    # F13-fix4：文本证据样本(标题原文/因果句)——只给计数会把参考文档式真机制文
+    # 误判(v4 实证);给出实际名称让 LLM 分辨"Captain/Executor Pool"vs"Faster onboarding"。
+    evidence_block = _collect_mechanism_evidence(body)
     messages = [
         {
             "role": "system",
@@ -1001,13 +1044,22 @@ def _check_mechanism_signal(body: str, route_llm_fn: Any) -> AdmissionCheck:
                 "你判断内容是否阐述了一个可复用的「机制」（≥3 命名组件 + 因果关系），"
                 "而非纯政策/新闻/观点散文。机制组件 = 命名架构部件/流程阶段/算法步骤/协议层；"
                 "推理/验证/自我修正等认知过程机制（如 CoT、self-consistency、verification）"
-                "也属于机制，只要文中给出组件化的过程与因果关系。"
-                "注意：信号计数高不等于机制——营销/发布文的收益清单（faster/better 因果词堆叠）"
-                "不构成机制因果，应判 false。"
+                "也属于机制，只要文中给出组件化的过程与因果关系；"
+                "工具/系统的组件化参考文档（配置项、生命周期、hooks、权限模型、子系统交互）"
+                "同样属于机制——判据是组件是否被命名且相互作用可追溯，不是文体。"
+                "注意：信号计数高不等于机制——营销/发布文的收益清单（faster/better 因果词堆叠、"
+                "benefit 式小节标题）不构成机制因果，应判 false。"
                 "输出 JSON: {\"pass\": true/false, \"reason\": \"...\"}。reason 最多 150 字符。"
             ),
         },
-        {"role": "user", "content": f"{signal_line}\n\n内容:\n{content_snippet}"},
+        {
+            "role": "user",
+            "content": (
+                f"{signal_line}\n{evidence_block}\n\n内容:\n{content_snippet}"
+                if evidence_block
+                else f"{signal_line}\n\n内容:\n{content_snippet}"
+            ),
+        },
     ]
     try:
         response = route_llm_fn(

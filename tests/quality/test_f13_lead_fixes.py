@@ -110,8 +110,8 @@ def _make_capturing_no(captured: list) -> Any:
 
 
 def test_dense_body_goes_to_llm_with_signal_context() -> None:
-    """[fix2] 密度不再是通行证:lilian 形态(causal/steps/标题三高)也走 LLM 仲裁,
-    且仲裁 prompt 带确定性信号计数(证据增强)。"""
+    """[fix2/fix4] 密度不再是通行证:lilian 形态(causal/steps/标题三高)也走 LLM 仲裁,
+    且仲裁 prompt 带信号计数 + 文本证据样本(标题原文/因果句,fix4 证据升级)。"""
     sig = _scan_mechanism_signals(_DENSE_BODY)
     assert sig["components"] == 0 and sig["causal"] >= 5 and sig["numbered_steps"] >= 5
     captured: list = []
@@ -121,6 +121,10 @@ def test_dense_body_goes_to_llm_with_signal_context() -> None:
     user_msg = str(captured[0][-1]["content"])
     assert "确定性信号计数" in user_msg
     assert f"因果连接词={sig['causal']}" in user_msg
+    # fix4:文本证据——标题原文与因果句样本进 prompt(LLM 据名称分辨机制 vs 营销)
+    assert "小节标题原文" in user_msg
+    assert "Test-Time Compute" in user_msg
+    assert "因果句样本" in user_msg
 
 
 def test_marketing_numbered_benefits_llm_veto() -> None:
