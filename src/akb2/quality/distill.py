@@ -6791,6 +6791,12 @@ def _build_body(
         tldr = f"{mc_tldr_text} {tldr}".strip() if tldr else mc_tldr_text
     # F6-C: must_cover conclusion 字面量注入(tldr 节)
     tldr = _inject_missing_must_cover(tldr, must_cover_concls, inject_prefix="")
+    # F11-A: TLDR 注入后消毒——与 how 节对齐(probe-p9a A 臂 sub-agents `--fork` 误报:
+    # must_cover literal 含反引号命令,注入 TLDR 后无 strip → SG-command-recheck 误报)。
+    # _sanitize_backticks 平衡反引号 + _strip_ungrounded_backtick_commands 剥不接地命令。
+    tldr = _sanitize_backticks(tldr)
+    if raw_full_text:
+        tldr = _strip_ungrounded_backtick_commands(tldr, raw_full_text)
 
     # 论证与解释：argumentation 字段逐条展开。
     # source_grounded 条目回到 claim 文本本身，避免把 LLM 的归纳解释伪装成来源事实。
@@ -6857,6 +6863,9 @@ def _build_body(
     # F6-C: must_cover 字面量注入——检查每条 source_operation 字面量是否在 how_text
     # (归一化比对,与 SG-must-cover 同口径);缺失→逐字注入(含链接语法)
     how_text = _inject_missing_must_cover(how_text, must_cover_ops)
+    # F11-A: how 注入后先平衡反引号(与 TLDR/boundary 对齐),再 F7-B strip 不接地命令。
+    # must_cover literal 可能含不成对反引号 → _sanitize_backticks 平衡后 strip 才正确配对。
+    how_text = _sanitize_backticks(how_text)
     # F7-B: 渲染前最后一道不变式——how_text 里所有反引号命令(非 reserved)必须字面在 raw
     # 出现(SG-command-recheck 同口径 _verify_commands_in_raw)。不在→剥反引号(保留文本,
     # 去掉 ` ` 包裹,SG 不再当命令回查)。probe-p6 memory ~/；claude/rules/ 漏进来(F3-B 只
@@ -6965,6 +6974,11 @@ def _build_body(
         )
     # F6-C: must_cover boundary 字面量注入(适用边界节)
     boundary_text = _inject_missing_must_cover(boundary_text, must_cover_bounds)
+    # F11-A: boundary 注入后消毒——与 how/TLDR 节对齐(must_cover literal 可能含反引号命令,
+    # 注入后无 strip → SG 误报)。_sanitize_backticks 平衡 + _strip_ungrounded_backtick_commands 剥不接地命令。
+    boundary_text = _sanitize_backticks(boundary_text)
+    if raw_full_text:
+        boundary_text = _strip_ungrounded_backtick_commands(boundary_text, raw_full_text)
 
     from datetime import UTC, datetime
 
