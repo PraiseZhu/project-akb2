@@ -681,6 +681,9 @@ def extract_claims(
             # names(含 alias);不在→丢边(防 compose SG-mechanism-edge-evidence 自拒,如
             # probe-p5 memory 'edge.to=Auto memory 不在组件表')。enrichment 复用同 helper。
             _close_edge_endpoints(merged)
+            # F8-D: 边端点命名归一——from/to 改写为组件表 canonical name(消 'claudemd_files
+            # vs CLAUDE.md files' 类命名分裂,grader H3 命名一致性)。
+            _normalize_edge_endpoints_to_canonical(merged)
             # F6-D/F8-A: 组件 evidence 确定性回填——evidence_anchor/evidence_sentence 为空的
             # 组件,用专用搜索词(无 stoplist,单组件已认定无歧义)+ 两遍(全名优先,再 token)
             # 在 raw 行级定位命中句 + 就近锚回填(H3 主因:组件 evidence 空)。F8-A 修 frontmatter
@@ -3452,6 +3455,48 @@ def _close_edge_endpoints(
     return dropped
 
 
+def _normalize_edge_endpoints_to_canonical(
+    extract_data: dict[str, Any],
+) -> int:
+    """F8-D: 边端点命名归一——causal_edges/graph_edges 的 from/to 改写为组件表
+    canonical name(消 grader H3 'claudemd_files vs CLAUDE.md files' 类命名分裂)。
+
+    端点经 _close_edge_endpoints 后已在组件名单(含 alias),但可能用小写/别名/slug 形式,
+    与组件表 name 列不一致 → 组件表与边表命名分裂,grader H3 抱怨命名不归一。本函数用
+    name+alias → canonical name 映射把端点改写为组件表原 name。Returns rewritten count。
+    """
+    components = extract_data.get("mechanism_components", []) or []
+    # lower(form) → canonical name(name 优先,alias 映射到所属组件 name;不覆盖已存在的 name 映射)
+    canon_map: dict[str, str] = {}
+    for c in components:
+        if not isinstance(c, dict):
+            continue
+        n = str(c.get("name", "")).strip()
+        if not n:
+            continue
+        canon_map.setdefault(n.lower(), n)
+        for a in c.get("aliases") or []:
+            if isinstance(a, str) and a.strip():
+                canon_map.setdefault(a.strip().lower(), n)
+    if not canon_map:
+        return 0
+    rewritten = 0
+    for edge_key in ("causal_edges", "graph_edges"):
+        edges = extract_data.get(edge_key, []) or []
+        for e in edges:
+            if not isinstance(e, dict):
+                continue
+            for ep_field in ("from", "to"):
+                ep = str(e.get(ep_field, "")).strip()
+                if not ep:
+                    continue
+                canon = canon_map.get(ep.lower())
+                if canon and canon != ep:
+                    e[ep_field] = canon
+                    rewritten += 1
+    return rewritten
+
+
 def _generate_backfill_search_terms(name: str, tokens: bool) -> list[str]:
     """F8-A: 回填专用搜索词(无 stoplist/collision——单组件已认定,无歧义)。
 
@@ -3694,6 +3739,8 @@ def _enrich_zero_eligible_with_deterministic(
         extract_data["causal_edges"] = existing_edges
     # F5-A/F6-A: 端点闭合——复用全局 _close_edge_endpoints(含 det_components 补名单)
     diag["edges_dropped_endpoint"] = _close_edge_endpoints(extract_data, det_components)
+    # F8-D: 边端点命名归一(det 边用原名,LLM 边可能小写/别名→统一 canonical name)
+    _normalize_edge_endpoints_to_canonical(extract_data)
     diag["enriched"] = added_comp or added_edge or diag["edges_dropped_endpoint"] > 0
     return diag
 
@@ -5723,6 +5770,115 @@ def _compact_tldr_sentence(text: str) -> str:
     return compact.rstrip("。.!?！？")
 
 
+def _normalize_text_for_sim(text: str) -> str:
+    """F8-D: 归一化文本用于相似度比对(小写 + 去非词字符 + 折叠空白)。"""
+    return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", "", str(text).lower())).strip()
+
+
+def _text_similarity(a: str, b: str) -> float:
+    """F8-D: 归一化后词集 overlap coefficient = |A∩B| / min(|A|,|B|)(0-1)。
+
+    用 overlap 而非 Jaccard:Jaccard 对长短不一的包含关系(如 'A holds goal' vs
+    'A holds goal and maintains tasks')给 0.7 < 0.8 漏判,而二者实为同一论点(短串
+    全含于长串)。overlap = 交集 / 较小集大小 → 包含关系给 1.0,符合 lead '≥80%
+    视为重复' 的意图。≥0.8 视为重复论点。
+    """
+    na, nb = _normalize_text_for_sim(a), _normalize_text_for_sim(b)
+    if not na or not nb:
+        return 0.0
+    wa, wb = set(na.split()), set(nb.split())
+    if not wa or not wb:
+        return 0.0
+    return len(wa & wb) / min(len(wa), len(wb))
+
+
+def _dedup_claims_for_tldr(
+    claims: list[dict[str, Any]], threshold: float = 0.8
+) -> list[dict[str, Any]]:
+    """F8-D: TLDR claims 去重——归一文本 overlap ≥threshold 视为重复,保留首个。
+
+    grader 抱怨:'后两句重复同一论点/大面积重复 §F_EVIDENCE'。top-3 claims 可能有
+    ≥80% 相似的重复论点(LLM 从同一 raw 锚抽多条近似 claim,或子串包含)。本函数去重,
+    保序保留首个。
+    """
+    deduped: list[dict[str, Any]] = []
+    for c in claims:
+        text = str(c.get("text", ""))
+        if any(
+            _text_similarity(text, str(d.get("text", ""))) >= threshold
+            for d in deduped
+        ):
+            continue
+        deduped.append(c)
+    return deduped
+
+
+def _build_tldr_mechanism_sentence(
+    extract_data: dict[str, Any], raw_content: str | None
+) -> str:
+    """F8-D: TLDR 核心机制句——首条 eligible 边 '{from} {relation} {to} [raw §X].'。
+
+    要素覆盖 1/3:核心机制。零编造:来自 eligible source_causal 边(已校验);anchor ∈ 声明集。
+    无 eligible → 空串(退化为纯 claims TLDR)。
+    """
+    edges = extract_data.get("causal_edges", []) or []
+    decl = declared_anchor_set(raw_content)
+    for e in edges:
+        if not isinstance(e, dict):
+            continue
+        if e.get("edge_kind") != "source_causal":
+            continue
+        if not e.get("evidence") or not e.get("evidence_anchor"):
+            continue
+        anchor = canonicalize_anchor(str(e.get("evidence_anchor", "")).strip())
+        if anchor not in decl and decl:
+            resolved = resolve_anchor_ref(anchor, decl)
+            anchor = resolved if resolved else anchor
+        if not decl or anchor not in decl:
+            continue
+        frm = str(e.get("from", "")).strip()
+        to = str(e.get("to", "")).strip()
+        rel = str(e.get("relation", "")).strip() or "导致"
+        return f"(source_grounded) {frm} {rel} {to} [raw {anchor}]."
+    return ""
+
+
+def _build_tldr_component_sentence(
+    extract_data: dict[str, Any], raw_content: str | None
+) -> str:
+    """F8-D: TLDR 组件全景句——'机制组件(N 个): name1, name2, ... [raw §X].'。
+
+    要素覆盖 2/3:组件全景(组件数 + 关键名)。anchor 用首组件 evidence_anchor(∈ 声明集,
+    F6-D 回填保证)。无组件/无有效锚 → 空串。
+    """
+    components = extract_data.get("mechanism_components", []) or []
+    if not components:
+        return ""
+    decl = declared_anchor_set(raw_content)
+    key_names = [
+        str(c.get("name", "")).strip()
+        for c in components
+        if isinstance(c, dict) and str(c.get("name", "")).strip()
+    ][:4]
+    if not key_names:
+        return ""
+    # 取首个有 evidence_anchor∈声明集 的组件
+    anchor = ""
+    for c in components:
+        if not isinstance(c, dict):
+            continue
+        a = canonicalize_anchor(str(c.get("evidence_anchor", "")).strip())
+        if a and (not decl or a in decl):
+            anchor = a
+            break
+    if not anchor:
+        return ""
+    return (
+        f"(source_grounded) 机制组件（{len(key_names)} 个）："
+        f"{', '.join(key_names)} [raw {anchor}]."
+    )
+
+
 # 共享 markdown 表格 cell 转义(写侧),与 checks_structural 的读侧(split_md_table_row)同契约
 from src.akb2.quality.md_table import md_table_cell as _md_table_cell  # noqa: E402
 
@@ -6118,6 +6274,68 @@ def _render_concept_mechanism_walkthrough(
     return "\n".join(lines) if lines else _zero_fallback
 
 
+def _render_mechanism_narrative(
+    extract_data: dict[str, Any], raw_content: str | None
+) -> str:
+    """F8-D: 机制叙述段落——用 eligible 边确定性生成连贯段落(每边一句,按锚顺序)。
+
+    grader H3 抱怨:'正文重复罗列来源句子,缺少因果解释/机制闭环不足'。机制组件与因果边
+    证据表只罗列 from/to/evidence,缺因果叙述。本函数在表后追加确定性叙述:每条 eligible
+    source_causal 边一句 '{from} 通过 {relation} 导致 {to}（证据：[raw §X] {evidence}）',
+    按 evidence_anchor 在 raw 中的出现顺序排序(机制叙述顺序 = raw 叙述顺序)。
+
+    零编造:evidence/anchor/from/to 全来自 eligible 边(已过 floor 校验);anchor 走 P1a
+    统一 parser(canonicalize + resolve_anchor_ref),∈ raw 声明集,不在则跳过该边(不造假)。
+    ≤6 句(有界预算)。无 eligible 边 → 返空串(不硬凑)。
+    """
+    edges = extract_data.get("causal_edges", []) or []
+    eligible = [
+        e for e in edges
+        if isinstance(e, dict)
+        and e.get("edge_kind") == "source_causal"
+        and e.get("evidence")
+        and e.get("evidence_anchor")
+    ]
+    if not eligible:
+        return ""
+    decl = declared_anchor_set(raw_content)
+    if not decl:
+        return ""
+    # 按 anchor 在 raw 中的位置排序(机制叙述顺序 = raw 叙述顺序)
+    anchor_positions = _raw_anchor_positions(raw_content)
+    pos_map = {a: p for a, p in anchor_positions}
+
+    def _anchor_pos(e: dict[str, Any]) -> int:
+        a = canonicalize_anchor(str(e.get("evidence_anchor", "")).strip())
+        if a not in pos_map and decl:
+            resolved = resolve_anchor_ref(a, decl)
+            if resolved:
+                a = resolved
+        return pos_map.get(a, 0)
+
+    eligible.sort(key=_anchor_pos)
+    sentences: list[str] = []
+    for e in eligible[:6]:  # ≤6 句(有界)
+        anchor = canonicalize_anchor(str(e.get("evidence_anchor", "")).strip())
+        if anchor not in decl:
+            resolved = resolve_anchor_ref(anchor, decl)
+            anchor = resolved if resolved else anchor
+        if anchor not in decl:
+            continue  # 不在声明集 → 跳过(不造假 anchor)
+        frm = str(e.get("from", "")).strip()
+        to = str(e.get("to", "")).strip()
+        rel = str(e.get("relation", "")).strip() or "导致"
+        ev = re.sub(r"\s+", " ", str(e.get("evidence", ""))).strip()
+        if len(ev) > 120:
+            ev = ev[:117] + "..."  # 段落可读性截断(保留核心)
+        sentences.append(
+            f"{frm} 通过 {rel} 导致 {to}（证据：[raw {anchor}] {ev}）。"
+        )
+    if not sentences:
+        return ""
+    return "\n\n机制叙述：\n\n" + " ".join(sentences) + "\n\n"
+
+
 def _build_body(
     extract_data: dict[str, Any],
     raw_path: str,
@@ -6202,13 +6420,31 @@ def _build_body(
         for i, c in enumerate(claims, 1)
     )
 
-    # TLDR：从 top-3 claims 构建（每句含 [raw §X] 锚点；rubric: TLDR 密度 ≤3 句含锚点）
-    tldr_sentences = [
+    # TLDR：F8-D 去重 + 要素覆盖(核心机制 + 组件全景 + how/边界 claim,≤3-4 句含锚点)。
+    # grader 抱怨:'后两句重复同一论点/大面积重复 §F_EVIDENCE'。先 _dedup_claims_for_tldr
+    # 去掉 ≥80% 相似 claim,再优先覆盖核心机制(首条 eligible 边)+ 组件全景,末尾 how/边界 claim。
+    deduped_claims = _dedup_claims_for_tldr(claims)
+    tldr_claim_sentences = [
         f"(source_grounded) {_compact_tldr_sentence(c['text'])} [raw {c['anchor']}]."
-        for c in claims[:3]
+        for c in deduped_claims[:3]
         if _compact_tldr_sentence(c["text"])
     ]
-    tldr = " ".join(tldr_sentences) if tldr_sentences else tldr
+    tldr_parts: list[str] = []
+    # 要素 1:核心机制(首条 eligible 边)
+    mech_sent = _build_tldr_mechanism_sentence(extract_data, raw_content)
+    if mech_sent:
+        tldr_parts.append(mech_sent)
+    # 要素 2:组件全景(组件数 + 关键名)
+    comp_sent = _build_tldr_component_sentence(extract_data, raw_content)
+    if comp_sent:
+        tldr_parts.append(comp_sent)
+    # 要素 3:how/边界 claim(去重后,补足到 ≤3-4 句)
+    tldr_parts.extend(tldr_claim_sentences[: max(0, 3 - len(tldr_parts))])
+    if tldr_parts:
+        tldr = " ".join(tldr_parts)
+    elif tldr_claim_sentences:
+        tldr = " ".join(tldr_claim_sentences)
+    # 都空 → 退回 tldr(claims[0] 或占位)
 
     # must_cover source_conclusion: 代码直出进 TLDR，LLM 无最终选择权。
     # 即使 LLM tldr 漏掉原文显式结论，scanner 账本仍强制渲染进 TLDR 节。
@@ -6399,6 +6635,9 @@ def _build_body(
 
     # §0.2/D7/C1：机制组件与因果边证据表（grader H3 + A 层 SG-mechanism-edge-evidence 消费）
     mechanism_section = _build_mechanism_evidence_section(extract_data)
+    # F8-D: 机制叙述段落——表后追加 eligible 边确定性叙述(每边一句,按锚顺序),
+    # 消 '正文重复罗列来源句子,缺少因果解释/机制闭环不足'。无 eligible → 空(不硬凑)。
+    mechanism_narrative = _render_mechanism_narrative(extract_data, raw_content)
 
     body = f"""## TLDR
 
@@ -6445,7 +6684,7 @@ def _build_body(
 图谱边按 evidence 的 provenance 判定；weak 边仍需后续图谱校准确认。
 
 {graph_rows}
-{mechanism_section}## Future Questions
+{mechanism_section}{mechanism_narrative}## Future Questions
 
 {chr(10).join(f'- {q}' for q in _generate_questions(claims, how_steps))}
 
