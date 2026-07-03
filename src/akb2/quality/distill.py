@@ -6054,13 +6054,17 @@ def _concrete_param_value(value: Any, default: Any) -> Any:
 
 
 def _compact_tldr_sentence(text: str) -> str:
-    """把 claim 压成 TLDR 单句，避免一个 claim 内部多句导致 TLDR 超标。"""
+    """把 claim 压成 TLDR 单句，避免一个 claim 内部多句导致 TLDR 超标。
+
+    F10-A:末过 _sanitize_backticks 消毒不成对反引号(TLDR 含 raw 摘录 claim text)。
+    """
     compact = re.sub(r"\s+", " ", str(text)).strip()
     if not compact:
         return ""
     compact = re.sub(r"[。.!?！？]+", "；", compact)
     compact = compact.strip("；; ")
-    return compact.rstrip("。.!?！？")
+    compact = compact.rstrip("。.!?！？")
+    return _sanitize_backticks(compact)
 
 
 def _normalize_text_for_sim(text: str) -> str:
@@ -6246,6 +6250,26 @@ def _strip_ungrounded_backtick_commands(text: str, raw_text: str) -> str:
         return literal  # 不在 raw → 剥反引号(保留文本,SG 不再回查)
 
     return _BACKTICK_COMMAND_RE.sub(_replace, text)
+
+
+def _sanitize_backticks(text: str) -> str:
+    """F10-A: 消毒 raw 摘录文本的反引号——保证平衡,防 SG-command-recheck 误把叙述框成命令。
+
+    raw 摘录(evidence/TLDR/叙述/组件表句)可能含不成对反引号(probe-p8 crewai
+    'to resume:)。 Creating Crews...' 含奇数反引号),渲染进 body 后跨段把叙述框成
+    "命令" span → SG-command-recheck 误报。本函数:奇数反引号→移除末个不成对反引号
+    (成偶数=平衡,与 SG 顺序配对同口径);偶数不动(已是成对 code span,SG 回查 grounded)。
+    只用于 raw 摘录字段(evidence/claim text/TLDR/叙述),不用于 how_text 命令段
+    (那由 _strip_ungrounded_backtick_commands 处理)。
+    """
+    if not text:
+        return text
+    n = text.count("`")
+    if n % 2 == 0:
+        return text  # 平衡
+    # 奇数:顺序配对下末个反引号不成对 → 移除(成偶数)
+    idx = text.rfind("`")
+    return text[:idx] + text[idx + 1:]
 
 
 def _inject_missing_must_cover(
@@ -6493,7 +6517,7 @@ def _build_mechanism_evidence_section(extract_data: dict[str, Any]) -> str:
     comp_rows = "\n".join(
         f"| {c.get('component_id', '')} | {_md_table_cell(c.get('name', ''))} | "
         f"{_md_table_cell(c.get('role', ''))} | {c.get('evidence_anchor', '')} | "
-        f"{_md_table_cell(c.get('evidence_sentence', ''))} |"
+        f"{_md_table_cell(_sanitize_backticks(c.get('evidence_sentence', '')))} |"
         for c in components
         if isinstance(c, dict)
     ) or "|  |  |  |  |  |"
@@ -6501,7 +6525,7 @@ def _build_mechanism_evidence_section(extract_data: dict[str, Any]) -> str:
         f"| {e.get('from', '')} | {e.get('to', '')} | "
         f"{_md_table_cell(e.get('relation', ''))} | "
         f"{_edge_kind_label(e.get('edge_kind', ''))} | "
-        f"{e.get('evidence_anchor', '')} | {_md_table_cell(e.get('evidence', ''))} |"
+        f"{e.get('evidence_anchor', '')} | {_md_table_cell(_sanitize_backticks(e.get('evidence', '')))} |"
         for e in edges
         if isinstance(e, dict)
     ) or "|  |  |  |  |  |  |"
@@ -6621,6 +6645,7 @@ def _render_mechanism_narrative(
         ev = re.sub(r"\s+", " ", str(e.get("evidence", ""))).strip()
         if len(ev) > 120:
             ev = ev[:117] + "..."  # 段落可读性截断(保留核心)
+        ev = _sanitize_backticks(ev)  # F10-A: 消毒不成对反引号
         sentences.append(
             f"{frm} 通过 {rel} 导致 {to}（证据：[raw {anchor}] {ev}）。"
         )
@@ -6702,14 +6727,14 @@ def _build_body(
 
     # 关键发现：带 [raw §X] 锚点+provenance 的证据格式（rubric: 论断锚定率要求 [raw §X] 格式）
     claims_text = "\n".join(
-        f"- [raw {c['anchor']}] ({c['provenance']}) {c['text']}"
+        f"- [raw {c['anchor']}] ({c['provenance']}) {_sanitize_backticks(c['text'])}"
         for c in claims
     )
 
     # 核心论点：带 [raw §X] 锚点+provenance，与关键发现区分（编号列表格式）
     # rubric 解读分离: 每条论点必须标注 provenance；论断锚定率: 必须带 [raw §X]
     core_claims_text = "\n".join(
-        f"{i}. [raw {c['anchor']}] ({c['provenance']}) {c['text']}"
+        f"{i}. [raw {c['anchor']}] ({c['provenance']}) {_sanitize_backticks(c['text'])}"
         for i, c in enumerate(claims, 1)
     )
 
@@ -6842,7 +6867,7 @@ def _build_body(
     # cell 经 _md_table_cell 转义 |（否则 evidence 含 | 会拆列 + A4 假绿）
     _GAP_FALLBACK = "未覆盖：原文未提供该论点的独立验证、量化结果或失败样本。"
     evidence_rows = "\n".join(
-        f"| {_md_table_cell(c['anchor'])} | {_md_table_cell(c['text'][:60])}... "
+        f"| {_md_table_cell(c['anchor'])} | {_md_table_cell(_sanitize_backticks(c['text'][:60]))}... "
         f"| {c['provenance']} "
         f"| {_md_table_cell(c.get('evidence_gap') or _GAP_FALLBACK)} |"
         for c in claims
@@ -6859,7 +6884,7 @@ def _build_body(
         rows = "\n".join(
             f"| {_md_table_cell(edge['concept'])} | {_md_table_cell(edge['relation_type'])} "
             f"| {edge['strength']} | {edge['provenance']} | "
-            f"{_md_table_cell(edge.get('evidence', ''))} |"
+            f"{_md_table_cell(_sanitize_backticks(edge.get('evidence', '')))} |"
             for edge in (_normalize_graph_edge(e) for e in graph_edges)
         )
         graph_rows = f"{_GRAPH_TABLE_HEADER}\n{rows}"
