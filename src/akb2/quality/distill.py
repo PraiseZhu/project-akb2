@@ -5591,6 +5591,33 @@ def _map_span_to_declared_anchor(
     return chosen
 
 
+def _strip_ungrounded_backtick_commands(text: str, raw_text: str) -> str:
+    """F7-B: 渲染前最后一道不变式——text 里所有反引号命令(非 reserved)必须字面在 raw
+    出现(SG-command-recheck 同口径 _BACKTICK_COMMAND_RE + is_command_allowed_for_candidate)。
+    不在→剥反引号(保留文本,去掉 `` ` `` 包裹,SG 不再当命令回查)。
+
+    probe-p6 memory:~/；claude/rules/ 漏进来——F3-B 只 strip how_steps[].command 字段,
+    漏 instruction/argumentation/tldr 里的反引号串;repair 重写后也不过 strip。本函数在
+    compose 渲染 how 节后对整段文本做最终回查,与 SG 完全同口径(自检不自拒)。
+    """
+    if not text or not raw_text:
+        return text
+    from src.akb2.quality.source_ops_scanners.raw_verify import (
+        _BACKTICK_COMMAND_RE,
+        is_command_allowed_for_candidate,
+    )
+
+    def _replace(m: re.Match[str]) -> str:
+        literal = m.group(1).strip()
+        if not literal:
+            return m.group(0)
+        if is_command_allowed_for_candidate(literal, raw_text):
+            return m.group(0)  # 在 raw 中,保留反引号
+        return literal  # 不在 raw → 剥反引号(保留文本,SG 不再回查)
+
+    return _BACKTICK_COMMAND_RE.sub(_replace, text)
+
+
 def _inject_missing_must_cover(
     section_text: str,
     items: list[Any],
@@ -6076,6 +6103,12 @@ def _build_body(
     # F6-C: must_cover 字面量注入——检查每条 source_operation 字面量是否在 how_text
     # (归一化比对,与 SG-must-cover 同口径);缺失→逐字注入(含链接语法)
     how_text = _inject_missing_must_cover(how_text, must_cover_ops)
+    # F7-B: 渲染前最后一道不变式——how_text 里所有反引号命令(非 reserved)必须字面在 raw
+    # 出现(SG-command-recheck 同口径 _verify_commands_in_raw)。不在→剥反引号(保留文本,
+    # 去掉 ` ` 包裹,SG 不再当命令回查)。probe-p6 memory ~/；claude/rules/ 漏进来(F3-B 只
+    # strip how_steps[].command 字段,漏 instruction/argumentation/tldr 里的反引号串)。
+    if raw_full_text:
+        how_text = _strip_ungrounded_backtick_commands(how_text, raw_full_text)
     params = extract_data.get("params") or {}
     if isinstance(params, dict) and params:
         how_text = f"{how_text}\n\n配置示例：\n{_build_params_example(params)}"
