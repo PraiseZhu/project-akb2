@@ -312,6 +312,11 @@ _ANCHOR_DECL_RE = ANCHOR_TOKEN_PAT
 _CONTENT_START_RE = re.compile(rf"{_ANCHOR_DECL_RE}_CONTENT_START")
 
 _ANCHOR_HEADING_RE = re.compile(rf"(?m)^##\s+{_ANCHOR_DECL_RE}\.?\s+.+$")
+# F11-C: 任意 H2 标题切节(scraped blog 普通 ## 标题,非 ## §X 锚点标题)。
+# 旧 _split_heading_sections 只按 ## §X 切 → scraped blog 整篇 1 节 →
+# _build_keyword_aware_snippet 取前 8000(intro),机制段在末尾被截 → LLM 误判
+# no_mechanism_signal(idx0 long-running-agents)。改任意 H2 切,机制节单独成节被选入。
+_H2_HEADING_RE = re.compile(r"(?m)^##\s+\S.*$")
 _HOW_HEADING_RE = re.compile(
     r"(?im)^#{1,4}\s+.*(?:"
     r"how|step|workflow|configuration|template|example|code|"
@@ -320,7 +325,11 @@ _HOW_HEADING_RE = re.compile(
 )
 _LEGACY_HOW_ANCHOR_HEADING_RE = re.compile(r"(?im)^##\s+§[B-H]\b")
 _TOC_BLOCK_RE = re.compile(
-    rf"(?ms)^##\s*锚点目录\s*\n.*?(?=^---\s*$|^##\s+{_ANCHOR_DECL_RE}\.|\Z)"
+    # F11-C: 加 ^##\s+\S(任意 H2 标题)作停边界——idx8 lilian-weng 等 scraped blog
+    # 有 intake 加的 ## 锚点目录 但无 --- 分隔、body 是普通 ## H2 → 旧正则只停 ---
+    # 或 ## §X. → 从 ## 锚点目录 吃到 \Z,只剩 frontmatter → mechanism snippet=325
+    # 字符 → LLM 收空 body 误判 no_mechanism_signal。加 H2 停边界正确界定 TOC 块。
+    rf"(?ms)^##\s*锚点目录\s*\n.*?(?=^---\s*$|^##\s+\S|\Z)"
 )
 
 
@@ -451,12 +460,21 @@ def _remove_anchor_toc(raw_content: str) -> str:
 
 
 def _split_heading_sections(text: str) -> list[str]:
-    """按 `## §X` 章节切分；没有锚点标题时返回整篇。"""
-    matches = list(_ANCHOR_HEADING_RE.finditer(text))
+    """按 H2 章节切分(任意 ## 标题,含 ## §X 锚点 + scraped blog 普通 ##)。
+
+    F11-C: 旧版只按 ## §X 锚点切,scraped blog(无锚点,普通 ## 标题)整篇 1 节 →
+    snippet 取前 8000(intro),机制段在末尾被截 → LLM 误判 no_mechanism(idx0)。
+    改任意 H2 切,机制节单独成节被 _build_keyword_aware_snippet 选入。
+    """
+    matches = list(_H2_HEADING_RE.finditer(text))
     if not matches:
         return [text]
 
     sections: list[str] = []
+    # H2 之前的内容(frontmatter/导语)作为首节(若非空)
+    pre = text[: matches[0].start()].strip()
+    if pre:
+        sections.append(pre)
     for idx, match in enumerate(matches):
         start = match.start()
         end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
