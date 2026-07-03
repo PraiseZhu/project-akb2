@@ -4198,6 +4198,19 @@ def _build_frontmatter(
                     break
         related_links = [c if str(c).startswith("[[") else f"[[{c}]]" for c in related]
 
+    # F7-C: 最后保底——related 仍空(冷启动 LLM 未产 referenced_concepts + _infer_concepts
+    # 未命中关键词)→ 用首个 mechanism_component 名或 source_slug 作 related_concept,
+    # 保证候选 lint-clean(R14 ACTIVE-MISSING-RELATED:至少 1 个 related_* 非空)。
+    if not related_links:
+        fallback_name = ""
+        comps = extract_data.get("mechanism_components", []) or []
+        if comps and isinstance(comps[0], dict):
+            fallback_name = str(comps[0].get("name", "")).strip()
+        if not fallback_name:
+            fallback_name = _derive_slug(raw_path)
+        if fallback_name:
+            related_links = [f"[[{fallback_name}]]"]
+
     # future_questions 2-3 条
     questions = _generate_questions(claims, extract_data.get("how_steps", []))
 
