@@ -2262,6 +2262,11 @@ def _ground_claims_to_raw(merged: dict[str, Any], raw_content: str | None) -> No
 
     claims = merged.get("claims")
     grounded_anchors: set[str] = set()  # 本就正确 + 升级后的 source_grounded claim anchors
+    # F11-D: 记录 claim 锚 remap(old→new),同步 argumentation.claim_anchor。
+    # probe-p9b idx11 orchestration-tax fallback:claims[0].anchor §A 被接地到 §G_EXAMPLES
+    # (claim 文本实际在 §G),但 argumentation[0].claim_anchor 仍 §A → validation
+    # "claim_anchor 不在 claims anchors" fail。同步后 argumentation 跟到新锚。
+    anchor_remap: dict[str, str] = {}
 
     if isinstance(claims, list):
         for claim in claims:
@@ -2285,6 +2290,8 @@ def _ground_claims_to_raw(merged: dict[str, Any], raw_content: str | None) -> No
                         new_anchor = nearest_preceding_anchor(body, pos, decls)
                         if new_anchor and new_anchor in declared_set:
                             claim["anchor"] = new_anchor
+                            if anchor and anchor != new_anchor:
+                                anchor_remap[anchor] = new_anchor
                             grounded_anchors.add(new_anchor)
             elif prov == "akb_interpretation":
                 # 强匹配:唯一升级通路(连续片段覆盖 ≥60%)
@@ -2293,25 +2300,39 @@ def _ground_claims_to_raw(merged: dict[str, Any], raw_content: str | None) -> No
                     new_anchor = nearest_preceding_anchor(body, pos, decls)
                     if new_anchor and new_anchor in declared_set:
                         claim["provenance"] = "source_grounded"
+                        if anchor and anchor != new_anchor:
+                            anchor_remap[anchor] = new_anchor
                         claim["anchor"] = new_anchor
                         if not claim.get("traces_to"):
                             claim["traces_to"] = [new_anchor]
                         grounded_anchors.add(new_anchor)
                 # 无强匹配 → 留 interpretation;不补造 traces_to(fail-closed,由 floor 裁)
 
-    # [B2] argumentation 保守补填 traces_to
+    # [B2] argumentation: F11-D 同步 claim_anchor(全 provenance)+ 保守补填 traces_to(akb_interpretation)
     arg = merged.get("argumentation")
-    if isinstance(arg, list) and grounded_anchors:
-        for item in arg:
-            if not isinstance(item, dict):
-                continue
-            if str(item.get("provenance", "")).strip() != "akb_interpretation":
-                continue
-            if item.get("traces_to"):  # 已有 traces_to,不动
-                continue
-            claim_anchor = str(item.get("claim_anchor", "")).strip()
-            if claim_anchor and claim_anchor in grounded_anchors:
-                item["traces_to"] = [claim_anchor]
+    if isinstance(arg, list):
+        # F11-D: 同步 claim_anchor 到接地后的新锚(全 provenance,防 validation 不匹配)。
+        # probe-p9b idx11 fallback:arg[0] source_grounded claim_anchor=§A,claims[0] 接地到
+        # §G_EXAMPLES → arg.claim_anchor 须跟到 §G_EXAMPLES,否则 validation fail。
+        if anchor_remap:
+            for item in arg:
+                if not isinstance(item, dict):
+                    continue
+                ca = str(item.get("claim_anchor", "")).strip()
+                if ca and ca in anchor_remap:
+                    item["claim_anchor"] = anchor_remap[ca]
+        # [B2] 保守补填 traces_to(仅 akb_interpretation,claim_anchor 须指向 grounded)
+        if grounded_anchors:
+            for item in arg:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("provenance", "")).strip() != "akb_interpretation":
+                    continue
+                if item.get("traces_to"):  # 已有 traces_to,不动
+                    continue
+                claim_anchor = str(item.get("claim_anchor", "")).strip()
+                if claim_anchor and claim_anchor in grounded_anchors:
+                    item["traces_to"] = [claim_anchor]
 
 
 def _infer_source_command_from_instruction(instruction: str) -> str:
