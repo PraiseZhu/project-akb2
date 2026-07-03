@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,7 +43,9 @@ RUBRIC_FILE = "10-dimensions.md"
 RUBRIC_SPEC_FILE = "rubric.yaml"
 
 # 评分模型阵容
-PRIMARY_GRADER_MODEL = "gpt-5.4"
+# F10-D: AKB2_GRADER_FAMILY env 覆盖(默认 gpt-5.4 不变;A/B 双臂对比用)。
+# -preview 模型由 llm_router._validate_model_family 在调用时拒(7×24 禁 -preview 不变)。
+PRIMARY_GRADER_MODEL = os.environ.get("AKB2_GRADER_FAMILY", "gpt-5.4")
 FALLBACK_GRADER_MODEL = "gemini-flash"
 
 # 预算

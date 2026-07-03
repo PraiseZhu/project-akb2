@@ -41,6 +41,9 @@ SPOT_CHECK_PASS_THRESHOLD: float = 0.8  # 达标率阈值
 MAX_PROCESSING_LOCK_AGE_SEC: int = 3600  # 锁文件最大年龄（超时自动清理）
 DISTILL_TIMEOUT_S: float = 60.0
 DISTILL_MAX_RETRIES: int = 0
+# F10-D: A/B 双臂基建——env 覆盖模型族(与 distill.DISTILL_MODEL_FAMILY 同源,
+# ledger 记录实际使用的族,A/B 可追溯)。默认 deepseek-v4-pro 不变。
+DISTILL_MODEL_FAMILY: str = os.environ.get("AKB2_DISTILL_FAMILY", "deepseek-v4-pro")
 DISTILL_EXTRACT_WORKER_TIMEOUT_S: float = 210.0
 DISTILL_EXTRACT_WORKER_KILL_GRACE_S: float = 2.0
 # F2-B: traceability retake 子进程超时(distill 内部 60s + 子进程外层缓冲)
@@ -370,7 +373,7 @@ def _distill_abort_details(
     return {
         "error": error_detail,
         "error_class": _classify_distill_error(error_detail),
-        "model_family": "deepseek-v4-pro",
+        "model_family": DISTILL_MODEL_FAMILY,
         "timeout_s": DISTILL_TIMEOUT_S,
         "max_retries": DISTILL_MAX_RETRIES,
         "retries_used": 0,
@@ -1555,7 +1558,7 @@ def _run_pipeline_segments(
         content_hash,
         {
             "status": "start",
-            "model_family": "deepseek-v4-pro",
+            "model_family": DISTILL_MODEL_FAMILY,
             "timeout_s": DISTILL_TIMEOUT_S,
             "max_retries": DISTILL_MAX_RETRIES,
             "content_lane": content_lane,
@@ -1597,7 +1600,7 @@ def _run_pipeline_segments(
 
     _log_event(config, "distill_extract", "distill_extract", content_hash,
                {"status": "success",
-                "model_family": "deepseek-v4-pro",
+                "model_family": DISTILL_MODEL_FAMILY,
                "timeout_s": DISTILL_TIMEOUT_S,
                "max_retries": DISTILL_MAX_RETRIES,
                "retries_used": distill_meta.get("retries_used", 0),

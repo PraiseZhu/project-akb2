@@ -1236,6 +1236,14 @@ def run_calibration(
     """
     if config is None:
         config = _default_config()
+    # F10-D: A/B 双臂基建——env 覆盖模型族(AKB2_DISTILL_FAMILY/AKB2_GRADER_FAMILY),
+    # 启动时 fail-fast 校验 maker/checker 不同族(宪法 P7 异族分离,无自评自批)。
+    # -preview 族由 _validate_model_family 在调用点拒(7×24 禁 -preview 不变)。
+    from src.akb2.quality.distill import DISTILL_MODEL_FAMILY
+    from src.akb2.quality.grader import PRIMARY_GRADER_MODEL
+    from src.akb2.quality.llm_router import validate_maker_checker_separation
+
+    validate_maker_checker_separation(DISTILL_MODEL_FAMILY, PRIMARY_GRADER_MODEL)
     # P0：raw 留存目录（<report_out 同级>/raw-store）；persist_raw=False 关闭。
     config["raw_store_dir"] = _resolve_raw_store_dir(report_out, persist_raw)
 
@@ -1287,6 +1295,9 @@ def run_calibration(
         and report["live_positive_intake_raw_failures"] == 0
         and report["positive_live_pass_rate"] >= report["effective_live_positive_pass_floor"]
     )
+    # F10-D: A/B 双臂可追溯——记录本次运行的 maker/checker 族(env 覆盖后可区分 A/B 臂)。
+    report["maker_family"] = DISTILL_MODEL_FAMILY
+    report["checker_family"] = PRIMARY_GRADER_MODEL
 
     # 写报告
     out_path = Path(report_out)
