@@ -43,6 +43,7 @@ from src.akb2.quality.checks_structural import (
     RAW_ANCHOR_RE,
     Defect,
     _extract_body_text,
+    _normalize_must_cover_text,
 )
 from src.akb2.quality.grader import run_grader_with_fixture_detailed
 from src.akb2.quality.llm_router import RouterConfigError
@@ -804,69 +805,139 @@ def _apply_how_executability_repairs(
     ]
 
 
+def _reinject_must_cover_into_h2_section(
+    lines: list[str],
+    items: list,
+    section_title: str,
+    raw_text: str,
+    decls: list[tuple[int, str]],
+) -> tuple[list[str], int]:
+    """F11-B: re-inject must_cover items into an H2 section when repair rewrite dropped them.
+
+    probe-p9b B 臂 sub-agents ×3 SG-must-cover 死因:compose 阶段 must_cover 4/4 在场,
+    repair 循环 r3 重写 body 时丢了 source_operation 项,旧版只 re-inject source_conclusion,
+    不修 source_operation/source_boundary → SG-must-cover 报缺。本 helper 补 operation/boundary。
+
+    用 _normalize_must_cover_text(与 SG-must-cover 同口径)查在场;literal 替 `→' 避
+    SG-command-recheck 误报(SG-must-cover 归一化 `↔' 同口径,不影响覆盖判定)。
+    Returns (new_lines, additions_count)。
+    """
+    section_range = _find_section_line_range(lines, section_title)
+    if section_range is None:
+        return lines, 0
+    start, end = section_range
+    accumulated = "\n".join(lines[start:end])
+    additions: list[str] = []
+    for item in items:
+        literal = re.sub(r"\s+", " ", item.literal).strip()
+        if not literal or len(literal) > 500:
+            continue
+        if _normalize_must_cover_text(literal) in _normalize_must_cover_text(accumulated):
+            continue  # 已在场(归一化口径)
+        literal_safe = literal.replace("`", "'")  # 避 SG-command-recheck 误报
+        anchor = _map_span_to_declared_anchor(raw_text, item.raw_anchor_span.start, decls)
+        additions.append(f"- [raw {anchor}] (source_grounded) {literal_safe}")
+        accumulated += "\n" + additions[-1]
+    if not additions:
+        return lines, 0
+    insert_at = end
+    while insert_at > start and not lines[insert_at - 1].strip():
+        insert_at -= 1
+    new_lines = lines[:insert_at] + additions + lines[insert_at:]
+    return new_lines, len(additions)
+
+
 def _apply_must_cover_repairs(
     text: str,
     defects: list[Defect],
     raw_text: str | None = None,
 ) -> tuple[str, list[dict[str, str]]]:
-    """Reinsert scanner-required source conclusions into core claims."""
+    """Reinsert scanner-required must_cover literals (conclusion/operation/boundary).
+
+    F11-B: 扩展全 3 kinds。旧版只 re-inject source_conclusion(核心论点),不修
+    source_operation/source_boundary → repair 重写丢项后 SG-must-cover 报缺。
+    """
     if not any(d.dimension == "SG-must-cover" for d in defects):
         return text, []
     raw_grounding_text = raw_text or ""
     if not raw_grounding_text:
         return text, []
-    conclusion_items = [
-        item for item in scan_source_ops(raw_grounding_text) if item.kind == "source_conclusion"
-    ]
-    if not conclusion_items:
+    all_items = scan_source_ops(raw_grounding_text)
+    if not all_items:
         return text, []
 
     lines = text.split("\n")
-    section_range = _find_section_line_range(lines, "核心论点")
-    if section_range is None:
-        return text, []
-    start, end = section_range
-    core_section = "\n".join(lines[start:end])
-    target_text = "\n".join(
-        section
-        for section in (
-            _section_text_by_title(lines, "TLDR"),
-            _section_text_by_title(lines, "关键发现"),
-            core_section,
-        )
-        if section
-    )
     decls = _declared_raw_anchors_with_pos(raw_grounding_text)
-    existing_numbers = [
-        int(match.group(1))
-        for match in re.finditer(r"(?m)^\s*(\d+)\.\s+", core_section)
-    ]
-    next_num = max(existing_numbers, default=0) + 1
-    additions: list[str] = []
-    for item in conclusion_items:
-        literal = re.sub(r"\s+", " ", item.literal).strip()
-        if not literal or literal in target_text:
-            continue
-        anchor = _map_span_to_declared_anchor(
-            raw_grounding_text,
-            item.raw_anchor_span.start,
-            decls,
+    actions: list[dict[str, str]] = []
+
+    # 1. source_conclusion → 核心论点(既有逻辑,编号列表)
+    conclusion_items = [it for it in all_items if it.kind == "source_conclusion"]
+    if conclusion_items:
+        section_range = _find_section_line_range(lines, "核心论点")
+        if section_range is not None:
+            start, end = section_range
+            core_section = "\n".join(lines[start:end])
+            target_text = "\n".join(
+                section
+                for section in (
+                    _section_text_by_title(lines, "TLDR"),
+                    _section_text_by_title(lines, "关键发现"),
+                    core_section,
+                )
+                if section
+            )
+            existing_numbers = [
+                int(match.group(1))
+                for match in re.finditer(r"(?m)^\s*(\d+)\.\s+", core_section)
+            ]
+            next_num = max(existing_numbers, default=0) + 1
+            additions: list[str] = []
+            for item in conclusion_items:
+                literal = re.sub(r"\s+", " ", item.literal).strip()
+                if not literal or literal in target_text:
+                    continue
+                anchor = _map_span_to_declared_anchor(
+                    raw_grounding_text, item.raw_anchor_span.start, decls
+                )
+                additions.append(f"{next_num}. [raw {anchor}] (source_grounded) {literal}")
+                next_num += 1
+            if additions:
+                insert_at = end
+                while insert_at > start and not lines[insert_at - 1].strip():
+                    insert_at -= 1
+                lines = lines[:insert_at] + additions + lines[insert_at:]
+                actions.append({
+                    "section": "核心论点", "changed_sections": "核心论点",
+                    "must_cover_conclusion_count": str(len(additions)),
+                })
+
+    # 2. F11-B: source_operation → 论证与解释 section(含 ### 操作步骤;_how_section_text 覆盖)
+    op_items = [it for it in all_items if it.kind == "source_operation"]
+    if op_items:
+        lines, op_count = _reinject_must_cover_into_h2_section(
+            lines, op_items, "论证与解释", raw_grounding_text, decls
         )
-        additions.append(f"{next_num}. [raw {anchor}] (source_grounded) {literal}")
-        next_num += 1
-    if not additions:
+        if op_count:
+            actions.append({
+                "section": "论证与解释", "changed_sections": "论证与解释",
+                "must_cover_operation_count": str(op_count),
+            })
+
+    # 3. F11-B: source_boundary → 适用边界 section
+    bound_items = [it for it in all_items if it.kind == "source_boundary"]
+    if bound_items:
+        lines, bound_count = _reinject_must_cover_into_h2_section(
+            lines, bound_items, "适用边界", raw_grounding_text, decls
+        )
+        if bound_count:
+            actions.append({
+                "section": "适用边界", "changed_sections": "适用边界",
+                "must_cover_boundary_count": str(bound_count),
+            })
+
+    if not actions:
         return text, []
-    insert_at = end
-    while insert_at > start and not lines[insert_at - 1].strip():
-        insert_at -= 1
-    new_lines = lines[:insert_at] + additions + lines[insert_at:]
-    return "\n".join(new_lines), [
-        {
-            "section": "核心论点",
-            "changed_sections": "核心论点",
-            "must_cover_conclusion_count": str(len(additions)),
-        }
-    ]
+    return "\n".join(lines), actions
 
 
 def _apply_novelty_provenance_repairs(
