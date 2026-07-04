@@ -10,8 +10,10 @@ step-3 SC-3b/SC-3h/A3-2/A3-5：循环1 在 distill 段评估结构化 extract �
   ③ interpretation_traceability(层①) — 每条 akb_interpretation 带 traces_to 指向 claims 中真实
                             存在的 source_grounded anchor（确定性 pre-grader 地板；F3 层② entailment
                             由 grader 异族硬判，见 grader.interpretation_entailment）
-  ④ F4 车道核心价值        — concept: len(mechanism_components)≥3 且每组件在 causal_edges 有出/入边
-                            （只读结构字段，不反解 H3 标签，A3-5）；procedural: H1≥1
+  ④ F4 车道核心价值        — concept: ≥3 唯一命名组件 + ≥1 eligible edge（source_causal/
+                            llm_evidence 带 evidence + evidence_anchor ∈ raw 声明全集）；
+                            inferred_from_structure 弱边不计 F4；0 eligible fail（§0.2 D1+F1）；
+                            procedural: H1≥1
 
 设计原则：
 - 二值（pass/fail），无连续分（宪法原则 8）。
@@ -174,11 +176,39 @@ def _interpretation_traceability_failed(extract_data: dict) -> tuple[bool, str, 
     return False, "", skipped_no_grounded
 
 
-def _core_value_f4_failed(extract_data: dict, content_lane: str) -> tuple[bool, str]:
+def _trusted_raw_anchors(
+    extract_data: dict, raw_anchors: set[str] | None = None
+) -> set[str]:
+    """§0.2/F1 + F1-followup + F1-regex：可信 raw anchor 集——raw 真实声明 §-anchor 全集。
+
+    **只认 raw_anchors**（runner 从 raw_content 解析的真实 §X 全集，认 #{1,6} 多#格式），
+    **不回落 grounded claims anchors**——codex 查出反方向放水缝：LLM 可把 raw 里不存在的
+    §Z 同时写进 source_grounded claim 和 edge，§Z 进 claims → 进 trusted（旧回落口径）→
+    伪边计 eligible 混过 F4。根治：trusted = raw 真实声明全集 → §Z 不在 raw 声明集 → 不 trusted。
+
+    raw_anchors 为 None/空 → 返空集（fail-closed，所有边 untrusted → 0 eligible → F4 fail）。
+    调用方必须传 raw_anchors（runner 已传；测试需显式传）。
+    """
+    if raw_anchors:
+        return set(raw_anchors)
+    # §0.2/F1-regex 根治：不回落 claims anchors（防 LLM 伪造 §Z 进 claim+edge 混过 F4）
+    return set()
+
+
+def _core_value_f4_failed(
+    extract_data: dict,
+    content_lane: str,
+    raw_anchors: set[str] | None = None,
+) -> tuple[bool, str]:
     """④ 车道核心价值（F4）。
 
-    - concept: len(mechanism_components)≥3 且每个命名组件在 causal_edges 中至少有一条出边
-      或入边指向另一命名组件（只读结构字段，A3-5，不从 H3 标签/自然语言反解）。
+    §0.2/D1 + §0.2/F1：F4 只认 eligible edge = ``edge_kind ∈ {source_causal, llm_evidence}``
+    + ``evidence`` 非空 + ``evidence_anchor`` 非空 **且 ∈ 可信 raw anchor 集**
+    （grounded claims 的 §X anchor）。伪 §Z / 合成 §raw 不计 eligible（防伪边过 F4）。
+    ``inferred_from_structure`` 弱边**一律不计入 F4**（只渲染进正文表 + 交 grader H3
+    审语义）。0 eligible edge → F4 fail（runner 据需 retake 信号补抽，仍 0 才 fail-closed）。
+
+    - concept: ≥3 唯一命名组件 + ≥1 eligible edge（anchor 必须真实）。
     - procedural: how_steps 中至少 1 条 how_level==H1（命令级），即 H1≥1。
     """
     if _is_concept_lane(content_lane):
@@ -197,21 +227,41 @@ def _core_value_f4_failed(extract_data: dict, content_lane: str) -> tuple[bool, 
                 f"（输入 {len(named)} 条，去重后 {len(named_set)}）"
             )
         edges = extract_data.get("causal_edges", []) or []
-        # 统计每个命名组件是否有出/入边指向另一个命名组件
-        connected: set[str] = set()
+        # §0.2/D1 + F1 + F1-followup：统计 eligible edge（弱边不计；
+        # evidence_anchor 须 ∈ raw 真实 anchor 全集，不只 grounded claims）
+        eligible_kinds = {"source_causal", "llm_evidence"}
+        trusted_anchors = _trusted_raw_anchors(extract_data, raw_anchors)
+        eligible_count = 0
+        weak_count = 0
+        untrusted_anchor_count = 0
+        eligible_components: set[str] = set()
         for e in edges:
             if not isinstance(e, dict):
                 continue
             src = str(e.get("from", "")).strip()
             dst = str(e.get("to", "")).strip()
-            if src in named_set and dst in named_set and src != dst:
-                connected.add(src)
-                connected.add(dst)
-        isolated = named_set - connected
-        if isolated:
+            if src not in named_set or dst not in named_set or src == dst:
+                continue
+            kind = str(e.get("edge_kind", "")).strip()
+            evidence = str(e.get("evidence", "")).strip()
+            evidence_anchor = str(e.get("evidence_anchor", "")).strip()
+            if kind in eligible_kinds and evidence and evidence_anchor:
+                # §0.2/F1：evidence_anchor 必须是真实 raw anchor（∈ grounded claims anchors）
+                if evidence_anchor in trusted_anchors:
+                    eligible_count += 1
+                    eligible_components.add(src)
+                    eligible_components.add(dst)
+                else:
+                    untrusted_anchor_count += 1
+            elif kind == "inferred_from_structure":
+                weak_count += 1
+        if eligible_count == 0:
             return True, (
-                f"concept F4：命名组件无因果边连接: {sorted(isolated)}"
-                "（纯名词清单，机制未讲清）"
+                f"concept F4：0 eligible 因果边（source_causal/llm_evidence 带 evidence + "
+                f"evidence_anchor ∈ 真实 raw anchor 集）；{weak_count} 条 inferred 弱边不计 F4；"
+                f"{untrusted_anchor_count} 条边 evidence_anchor 不在可信 anchor 集"
+                f"（伪 §Z/合成 §raw 不计）"
+                f"（§0.2 D1+F1：弱边/伪 anchor 不救 F4）"
             )
         return False, ""
 
@@ -225,7 +275,11 @@ def _core_value_f4_failed(extract_data: dict, content_lane: str) -> tuple[bool, 
     return False, ""
 
 
-def evaluate_integrity_floor(extract_data: dict, content_lane: str = "") -> FloorResult:
+def evaluate_integrity_floor(
+    extract_data: dict,
+    content_lane: str = "",
+    raw_anchors: set[str] | None = None,
+) -> FloorResult:
     """评估完整性地板四成员（concept）/ 对应 procedural 成员。
 
     任一成员 fail → passed=False；runner 评分段须先看本结果 early-return。
@@ -234,6 +288,9 @@ def evaluate_integrity_floor(extract_data: dict, content_lane: str = "") -> Floo
         extract_data: 结构化 extract 输出（claims/argumentation/mechanism_components/
             causal_edges/how_steps）。
         content_lane: 内容车道（concept/procedural，默认 procedural 兼容）。
+        raw_anchors: §0.2/F1-followup：raw 真实 §-anchor 全集（runner 从 raw_content 解析）。
+            F4 eligible edge 的 evidence_anchor 须在此集内（不只 grounded claims）；
+            None 时回落 grounded claims anchors（兼容旧测试）。
 
     Returns:
         FloorResult: 二值 passed + failed_floors + reason。
@@ -262,10 +319,27 @@ def evaluate_integrity_floor(extract_data: dict, content_lane: str = "") -> Floo
         # SC-5：traceability 因 grounded 空被豁免——写可见 meta，治诊断变弱
         trace_meta["traceability_skipped_no_grounded_anchor"] = True
 
-    f4_failed, f4_reason = _core_value_f4_failed(extract_data, content_lane)
+    f4_failed, f4_reason = _core_value_f4_failed(
+        extract_data, content_lane, raw_anchors=raw_anchors
+    )
     if f4_failed:
         failed.append(FLOOR_CORE_VALUE_F4)
         reasons.append(f4_reason)
+        # §0.2/F1 太脆：concept F4 因 0 eligible edge 失败（非 <3 组件）+ 组件≥3 →
+        # 标 needs_causal_edge_retake，runner 据此补抽 causal edges（仍 0 才 fail-closed），
+        # 不静默 F4 早死救不回真机漏字段。
+        if _is_concept_lane(content_lane):
+            components = extract_data.get("mechanism_components", []) or []
+            named_set = {
+                str(c.get("name", "")).strip()
+                for c in components
+                if isinstance(c, dict) and str(c.get("name", "")).strip()
+            }
+            if (
+                len(named_set) >= CONCEPT_MIN_MECHANISM_COMPONENTS
+                and "0 eligible" in f4_reason
+            ):
+                trace_meta["needs_causal_edge_retake"] = True
 
     return FloorResult(
         passed=not failed,

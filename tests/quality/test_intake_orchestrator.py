@@ -599,6 +599,9 @@ def test_failures_path_written_on_archive_fail(tmp_path):
 
 def test_feed_discovery_uses_httpx_when_no_feed_content(tmp_path):
     """Fix R1: discover_articles 无 feed_content 时通过 httpx 真实抓取 feed。"""
+    import pytest
+
+    pytest.importorskip("feedparser")  # env 依赖：feedparser 未装则跳过（非代码缺陷）
     import feedparser  # noqa: F401 — 用于验证 parse_feed 正常路径
 
     from src.akb2.quality.intake.discovery import discover_articles

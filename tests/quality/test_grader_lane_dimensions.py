@@ -81,3 +81,56 @@ class TestGraderLaneDimensions:
         assert "概念机制清晰度(H3)" not in by_lane["concept"]
         # procedural 不受 concept 改名影响
         assert by_lane["procedural"] == RUBRIC_DIMENSIONS
+
+
+# ---------------------------------------------------------------------------
+# §0.2/D6：grader concept prompt 含 inferred_from_structure / edge evidence / H3 fail
+# ---------------------------------------------------------------------------
+
+
+class TestD6GraderConceptPromptH3:
+    """§0.2/D6：concept grader prompt 显式含 H3 fail 条件 + inferred + edge evidence。"""
+
+    def test_concept_prompt_contains_inferred_from_structure(self):
+        from src.akb2.quality.grader import _build_grader_prompt, _load_rubric_text
+
+        msgs = _build_grader_prompt("候选页正文", _load_rubric_text(), content_lane="concept")
+        system = msgs[0]["content"]
+        assert "inferred_from_structure" in system, (
+            "concept grader prompt 须含 inferred_from_structure（H3 fail 条件）"
+        )
+
+    def test_concept_prompt_contains_edge_evidence_and_h3_fail(self):
+        from src.akb2.quality.grader import _build_grader_prompt, _load_rubric_text
+
+        msgs = _build_grader_prompt("候选页正文", _load_rubric_text(), content_lane="concept")
+        system = msgs[0]["content"]
+        assert "evidence" in system and "evidence_anchor" in system, (
+            "concept prompt 须含 edge evidence / evidence_anchor"
+        )
+        assert "H3 fail" in system or "H3（概念机制清晰度）fail" in system, (
+            "concept prompt 须显式含 H3 fail 条件"
+        )
+        assert "机制组件与因果边证据" in system, (
+            "concept prompt 须指向 ## 机制组件与因果边证据 两表"
+        )
+
+    def test_procedural_prompt_has_no_h3_fail_note(self):
+        """procedural 不注 H3 fail 条件（H3 是 concept 维度）。"""
+        from src.akb2.quality.grader import _build_grader_prompt, _load_rubric_text
+
+        msgs = _build_grader_prompt("候选页正文", _load_rubric_text(), content_lane="procedural")
+        system = msgs[0]["content"]
+        assert "H3 fail" not in system, "procedural prompt 不应含 concept H3 fail 条件"
+
+    def test_rubric_yaml_h3_note_contains_d6_keywords(self):
+        """rubric.yaml concept H3 note 含 inferred_from_structure + eligible edge。"""
+        from src.akb2.quality.grader import _load_rubric_spec
+
+        spec = _load_rubric_spec()
+        concept_dims = spec["lanes"]["concept"]["dimensions"]
+        h3 = next(d for d in concept_dims if "H3" in d["name"])
+        note = h3["note"]
+        assert "inferred_from_structure" in note
+        assert "evidence_anchor" in note
+        assert "eligible" in note or "source_causal" in note

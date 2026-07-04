@@ -442,6 +442,43 @@ test
         rc_defects = [d for d in defects if "related_concepts" in d.location]
         assert len(rc_defects) >= 1
 
+    def test_cold_start_proposed_graph_nodes_accepted_concept_proposal(self):
+        """§0.2/D8：concept+proposal 模式接受 related<2 OR proposed_graph_nodes>=1。
+
+        冷启动 concept（related=1 但 proposed_graph_nodes>=1）→ 不报 related_concepts 缺陷。
+        """
+        text = """---
+status: candidate
+content_lane: concept
+gate_decision: null
+source_refs:
+  - raw/test.md
+gate_reason: ok
+future_questions:
+  - q1
+  - q2
+related_concepts:
+  - only one
+proposed_graph_nodes:
+  - slug: cold-concept
+    label: cold-concept
+    reason: cold start
+    source_anchor: §A
+---
+
+## TLDR
+test
+"""
+        # concept+proposal：接受 proposed_graph_nodes>=1 → 无 related_concepts 缺陷
+        defects = check_a2_frontmatter(text, content_lane="concept", promotion_mode="proposal")
+        rc_defects = [d for d in defects if "related_concepts" in d.location]
+        assert rc_defects == [], f"concept+proposal 冷启动应接受 proposed_graph_nodes: {rc_defects}"
+
+        # active/lint 模式（promotion_mode != proposal）：仍要求 related>=2 → 有缺陷
+        defects_active = check_a2_frontmatter(text, content_lane="concept", promotion_mode="active")
+        rc_defects_active = [d for d in defects_active if "related_concepts" in d.location]
+        assert len(rc_defects_active) >= 1, "active 模式仍要求 related>=2（proposed 不替代）"
+
     def test_missing_frontmatter(self):
         """负: 无 frontmatter → 多缺陷。"""
         text = """# No frontmatter
@@ -523,7 +560,12 @@ Verification is still on you.
         assert defects == []
 
     def test_bracketed_raw_anchor_lines_exist(self):
-        """正: smoke/raw 常用的 `[raw §A] ...` 段落行应被识别为锚点声明。"""
+        """[B4] 正: 目录块内的行首 `[raw §A]` 声明形态被识别;正文 `[raw §A] text` 是引用不算声明。
+
+        P1a [B4] 收窄:行首 `[raw §X]` 声明形态只在锚点目录块内识别(防正文示例行误声明)。
+        故本 fixture 在 `## 锚点目录` 块内用 `[raw §A]`/`[raw §I]` 声明,正文 `[raw §A] text`
+        段落是引用(不算声明,但因目录块已声明 §A/§I 故 A3 过)。
+        """
         candidate = """---
 status: candidate
 gate_decision: null
@@ -537,11 +579,40 @@ Loop 工程需要显式停止条件 [raw §A]，也需要失败可观测 [raw §
 artifact_type: raw
 ---
 
+## 锚点目录
+
+[raw §A]
+[raw §I]
+
+---
+
 [raw §A] Loop engineering is bounded, convergent, and observable.
 
 [raw §I] A loop is deployable only when failure is observable.
 """
         assert check_a3_raw_anchors(candidate, raw) == []
+
+    def test_body_rawline_not_treated_as_declaration(self):
+        """[B4] 负: 正文 `[raw §A] text` 段落行不算声明(只目录块内算)→ §A 未声明 → A3 缺陷。"""
+        candidate = """---
+status: candidate
+gate_decision: null
+---
+
+## TLDR
+
+引用 [raw §A]。
+"""
+        # raw 无目录块、无 heading/marker,只有正文 [raw §A] 段落行(引用,非声明)
+        raw = """---
+artifact_type: raw
+---
+
+[raw §A] Loop engineering is bounded, convergent, and observable.
+"""
+        defects = check_a3_raw_anchors(candidate, raw)
+        assert len(defects) == 1
+        assert "§A" in defects[0].defect
 
     def test_numeric_anchor_headings_exist(self):
         """正: fresh raw 的 `§1/§2` 数字锚点必须被识别。"""
@@ -1493,3 +1564,183 @@ class TestSGCommandRecheckFailClosed:
         recheck = [d for d in defects if d.dimension == "SG-command-recheck"]
         assert recheck, "空 raw 不得跳过 SG-command-recheck"
         assert any("npm install" in d.defect for d in recheck)
+
+
+# ---------------------------------------------------------------------------
+# §0.2/D7/C1：SG-mechanism-edge-evidence — 机制组件与因果边证据表完整性
+# ---------------------------------------------------------------------------
+
+
+class TestSGMechanismEdgeEvidence:
+    """§0.2/D7/C1：SG-mechanism-edge-evidence 检查机制证据表完整性。
+
+    - concept + 节缺失 → defect
+    - eligible 边空 evidence/anchor → defect
+    - 未知 edge_kind → defect
+    - edge 端点不在 components → defect
+    - 合格表（eligible 带证据 + 端点在 components）→ 无 defect
+    """
+
+    _VALID_BODY = """## TLDR
+
+test [raw §A]
+
+## 机制组件与因果边证据
+
+组件：
+
+| component_id | name | role | evidence_anchor | evidence_sentence |
+|---|---|---|---|---|
+| captain | Captain | dispatch | §A | The Captain dispatches |
+| executor | Executor | run | §A | The Executor runs |
+
+因果边：
+
+| from | to | relation | edge_kind | evidence_anchor | evidence_sentence |
+|---|---|---|---|---|---|
+| Captain | Executor | dispatches | source_causal | §A | The Captain dispatches |
+| Captain | Executor | seq | inferred_from_structure (weak) |  |  |
+"""
+
+    def test_concept_missing_section_defect(self):
+        """concept + 无机制证据节 → defect。"""
+        from src.akb2.quality.checks_structural import _check_sg_mechanism_edge_evidence
+
+        body = "## TLDR\n\ntest [raw §A]\n"
+        defects = _check_sg_mechanism_edge_evidence(body, "concept")
+        assert any(d.dimension == "SG-mechanism-edge-evidence" for d in defects)
+
+    def test_procedural_missing_section_no_defect(self):
+        """procedural + 无机制证据节 → 无 defect（procedural 不渲染该节）。"""
+        from src.akb2.quality.checks_structural import _check_sg_mechanism_edge_evidence
+
+        body = "## TLDR\n\ntest [raw §A]\n"
+        defects = _check_sg_mechanism_edge_evidence(body, "procedural")
+        assert not any(d.dimension == "SG-mechanism-edge-evidence" for d in defects)
+
+    def test_valid_table_no_defect(self):
+        """合格表（eligible 带证据 + 端点在 components + inferred 标 weak）→ 无 defect。"""
+        from src.akb2.quality.checks_structural import _check_sg_mechanism_edge_evidence
+
+        defects = _check_sg_mechanism_edge_evidence(self._VALID_BODY, "concept")
+        sg = [d for d in defects if d.dimension == "SG-mechanism-edge-evidence"]
+        assert sg == [], f"合格表不应有 defect: {sg}"
+
+    def test_eligible_edge_missing_evidence_defect(self):
+        """eligible 边（source_causal）缺 evidence → defect。"""
+        from src.akb2.quality.checks_structural import _check_sg_mechanism_edge_evidence
+
+        body = self._VALID_BODY.replace(
+            "| Captain | Executor | dispatches | source_causal | §A | The Captain dispatches |",
+            "| Captain | Executor | dispatches | source_causal | §A |  |",
+        )
+        defects = _check_sg_mechanism_edge_evidence(body, "concept")
+        assert any("缺 evidence" in d.defect for d in defects)
+
+    def test_eligible_edge_missing_anchor_defect(self):
+        """eligible 边缺 evidence_anchor → defect。"""
+        from src.akb2.quality.checks_structural import _check_sg_mechanism_edge_evidence
+
+        body = self._VALID_BODY.replace(
+            "| Captain | Executor | dispatches | source_causal | §A |",
+            "| Captain | Executor | dispatches | source_causal |  |",
+            1,
+        )
+        defects = _check_sg_mechanism_edge_evidence(body, "concept")
+        assert any("缺 evidence_anchor" in d.defect for d in defects)
+
+    def test_unknown_edge_kind_defect(self):
+        """未知 edge_kind → defect。"""
+        from src.akb2.quality.checks_structural import _check_sg_mechanism_edge_evidence
+
+        body = self._VALID_BODY.replace(
+            "inferred_from_structure (weak)", "bogus_kind"
+        )
+        defects = _check_sg_mechanism_edge_evidence(body, "concept")
+        assert any("未知 edge_kind" in d.defect for d in defects)
+
+    def test_edge_endpoint_not_in_components_defect(self):
+        """edge 端点不在 components → defect。"""
+        from src.akb2.quality.checks_structural import _check_sg_mechanism_edge_evidence
+
+        body = self._VALID_BODY.replace(
+            "| Captain | Executor | dispatches | source_causal |",
+            "| Captain | Nonexistent | dispatches | source_causal |",
+        )
+        defects = _check_sg_mechanism_edge_evidence(body, "concept")
+        assert any("不在 mechanism_components" in d.defect for d in defects)
+
+
+# ---------------------------------------------------------------------------
+# §0.2/F5：SG-mechanism-edge-evidence 与 F4 统一口径（eligible anchor ∈ raw 全集）
+# ---------------------------------------------------------------------------
+
+
+class TestF5UnifiedAnchorCaliber:
+    """§0.2/F5：SG eligible edge 的 evidence_anchor 须 ∈ raw 声明全集（与 F4 同口径）。
+
+    旧口径要求正文有 `[raw §X]`（只来自 claims，不覆盖所有 raw anchor）→ F4 认可的真边
+    （anchor∈raw 但未被 claim 引用）被 SG 拒 → 7 条 compose_failed。统一为 raw 全集。
+    """
+
+    _F5_BODY = """## TLDR
+
+test [raw §A]
+
+## 机制组件与因果边证据
+
+组件：
+
+| component_id | name | role | evidence_anchor | evidence_sentence |
+|---|---|---|---|---|
+| a | A | r | §I_LIMIT | A does x |
+| b | B | r | §A | B does y |
+
+因果边：
+
+| from | to | relation | edge_kind | evidence_anchor | evidence_sentence |
+|---|---|---|---|---|---|
+| A | B | feeds | source_causal | §I_LIMIT | A feeds B |
+"""
+
+    def test_f5_edge_anchor_in_raw_not_in_body_no_defect(self):
+        """F5：edge anchor §I_LIMIT ∈ raw_anchors 但 body 无 [raw §I_LIMIT] → SG 不拒。
+
+        F4 认可（§I_LIMIT ∈ raw），SG 旧口径会拒（body 无 [raw §I_LIMIT]）→ 统一后不拒。
+        """
+        from src.akb2.quality.checks_structural import _check_sg_mechanism_edge_evidence
+
+        # raw_anchors 含 §I_LIMIT（raw 真实声明），body 无 [raw §I_LIMIT]
+        raw_anchors = {"§A", "§I_LIMIT"}
+        defects = _check_sg_mechanism_edge_evidence(
+            self._F5_BODY, "concept", raw_anchors=raw_anchors
+        )
+        anchor_defects = [
+            d for d in defects
+            if "不在 raw 声明" in d.defect or "无对应 [raw" in d.defect
+        ]
+        assert anchor_defects == [], (
+            f"§I_LIMIT ∈ raw_anchors → SG 不应拒（F5 统一口径）: {anchor_defects}"
+        )
+
+    def test_f5_edge_anchor_not_in_raw_still_defect(self):
+        """F5：edge anchor §Z ∉ raw_anchors → SG 仍拒（防伪不破）。"""
+        from src.akb2.quality.checks_structural import _check_sg_mechanism_edge_evidence
+
+        raw_anchors = {"§A", "§I_LIMIT"}  # 不含 §Z
+        defects = _check_sg_mechanism_edge_evidence(
+            self._F5_BODY.replace("§I_LIMIT", "§Z"), "concept", raw_anchors=raw_anchors
+        )
+        anchor_defects = [d for d in defects if "不在 raw 声明" in d.defect]
+        assert len(anchor_defects) >= 1, "§Z ∉ raw → SG 应拒（防伪）"
+
+    def test_f5_no_raw_anchors_skips_anchor_check(self):
+        """F5：raw_anchors=None → 跳过 anchor 检查（无 raw 兜底，不阻断）。"""
+        from src.akb2.quality.checks_structural import _check_sg_mechanism_edge_evidence
+
+        defects = _check_sg_mechanism_edge_evidence(self._F5_BODY, "concept")
+        anchor_defects = [
+            d for d in defects
+            if "不在 raw 声明" in d.defect or "无对应 [raw" in d.defect
+        ]
+        assert anchor_defects == [], "raw_anchors=None → 跳过 anchor 检查"

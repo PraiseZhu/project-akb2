@@ -1,0 +1,22 @@
+=== §4 + F1-regex 多#格式 mini e2e ===
+raw_anchors (多#解析): {'§A', '§B', '§C'}
+{
+  "llm_multi_hash": {
+    "extract_success": true,
+    "eligible_edges": 2,
+    "floor_F4_pass": true
+  },
+  "fallback_multi_hash": {
+    "fb_eligible_edges": 2,
+    "fb_anchors": [
+      "§A",
+      "§B"
+    ],
+    "floor_F4_pass": true
+  },
+  "fake_z_multi_hash": {
+    "floor_F4_pass": false
+  }
+}
+
+=== F1-regex 硬证据：多#格式 raw（## §A / ### §B）产 eligible + F4 pass；伪 §Z 仍不过 ===

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,7 +43,9 @@ RUBRIC_FILE = "10-dimensions.md"
 RUBRIC_SPEC_FILE = "rubric.yaml"
 
 # 评分模型阵容
-PRIMARY_GRADER_MODEL = "gpt-5.4"
+# F10-D: AKB2_GRADER_FAMILY env 覆盖(默认 gpt-5.4 不变;A/B 双臂对比用)。
+# -preview 模型由 llm_router._validate_model_family 在调用时拒(7×24 禁 -preview 不变)。
+PRIMARY_GRADER_MODEL = os.environ.get("AKB2_GRADER_FAMILY", "gpt-5.4")
 FALLBACK_GRADER_MODEL = "gemini-flash"
 
 # 预算
@@ -116,6 +119,28 @@ def _rubric_dimension_names_by_lane(
 
 # 按 lane 选维度集（SC-3f/A3-6：动态派生不硬编码）
 RUBRIC_DIMENSIONS_BY_LANE: dict[str, list[str]] = _rubric_dimension_names_by_lane()
+
+
+def _advisory_dimension_names(spec: dict[str, Any] | None = None) -> frozenset[str]:
+    """rubric 1.4.0（用户裁决）：advisory: true 的加分维名集合（全局 + 各 lane 汇总）。
+
+    advisory 维（如「新颖增量」）：有则加分,缺失不作为入库卡点——其缺陷不计
+    blocking、不阻断 repair 收敛（repair._blocking_defects 消费）,仍照常评分记录。
+    从 spec 动态派生,不硬编码维名（改 rubric.yaml 即生效）。
+    """
+    spec = spec or _load_rubric_spec()
+    names: set[str] = set()
+    for dim in spec.get("dimensions", []) or []:
+        if isinstance(dim, dict) and dim.get("advisory") and dim.get("name"):
+            names.add(str(dim["name"]))
+    for lane_cfg in (spec.get("lanes", {}) or {}).values():
+        for dim in (lane_cfg or {}).get("dimensions", []) or []:
+            if isinstance(dim, dict) and dim.get("advisory") and dim.get("name"):
+                names.add(str(dim["name"]))
+    return frozenset(names)
+
+
+ADVISORY_DIMENSIONS: frozenset[str] = _advisory_dimension_names()
 
 
 def _dimensions_for_lane(content_lane: str) -> list[str]:
@@ -245,6 +270,23 @@ def _build_grader_weight_floor_note(content_lane: str = "") -> str:
     )
 
 
+def _concept_h3_fail_note(content_lane: str) -> str:
+    """§0.2/D6：concept 车道 H3 fail 条件显式注入 grader prompt。
+
+    concept H3（概念机制清晰度）pass 需机制组件/因果边/edge evidence 在正文可读可追溯；
+    仅 1 条 inferred_from_structure 弱边、其余组件无因果说明 → H3 fail；
+    无 evidence 的边不作机制清晰度证据。
+    """
+    if str(content_lane or "").strip().lower() != "concept":
+        return ""
+    return (
+        "6. concept H3（概念机制清晰度）fail 条件：仅 1 条 inferred_from_structure 弱边、"
+        "其余组件无因果说明 → H3 fail；无 evidence 的边不作机制清晰度证据；"
+        "eligible 边（source_causal/llm_evidence）须带 evidence + evidence_anchor，"
+        "读 ## 机制组件与因果边证据 两表判定。\n"
+    )
+
+
 def _build_grader_prompt(
     candidate_text: str, rubric_text: str, content_lane: str = ""
 ) -> list[dict[str, str]]:
@@ -295,7 +337,7 @@ def _build_grader_prompt(
    是否真从其所引 [raw §X] anchor 推出。anchor 真实存在但与解读语义无关
    （poisoned-trace，挂羊头卖狗肉）→ false；推导真成立 → true。concept 车道必填此字段，
    procedural 可省。此字段是异族硬判地板，false 即整体 reject（不可被加权分补偿）。
-
+{_concept_h3_fail_note(content_lane)}
 输出 JSON 结构（必须严格使用以下字段名，不得用 verdict / overall_decision / overall_pass
 等其他字段名；上列每个维度都必须各输出恰好一条）:
 {{

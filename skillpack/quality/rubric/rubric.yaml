@@ -12,7 +12,7 @@
 # calibration_status: initial —— 全部 concept 权重/阈值为初始结构占位，真实数值由后续
 # 满仓校准回填（spec FR-010），非终值。step-3 只读消费此表、不回写。
 
-rubric_version: "1.2.0"
+rubric_version: "1.5.0"
 
 # 全局默认维度集（= procedural 旧 10 维，等价旧行为）。lanes 内可覆盖。
 # 这是 grader 在无 lane 信息时的默认维度集，保证旧行为零回归。
@@ -31,6 +31,7 @@ dimensions:
     weight: 1.0
   - name: "新颖增量"
     weight: 1.0
+    advisory: true
   - name: "边强度匹配"
     weight: 1.0
   - name: "Future Questions 质量"
@@ -79,6 +80,7 @@ lanes:
         weight: 1.0
       - name: "新颖增量"
         weight: 1.0
+        advisory: true
       - name: "边强度匹配"
         weight: 1.0
       - name: "Future Questions 质量"
@@ -108,13 +110,14 @@ lanes:
     dimensions:
       - name: "概念机制清晰度(H3)"
         weight: 3.5
-        note: "核心价值：组件命名 + 因果边讲清机制（H3≥3）"
+        note: "§0.2/D6：H3 pass 需机制组件/因果边/edge evidence 在正文可读可追溯（## 机制组件与因果边证据 两表）。仅 1 条 inferred_from_structure 弱边、其余组件无因果说明 → H3 fail。无 evidence 的边不作机制清晰度证据。eligible 边（source_causal/llm_evidence）须带 evidence + evidence_anchor。"
       - name: "实现机制说明(H2)"
         weight: 0.5
         note: "机制如何落地的说明（非命令密度）"
       - name: "图谱可调用性"
         weight: 2.0
-        note: "概念可被图谱 resolve（known/pending 命中、边强度匹配并入 A 层）"
+        advisory: true
+        note: "概念可被图谱 resolve（known/pending 命中、边强度匹配并入 A 层）。冷启动校准（1.3.0）：vault 无可 resolve 相邻概念（proposal 模式 proposed_graph_nodes+graph_pending，resolve 未命中非内容之过）时按候选自身图谱要素质量判——proposed_graph_nodes 结构完整且图谱边带真实 evidence_anchor → pass；不得仅以「resolve 未命中」为由 fail。图谱要素缺失/伪造仍 fail。加分项（advisory，1.5.0 用户裁决 2026-07-04）：图谱补全由入库门控侧兜底链路承担（D8 proposed_graph_nodes → pending 共指累积 → 图谱校准补边 → promote graph_readiness 闸），候选阶段本维不作为入库卡点（fail 不计 blocking 缺陷）——有可 resolve 图谱加分；仍照常评分记录（fail-visible）。图谱**诚实性**不在此维承担：假边/假 target 由 A4 四条件锁与 F4 硬门拦截（不放宽）。"
       - name: "适用边界"
         weight: 1.5
         note: "≥2 适用 + ≥1 不适用场景"
@@ -126,7 +129,8 @@ lanes:
         note: "2-3 条具体可研究问题"
       - name: "新颖增量"
         weight: 0.5
-        note: "对既有 wiki 的增量"
+        advisory: true
+        note: "对既有 wiki 的增量。冷启动校准（1.3.0）：无相邻 wiki 基线可比（比对集为空/未命中，属「缺少基线」非「证明无增量」）时按内容自证判——核心论点/机制自身成立且非常识复述 → pass；不得仅以「未发现相邻条目/无本地基线」为由 fail。与既有条目实际重合仍 fail。加分项（advisory，1.4.0 用户裁决 2026-07-04）：本维是加分项——有增量加分；缺失/未证不作为入库卡点（其 fail 不计 blocking 缺陷、不阻断 repair 收敛），仍照常评分与记录（fail-visible）。注意：真重复（洗稿）由 admission novelty 门拦截，不依赖本维。"
     integrity_floor:
       - name: "论断锚定率(raw-anchor)"
         hard: true

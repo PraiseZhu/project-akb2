@@ -429,7 +429,11 @@ class TestExtractViaScrapling:
         mock_page.html_content = "word " * 250
         mock_page.title = "Article From Scrapling Fetcher"
 
-        with patch("scrapling.Fetcher") as MockFetcher:
+        # mock _extract_via_defuddle 返空，强制走 _html_to_clean_text fallback
+        # （隔离 defuddle 是否安装的环境依赖，测 scrapling 调 Fetcher 的行为本身）
+        with patch("scrapling.Fetcher") as MockFetcher, patch(
+            "src.akb2.quality.intake.extract._extract_via_defuddle", return_value={}
+        ):
             MockFetcher.get.return_value = mock_page
             result = _extract_via_scrapling("https://example.com/article", browser_mode=False)
 
@@ -452,7 +456,10 @@ class TestExtractViaScrapling:
         mock_page.html_content = "word " * 250
         mock_page.title = "Article From Scrapling StealthyFetcher"
 
-        with patch("scrapling.StealthyFetcher") as MockStealthy:
+        # mock _extract_via_defuddle 返空，强制走 fallback（隔离 defuddle 安装依赖）
+        with patch("scrapling.StealthyFetcher") as MockStealthy, patch(
+            "src.akb2.quality.intake.extract._extract_via_defuddle", return_value={}
+        ):
             MockStealthy.fetch.return_value = mock_page
             result = _extract_via_scrapling("https://example.com/article", browser_mode=True)
 

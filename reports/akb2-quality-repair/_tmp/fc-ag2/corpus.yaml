@@ -1,0 +1,7 @@
+fixture_only_domains: []
+entries:
+- url: "fixture:ag2-captain-agent-concept"
+  domain: "AI Agent"
+  expected: "ingest"
+  notes: "F-C ag2 single-sample 诊断"
+  fixture_kind: "concept_positive"

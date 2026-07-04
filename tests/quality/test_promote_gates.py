@@ -233,3 +233,199 @@ class TestFiveGates:
 
         assert passed is False
         assert "Gate-5" in failed_name
+
+
+# ---------------------------------------------------------------------------
+# §0.2/D8：proposed_node_only 冷启动分叉（allow_proposed_node_only + AUTO_PROMOTE 二次拒）
+# ---------------------------------------------------------------------------
+
+
+def _cold_start_vault(tmp_path: Path) -> Path:
+    """创建冷启动 vault：candidate 用 proposed_graph_nodes（无 real_link）。"""
+    vault = tmp_path / "vault_cold"
+    vault.mkdir()
+    (vault / "staging" / "candidate" / "test-batch").mkdir(parents=True)
+    (vault / "wiki" / "sources").mkdir(parents=True)
+    (vault / "manifests" / "ingest").mkdir(parents=True)
+    (vault / ".akb-runtime").mkdir(parents=True)
+    cand = vault / "staging" / "candidate" / "test-batch" / "test-gates.md"
+    cand.write_text("""---
+page_status: candidate
+source_type: blog
+template_type: source
+source_refs: [raw/test-gates--raw.md]
+future_questions:
+  - Q1: Test gate one?
+  - Q2: Test gate two?
+related_concepts: []
+proposed_graph_nodes:
+  - slug: cold-concept
+    label: cold-concept
+    reason: cold start pending adjudication
+    source_anchor: §A
+graph_pending: true
+gate_decision: null
+slug: test-gates
+title: Cold Start Article
+source_url: https://example.com/cold
+date: 2026-06-13
+evidence_provenance: source_grounded
+graph_role: leaf
+graph_status: pending
+key_findings:
+  - Cold start finding one
+  - Cold start finding two
+  - Cold start finding three
+---
+
+## TLDR
+
+Cold start candidate with proposed_graph_nodes.
+
+## 关键发现
+
+Finding one. Finding two. Finding three.
+
+## 入选理由
+
+Cold start inclusion.
+
+## 证据地图
+
+| 证据 | 来源 | 强度 |
+|------|------|------|
+| Test | [raw] | strong |
+
+## 核心论点
+
+Cold start argument.
+
+## 论证与解释
+
+Detailed explanation.
+
+## 适用边界
+
+Cold start scenarios.
+
+## 图谱关系
+
+（无图谱边，待 adjudication）
+
+## Future Questions
+
+Q1: Test one?
+Q2: Test two?
+
+## 维护记录
+
+| 2026-06-13 | Initial candidate | gate: null |""")
+    return vault
+
+
+class TestD8ProposedNodeOnly:
+    """§0.2/D8：proposed_node_only 冷启动分叉。
+
+    - evaluate_five_gates(allow_proposed_node_only=True) → 过（medium + proposed_node_only）
+    - evaluate_five_gates(allow=False) → Gate-3 fail（real_link required）
+    - run_promote AUTO_PROMOTE=1 → 二次拒 proposed_node_only 写 active
+    - run_promote AUTO_PROMOTE=0 → proposal 成功（不写 active）
+    """
+
+    def test_graph_readiness_is_proposed_node_only(self, tmp_path):
+        """冷启动 candidate → gate CLI graph_readiness=proposed_node_only + confidence=medium。"""
+        from src.akb2.quality.promote import _run_gate_check
+
+        vault = _cold_start_vault(tmp_path)
+        cand = vault / "staging" / "candidate" / "test-batch" / "test-gates.md"
+        gate_ok, detail, parsed = _run_gate_check(cand, vault)
+        # gate CLI 读 proposed_graph_nodes → proposed_node_only + medium
+        assert parsed.get("graph_readiness") == "proposed_node_only", (
+            f"冷启动应 proposed_node_only: {detail}"
+        )
+
+    def test_evaluate_five_gates_allow_proposed_passes(self, tmp_path, monkeypatch):
+        """allow_proposed_node_only=True → 过闸（medium + proposed_node_only 接受）。"""
+        from src.akb2.quality.promote import _run_gate_check, evaluate_five_gates
+
+        vault = _cold_start_vault(tmp_path)
+        cand = vault / "staging" / "candidate" / "test-batch" / "test-gates.md"
+        # 确认 gate CLI 真返 proposed_node_only（否则测试无意义）
+        _, _, parsed = _run_gate_check(cand, vault)
+        assert parsed.get("graph_readiness") == "proposed_node_only"
+
+        # mock lint + grader 为 pass（monkeypatch auto-stop，不泄漏到后续测试）
+        monkeypatch.setattr(
+            "src.akb2.quality.promote._run_lint_check",
+            lambda c, v: (True, "mock lint pass"),
+        )
+        monkeypatch.setattr(
+            "src.akb2.quality.promote._read_grader_result",
+            lambda p: (True, "mock grader pass"),
+        )
+        passed, failed, reason = evaluate_five_gates(
+            cand, vault, None, allow_proposed_node_only=True
+        )
+        # Gate-2/3 接受 proposed_node_only → 不在 Gate-2/3 fail
+        assert failed not in ("Gate-2 (decision_confidence)", "Gate-3 (graph_readiness)"), (
+            f"allow=True 时 Gate-2/3 应接受 proposed_node_only: {failed} {reason}"
+        )
+
+    def test_evaluate_five_gates_default_rejects_proposed(self, tmp_path):
+        """默认 allow=False → Gate-2/3 fail（proposed_node_only 不够，要 high+real_link）。"""
+        from src.akb2.quality.promote import evaluate_five_gates
+
+        vault = _cold_start_vault(tmp_path)
+        cand = vault / "staging" / "candidate" / "test-batch" / "test-gates.md"
+        passed, failed, reason = evaluate_five_gates(
+            cand, vault, None, allow_proposed_node_only=False
+        )
+        assert passed is False
+        # 默认模式 proposed_node_only 被 Gate-2（medium confidence）或 Gate-3（非 real_link）拒
+        assert failed in ("Gate-2 (decision_confidence)", "Gate-3 (graph_readiness)"), (
+            f"默认模式 proposed_node_only 应被 Gate-2/3 拒: {failed}"
+        )
+
+    def test_run_promote_auto_promote_refuses_proposed_node_only(self, tmp_path, monkeypatch):
+        """§0.2/D8：AUTO_PROMOTE=1 + proposed_node_only → 二次拒写 active（落账可见）。"""
+        from src.akb2.quality.promote import run_promote
+
+        vault = _cold_start_vault(tmp_path)
+        cand = vault / "staging" / "candidate" / "test-batch" / "test-gates.md"
+        monkeypatch.setenv("AKB2_AUTO_PROMOTE", "1")
+        monkeypatch.setattr(
+            "src.akb2.quality.promote._run_lint_check",
+            lambda c, v: (True, "mock lint pass"),
+        )
+        monkeypatch.setattr(
+            "src.akb2.quality.promote._read_grader_result",
+            lambda p: (True, "mock grader pass"),
+        )
+        success, detail, snapshot_id = run_promote(cand, vault, None)
+        assert success is False, "AUTO_PROMOTE=1 + proposed_node_only 应二次拒写 active"
+        assert snapshot_id is None
+        assert "proposed_node_only" in detail or "graph_pending" in detail
+        # active 未写入
+        active = vault / "wiki" / "sources" / "test-gates.md"
+        assert not active.exists(), "proposed_node_only 不应写 active"
+
+    def test_run_promote_proposal_mode_accepts_proposed_node_only(self, tmp_path, monkeypatch):
+        """§0.2/D8：AUTO_PROMOTE=0 + proposed_node_only → proposal 成功（不写 active）。"""
+        from src.akb2.quality.promote import run_promote
+
+        vault = _cold_start_vault(tmp_path)
+        cand = vault / "staging" / "candidate" / "test-batch" / "test-gates.md"
+        monkeypatch.setenv("AKB2_AUTO_PROMOTE", "0")
+        monkeypatch.setattr(
+            "src.akb2.quality.promote._run_lint_check",
+            lambda c, v: (True, "mock lint pass"),
+        )
+        monkeypatch.setattr(
+            "src.akb2.quality.promote._read_grader_result",
+            lambda p: (True, "mock grader pass"),
+        )
+        success, detail, snapshot_id = run_promote(cand, vault, None)
+        assert success is True, "AUTO_PROMOTE=0 + proposed_node_only 应 proposal 成功"
+        assert snapshot_id is None, "proposal 模式不写 active（无 snapshot）"
+        active = vault / "wiki" / "sources" / "test-gates.md"
+        assert not active.exists(), "proposal 模式不写 active"

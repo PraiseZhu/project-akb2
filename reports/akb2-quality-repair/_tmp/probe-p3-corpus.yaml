@@ -1,0 +1,100 @@
+fixture_only_domains: []
+entries:
+- url: fixture:ag2-captain-agent-concept
+  domain: AI Agent
+  expected: ingest
+  notes: AG2 Captain Agent 参考架构, 含多 agent 任务分发与 sub-agent 生命周期管理。概念正样本 fixture
+  fixture_kind: concept_positive
+  audit:
+    mechanism_present: true
+    original_expected: ingest
+    mechanism_present_reason: 4 命名组件(Captain/Executor Pool/Task Graph/Sub-Agent Lifecycle)+Delegation
+      Protocol typed schema+因果边
+    evidence_anchors_or_url_lines:
+    - 'Architectural Components: 1. Captain, 2. Executor Pool, 3. Task Graph and Checkpointing,
+      4. Sub-Agent Lifecycle'
+    - 'Delegation Protocol: DispatchMessage/ResultMessage (task_id/executor_capability/scoped_context/constraints)'
+    review_status: confirmed
+    reviewers:
+    - glm5.2-worker
+- url: https://code.claude.com/docs/en/memory
+  domain: Context Engineering
+  expected: ingest
+  notes: Claude Code memory 系统文档, 含 CLAUDE.md / MEMORY.md / 自动记忆三层架构
+  feed_title: Claude Code Memory
+  feed_author: Anthropic
+  feed_published: '2026-06-01'
+  source_publisher: Anthropic
+  source_slug: anthropic-engineering
+  replaced_reason: 原 github.com/anthropics/claude-code/blob/main/docs/memory.md [404];
+    docs 迁移至 code.claude.com
+  off_corpus_rationale: code.claude.com 不在 main_sources; proxy_slug=anthropic-engineering
+    (Anthropic 官方, Claude Code 母站)
+  audit:
+    mechanism_present: true
+    original_expected: ingest
+    mechanism_present_reason: 三层架构(CLAUDE.md/MEMORY.md/自动记忆)命名组件
+    evidence_anchors_or_url_lines:
+    - 'notes: CLAUDE.md / MEMORY.md / 自动记忆三层架构'
+    review_status: confirmed
+    reviewers:
+    - glm5.2-worker
+- url: fixture:vercel-ai-sdk-nosource
+  domain: Harness Engineering
+  expected: ingest
+  notes: Vercel AI SDK agent harness 实现, 含 tool use / streaming / multi-step 模式。无源页
+    fixture (原 repo 404)
+  fixture_kind: no_source_page
+  audit:
+    mechanism_present: true
+    original_expected: ingest
+    mechanism_present_reason: tool registration schema+5-step invocation flow+multi-step
+      loop+maxSteps budget+convergence detection(how/procedural)
+    evidence_anchors_or_url_lines:
+    - 'Tool Invocation Flow: 1-5 steps (extract/validate/execute/feed back/decide)'
+    - 'Multi-Step Loop: 1-5 structure; maxSteps hard budget; Convergence Detection'
+    review_status: confirmed
+    reviewers:
+    - glm5.2-worker
+- url: https://docs.crewai.com/concepts/crews
+  domain: Multi-Agent Orchestration
+  expected: ingest
+  notes: CrewAI crew 概念文档, 含 role-based agent 协作与 sequential/hierarchical 流程
+  feed_title: Crews - CrewAI
+  feed_author: CrewAI
+  feed_published: '2026-05-01'
+  source_publisher: CrewAI
+  source_slug: langchain-blog
+  off_corpus_rationale: crewai.com 不在 main_sources; proxy_slug=langchain-blog (LangGraph/LangChain
+    为多 agent 编排权威)
+  audit:
+    mechanism_present: true
+    original_expected: ingest
+    mechanism_present_reason: role-based agent 协作+sequential/hierarchical 流程(命名流程机制)
+    evidence_anchors_or_url_lines:
+    - 'notes: role-based agent 协作与 sequential/hierarchical 流程'
+    review_status: confirmed
+    reviewers:
+    - glm5.2-worker
+- url: https://code.claude.com/docs/en/sub-agents
+  domain: AI Coding Workflow
+  expected: ingest
+  notes: Claude Code sub-agent 文档, 含 task 分发/隔离/并行控制模式
+  feed_title: Claude Code Sub-Agents
+  feed_author: Anthropic
+  feed_published: '2026-06-01'
+  source_publisher: Anthropic
+  source_slug: anthropic-engineering
+  replaced_reason: 原 github.com/anthropics/claude-code/blob/main/docs/sub-agents.md
+    [404]; docs 迁移至 code.claude.com
+  off_corpus_rationale: code.claude.com 不在 main_sources; proxy_slug=anthropic-engineering
+    (Anthropic 官方, Claude Code 母站)
+  audit:
+    mechanism_present: true
+    original_expected: ingest
+    mechanism_present_reason: task 分发/隔离/并行控制模式(命名机制)
+    evidence_anchors_or_url_lines:
+    - 'notes: task 分发/隔离/并行控制模式'
+    review_status: confirmed
+    reviewers:
+    - glm5.2-worker

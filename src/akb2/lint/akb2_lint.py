@@ -615,8 +615,16 @@ def rule_r13_graph_status_invalid(path, fm, body, ctx):
 
 
 def rule_r14_active_missing_related(path, fm, body, ctx):
-    """PAGE-TEMPLATES §3 active 必填: 至少 1 个 related_* 字段非空."""
+    """PAGE-TEMPLATES §3 active 必填: 至少 1 个 related_* 字段非空.
+
+    F8-B(lead 裁决 1):加 ``status == active`` 守卫——规则名/docstring 都写明 active-only,
+    代码漏守卫是 bug 对齐(非标准放宽)。candidate/proposal 等非 active 状态空 related
+    不触发 R14(冷启动 related 空是诚实状态,不硬塞)。
+    """
     if ctx.get("template_type") == "query-result":
+        return []
+    # F8-B:仅 active 状态触发(规则本身行为对 active 不变;candidate 不再误报)
+    if not ACTIVE_MARK.search(fm):
         return []
     has_any = False
     for fname in RELATED_FIELDS_WHITELIST:

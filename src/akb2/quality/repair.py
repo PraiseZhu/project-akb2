@@ -43,10 +43,18 @@ from src.akb2.quality.checks_structural import (
     RAW_ANCHOR_RE,
     Defect,
     _extract_body_text,
+    _normalize_must_cover_text,
 )
-from src.akb2.quality.grader import run_grader_with_fixture_detailed
+from src.akb2.quality.grader import (
+    ADVISORY_DIMENSIONS,
+    run_grader_with_fixture_detailed,
+)
 from src.akb2.quality.llm_router import RouterConfigError
 from src.akb2.quality.md_table import md_table_cell, split_md_table_row
+from src.akb2.quality.raw_anchors import (
+    declared_anchor_positions,
+    nearest_preceding_anchor,
+)
 from src.akb2.quality.source_ops_scanners import scan_all as scan_source_ops
 from src.akb2.quality.source_ops_scanners.raw_verify import (
     is_command_allowed_for_candidate,
@@ -141,6 +149,19 @@ def _defects_to_summary(defects: list[Defect]) -> list[dict[str, str]]:
             "suggestion": d.suggestion,
         }
         for d in defects
+    ]
+
+
+def _blocking_defects(defects: list[Defect]) -> list[Defect]:
+    """rubric 1.4.0（用户裁决 2026-07-04）：过滤 advisory 加分维缺陷。
+
+    advisory 维（rubric advisory: true,如「新颖增量」）= 有则加分,缺失不作为
+    入库卡点——其缺陷不计 blocking、不阻断 repair 收敛;仍随 final_defects/trace
+    记录（fail-visible,宪法 P4）。非 advisory 维缺陷全保留（收敛判定不放宽）。
+    """
+    return [
+        d for d in (defects or [])
+        if getattr(d, "dimension", "") not in ADVISORY_DIMENSIONS
     ]
 
 
@@ -593,20 +614,16 @@ def _how_command_for_claim(claim: str, idx: int) -> tuple[str, str]:
     )
 
 
-_RAW_ANCHOR_DECL_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(rf"(?m)^#{{1,6}}\s+({RAW_ANCHOR_DECL_RE})(?:[.\s:：]|$)"),
-    re.compile(rf"(?m)^\[raw\s+({RAW_ANCHOR_DECL_RE})\]"),
-    re.compile(rf"(?m)^({RAW_ANCHOR_DECL_RE})_[A-Z_]+\b"),
-    re.compile(rf"(?m)^\|\s*({RAW_ANCHOR_DECL_RE})\s*\|"),
-)
+# P1a:声明形态 + 位置 + 就近映射统一委托 raw_anchors（口径唯一）。旧本地
+# _RAW_ANCHOR_DECL_PATTERNS（4 形态全局,不认 [B4] 目录块收窄、不 canonicalize）已删。
 
 
 def _declared_raw_anchors_with_pos(raw_text: str) -> list[tuple[int, str]]:
-    decls: list[tuple[int, str]] = []
-    for pattern in _RAW_ANCHOR_DECL_PATTERNS:
-        for match in pattern.finditer(raw_text):
-            decls.append((match.start(), match.group(1)))
-    return sorted(decls, key=lambda x: x[0])
+    """Return (position, canonical §X) pairs for all declared raw anchors, sorted.
+
+    P1a:委托 ``raw_anchors.declared_anchor_positions``。
+    """
+    return declared_anchor_positions(raw_text)
 
 
 def _map_span_to_declared_anchor(
@@ -614,18 +631,17 @@ def _map_span_to_declared_anchor(
     span_start: int,
     decls: list[tuple[int, str]] | None = None,
 ) -> str:
-    if not raw_text:
-        return "§A"
+    """P1a:委托 raw_anchors.nearest_preceding_anchor + repair lenient 回落。
+
+    repair 渲染 How 命令须有 [raw §X] 可渲染:无声明 → 回落 ``§A``(raw_archiver
+    REQUIRED_ANCHORS 保证 A 必声明);span 先于所有声明 → 回落首锚。严格 fail-closed
+    由 F4 eligibility 走 _build_real_causal_edges 直接判定,不在此处。
+    """
     if decls is None:
-        decls = _declared_raw_anchors_with_pos(raw_text)
+        decls = declared_anchor_positions(raw_text) if raw_text else []
     if not decls:
         return "§A"
-    chosen = ""
-    for pos, anchor in decls:
-        if pos <= span_start:
-            chosen = anchor
-        else:
-            break
+    chosen = nearest_preceding_anchor(raw_text, span_start, decls)
     return chosen or decls[0][1]
 
 
@@ -805,69 +821,139 @@ def _apply_how_executability_repairs(
     ]
 
 
+def _reinject_must_cover_into_h2_section(
+    lines: list[str],
+    items: list,
+    section_title: str,
+    raw_text: str,
+    decls: list[tuple[int, str]],
+) -> tuple[list[str], int]:
+    """F11-B: re-inject must_cover items into an H2 section when repair rewrite dropped them.
+
+    probe-p9b B 臂 sub-agents ×3 SG-must-cover 死因:compose 阶段 must_cover 4/4 在场,
+    repair 循环 r3 重写 body 时丢了 source_operation 项,旧版只 re-inject source_conclusion,
+    不修 source_operation/source_boundary → SG-must-cover 报缺。本 helper 补 operation/boundary。
+
+    用 _normalize_must_cover_text(与 SG-must-cover 同口径)查在场;literal 替 `→' 避
+    SG-command-recheck 误报(SG-must-cover 归一化 `↔' 同口径,不影响覆盖判定)。
+    Returns (new_lines, additions_count)。
+    """
+    section_range = _find_section_line_range(lines, section_title)
+    if section_range is None:
+        return lines, 0
+    start, end = section_range
+    accumulated = "\n".join(lines[start:end])
+    additions: list[str] = []
+    for item in items:
+        literal = re.sub(r"\s+", " ", item.literal).strip()
+        if not literal or len(literal) > 500:
+            continue
+        if _normalize_must_cover_text(literal) in _normalize_must_cover_text(accumulated):
+            continue  # 已在场(归一化口径)
+        literal_safe = literal.replace("`", "'")  # 避 SG-command-recheck 误报
+        anchor = _map_span_to_declared_anchor(raw_text, item.raw_anchor_span.start, decls)
+        additions.append(f"- [raw {anchor}] (source_grounded) {literal_safe}")
+        accumulated += "\n" + additions[-1]
+    if not additions:
+        return lines, 0
+    insert_at = end
+    while insert_at > start and not lines[insert_at - 1].strip():
+        insert_at -= 1
+    new_lines = lines[:insert_at] + additions + lines[insert_at:]
+    return new_lines, len(additions)
+
+
 def _apply_must_cover_repairs(
     text: str,
     defects: list[Defect],
     raw_text: str | None = None,
 ) -> tuple[str, list[dict[str, str]]]:
-    """Reinsert scanner-required source conclusions into core claims."""
+    """Reinsert scanner-required must_cover literals (conclusion/operation/boundary).
+
+    F11-B: 扩展全 3 kinds。旧版只 re-inject source_conclusion(核心论点),不修
+    source_operation/source_boundary → repair 重写丢项后 SG-must-cover 报缺。
+    """
     if not any(d.dimension == "SG-must-cover" for d in defects):
         return text, []
     raw_grounding_text = raw_text or ""
     if not raw_grounding_text:
         return text, []
-    conclusion_items = [
-        item for item in scan_source_ops(raw_grounding_text) if item.kind == "source_conclusion"
-    ]
-    if not conclusion_items:
+    all_items = scan_source_ops(raw_grounding_text)
+    if not all_items:
         return text, []
 
     lines = text.split("\n")
-    section_range = _find_section_line_range(lines, "核心论点")
-    if section_range is None:
-        return text, []
-    start, end = section_range
-    core_section = "\n".join(lines[start:end])
-    target_text = "\n".join(
-        section
-        for section in (
-            _section_text_by_title(lines, "TLDR"),
-            _section_text_by_title(lines, "关键发现"),
-            core_section,
-        )
-        if section
-    )
     decls = _declared_raw_anchors_with_pos(raw_grounding_text)
-    existing_numbers = [
-        int(match.group(1))
-        for match in re.finditer(r"(?m)^\s*(\d+)\.\s+", core_section)
-    ]
-    next_num = max(existing_numbers, default=0) + 1
-    additions: list[str] = []
-    for item in conclusion_items:
-        literal = re.sub(r"\s+", " ", item.literal).strip()
-        if not literal or literal in target_text:
-            continue
-        anchor = _map_span_to_declared_anchor(
-            raw_grounding_text,
-            item.raw_anchor_span.start,
-            decls,
+    actions: list[dict[str, str]] = []
+
+    # 1. source_conclusion → 核心论点(既有逻辑,编号列表)
+    conclusion_items = [it for it in all_items if it.kind == "source_conclusion"]
+    if conclusion_items:
+        section_range = _find_section_line_range(lines, "核心论点")
+        if section_range is not None:
+            start, end = section_range
+            core_section = "\n".join(lines[start:end])
+            target_text = "\n".join(
+                section
+                for section in (
+                    _section_text_by_title(lines, "TLDR"),
+                    _section_text_by_title(lines, "关键发现"),
+                    core_section,
+                )
+                if section
+            )
+            existing_numbers = [
+                int(match.group(1))
+                for match in re.finditer(r"(?m)^\s*(\d+)\.\s+", core_section)
+            ]
+            next_num = max(existing_numbers, default=0) + 1
+            additions: list[str] = []
+            for item in conclusion_items:
+                literal = re.sub(r"\s+", " ", item.literal).strip()
+                if not literal or literal in target_text:
+                    continue
+                anchor = _map_span_to_declared_anchor(
+                    raw_grounding_text, item.raw_anchor_span.start, decls
+                )
+                additions.append(f"{next_num}. [raw {anchor}] (source_grounded) {literal}")
+                next_num += 1
+            if additions:
+                insert_at = end
+                while insert_at > start and not lines[insert_at - 1].strip():
+                    insert_at -= 1
+                lines = lines[:insert_at] + additions + lines[insert_at:]
+                actions.append({
+                    "section": "核心论点", "changed_sections": "核心论点",
+                    "must_cover_conclusion_count": str(len(additions)),
+                })
+
+    # 2. F11-B: source_operation → 论证与解释 section(含 ### 操作步骤;_how_section_text 覆盖)
+    op_items = [it for it in all_items if it.kind == "source_operation"]
+    if op_items:
+        lines, op_count = _reinject_must_cover_into_h2_section(
+            lines, op_items, "论证与解释", raw_grounding_text, decls
         )
-        additions.append(f"{next_num}. [raw {anchor}] (source_grounded) {literal}")
-        next_num += 1
-    if not additions:
+        if op_count:
+            actions.append({
+                "section": "论证与解释", "changed_sections": "论证与解释",
+                "must_cover_operation_count": str(op_count),
+            })
+
+    # 3. F11-B: source_boundary → 适用边界 section
+    bound_items = [it for it in all_items if it.kind == "source_boundary"]
+    if bound_items:
+        lines, bound_count = _reinject_must_cover_into_h2_section(
+            lines, bound_items, "适用边界", raw_grounding_text, decls
+        )
+        if bound_count:
+            actions.append({
+                "section": "适用边界", "changed_sections": "适用边界",
+                "must_cover_boundary_count": str(bound_count),
+            })
+
+    if not actions:
         return text, []
-    insert_at = end
-    while insert_at > start and not lines[insert_at - 1].strip():
-        insert_at -= 1
-    new_lines = lines[:insert_at] + additions + lines[insert_at:]
-    return "\n".join(new_lines), [
-        {
-            "section": "核心论点",
-            "changed_sections": "核心论点",
-            "must_cover_conclusion_count": str(len(additions)),
-        }
-    ]
+    return "\n".join(lines), actions
 
 
 def _apply_novelty_provenance_repairs(
@@ -962,6 +1048,65 @@ def _is_deterministic_repair_defect(defect: Defect) -> bool:
         or defect.dimension.startswith("A8-")
         or defect.dimension == "SG-provenance-ratio"
     )
+
+
+def _classify_defect_schema(defect: Defect) -> dict[str, str]:
+    """§0.2/D3：结构化 defect schema（统一 repair 路由，防各写一套字符串判断）。
+
+    {defect_type, repairability(hard_fail|repairable), source_node, required_evidence,
+    retry_budget, final_fallback}。repairability 由 _is_deterministic_repair_defect 决定；
+    hard_fail（claim_anchor/evidence_honesty/traceability/F4 0 eligible/no_mechanism/编造/
+    entailment false）不进可通过 repair。
+    """
+    repairable = _is_deterministic_repair_defect(defect)
+    # §0.2/D3 + §0.2/F2 + §0.2/F2-taxonomy 底线白名单：硬 fail 不进 repair（任一 hard_fail
+    # 剩余即 fail-closed）。claim_anchor_rate / evidence_honesty / traceability / poisoned_trace /
+    # entailment false / F4 0 eligible / no_mechanism / 编造 / **A3-锚点真实 / SG 伪合成 anchor**
+    # 均不可 patch（raw 不支撑，不可凭空造；防 LLM"猜一个可用 anchor"洗掉伪引用）。
+    # 注：SG-provenance-ratio 虽与 evidence_honesty 相关，但 _is_deterministic_repair_defect
+    # 允许 rebalance，故归 repairable（不在此 hard_fail 列表）。
+    hard_fail_dims = {
+        "SG-raw-anchor",  # claim_anchor_rate 底线
+        "SG-evidence-honesty",  # evidence_honesty 底线
+        "SG-interpretation-traceability",  # traceability 底线
+        "interpretation_entailment",  # entailment false 硬门
+        "A3-锚点真实",  # §0.2/F2-taxonomy：引用锚点 raw 不存在（伪 anchor）
+    }
+    hard_fail_keywords = (
+        "no_mechanism_signal", "integrity_floor", "0 eligible",
+        "interpretation_entailment", "poisoned_trace", "poisoned-trace",
+        "编造", "claim_anchor", "evidence_honesty", "traceability",
+    )
+    defect_text = f"{defect.dimension} {defect.defect} {defect.location}".lower()
+    is_hard_fail = (
+        defect.dimension in hard_fail_dims
+        or any(kw.lower() in defect_text for kw in hard_fail_keywords)
+    )
+    # §0.2/F2-taxonomy：SG-mechanism-edge-evidence 中只把真实性缺陷（伪/合成 anchor、
+    # 无对应 [raw §X]、raw 不存在）列 hard_fail；保留"漏渲染/缺字段但 extract/raw 已支撑"
+    # 为 repairable（不能一刀切）。
+    if (
+        not is_hard_fail
+        and defect.dimension == "SG-mechanism-edge-evidence"
+    ):
+        sg_truth_keywords = ("伪", "合成", "无对应 [raw", "raw 不存在", "不计 eligible")
+        if any(kw in defect.defect for kw in sg_truth_keywords):
+            is_hard_fail = True
+    if is_hard_fail:
+        repairable = False
+    return {
+        "defect_type": defect.dimension,
+        "repairability": (
+            "hard_fail" if is_hard_fail
+            else ("repairable" if repairable else "semantic_not_patchable")
+        ),
+        "source_node": defect.location,
+        "required_evidence": (
+            "raw/extract 已支撑" if repairable else "raw 不支撑（不可凭空造）"
+        ),
+        "retry_budget": str(MAX_REPAIR_ROUNDS) if repairable else "0",
+        "final_fallback": "fail_closed" if not repairable else "repair_or_fail_closed",
+    }
 
 
 # 根因③(2026-06-20 修):全角→半角等价标点的显式 allow-list(放行口径)。
@@ -1456,6 +1601,40 @@ def _kill_process_group(proc: subprocess.Popen[Any], grace_s: float) -> None:
 # ---------------------------------------------------------------------------
 
 
+# WP-4: repair 收敛护栏常量（D5 震荡/空转/吞节）
+# 连续空转（持平/非单调/吞节回退）≥ 阈值 → fail-visible 早停，不让 wall-clock 空耗。
+REPAIR_IDLE_EARLY_STOP: int = 2
+# 必备 H3（lane 需要）：命名 H2 内的 H3 被重写吞掉时独立 guard 拒收（D5-3）。
+# _verify_unchanged_sections 豁免命名 H2 整 span（含内部 H3），故需独立检测。
+REQUIRED_H3_MARKERS: tuple[str, ...] = ("### 操作步骤",)
+
+
+def _defect_identity(defects: list[Defect]) -> set[str]:
+    """缺陷 identity 集合（dimension+location+defect 归一化签名）。
+
+    WP-4.1 单调护栏：新轮 defect identity 必须是上轮的**子集**（无新增 identity），
+    且总数严格下降；否则回退该轮（防震荡回归，D5-1）。
+    """
+    identity: set[str] = set()
+    for d in defects or []:
+        dim = str(getattr(d, "dimension", "") or "").strip()
+        loc = _normalize_loc(str(getattr(d, "location", "") or ""))
+        defect = str(getattr(d, "defect", "") or "").strip()[:80]
+        identity.add(f"{dim}|{loc}|{defect}")
+    return identity
+
+
+def _required_h3_deleted(prev_text: str, new_text: str) -> list[str]:
+    """检测必备 H3（``### 操作步骤`` 等）被重写吞掉（D5-3）。
+
+    返回 prev 有而 new 没有的必备 H3 标记列表（空 = 无吞节）。
+    仅检测删除（prev 有 new 无），不要求候选页绝对具备——零回归于从未有该 H3 的候选。
+    """
+    if not prev_text or not new_text:
+        return []
+    return [m for m in REQUIRED_H3_MARKERS if m in prev_text and m not in new_text]
+
+
 def run_repair_loop(
     candidate_text: str,
     a_defects: list[Defect],
@@ -1523,8 +1702,28 @@ def run_repair_loop(
     current_text = candidate_text
     current_defects = list(all_defects)
     final_grader_meta: dict[str, Any] = {}
+    # WP-4: 有效轮计数（仅严格单调下降+无新增 identity 才计入）+ 连续空转计数（早停用）。
+    # attempts 硬上限仍是 MAX_REPAIR_ROUNDS（for 循环）；effective_rounds 独立计数空转不计。
+    effective_rounds = 0
+    consecutive_idle = 0
 
     for round_num in range(1, MAX_REPAIR_ROUNDS + 1):
+        # rubric 1.4.0 F15-fix（e2e v7 实证漏洞）：轮首 advisory-only 短路——若当前
+        # 缺陷全为 advisory 加分维(如「新颖增量」),不进本轮 repair(LLM 修不动
+        # advisory 会触发空转早停,把本该收敛的样本判死,v7 idx17 死因)。直接收敛,
+        # advisory 残留随 final_defects 记录(fail-visible)。
+        if not _blocking_defects(current_defects):
+            return {
+                "converged": True,
+                "rounds": round_num - 1,
+                "effective_rounds": effective_rounds,
+                "final_text": current_text,
+                "final_defects": list(current_defects),
+                "signature_written": False,
+                "failure_signature": None,
+                "trace_paths": trace_paths,
+                "final_grader_meta": final_grader_meta,
+            }
         before_hash = _compute_text_hash(current_text)
         # 根因①②:定位认 H2+H3 + location 归一化匹配
         # 标题归一预算一次(消 D×T 重算);body 本轮不变,apply 段复用
@@ -1619,8 +1818,14 @@ def run_repair_loop(
                     )
                 current_defects = grader_result.defects
                 trace_payload["b_defects_after"] = _defects_to_summary(current_defects)
-                if not current_defects:
+                # rubric 1.4.0：advisory 加分维缺陷不阻断收敛（仍记录 fail-visible）
+                if not _blocking_defects(current_defects):
+                    effective_rounds += 1
                     trace_payload["status"] = "converged_after_deterministic"
+                    if current_defects:
+                        trace_payload["advisory_residual"] = _defects_to_summary(
+                            current_defects
+                        )
                     trace_payload["after_text_hash"] = _compute_text_hash(current_text)
                     trace_paths.append(
                         _write_repair_trace(trace_root, round_num, trace_payload, current_defects)
@@ -1628,8 +1833,9 @@ def run_repair_loop(
                     return {
                         "converged": True,
                         "rounds": round_num,
+                        "effective_rounds": effective_rounds,
                         "final_text": current_text,
-                        "final_defects": [],
+                        "final_defects": list(current_defects),
                         "signature_written": False,
                         "failure_signature": None,
                         "trace_paths": trace_paths,
@@ -1655,6 +1861,35 @@ def run_repair_loop(
                         named_sections.add(title)
                         break
             trace_payload["named_sections"] = sorted(named_sections)
+
+        # §0.2/A4 + §0.2/F2：任一 hard_fail 剩余即 fail-closed，不进 repair。
+        # hard_fail（claim_anchor/evidence_honesty/traceability/poisoned_trace/entailment false/
+        # F4 0 eligible/no_mechanism/编造）不可 LLM patch（raw 不支撑，不可凭空造）。
+        # 旧 all(==hard_fail) 口径放水：混合缺陷会把 hard_fail 写进 repair prompt → 改 any。
+        # 仍 fail-closed 不放水（A4 不算救率功劳，省时优化）。
+        if current_defects and any(
+            _classify_defect_schema(d)["repairability"] == "hard_fail"
+            for d in current_defects
+        ):
+            trace_payload["status"] = "a4_hard_fail_early_stop"
+            trace_payload["after_text_hash"] = _compute_text_hash(current_text)
+            trace_payload["hard_fail_defects"] = [
+                {"dimension": d.dimension, "defect": d.defect}
+                for d in current_defects
+                if _classify_defect_schema(d)["repairability"] == "hard_fail"
+            ]
+            trace_paths.append(
+                _write_repair_trace(trace_root, round_num, trace_payload, current_defects)
+            )
+            return _fail_closed(
+                failures_path,
+                current_text,
+                current_defects,
+                round_num,
+                "a4_hard_fail_early_stop",
+                trace_paths=trace_paths,
+                final_grader_meta=final_grader_meta,
+            )
 
         # 构建修复指令(根因③:喂黄金样张作标杆)
         instruction_text = _build_repair_instruction(current_defects)
@@ -1715,14 +1950,48 @@ def run_repair_loop(
         changed_sections = _verify_unchanged_sections(current_text, repaired_text, named_sections)
         trace_payload["changed_sections"] = changed_sections
         if changed_sections:
-            # 违规: 丢弃本轮重写，不更新 current_text
-            # 但仍继续下一轮（可能修复指令不同）
+            # 违规: 丢弃本轮重写，不更新 current_text（空转——非单调改进）
+            # P2-D: 计入 consecutive_idle + 早停检查（不让 wall-clock 空耗）
             trace_payload["status"] = "discarded_changed_sections"
             trace_payload["after_text_hash"] = _compute_text_hash(current_text)
             trace_paths.append(
                 _write_repair_trace(trace_root, round_num, trace_payload, current_defects)
             )
+            consecutive_idle += 1
+            if consecutive_idle >= REPAIR_IDLE_EARLY_STOP:
+                return _fail_closed(
+                    failures_path, current_text, current_defects, round_num,
+                    "repair_idle_early_stop",
+                    trace_paths=trace_paths, final_grader_meta=final_grader_meta,
+                    effective_rounds=effective_rounds,
+                )
             continue
+
+        # WP-4.3: 必备节 guard —— 命名 H2 内 H3（### 操作步骤）被重写吞掉 → 回退该轮。
+        # _verify_unchanged_sections 豁免命名 H2 整 span（含内部 H3），故独立 guard（D5-3）。
+        deleted_h3 = _required_h3_deleted(current_text, repaired_text)
+        if deleted_h3:
+            trace_payload["status"] = "rolled_back_required_h3_deleted"
+            trace_payload["rolled_back_h3"] = deleted_h3
+            trace_payload["after_text_hash"] = _compute_text_hash(current_text)
+            trace_paths.append(
+                _write_repair_trace(trace_root, round_num, trace_payload, current_defects)
+            )
+            consecutive_idle += 1
+            if consecutive_idle >= REPAIR_IDLE_EARLY_STOP:
+                return _fail_closed(
+                    failures_path, current_text, current_defects, round_num,
+                    "repair_idle_early_stop",
+                    trace_paths=trace_paths, final_grader_meta=final_grader_meta,
+                    effective_rounds=effective_rounds,
+                )
+            continue
+
+        # WP-4.1: 捕获本轮接受前状态，供单调护栏比较（防震荡回归，D5-1）
+        prev_text = current_text
+        prev_defects = list(current_defects)
+        prev_identity = _defect_identity(prev_defects)
+        prev_count = len(prev_defects)
 
         # 更新当前文本
         current_text = repaired_text
@@ -1738,8 +2007,32 @@ def run_repair_loop(
         trace_payload["a_defects_after"] = _defects_to_summary(new_a_defects)
 
         if new_a_defects:
-            # A 层仍有缺陷，进入下一轮
+            # WP-4.1: 单调护栏 —— 新 identity 必须是 prev 子集 + 总数严格下降，否则回退
+            new_identity = _defect_identity(new_a_defects)
+            new_ids = new_identity - prev_identity
+            if new_ids or len(new_a_defects) >= prev_count:
+                # 非单调（新增 identity 或未严格下降）→ 回退该轮，不更新 current_text
+                current_text = prev_text
+                current_defects = prev_defects
+                trace_payload["status"] = "rolled_back_no_monotonic_decrease"
+                trace_payload["new_defect_identities"] = sorted(new_ids)[:5]
+                trace_payload["after_text_hash"] = _compute_text_hash(current_text)
+                trace_paths.append(
+                    _write_repair_trace(trace_root, round_num, trace_payload, current_defects)
+                )
+                consecutive_idle += 1
+                if consecutive_idle >= REPAIR_IDLE_EARLY_STOP:
+                    return _fail_closed(
+                        failures_path, current_text, current_defects, round_num,
+                        "repair_idle_early_stop",
+                        trace_paths=trace_paths, final_grader_meta=final_grader_meta,
+                        effective_rounds=effective_rounds,
+                    )
+                continue
+            # 单调接受：有效轮 +1，重置空转
             current_defects = new_a_defects
+            effective_rounds += 1
+            consecutive_idle = 0
             trace_payload["status"] = "a_defects_remaining"
             trace_payload["after_text_hash"] = _compute_text_hash(current_text)
             trace_paths.append(
@@ -1795,9 +2088,14 @@ def run_repair_loop(
         current_defects = grader_result.defects
         trace_payload["b_defects_after"] = _defects_to_summary(current_defects)
 
-        if not current_defects:
-            # 收敛: 无缺陷
+        # rubric 1.4.0：收敛 = 无 blocking 缺陷（advisory 加分维如「新颖增量」不卡
+        # 收敛,残留随 final_defects/trace 记录——fail-visible,宪法 P4）
+        if not _blocking_defects(current_defects):
+            # 收敛: 无 blocking 缺陷
+            effective_rounds += 1
             trace_payload["status"] = "converged"
+            if current_defects:
+                trace_payload["advisory_residual"] = _defects_to_summary(current_defects)
             trace_payload["after_text_hash"] = _compute_text_hash(current_text)
             trace_paths.append(
                 _write_repair_trace(trace_root, round_num, trace_payload, current_defects)
@@ -1805,20 +2103,44 @@ def run_repair_loop(
             return {
                 "converged": True,
                 "rounds": round_num,
+                "effective_rounds": effective_rounds,
                 "final_text": current_text,
-                "final_defects": [],
+                "final_defects": list(current_defects),
                 "signature_written": False,
                 "failure_signature": None,
                 "trace_paths": trace_paths,
                 "final_grader_meta": final_grader_meta,
             }
+        # WP-4.1: B 缺陷单调护栏 —— 同 A 路径
+        new_identity = _defect_identity(current_defects)
+        new_ids = new_identity - prev_identity
+        if new_ids or len(current_defects) >= prev_count:
+            current_text = prev_text
+            current_defects = prev_defects
+            trace_payload["status"] = "rolled_back_no_monotonic_decrease"
+            trace_payload["new_defect_identities"] = sorted(new_ids)[:5]
+            trace_payload["after_text_hash"] = _compute_text_hash(current_text)
+            trace_paths.append(
+                _write_repair_trace(trace_root, round_num, trace_payload, current_defects)
+            )
+            consecutive_idle += 1
+            if consecutive_idle >= REPAIR_IDLE_EARLY_STOP:
+                return _fail_closed(
+                    failures_path, current_text, current_defects, round_num,
+                    "repair_idle_early_stop",
+                    trace_paths=trace_paths, final_grader_meta=final_grader_meta,
+                    effective_rounds=effective_rounds,
+                )
+            continue
+        effective_rounds += 1
+        consecutive_idle = 0
         trace_payload["status"] = "b_defects_remaining"
         trace_payload["after_text_hash"] = _compute_text_hash(current_text)
         trace_paths.append(
             _write_repair_trace(trace_root, round_num, trace_payload, current_defects)
         )
 
-    # 3 轮耗尽后仍有缺陷 → fail-closed
+    # 3 轮耗尽后仍有缺陷 → fail-closed（attempts 硬上限 = MAX_REPAIR_ROUNDS）
     return _fail_closed(
         failures_path,
         current_text,
@@ -1827,6 +2149,7 @@ def run_repair_loop(
         "distill_no_converge",
         trace_paths=trace_paths,
         final_grader_meta=final_grader_meta,
+        effective_rounds=effective_rounds,
     )
 
 
@@ -1838,6 +2161,7 @@ def _fail_closed(
     error_class: str,
     trace_paths: list[str] | None = None,
     final_grader_meta: dict[str, Any] | None = None,
+    effective_rounds: int = 0,
 ) -> dict[str, Any]:
     """不收敛出口: 落故障签名 + 返回 fail-closed 结果。
 
@@ -1845,8 +2169,10 @@ def _fail_closed(
         failures_path: failures.jsonl 路径
         final_text: 最终稿件文本
         remaining_defects: 剩余缺陷
-        rounds: 已用轮数
-        error_class: 故障分类（distill_no_converge 或 grader_all_down）
+        rounds: 已用 attempts 轮数（硬上限 MAX_REPAIR_ROUNDS）
+        error_class: 故障分类（distill_no_converge / grader_all_down /
+            repair_idle_early_stop 等）
+        effective_rounds: 实际有效轮数（空转不计，WP-4.2）
 
     Returns:
         dict: 含 converged=False 和签名信息
@@ -1861,6 +2187,7 @@ def _fail_closed(
     return {
         "converged": False,
         "rounds": rounds,
+        "effective_rounds": effective_rounds,
         "final_text": final_text,
         "final_defects": remaining_defects,
         "signature_written": True,

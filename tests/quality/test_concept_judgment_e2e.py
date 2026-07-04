@@ -47,9 +47,16 @@ def _concept_positive_extract() -> dict:
             {"name": "组件B", "role": "process"},
             {"name": "组件C", "role": "output"},
         ],
+        # §0.2/D1：eligible edge（source_causal + evidence + evidence_anchor）→ F4 pass
         "causal_edges": [
-            {"from": "组件A", "to": "组件B", "relation": "feeds"},
-            {"from": "组件B", "to": "组件C", "relation": "produces"},
+            {
+                "from": "组件A", "to": "组件B", "relation": "feeds",
+                "edge_kind": "source_causal", "evidence": "A feeds B", "evidence_anchor": "§A",
+            },
+            {
+                "from": "组件B", "to": "组件C", "relation": "produces",
+                "edge_kind": "source_causal", "evidence": "B produces C", "evidence_anchor": "§B",
+            },
         ],
         "how_steps": [],
     }
@@ -90,7 +97,7 @@ def _run_judgment(extract: dict, grader_content: dict) -> tuple[bool, str]:
     Returns (overall_pass, reject_reason)。reject_reason 标明在哪一层拒（floor/grader/score）。
     """
     # 1. 完整性地板（任一成员 fail → 拒，加权分不算）
-    floor = evaluate_integrity_floor(extract, "concept")
+    floor = evaluate_integrity_floor(extract, "concept", raw_anchors={"§A", "§B"})
     if not floor.passed:
         return False, f"floor:{floor.failed_floors}"
 

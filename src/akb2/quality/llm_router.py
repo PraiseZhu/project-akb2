@@ -151,6 +151,27 @@ def _unique_env_names(env_names: list[str]) -> list[str]:
     return unique
 
 
+def validate_maker_checker_separation(maker_family: str, checker_family: str) -> None:
+    """F10-D: 宪法护栏——maker 与 checker 必须不同族(无自评自批)。
+
+    A/B 双臂对比通过 AKB2_DISTILL_FAMILY/AKB2_GRADER_FAMILY env 覆盖模型族,但两族
+    相同时 fail-fast 拒启动(防 maker/checker 同族自评自批,违宪法 P7/Maker-Checker
+    异族分离)。7×24 禁 -preview 由 _validate_model_family 在调用时拒(本函数不重复)。
+    -preview 族在 env 设置阶段本函数不拦(留给 _validate_model_family 调用点拒)。
+    """
+    if not maker_family or not checker_family:
+        raise RouterConfigError(
+            f"maker/checker 模型族为空: maker={maker_family!r} checker={checker_family!r}"
+        )
+    if maker_family == checker_family:
+        raise RouterConfigError(
+            f"宪法护栏:maker({maker_family})与 checker({checker_family})同族,"
+            f"违 Maker-Checker 异族分离(P7)。A/B 双臂需用不同族:"
+            f"A 臂 = deepseek-v4-pro 提炼 / gpt-5.4 grader;"
+            f"B 臂 = gpt-5.4 提炼 / deepseek-v4-pro grader。"
+        )
+
+
 def _validate_model_family(model_family: str) -> dict[str, Any]:
     """验证模型家族名并返回对应配置。
 

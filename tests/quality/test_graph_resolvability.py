@@ -257,7 +257,7 @@ class TestFilterUnresolvableEdges:
             "anthropic-effective-context-engineering",
             "mcp-spec",
         ]
-        fe, fc, _dropped = _filter_resolvable_graph_edges(edges, concepts, known, None)
+        fe, fc, _dropped, _de = _filter_resolvable_graph_edges(edges, concepts, known, None)
         kept_targets = [e.get("concept") or e.get("target") for e in fe]
         assert "loop-engineering" not in kept_targets, "发明 slug 须被过滤"
         assert "concept-context-engineering" in kept_targets
@@ -273,7 +273,7 @@ class TestFilterUnresolvableEdges:
         from src.akb2.quality.distill import _filter_resolvable_graph_edges
 
         edges = [{"concept": "whatever-invented"}]
-        fe, fc, _dropped = _filter_resolvable_graph_edges(edges, ["whatever-invented"], None, None)
+        fe, fc, _dropped, _de = _filter_resolvable_graph_edges(edges, ["whatever-invented"], None, None)
         assert fe == edges, "known/pending 均 None 时须原样返回（兼容）"
         assert fc == ["whatever-invented"]
 
@@ -282,7 +282,7 @@ class TestFilterUnresolvableEdges:
         from src.akb2.quality.distill import _filter_resolvable_graph_edges
 
         edges = [{"concept": "context-engineering", "relation_type": "related"}]
-        fe, _, _dropped = _filter_resolvable_graph_edges(
+        fe, _, _dropped, _de = _filter_resolvable_graph_edges(
             edges, [], ["concept-context-engineering"], None
         )
         assert fe == edges, "裸名 target 须经 SC-2a 前缀归一化保留"
@@ -357,7 +357,7 @@ class TestSC2PlaceholderProtocol:
             {"concept": "concept-x", "relation_type": "related"},
             {"concept": "loop-engineering", "relation_type": "related"},
         ]
-        kept_e, kept_c, dropped = _filter_resolvable_graph_edges(
+        kept_e, kept_c, dropped, _de = _filter_resolvable_graph_edges(
             edges, ["loop-engineering"], ["concept-x"], None
         )
         assert "loop-engineering" in dropped, "被 drop 的 target 须进 dropped 列表"

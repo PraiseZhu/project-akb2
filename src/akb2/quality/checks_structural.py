@@ -27,6 +27,13 @@ from dataclasses import dataclass
 import yaml
 
 from src.akb2.quality.md_table import split_md_table_row
+from src.akb2.quality.raw_anchors import (
+    ANCHOR_TOKEN_PAT,
+    RAW_ANCHOR_REF_RE,
+    canonicalize_anchor,
+    declared_anchor_positions,
+    declared_anchor_set,
+)
 from src.akb2.quality.source_ops_scanners import scan_all as _scan_source_evidence
 from src.akb2.quality.source_ops_scanners.raw_verify import (
     verify_commands_in_raw as _verify_commands_in_raw,
@@ -94,9 +101,9 @@ GRAPH_EDGE_COLUMNS: tuple[str, ...] = (
 GRAPH_EDGE_STRENGTHS: set[str] = {"strong", "medium", "weak"}
 GRAPH_EDGE_PROVENANCES: set[str] = {"source_grounded", "akb_interpretation"}
 PROVENANCE_MARKERS: tuple[str, ...] = ("(source_grounded)", "(akb_interpretation)")
-RAW_ANCHOR_TOKEN_RE = re.compile(r"§[A-Z0-9]+")
-RAW_ANCHOR_RE = re.compile(r"\[raw\s+(§[A-Z0-9]+)\]")
-RAW_ANCHOR_DECL_RE = r"§[A-Z0-9]+"
+RAW_ANCHOR_TOKEN_RE = re.compile(ANCHOR_TOKEN_PAT)
+RAW_ANCHOR_RE = RAW_ANCHOR_REF_RE
+RAW_ANCHOR_DECL_RE = ANCHOR_TOKEN_PAT
 MD_TABLE_SEPARATOR_RE = re.compile(r":?-{3,}:?")
 
 # Candidate self-gate 约束：这些不是基础结构格式检查，而是 maker 侧出稿前
@@ -107,7 +114,7 @@ MIN_HOW_EXECUTABLE_STEPS: int = 3
 CONTENT_LANE_CONCEPT: str = "concept"
 # step-3 SC-3e：concept 图谱可调用性满分（边 resolve 到真实节点/pending 共指）/ 假边封顶。
 GRAPH_RESOLVE_FULL_SCORE: float = 2.0
-GRAPH_RESOLVE_UNRESOLVED_CAP: float = 0.5
+# F14-A: GRAPH_RESOLVE_UNRESOLVED_CAP(旧 0.5)是死常量无消费方,已删。
 # pending 队列共指阈值：边 target 未命中已有节点但 pending 中 ≥此数共指也算可 resolve。
 GRAPH_PENDING_COREF_MIN: int = 3
 
@@ -138,7 +145,7 @@ FORBIDDEN_HOW_FALLBACK_MARKERS: tuple[str, ...] = (
     "无可复制命令",
 )
 HOW_STEP_COMMAND_RE = re.compile(
-    r"(?m)^\s*(?:[-*]\s*)?\d+\.\s+\[raw\s+§[A-Z0-9]+\]\s+"
+    rf"(?m)^\s*(?:[-*]\s*)?\d+\.\s+\[raw\s+{ANCHOR_TOKEN_PAT}\]\s+"
     r"\((source_grounded|akb_interpretation)\)\s+.+?`([^`\n]+)`"
 )
 FORBIDDEN_HARDCODED_COMPARISONS: tuple[str, ...] = (
@@ -233,27 +240,14 @@ def _extract_body_text(text: str) -> str:
 
 
 def _extract_raw_anchors(raw_content: str) -> set[str]:
-    """提取 raw 文件中声明过的 `§X` 锚点。
+    """提取 raw 文件中声明过的 canonical `§X` 锚点集合。
 
-    raw 归档当前存在四类合法声明形态：
-    - markdown 章节标题：`# §A Loop`、`## §A. 开篇`
-    - raw 段落行：`[raw §A] ...`
-    - defuddle/archiver 标记：`§A_CONTENT_START`
-    - 锚点目录表：`| §A | 开篇 |`
-
-    只把行首、标题、表格单元、`[raw §X]` 行和 `_CONTENT_START`
-    识别为声明，避免正文里偶然提到 `§A` 就被当作可引用锚点。
+    P1a:口径统一到 ``src.akb2.quality.raw_anchors.declared_anchor_set``——heading 与
+    marker 形态全 raw 生效;表格单元 `| §X |` 与行首 `[raw §X]` 只在 `## 锚点目录` 块内
+    识别(防正文表格/示例行偶然提到 `§Z` 被当声明)。marker 后缀 `_CONTENT_START`/
+    `_CONTENT_END` 剥离归一,业务下划线锚(`§I_LIMITATIONS` 类)保留全名。
     """
-    patterns = (
-        re.compile(rf"(?m)^#{{1,6}}\s+({RAW_ANCHOR_DECL_RE})(?:[.\s:：]|$)"),
-        re.compile(rf"(?m)^\[raw\s+({RAW_ANCHOR_DECL_RE})\]"),
-        re.compile(rf"(?m)^({RAW_ANCHOR_DECL_RE})_[A-Z_]+\b"),
-        re.compile(rf"(?m)^\|\s*({RAW_ANCHOR_DECL_RE})\s*\|"),
-    )
-    anchors: set[str] = set()
-    for pattern in patterns:
-        anchors.update(pattern.findall(raw_content))
-    return anchors
+    return declared_anchor_set(raw_content)
 
 
 # ---------------------------------------------------------------------------
@@ -290,11 +284,18 @@ def check_a1_sections(text: str) -> list[Defect]:
 # ---------------------------------------------------------------------------
 
 
-def check_a2_frontmatter(text: str) -> list[Defect]:
+def check_a2_frontmatter(
+    text: str, *, content_lane: str = "", promotion_mode: str = "proposal"
+) -> list[Defect]:
     """检查 frontmatter 硬字段约束。
 
     A2: source_refs≥1, future_questions 2-3, related_concepts≥2,
         gate_decision 必须 null, gate_reason≤150 字符
+
+    §0.2/D8：concept + proposal 模式接受 ``related_concepts>=2 OR proposed_graph_nodes>=1``
+    （冷启动：resolver 未 resolve 足够 related 时，写 proposed_graph_nodes 待 adjudication）。
+    active/lint（promotion_mode != proposal）仍要求真实 related_concepts>=2（proposed
+    不替代 active 的 real_link）。
     """
     defects: list[Defect] = []
     try:
@@ -387,16 +388,38 @@ def check_a2_frontmatter(text: str) -> list[Defect]:
                     )
                 )
 
-    # related_concepts >= 2
+    # related_concepts >= 2  （§0.2/D8：concept+proposal 接受 proposed_graph_nodes>=1 替代）
     rc = fm.get("related_concepts", [])
+    proposed_nodes = fm.get("proposed_graph_nodes", [])
+    is_concept_proposal = (
+        str(content_lane).lower() == "concept"
+        and str(promotion_mode).lower() == "proposal"
+    )
     if isinstance(rc, list):
-        if len(rc) < MIN_RELATED_CONCEPTS:
+        rc_ok = len(rc) >= MIN_RELATED_CONCEPTS
+        proposed_ok = (
+            is_concept_proposal
+            and isinstance(proposed_nodes, list)
+            and len(proposed_nodes) >= 1
+        )
+        if not (rc_ok or proposed_ok):
             defects.append(
                 Defect(
                     dimension="A2-frontmatter",
                     location="frontmatter.related_concepts",
-                    defect=f"related_concepts 数量不足: {len(rc)} < {MIN_RELATED_CONCEPTS}",
-                    suggestion="添加至少 2 个相关概念",
+                    defect=(
+                        f"related_concepts 数量不足: {len(rc)} < {MIN_RELATED_CONCEPTS}"
+                        + (
+                            "（concept+proposal 可用 proposed_graph_nodes>=1 替代）"
+                            if is_concept_proposal
+                            else ""
+                        )
+                    ),
+                    suggestion=(
+                        "添加至少 2 个可 resolve 的相关概念"
+                        + ("，或 concept 冷启动写 proposed_graph_nodes>=1"
+                           if is_concept_proposal else "")
+                    ),
                 )
             )
     else:
@@ -456,8 +479,11 @@ def check_a3_raw_anchors(text: str, raw_content: str | None = None) -> list[Defe
 
     body = _extract_body_text(text)
 
-    # 提取所有 [raw §X] 引用
-    referenced_anchors = set(RAW_ANCHOR_RE.findall(body))
+    # 提取所有 [raw §X] 引用,canonicalize 后与 raw 声明集比对
+    # (引用 §A_CONTENT_START 与声明 §A 经 canonicalize 都归一为 §A)
+    referenced_anchors = {
+        canonicalize_anchor(a) for a in RAW_ANCHOR_RE.findall(body)
+    }
 
     raw_anchors = _extract_raw_anchors(raw_content)
 
@@ -484,7 +510,7 @@ _CONCEPT_PREFIX = "concept-"
 
 
 def _slug_normalize_variants(slug: str) -> set[str]:
-    """返回一个 slug 的归一化等价形式集合（裸名 + concept- 前缀互译）。
+    """返回一个 slug 的归一化等价形式集合（裸名 + concept- 前缀互译 + 下划线↔连字符互认）。
 
     vault 概念页命名规范为 concept-<name>（main-pipeline-golden-sample.md 回边
     concept-{harness-engineering,...}；wiki/concepts/ 文件名同前缀；现有概念页
@@ -495,16 +521,105 @@ def _slug_normalize_variants(slug: str) -> set[str]:
 
     非 concept- 开头的 slug 会额外生成 concept- 前缀形式参与匹配——若对方
     集合无该前缀项则自然不命中，不产生误报。
+
+    F10-B(probe-p8):下划线↔连字符互认——LLM/D8 产 loop_engineering(下划线 slug),
+    vault 文件名 loop-engineering(连字符),旧版精确匹配永远 miss → 4 样本图谱维度
+    全挂。本函数把 _ 与 - 互译加入等价集,两侧互认。只修口径,不放宽 resolve 语义
+    (真不存在的概念仍 miss:fake_concept 生成 fake_concept/fake-concept/...,
+    known 无任一形式仍 miss)。
     """
     s = slug.strip().lower()
     if not s:
         return set()
     variants = {s}
-    if s.startswith(_CONCEPT_PREFIX):
-        variants.add(s[len(_CONCEPT_PREFIX):])
-    else:
-        variants.add(f"{_CONCEPT_PREFIX}{s}")
+    # F10-B: 下划线↔连字符互认
+    if "_" in s:
+        variants.add(s.replace("_", "-"))
+    if "-" in s:
+        variants.add(s.replace("-", "_"))
+    # concept- 前缀互译(对每个变体都生成 concept- 前缀形式)
+    expanded: set[str] = set()
+    for v in variants:
+        if v.startswith(_CONCEPT_PREFIX):
+            expanded.add(v[len(_CONCEPT_PREFIX):])
+        else:
+            expanded.add(f"{_CONCEPT_PREFIX}{v}")
+    variants |= expanded
     return variants
+
+
+def _target_in_proposed_nodes(target: str, proposed_ids: set[str]) -> bool:
+    """F14-A: target 是否 ∈ proposed_graph_nodes ids(归一化口径,_↔-/concept- 互认)。
+
+    proposed slug 用 _slugify_component_id(下划线),target 是原 concept 串(可能连字符)。
+    用 _slug_normalize_variants 两侧归一化后交集判定(同 F10-B 口径)。
+    """
+    if not target or not proposed_ids:
+        return False
+    tvars = _slug_normalize_variants(target)
+    if not tvars:
+        return False
+    return any(tvars & _slug_normalize_variants(pid) for pid in proposed_ids)
+
+
+# F14-A-fix(reviewer blocking:假 target + 真锚可混过):target 词面支撑校验常量。
+# 显著 token = len≥此值且非泛词;泛词单独出现不构成支撑(fake-concept 的 "concept")。
+# F14-A-fix3(reviewer 第八轮):补 AKB 领域高频泛词——agent 文档几乎必含 "agent(s)",
+# 让 agent-workflow/tool-framework 类泛化 target 仅靠领域泛词命中即豁免 = 假绿。
+# 全泛词 target 过滤后为空 → fail-closed 拒(loop-engineering 靠 loop、quality-gate
+# 靠 quality/gate 仍可过——它们是具体词)。
+_TARGET_SUPPORT_TOKEN_MIN_LEN: int = 4
+_TARGET_SUPPORT_GENERIC_TOKENS: frozenset[str] = frozenset({
+    "concept", "system", "model", "based", "using", "with", "engineering",
+    "framework", "pattern", "approach", "design", "method",
+    # F14-A-fix3 领域泛词(含复数形态,与朴素复数匹配对齐)
+    "agent", "agents", "tool", "tools", "workflow", "workflows",
+    "pipeline", "pipelines", "process", "processes", "component", "components",
+    "module", "modules",
+})
+
+
+def _anchor_block_texts(raw_content: str | None) -> dict[str, str]:
+    """F14-A-fix2: raw 锚段文本映射(canonical anchor → 该锚至下一锚声明间原文)。
+
+    词面支撑校验的**唯一信任源**——LLM evidence 字符串可自写 target token 回显
+    (reviewer 第七轮反例),raw 锚段原文不可变。无 raw → 空映射(调用方 fail-closed)。
+    """
+    if not raw_content:
+        return {}
+    decls = declared_anchor_positions(raw_content)
+    blocks: dict[str, str] = {}
+    for i, (pos, name) in enumerate(decls):
+        end = decls[i + 1][0] if i + 1 < len(decls) else len(raw_content)
+        blocks[name] = blocks.get(name, "") + raw_content[pos:end]
+    return blocks
+
+
+def _target_supported_by_text(target: str, text: str) -> bool:
+    """F14-A-fix2: pending 边 target 必须在 **raw 锚段原文** 中有词面支撑。
+
+    reviewer 两轮反例:(1) raw §A 讲 "Captain dispatches tasks to Executor Pool",
+    LLM 把 target 写成 fake-concept 塞进 proposed_graph_nodes;(2) LLM 再把
+    "fake concept" 回显进自己写的 evidence 字符串,骗过对 evidence 的校验。故本函数
+    的 text **必须传 raw 锚段原文**(_anchor_block_texts 取),不得传 LLM evidence。
+    判据:target 标签显著 token(len≥4,非泛词)至少 1 个以词界形式(允许朴素复数)
+    出现在 text;无支撑/无 raw 段 → 渲染不产行 + A4 不豁免(fail-closed)。
+    """
+    if not target or not text:
+        return False
+    text_lower = text.lower()
+    tokens = [
+        t
+        for t in re.split(r"[-_\s/]+", str(target).lower())
+        if len(t) >= _TARGET_SUPPORT_TOKEN_MIN_LEN
+        and t not in _TARGET_SUPPORT_GENERIC_TOKENS
+    ]
+    if not tokens:
+        return False  # 全泛词/全短词 target(如 fake "concept")→ 无从支撑,拒
+    return any(
+        re.search(rf"(?<![a-z0-9]){re.escape(t)}(?:s|es)?(?![a-z0-9])", text_lower)
+        for t in tokens
+    )
 
 
 def _resolve_graph_node(
@@ -544,6 +659,7 @@ def check_a4_graph_edges(
     known_concepts: list[str] | None = None,
     pending_queue: list[str] | None = None,
     content_lane: str = "",
+    raw_content: str | None = None,
 ) -> list[Defect]:
     """检查图谱关系表中每条边是否列齐且 provenance 清晰。
 
@@ -562,6 +678,20 @@ def check_a4_graph_edges(
         return defects
 
     resolve_enabled = _is_concept_lane(content_lane)
+    # F14-A: 冷启动 pending 边豁免——frontmatter graph_pending=true 且 target ∈
+    # proposed_graph_nodes ids 且 evidence 含 [raw §X](锚∈声明集由 compose 已确保)
+    # 的边,是 D8 proposal 语义(待 adjudication)不是假边,不报 A4-图谱resolve。
+    # 三条件缺一不可(防编造 target 借豁免放行)。
+    fm = _parse_frontmatter(text)
+    graph_pending = bool(fm.get("graph_pending", False))
+    proposed_node_ids: set[str] = set()
+    for pn in fm.get("proposed_graph_nodes", []) or []:
+        if isinstance(pn, dict):
+            slug = str(pn.get("slug", "")).strip()
+            if slug:
+                proposed_node_ids.add(slug)
+    # F14-A-fix2:词面支撑的信任源 = raw 锚段原文;无 raw_content → 空映射 → 不豁免。
+    _a4_anchor_blocks = _anchor_block_texts(raw_content)
 
     # 检测表格行: | target | relation | strength | provenance | evidence |
     # 在 图谱关系 节中查找表格
@@ -670,8 +800,33 @@ def check_a4_graph_edges(
                         )
                         # step-3 SC-3e/A3-8：concept 边 target 必须确定性 resolve（纯代码）。
                         # 未 resolve = 假边/悬空引用，报缺陷（weighted_score 据此把图谱分封顶）。
-                        if resolve_enabled and target and not _resolve_graph_node(
-                            target, known_concepts, pending_queue
+                        # F14-A: 冷启动 pending 边豁免——graph_pending=true 且 target ∈
+                        # proposed_graph_nodes ids(归一化口径)且 evidence 含
+                        # [raw §X](D8 proposal,非假边)
+                        # 且 target 在 **raw 锚段原文** 中有词面支撑(F14-A-fix2:
+                        # 信任源必须是 raw 段,LLM evidence 可自写回显骗过——reviewer
+                        # 第七轮反例;无 raw_content → 空块 → 不豁免 fail-closed)。
+                        _ev_anchor_m = RAW_ANCHOR_RE.search(evidence)
+                        _ev_block = (
+                            _a4_anchor_blocks.get(
+                                canonicalize_anchor(_ev_anchor_m.group(1)), ""
+                            )
+                            if _ev_anchor_m
+                            else ""
+                        )
+                        is_pending_exempt = (
+                            graph_pending
+                            and _target_in_proposed_nodes(target, proposed_node_ids)
+                            and _ev_anchor_m is not None
+                            and _target_supported_by_text(target, _ev_block)
+                        )
+                        if (
+                            resolve_enabled
+                            and target
+                            and not is_pending_exempt
+                            and not _resolve_graph_node(
+                                target, known_concepts, pending_queue
+                            )
                         ):
                             defects.append(
                                 Defect(
@@ -683,7 +838,9 @@ def check_a4_graph_edges(
                                     ),
                                     suggestion=(
                                         "把 target 指向已存在的概念页/源，"
-                                        "或在 pending 队列累积足量共指后再建边"
+                                        "或在 pending 队列累积足量共指后再建边，"
+                                        "或冷启动写 proposed_graph_nodes + graph_pending=true"
+                                        "（带真实 raw 锚证据的 pending 边豁免 A4）"
                                     ),
                                 )
                             )
@@ -980,7 +1137,10 @@ def run_structural_checks(
     defects: list[Defect] = []
 
     defects.extend(check_a1_sections(text))
-    defects.extend(check_a2_frontmatter(text))
+    # §0.2/D8：传 content_lane + promotion_mode=proposal（concept 冷启动接受 proposed_graph_nodes）
+    defects.extend(
+        check_a2_frontmatter(text, content_lane=content_lane, promotion_mode="proposal")
+    )
     defects.extend(check_a3_raw_anchors(text, raw_content))
     # step-3 SC-3e/A3-8：check_a4 增 known_concepts/pending_queue 形参——concept 图谱边
     # 必须 resolve 到真实节点或 pending ≥3 共指（纯代码确定性查，不调 LLM）。
@@ -990,6 +1150,7 @@ def run_structural_checks(
             known_concepts=known_concepts,
             pending_queue=pending_queue,
             content_lane=content_lane,
+            raw_content=raw_content,
         )
     )
     defects.extend(check_a5_wikilinks(text, pending_queue, known_concepts))
@@ -1001,6 +1162,154 @@ def run_structural_checks(
 
 def _body_without_frontmatter(text: str) -> str:
     return _extract_body_text(text)
+
+
+# §0.2/D7/C1：机制组件与因果边证据表 SG 检查
+_VALID_EDGE_KIND_LABELS = {
+    "source_causal", "llm_evidence", "inferred_from_structure",
+    "inferred_from_structure (weak)", "",
+}
+
+
+def _parse_mechanism_tables(body: str) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    """从 body 的 `## 机制组件与因果边证据` 节解析 components + edges 表行。
+
+    返回 (components, edges)，每项是 {col: cell} dict。节缺失 → ([], [])。
+    """
+    import re
+
+    section_match = re.search(
+        r"## 机制组件与因果边证据\s*(.*?)(?=\n## |\Z)", body, re.DOTALL
+    )
+    if not section_match:
+        return [], []
+    section = section_match.group(1)
+    # 拆 components / edges 两表（按 "组件：" / "因果边：" 标记）
+    comp_part_match = re.search(
+        r"组件：\s*\n\s*\|[^\n]*\n\|[-| ]+\n(.*?)(?=\n\s*因果边：|\Z)",
+        section, re.DOTALL,
+    )
+    edge_part_match = re.search(
+        r"因果边：\s*\n\s*\|[^\n]*\n\|[-| ]+\n(.*?)(?=\n## |\Z)",
+        section, re.DOTALL,
+    )
+    comp_cols = ["component_id", "name", "role", "evidence_anchor", "evidence_sentence"]
+    edge_cols = ["from", "to", "relation", "edge_kind", "evidence_anchor", "evidence_sentence"]
+
+    def parse_rows(part: str, cols: list[str]) -> list[dict[str, str]]:
+        rows = []
+        for line in (part or "").strip().splitlines():
+            line = line.strip()
+            if not line.startswith("|") or "---" in line:
+                continue
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            if len(cells) >= len(cols):
+                rows.append(dict(zip(cols, cells[: len(cols)], strict=False)))
+        return rows
+
+    components = parse_rows(comp_part_match.group(1) if comp_part_match else "", comp_cols)
+    edges = parse_rows(edge_part_match.group(1) if edge_part_match else "", edge_cols)
+    return components, edges
+
+
+def _check_sg_mechanism_edge_evidence(
+    body: str, content_lane: str, raw_anchors: set[str] | None = None
+) -> list[Defect]:
+    """§0.2/D7/C1 + §0.2/F5：SG-mechanism-edge-evidence — 机制组件与因果边证据表完整性。
+
+    - concept + 节缺失 → defect（concept 须渲染机制证据表供 grader H3/A 层消费）
+    - eligible edge（source_causal/llm_evidence）空 evidence 或 evidence_anchor → defect
+    - §0.2/F5：eligible edge 的 evidence_anchor 须 ∈ raw 声明 anchor 全集（与 F4 统一口径，
+      复用 _extract_raw_anchors 同源判断）；**不再要求正文额外渲染 [raw §X]**——
+      旧口径要求正文有 `[raw §X]`（只来自 claims，不覆盖所有 raw anchor）→ F4 认可的真边
+      （anchor∈raw 但未被 claim 引用）被 SG 拒 → 7 条 compose_failed。统一为 raw 全集。
+    - 未知 edge_kind → defect
+    - edge 端点不在 components → defect
+    - inferred 弱边须标 weak（edge_kind 含 inferred_from_structure）
+    """
+    defects: list[Defect] = []
+    components, edges = _parse_mechanism_tables(body)
+    comp_names = {c.get("name", "") for c in components if c.get("name")}
+
+    if "## 机制组件与因果边证据" not in body:
+        if str(content_lane).lower() == "concept":
+            defects.append(
+                Defect(
+                    dimension="SG-mechanism-edge-evidence",
+                    location="正文.机制组件与因果边证据",
+                    defect="concept 候选缺机制组件与因果边证据节",
+                    suggestion="concept 须渲染 ## 机制组件与因果边证据 两表供 grader H3 审语义",
+                )
+            )
+        return defects
+
+    for idx, e in enumerate(edges, 1):
+        kind = (e.get("edge_kind") or "").strip()
+        # 未知 edge_kind（"inferred_from_structure (weak)" 渲染标签合法）
+        if kind and kind not in _VALID_EDGE_KIND_LABELS:
+            defects.append(
+                Defect(
+                    dimension="SG-mechanism-edge-evidence",
+                    location=f"正文.机制组件与因果边证据.edges[{idx}]",
+                    defect=f"未知 edge_kind: {kind}",
+                    suggestion="edge_kind 用 source_causal/llm_evidence/inferred_from_structure",
+                )
+            )
+        # eligible edge 须带 evidence + evidence_anchor
+        is_eligible = kind in ("source_causal", "llm_evidence")
+        if is_eligible:
+            if not (e.get("evidence_sentence") or "").strip():
+                defects.append(
+                    Defect(
+                        dimension="SG-mechanism-edge-evidence",
+                        location=f"正文.机制组件与因果边证据.edges[{idx}]",
+                        defect=f"eligible 边 {kind} 缺 evidence 句",
+                        suggestion="source_causal/llm_evidence 边须带原文 evidence 句",
+                    )
+                )
+            anchor = (e.get("evidence_anchor") or "").strip()
+            if not anchor:
+                defects.append(
+                    Defect(
+                        dimension="SG-mechanism-edge-evidence",
+                        location=f"正文.机制组件与因果边证据.edges[{idx}]",
+                        defect=f"eligible 边 {kind} 缺 evidence_anchor",
+                        suggestion="source_causal/llm_evidence 边须带 §X evidence_anchor",
+                    )
+                )
+            elif raw_anchors is not None and anchor not in raw_anchors:
+                # §0.2/F1 + §0.2/F5：evidence_anchor 须 ∈ raw 声明 anchor 全集（与 F4 统一口径，
+                # 复用 _extract_raw_anchors 同源判断）；不再要求正文额外渲染 [raw §X]。
+                # 防伪仍成立：伪 §Z/合成 §raw 不在 raw 声明集 → 不计 eligible（破坏 traceability）。
+                # raw_anchors=None 时跳过此检查（无 raw_content 兜底，不阻断）。
+                defects.append(
+                    Defect(
+                        dimension="SG-mechanism-edge-evidence",
+                        location=f"正文.机制组件与因果边证据.edges[{idx}]",
+                        defect=(
+                            f"eligible 边 evidence_anchor {anchor} 不在 raw 声明 anchor 集"
+                            "（伪/合成 anchor 不计 eligible）"
+                        ),
+                        suggestion=(
+                            "evidence_anchor 须指向真实 raw §-anchor（∈ raw 声明全集）"
+                        ),
+                    )
+                )
+        # 端点须在 components
+        for end in ("from", "to"):
+            val = (e.get(end) or "").strip()
+            if val and val not in comp_names:
+                defects.append(
+                    Defect(
+                        dimension="SG-mechanism-edge-evidence",
+                        location=f"正文.机制组件与因果边证据.edges[{idx}]",
+                        defect=f"edge.{end}={val} 不在 mechanism_components 名单",
+                        suggestion=(
+                            "edge from/to 须指向 mechanism_components 的 name/alias"
+                        ),
+                    )
+                )
+    return defects
 
 
 def _provenance_counts(body: str) -> tuple[int, int]:
@@ -1102,7 +1411,7 @@ def _normalize_must_cover_text(s: str) -> str:
     归一化后只比"实质内容是否渲染"，tolerant 格式差异、仍 fail-closed 真缺失
     （内容根本没渲染时归一化后仍不匹配 → 仍报缺陷）。
     """
-    s = re.sub(r"\[raw\s*§[A-Z0-9]+\]", " ", s)  # 去 [raw §X] 锚点
+    s = re.sub(rf"\[raw\s*{ANCHOR_TOKEN_PAT}\]", " ", s)  # 去 [raw §X] 锚点
     # P2-C：单引号 ' 与反引号 ` 同去——渲染侧 _sanitize 把 literal 反引号换成 '，
     # 校验侧也消掉 '，两侧同口径（修 `Conv`→'Conv' 后 must_cover 失配，满仓 #6/#16）。
     s = re.sub(r"[`'*#>_]", " ", s)  # 去 markdown 标记 + 单引号
@@ -1144,6 +1453,16 @@ def run_candidate_self_gate(
                 suggestion="所有关键论点、边界、图谱 evidence 必须补充真实 raw anchor",
             )
         )
+
+    # §0.2/D7/C1 + §0.2/F5：SG-mechanism-edge-evidence — 机制组件与因果边证据表完整性
+    # F5：与 F4 统一口径——eligible edge 的 evidence_anchor 须 ∈ raw 声明全集
+    # （复用 _extract_raw_anchors，认 #{1,6} 多# + [raw §X] + _CONTENT_START + 表格）。
+    _sg_raw_anchors: set[str] = set()
+    if raw_content:
+        _sg_raw_anchors = _extract_raw_anchors(raw_content)
+    defects.extend(
+        _check_sg_mechanism_edge_evidence(body, content_lane, raw_anchors=_sg_raw_anchors)
+    )
 
     provenance_body = _core_provenance_body(text)
     source_count, akb_count = _provenance_counts(provenance_body)

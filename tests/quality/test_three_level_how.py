@@ -101,6 +101,17 @@ def _concept_how_params_segment() -> dict:
     }
 
 
+# F3-B:命令须在 sample_raw_content 原文存在(否则被 _strip_fabricated_how_commands 剥),
+# 故用 sample 里的真命令
+_PROC_REAL_COMMANDS = (
+    "make deploy",
+    "make test",
+    "python -m akb2.quality.runner --once",
+    "make pipeline",
+    "trigger=schedule",
+)
+
+
 def _procedural_how_params_segment(executable_count: int) -> dict:
     """操作型 how_params 段：executable_count 条可执行命令步骤（无机制组件）。"""
     steps = []
@@ -108,7 +119,7 @@ def _procedural_how_params_segment(executable_count: int) -> dict:
         steps.append(
             {
                 "instruction": f"操作步骤 {i}",
-                "command": f"akb_op_{i}=run(input=x)",
+                "command": _PROC_REAL_COMMANDS[i % len(_PROC_REAL_COMMANDS)],
                 "executable": True,
                 "how_level": "H1",
             }
@@ -147,7 +158,7 @@ def _make_segment_route(claims_seg: dict, how_seg: dict):
     return route
 
 
-# 关闭语义 retake 隔离本测试（retake 默认开，会多取交集；本测试聚焦 lane-aware 校验）
+# 关闭语义 retake 隔离本测试（retake 默认关；本测试聚焦 lane-aware 校验，显式 setenv 0 防御）
 @pytest.fixture(autouse=True)
 def _disable_semantic_retake(monkeypatch):
     monkeypatch.setenv("AKB2_DISTILL_SEMANTIC_RETAKE", "0")
@@ -177,31 +188,49 @@ class TestConceptLaneExtractLLMPath:
         assert levels <= {"H1", "H2", "H3"}
         assert "H2" in levels or "H3" in levels
 
-    def test_concept_too_few_mechanism_components_fails(self, sample_raw_content):
-        """concept 但 mechanism_components<3 → extract fail（改判门生效，不被绕过）。"""
+    def test_concept_too_few_mechanism_components_defers_to_floor(self, sample_raw_content):
+        """§0.2/A2：concept mechanism_components<3 → extract 不再早判 F4（deferred to floor）。
+
+        旧 WP-3.2 把 F4 前移到 _validate_extract_output，<3 组件 extract 即 raise。A2 删前移
+        （与 runner floor 双跑 + 顺序矛盾，见 §0.2 D1）。现在 extract 过，<3 组件由
+        integrity_floor F4 兜底（test_integrity_floor TestCoreValueF4 已覆盖）。
+        """
         thin_how = _concept_how_params_segment()
         thin_how["mechanism_components"] = thin_how["mechanism_components"][:2]
         route = _make_segment_route(_claims_segment(), thin_how)
         result = extract_claims(
             sample_raw_content, route_llm_fn=route, content_lane="concept"
         )
-        assert result.success is False
-        assert "mechanism_components" in (result.error or "")
+        # A2：extract 不再因 <3 组件 raise（F4 deferred to floor）
+        assert result.success is True, (
+            f"extract 应过（F4 deferred to floor）: {result.error}"
+        )
+        # floor 兜底：<3 组件 → F4 fail
+        from src.akb2.quality.integrity_floor import (
+            FLOOR_CORE_VALUE_F4,
+            evaluate_integrity_floor,
+        )
+
+        r = evaluate_integrity_floor(result.data, "concept", raw_anchors={"§A", "§B"})
+        assert FLOOR_CORE_VALUE_F4 in r.failed_floors, "<3 组件应 floor F4 fail"
 
 
 class TestConceptLaneDeterministicPath:
     """concept 车道 deterministic fallback 路径（maker LLM 不可用时）。"""
 
-    def test_concept_deterministic_extract_succeeds(self, sample_raw_content):
-        """build_deterministic_extract_result(content_lane='concept') → success。"""
+    def test_concept_deterministic_extract_fails_on_implicit_causal(self, sample_raw_content):
+        """P1-A: 黄金样张组件是编号列表(实体名 trigger/selector/...)但无显式因果语言
+        → fallback 不造假边 → F4 连通性 fail → fail-closed(保守; LLM extract 在生产
+        处理黄金样张, fallback 仅给 LLM 失败的显式机制内容)。"""
         result = build_deterministic_extract_result(
             sample_raw_content, "raw/concept-sample.md", content_lane="concept"
         )
-        assert result.success is True, result.error
-        assert (
-            len(result.data["mechanism_components"]) >= CONCEPT_MIN_MECHANISM_COMPONENTS
+        assert result.success is False, (
+            "黄金样张无显式因果语言, fallback 应 fail-closed 不造假边"
         )
-        assert len(result.data["causal_edges"]) >= 1
+        assert "F4" in (result.error or "") or "因果边" in (result.error or ""), (
+            f"应 F4 连通性 fail: {result.error}"
+        )
 
     def test_procedural_deterministic_still_succeeds(self, sample_raw_content):
         """procedural deterministic（默认 lane）仍 success（零回归），无机制组件。"""

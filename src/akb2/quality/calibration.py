@@ -30,6 +30,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -37,6 +38,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from src.akb2.quality.chrome_strip import ANCHOR_DECL_RE, strip_chrome_blocks
 from src.akb2.quality.intake.extract import (
     MIN_CONTENT_LENGTH,
     REQUIRED_METADATA_FIELDS,
@@ -62,6 +64,15 @@ MAX_LIVE_SAMPLE_DEFAULT: int = 3
 # B3-1: live 层下限——fixture 不补偿 live health
 LIVE_POSITIVE_QUOTA: int = 3           # live 正样本最少条数
 LIVE_POSITIVE_PASS_FLOOR: float = 0.9  # live 正样本通过率下限
+
+# §0.2/D5：本轮 quality-repair acceptance gate 起步线（精选 corpus proposal/repair 口径）。
+# 旧 0.60 不现实（两骨折一致：精选 30-45% 是第一轮目标）。factory_acceptance（出厂混池 0.9）
+# 拆成独立字段，不与本轮 repair gate 口径混淆。
+QUALITY_REPAIR_ACCEPTANCE_FLOOR: float = 0.30
+
+# F13（lead 裁决）：失败正样本有界重试硬上限（宪法 P1 有界自动化——每样本重试次数
+# 的绝对天花板，CLI 传更大值也被钳制）。对策目标是 LLM 方差，重试走完整管线全部闸门。
+RETRY_FAILED_POSITIVES_MAX: int = 2
 
 # corpus fixtures 目录（_load_fixture_content 按 fixture:<name> 读取）
 _FIXTURES_DIR_DEFAULT = Path("evals/main-pipeline-quality/fixtures")
@@ -114,6 +125,29 @@ def _init_report(total_samples: int, negative_count: int) -> dict[str, Any]:
         "amendment_status": amendment,
         "per_segment_failures": {},
         "rounds_distribution": {},
+        # WP-0/D6: 去重 funnel（按 chrome-stripped body content hash，排除
+        # frontmatter/TOC/锚点行/volatile fetched_at）+ 全链 failure_class taxonomy
+        # + 独立 repair_acceptance（与 factory_acceptance 解耦，SC-5 修复门）
+        "deduped_funnel": {
+            "total_entries": 0,
+            "unique_bodies": 0,
+            "duplicate_count": 0,
+            "duplicate_groups": [],
+        },
+        "repair_acceptance": {
+            "positive_pass_rate": 0.0,  # mechanism_present=true 子集，SC-5 目标 ≥0.60
+            "mechanism_present_true_total": 0,
+            "mechanism_present_true_passed": 0,
+            "negative_reject_rate": 0.0,  # 含 no_mechanism 负样本，目标 ==1.0
+            "negative_total": 0,
+            "negative_rejected": 0,
+            "layers": {},
+            "procedural_zero_pass_hard_fail": False,
+            "needs_adjudication_count": 0,
+            "needs_adjudication_indices": [],
+            "repair_acceptance_gate": False,
+            "AUTO_PROMOTE": os.environ.get("AKB2_AUTO_PROMOTE", "0"),
+        },
         "entries": [],
     }
 
@@ -185,6 +219,12 @@ def _process_corpus_entry(
         "extract_error": None,
         "missing_metadata": [],       # ["title", "author", "published", "url"] 子集
         "source": None,               # fixture | live
+        # WP-0: corpus 审计块透传（mechanism_present 驱动 repair_acceptance，SC-5）
+        # + 去重 hash（chrome-stripped body，排除 fm/TOC/anchor/fetched_at，D6）
+        "mechanism_present": (entry.get("audit") or {}).get("mechanism_present"),
+        "reject_reason": (entry.get("audit") or {}).get("reject_reason"),
+        "review_status": (entry.get("audit") or {}).get("review_status", "confirmed"),
+        "raw_content_sha256": None,
     }
 
     if replaced_reason:
@@ -276,6 +316,24 @@ def _process_corpus_entry(
         # path 4: live 抽取成功 → compose raw with 9-field frontmatter (SC-6)
         raw_content = _compose_raw_content(extract_result, ctx)
 
+    # WP-0/D6: raw_content_sha256 = chrome-stripped body hash（去重 funnel key）。
+    # hash 输入排除 frontmatter / TOC / 锚点声明行 / volatile fetched_at / chrome，
+    # 故同正文不同 fetched_at 必去重为 1（不复用 runner._compute_raw_hash 的路径 hash）。
+    result["raw_content_sha256"] = _compute_raw_content_sha256(raw_content)
+
+    # P0：raw 留存（live + fixture）供失败样本离线复放 + 救率账审计。
+    # [N4] raw_content_sha256 是 chrome-stripped body hash（去重用），非落盘文件 digest；
+    # 落盘文件完整性校验另存 raw_file_sha256。OSError 不阻断管线（只记 raw_store_error）。
+    _raw_path, _raw_file_sha, _raw_err = _persist_raw_content(
+        raw_content, result["raw_content_sha256"], config.get("raw_store_dir")
+    )
+    if _raw_path:
+        result["raw_store_path"] = _raw_path
+    if _raw_file_sha:
+        result["raw_file_sha256"] = _raw_file_sha
+    if _raw_err:
+        result["raw_store_error"] = _raw_err
+
     # --- 运行七段管道 ---
     pipeline_result = _run_pipeline_segments(
         raw_path=raw_path,
@@ -294,11 +352,54 @@ def _process_corpus_entry(
     result["content_lane"] = pipeline_result.get("content_lane", "")
     result["failed_node"] = pipeline_result.get("failed_node")
     result["error_class"] = pipeline_result.get("error_class")
+    # §0.2/D4：透传 promotion_outcome（active_promoted/proposal_passed/promotion_blocked）。
+    result["promotion_outcome"] = pipeline_result.get("promotion_outcome", "")
+    # §0.2/D9：透传 fallback_quality_basis（component_count/source_causal_edge_count/
+    # inferred_edge_count/component_evidence_anchors）——失败路径也须可见，不靠 error
+    # string 解析。供 §10 漏斗量化 + D12 counters 归因。
+    fbasis = pipeline_result.get("fallback_quality_basis")
+    if isinstance(fbasis, dict):
+        result["fallback_quality_basis"] = fbasis
+    # §0.2/F3：透传 mechanism_rendering（D12 hidden_mechanism_edges 真算）
+    mrender = pipeline_result.get("mechanism_rendering")
+    if isinstance(mrender, dict):
+        result["mechanism_rendering"] = mrender
+    # F-C fail-visible(P4):repair 不收敛时透出残留缺陷维度名列表 + distill 失败原因分类。
+    # 不改判定逻辑,只让部分失败可见,供报告归因。
+    _fds = pipeline_result.get("final_defects_summary")
+    if isinstance(_fds, list) and _fds:
+        result["residual_defects"] = [
+            str(d.get("dimension", "")).strip()
+            for d in _fds
+            if isinstance(d, dict) and d.get("dimension")
+        ]
+    _fn = str(pipeline_result.get("failed_node") or "")
+    if _fn.startswith("distill"):
+        result["distill_extract_failure_reason"] = _classify_distill_failure_reason(
+            str(pipeline_result.get("error", "")),
+            str(pipeline_result.get("error_class", "")),
+        )
 
     if expected == "ingest":
         # path 5: 正样本——期望通过
-        if final_status in ("promoted", "proposal_passed"):
-            result["passed"] = True
+        # §0.2/D4：只计 active_promoted + proposal_passed 为 positive pass；
+        # promotion_blocked（Gate-1/4/5 非允许失败 / AUTO_PROMOTE=1 proposed_node_only
+        # 二次拒）不计通过，防 proposal_passed 虚高。
+        outcome = pipeline_result.get("promotion_outcome", "")
+        if outcome in ("active_promoted", "proposal_passed") or final_status in (
+            "promoted",
+            "proposal_passed",
+        ):
+            # 优先用 promotion_outcome；缺失（早期失败无 outcome）时回落 final_status
+            if outcome and outcome not in ("active_promoted", "proposal_passed"):
+                result["passed"] = False
+                result["failure_segment"] = "promotion_blocked"
+                result["failure_reason"] = (
+                    f"promotion_blocked: {pipeline_result.get('error', '')}"
+                )
+                result["failure_attribution"] = "promotion_blocked"
+            else:
+                result["passed"] = True
         else:
             result["passed"] = False
             # 优先用 runner 返回的真实失败节点；缺失时回落 final_status 粗映射。
@@ -456,8 +557,11 @@ def _compose_raw_content(
     fm_block = "\n".join(lines)
 
     # 注入锚点 + 锚点目录（镜像 raw_archiver.archive_raw :360-384）
+    # WP-1: 注入锚点前先剥 chrome（与 intake extract 同 helper，两链同源；
+    # extract_result.content 在 extract.py 已剥过，此处 idempotent 再剥保两链一致）
+    clean_content, _chrome_diag = strip_chrome_blocks(extract_result.content)
     anchored_content, toc_entries, hit_counts = _inject_anchors(
-        extract_result.content, ANCHOR_DEFINITIONS
+        clean_content, ANCHOR_DEFINITIONS
     )
     # 断言必需锚点（fail-closed 契约；实际裁决由下游 distill self-gate 执行）
     _assert_anchors(hit_counts, REQUIRED_ANCHORS)
@@ -480,8 +584,9 @@ def _inject_anchors_into_raw(raw_md: str) -> str:
     self-gate 裁决（镜像 _compose_raw_content / archive_raw 语义）。
     """
     if not raw_md.startswith("---"):
-        # 无 frontmatter — 直接注入
-        anchored, toc, hit_counts = _inject_anchors(raw_md, ANCHOR_DEFINITIONS)
+        # 无 frontmatter — 直接注入（WP-1: 先剥 chrome）
+        body, _ = strip_chrome_blocks(raw_md)
+        anchored, toc, hit_counts = _inject_anchors(body, ANCHOR_DEFINITIONS)
         _assert_anchors(hit_counts, REQUIRED_ANCHORS)
         toc_block = "## 锚点目录\n\n" + "\n".join(toc) + "\n"
         return f"{toc_block}\n\n{anchored}\n"
@@ -489,14 +594,16 @@ def _inject_anchors_into_raw(raw_md: str) -> str:
     # 定位 frontmatter 闭合（第二个 --- 行）
     second_delim = raw_md.find("\n---", 3)
     if second_delim < 0:
-        # 无闭合 — 当作无 frontmatter
-        anchored, toc, hit_counts = _inject_anchors(raw_md, ANCHOR_DEFINITIONS)
+        # 无闭合 — 当作无 frontmatter（WP-1: 先剥 chrome）
+        body, _ = strip_chrome_blocks(raw_md)
+        anchored, toc, hit_counts = _inject_anchors(body, ANCHOR_DEFINITIONS)
         _assert_anchors(hit_counts, REQUIRED_ANCHORS)
         toc_block = "## 锚点目录\n\n" + "\n".join(toc) + "\n"
         return f"{toc_block}\n\n{anchored}\n"
 
     fm_block = raw_md[: second_delim + 4]  # 含闭合 ---（无 trailing newline）
     body = raw_md[second_delim + 4 :].lstrip("\n")
+    body, _ = strip_chrome_blocks(body)  # WP-1: 注入锚点前剥 chrome
 
     anchored, toc, hit_counts = _inject_anchors(body, ANCHOR_DEFINITIONS)
     _assert_anchors(hit_counts, REQUIRED_ANCHORS)
@@ -542,6 +649,176 @@ def _classify_failure_class(
 
     # 4. extraction_failure（无 preflight 时全失败保守归此类，P2）
     return "extraction_failure"
+
+
+def _extract_body_for_hash(raw_content: str) -> str:
+    """提取去重用 body 文本：去 frontmatter / 锚点目录 / 锚点声明行 / chrome。
+
+    hash 输入明确排除（WP-0/D6 round-2 P2）：
+      - frontmatter（含 volatile ``fetched_at``）；
+      - 锚点目录块（``## 锚点目录`` + ``- §X: ...`` 条目）；
+      - 锚点声明行（raw_archiver 注入的 ``§A_CONTENT_START`` 等）；
+      - 站点导航 chrome（经 strip_chrome_blocks 剥离）。
+    故同一正文不同 fetched_at / 不同 chrome 残留 → 同 hash（dedup 为 1）。
+    """
+    if not raw_content:
+        return ""
+    text = raw_content
+    # 1. 去 frontmatter（首尾 --- 之间，含 volatile fetched_at）
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            text = text[end + 4:].lstrip("\n")
+    # 2. 逐行过滤锚点目录标题 / TOC 条目 / 锚点声明行
+    kept: list[str] = []
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped == "## 锚点目录":
+            continue
+        if stripped.startswith("- §") and ":" in stripped:
+            continue
+        if ANCHOR_DECL_RE.match(line):
+            continue
+        kept.append(line)
+    body = "\n".join(kept)
+    # 3. 去 chrome（与 intake extract 共用同一 helper，WP-1 两链同源）
+    clean, _ = strip_chrome_blocks(body)
+    return clean.strip()
+
+
+def _compute_raw_content_sha256(raw_content: str | None) -> str | None:
+    """计算 raw_content 的 chrome-stripped body sha256（去重 funnel key）。
+
+    返回 None 表示无 raw_content（早退路径：fixture 缺失 / live 抽取失败 /
+    ImportError），该 entry 不计入 deduped_funnel.total（缺 hash 不参与去重统计）。
+    """
+    if not raw_content:
+        return None
+    body = _extract_body_for_hash(raw_content)
+    if not body:
+        return None
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _resolve_raw_store_dir(report_out: str, persist_raw: bool) -> str | None:
+    """解析 raw 留存目录：<report_out 同级>/raw-store；persist_raw=False 或无 report_out → None。
+
+    P0：live 与 fixture 都留存，供失败样本离线复放（去网络抖动）+ 救率账审计。
+    """
+    if not persist_raw or not report_out:
+        return None
+    return str(Path(report_out).parent / "raw-store")
+
+
+def _persist_raw_content(
+    raw_content: str | None,
+    sha: str | None,
+    raw_store_dir: str | None,
+) -> tuple[str | None, str | None, str | None]:
+    """把 raw_content 落盘到 <raw_store_dir>/<sha>.md 供离线复盘/审计。
+
+    [N4] sha 语义：传入的 ``sha`` 即 ``raw_content_sha256``——它是 chrome-stripped
+    **body hash**（见 ``_compute_raw_content_sha256``：去 frontmatter/TOC/锚点声明行/
+    volatile fetched_at/chrome 后的正文哈希，用于去重 funnel key），**不是**落盘文件
+    的 digest。落盘文件含完整 raw（frontmatter+TOC+锚点+正文），其文件级 digest 另存为
+    返回的 ``raw_file_sha256``，供审计校验落盘文件完整性（区别于 body hash 的去重用途）。
+
+    Returns:
+        (path, raw_file_sha256, error)
+        - 无 raw_content/sha/dir → (None, None, None)
+        - sha 幂等跳过（文件已存在）→ (path, None, None)（不重写、不重算 file hash）
+        - 写成功 → (path, raw_file_sha256, None)
+        - OSError 不致命 → (None, None, error_str)（管线继续，caller 记 raw_store_error）
+    """
+    if not raw_content or not sha or not raw_store_dir:
+        return None, None, None
+    out_path = Path(raw_store_dir) / f"{sha}.md"
+    if out_path.exists():
+        return str(out_path), None, None  # sha 幂等跳过
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(raw_content, encoding="utf-8")
+    except OSError as exc:
+        return None, None, f"{type(exc).__name__}: {exc}"
+    raw_file_sha = hashlib.sha256(raw_content.encode("utf-8")).hexdigest()
+    return str(out_path), raw_file_sha, None
+
+
+def _classify_distill_failure_reason(error: str, error_class: str) -> str:
+    """F-C: distill extract/compose 失败原因分类(schema错/超时/重试耗尽/provider/other)。
+
+    不改判定逻辑,只把 error+error_class 字符串归类,供报告 fail-visible。
+    顺序:重试耗尽 > 超时 > schema错 > provider > other(重试耗尽消息可能不含 schema 词,
+    schema 失败消息含校验失败,故先认重试耗尽)。
+    """
+    low = f"{error} {error_class}".lower()
+    if (
+        "重试耗尽" in low or "retry_exhausted" in low or "exhausted" in low
+        or ("retries" in low and "耗尽" in error)
+    ):
+        return "retry_exhausted"
+    if "timeout" in low or "deadline" in low or "超时" in low:
+        return "timeout"
+    if (
+        "schema" in low or "jsonschema" in low or "validation" in low
+        or "invalid_json" in low or "校验失败" in low or "非 json" in low
+    ):
+        return "schema_invalid"
+    if "provider" in low or "调用失败" in low or "api" in low:
+        return "provider_error"
+    return "other"
+
+
+def _classify_failure_class_chain(result: dict[str, Any]) -> str:
+    """全链 failure_class taxonomy（WP-0/D6）。
+
+    pass → 哨兵 ``"none"``；否则按 failed_node / error_class / final_status 映射，
+    覆盖 admission / distill_extract / distill_compose / integrity_floor /
+    repair_loop / grader / promote 全段（不只 intake_raw 的三分类）。
+
+    intake_raw 段已由 ``_classify_failure_class`` 设具体值（dead_link /
+    metadata_failure / extraction_failure），此处保留不覆盖。
+    """
+    if result.get("passed"):
+        return "none"
+    # 负样本未被正确拒收（passed=False 且 expected=reject）
+    if result.get("expected") == "reject":
+        return "negative_not_rejected"
+    # intake_raw 段已有具体 failure_class → 保留
+    existing = result.get("failure_class")
+    if existing and existing != "none":
+        return existing
+    failed_node = str(result.get("failed_node") or "")
+    error_class = str(result.get("error_class") or "")
+    final_status = str(result.get("final_status") or "")
+    # 具体段优先（按 failed_node / error_class 精确映射，先于 final_status 兜底，
+    # 避免 integrity_floor/distill 等的 final_status=rejected 被误归 admission）
+    if "poisoned_trace_entailment" in error_class:
+        return "poisoned_trace_entailment"
+    if "distill_no_converge" in error_class:
+        return "repair_no_converge"
+    if "integrity_floor" in failed_node or "integrity_floor" in error_class:
+        return "integrity_floor_failed"
+    if failed_node == "distill_extract":
+        return "distill_extract_failed"
+    if failed_node == "distill_compose":
+        return "distill_compose_failed"
+    if failed_node == "grader" or error_class.startswith("grader_"):
+        if "fallback_not_allowed" in error_class or "all_down" in error_class:
+            return "grader_unavailable"
+        return "grader_failed"
+    if failed_node == "promote":
+        return "promote_failed"
+    if failed_node == "admission":
+        return "admission_reject"
+    # final_status 兜底（failed_node 缺失时，rejected 多为 admission 段拒收）
+    if final_status == "rejected":
+        return "admission_reject"
+    if final_status == "fetch_failed":
+        return "extraction_failure"
+    if final_status == "error":
+        return "module_import_error"
+    return "unknown"
 
 
 def _compute_missing_metadata(extract_result: ExtractResult) -> list[str]:
@@ -764,7 +1041,181 @@ def _compute_statistics(report: dict[str, Any]) -> dict[str, Any]:
         rounds_dist[key] = rounds_dist.get(key, 0) + 1
     report["rounds_distribution"] = rounds_dist
 
+    # WP-0/D6: 全链 failure_class taxonomy — 每 entry failure_class 非 null
+    # （pass → "none"；intake_raw 保留三分类；pipeline 失败按 failed_node 映射）
+    for e in entries:
+        e["failure_class"] = _classify_failure_class_chain(e)
+
+    # WP-0/D6: 去重 funnel — 按 chrome-stripped body hash 聚类（同正文不同 fetched_at → 1）
+    hash_groups: dict[str, list[int]] = {}
+    for e in entries:
+        h = e.get("raw_content_sha256")
+        if h:
+            hash_groups.setdefault(h, []).append(e.get("index"))
+    total_with_hash = sum(len(v) for v in hash_groups.values())
+    unique_bodies = len(hash_groups)
+    dup_groups = [
+        {"hash": h[:16], "indices": v, "count": len(v)}
+        for h, v in hash_groups.items()
+        if len(v) > 1
+    ]
+    report["deduped_funnel"] = {
+        "total_entries": total_with_hash,
+        "unique_bodies": unique_bodies,
+        "duplicate_count": total_with_hash - unique_bodies,
+        "duplicate_groups": dup_groups,
+    }
+
+    # WP-0/SC-5: repair_acceptance — mechanism_present=true 子集修复门
+    # （与 factory_acceptance 解耦；procedural 0 通过 = 硬 fail）
+    report["repair_acceptance"] = _compute_repair_acceptance(entries)
+
+    # §0.2/D12：repair_quality_funnel — 旧早死模式 counters（修复后应全 0）
+    # scope: mechanism_present=true / expected=ingest（把合法 integrity_floor_zero_eligible_edge
+    # 与旧早死分开归因，不污染负样本/合法 hard fail）。
+    report["repair_quality_funnel"] = _compute_repair_quality_funnel(entries)
+
     return report
+
+
+def _compute_repair_quality_funnel(
+    entries: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """§0.2/D12：repair_quality_funnel counters（防 30% pass 掩盖旧早死）。
+
+    旧早死模式（修复后应全 0）：
+      - old_no_mechanism_signal_on_h2h3: admission 拒 no_mechanism 但 body 有 H2/H3（G2/C4 修）
+      - distill_f4_precompose_death: distill 阶段 F4 前移早死（A2 修，F4 唯一裁决点回 floor）
+      - a2_related_only_cold_start_death: A2 因 related<2 拒冷启动 concept
+        （D8 修，proposed_graph_nodes）
+      - hidden_mechanism_edges: 机制边存在 extract 但正文未渲染（C1 修）
+    scope: mechanism_present=true / expected=ingest。top_failure_class_share<=0.50（超则需解释）。
+    """
+    scoped = [
+        e for e in entries
+        if e.get("expected") == "ingest"
+        # §0.2/F9：mechanism_present 是 entry 顶层字段（calibration.py:220 透传），
+        # 非 e["audit"]["mechanism_present"]——旧 scope 读错位置 → scoped_total=0。
+        and e.get("mechanism_present") is True
+    ]
+    old_no_mech = 0
+    f4_precompose = 0
+    a2_cold_start = 0
+    hidden_edges = 0
+    failure_classes: dict[str, int] = {}
+    for e in scoped:
+        ec = str(e.get("error_class") or "")
+        fn = str(e.get("failed_node") or "") or str(e.get("failure_segment") or "")
+        # old_no_mechanism_signal_on_h2h3: admission no_mechanism 但 mechanism_present=true
+        # （G2/C4 修后普通 H2/H3 走 LLM，不应 deterministic no_mechanism）
+        if "no_mechanism_signal" in ec and fn == "admission":
+            old_no_mech += 1
+        # distill_f4_precompose_death: distill 阶段 F4 前移早死（A2 修后 F4 在 floor，不在 distill）
+        if ec == "distill_failed" and "F4" in str(e.get("error", "")):
+            f4_precompose += 1
+        # a2_related_only_cold_start_death: A2 因 related<2 拒冷启动（D8 proposed_graph_nodes 修）
+        err_str = str(e.get("error", ""))
+        if "related_concepts" in err_str and "cold" in err_str.lower():
+            a2_cold_start += 1
+        # hidden_mechanism_edges: extract 有 eligible edge 但正文机制表未渲染（C1 修后应 0）
+        # §0.2/F3：真算——用 mechanism_rendering.hidden（source_causal_edge_count>0 但
+        # 正文未渲染机制表/边）。旧实现永远 0（假实现）。
+        mrender = e.get("mechanism_rendering") or {}
+        if isinstance(mrender, dict) and mrender.get("hidden"):
+            hidden_edges += 1
+        # failure_class 分布
+        fc = e.get("failure_class") or (
+            "none" if e.get("passed") else (fn or "unknown")
+        )
+        failure_classes[fc] = failure_classes.get(fc, 0) + 1
+
+    total_scoped = len(scoped)
+    top_share = 0.0
+    if total_scoped and failure_classes:
+        top_share = max(failure_classes.values()) / total_scoped
+
+    return {
+        "scoped_total": total_scoped,
+        "old_no_mechanism_signal_on_h2h3_count": old_no_mech,
+        "distill_f4_precompose_death_count": f4_precompose,
+        "a2_related_only_cold_start_death_count": a2_cold_start,
+        "hidden_mechanism_edges_count": hidden_edges,
+        "top_failure_class_share": round(top_share, 4),
+        "failure_class_distribution": failure_classes,
+    }
+
+
+def _compute_repair_acceptance(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """SC-5 修复门：mechanism_present=true 子集通过率 + 分层 + procedural 硬 fail。
+
+    与 factory_acceptance 解耦（factory_acceptance / CLI exit 不动）：
+      - positive_pass_rate: mechanism_present=true 且 expected=ingest 子集通过率，
+        §0.2/D5 起步线 ≥QUALITY_REPAIR_ACCEPTANCE_FLOOR（0.30）；旧 0.60 不现实；
+      - negative_reject_rate: 负样本（含 no_mechanism）拒收率，目标 ==1.0；
+      - layers: live/fixture/concept/procedural 分层通过率（concept/procedural
+        取运行时 content_lane；空 lane 不计入 concept/procedural 层）；
+      - procedural_zero_pass_hard_fail: procedural 子集 >0 且 0 通过 → True（SC-5 硬 fail）；
+      - needs_adjudication: 双审不一致条目，不计入 mechanism_present=true 分母（不移 reject）。
+    """
+    def _layer(subset: list[dict[str, Any]]) -> dict[str, Any]:
+        passed = sum(1 for e in subset if e.get("passed"))
+        total = len(subset)
+        return {
+            "passed": passed,
+            "total": total,
+            "pass_rate": (passed / total) if total else 0.0,
+        }
+
+    mp_true = [
+        e for e in entries
+        if e.get("mechanism_present") is True and e.get("expected") == "ingest"
+    ]
+    mp_layer = _layer(mp_true)
+    live_layer = _layer([e for e in mp_true if e.get("source") == "live"])
+    fixture_layer = _layer([e for e in mp_true if e.get("source") == "fixture"])
+    concept_layer = _layer([
+        e for e in mp_true
+        if str(e.get("content_lane", "")).lower() == "concept"
+    ])
+    procedural_layer = _layer([
+        e for e in mp_true
+        if str(e.get("content_lane", "")).lower() == "procedural"
+    ])
+
+    neg = [e for e in entries if e.get("expected") == "reject"]
+    neg_rejected = sum(1 for e in neg if e.get("passed"))
+    neg_reject_rate = (neg_rejected / len(neg)) if neg else 0.0
+
+    needs_adj = [
+        e for e in entries if e.get("review_status") == "needs_adjudication"
+    ]
+    procedural_hard_fail = (
+        procedural_layer["total"] > 0 and procedural_layer["passed"] == 0
+    )
+    gate = (
+        mp_layer["pass_rate"] >= QUALITY_REPAIR_ACCEPTANCE_FLOOR
+        and neg_reject_rate == 1.0
+        and not procedural_hard_fail
+    )
+    return {
+        "positive_pass_rate": mp_layer["pass_rate"],
+        "mechanism_present_true_total": mp_layer["total"],
+        "mechanism_present_true_passed": mp_layer["passed"],
+        "negative_reject_rate": neg_reject_rate,
+        "negative_total": len(neg),
+        "negative_rejected": neg_rejected,
+        "layers": {
+            "live": live_layer,
+            "fixture": fixture_layer,
+            "concept": concept_layer,
+            "procedural": procedural_layer,
+        },
+        "procedural_zero_pass_hard_fail": procedural_hard_fail,
+        "needs_adjudication_count": len(needs_adj),
+        "needs_adjudication_indices": [e.get("index") for e in needs_adj],
+        "repair_acceptance_gate": gate,
+        "AUTO_PROMOTE": os.environ.get("AKB2_AUTO_PROMOTE", "0"),
+    }
 
 
 def run_calibration(
@@ -772,6 +1223,7 @@ def run_calibration(
     report_out: str,
     config: dict[str, Any] | None = None,
     live_sample: int = 0,
+    persist_raw: bool = True,
 ) -> dict[str, Any]:
     """校准核心：逐条跑语料 → 统计报告 → 出厂判定。
 
@@ -780,12 +1232,24 @@ def run_calibration(
         report_out: 输出报告 JSON 路径。
         config: 运行配置。
         live_sample: >0 时从 sources-ledger 取样实抓。
+        persist_raw: True 时写 <report_out 同级>/raw-store/<sha>.md 留存 raw 供离线复放
+            （P0，默认开）；False 关闭（CLI --no-raw-store）。
 
     Returns:
         完整报告 dict。
     """
     if config is None:
         config = _default_config()
+    # F10-D: A/B 双臂基建——env 覆盖模型族(AKB2_DISTILL_FAMILY/AKB2_GRADER_FAMILY),
+    # 启动时 fail-fast 校验 maker/checker 不同族(宪法 P7 异族分离,无自评自批)。
+    # -preview 族由 _validate_model_family 在调用点拒(7×24 禁 -preview 不变)。
+    from src.akb2.quality.distill import DISTILL_MODEL_FAMILY
+    from src.akb2.quality.grader import PRIMARY_GRADER_MODEL
+    from src.akb2.quality.llm_router import validate_maker_checker_separation
+
+    validate_maker_checker_separation(DISTILL_MODEL_FAMILY, PRIMARY_GRADER_MODEL)
+    # P0：raw 留存目录（<report_out 同级>/raw-store）；persist_raw=False 关闭。
+    config["raw_store_dir"] = _resolve_raw_store_dir(report_out, persist_raw)
 
     entries: list[dict[str, Any]] = []
 
@@ -822,6 +1286,42 @@ def run_calibration(
         passed = "PASS" if result["passed"] else "FAIL"
         print(f"    -> {status} ({passed}) rounds={result['repair_rounds']}", file=sys.stderr)
 
+    # F13（lead 裁决）：失败正样本有界重试（每样本至多 RETRY_FAILED_POSITIVES_MAX 次，
+    # 预算显式）。对策目标是 LLM 方差（同样本这轮过下轮死），非放宽标准：重试走完全相同
+    # 管线与全部闸门。fail-visible：entry 记 retry_attempted/first_attempt_failure_class，
+    # report 记 retry_policy 汇总（宪法 P4 部分失败明示）。默认 0 = 行为与旧版逐字节一致。
+    retry_n = int(config.get("retry_failed_positives", 0) or 0)
+    if retry_n > 0:
+        retried = 0
+        rescued = 0
+        for idx, prev in enumerate(report["entries"]):
+            if prev.get("expected") != "ingest" or prev.get("passed"):
+                continue
+            entry = entries[idx]
+            for attempt in range(min(retry_n, RETRY_FAILED_POSITIVES_MAX)):
+                retried += 1
+                print(
+                    f"  [retry {attempt + 1}] {entry.get('url', '?')[:80]}...",
+                    file=sys.stderr,
+                )
+                redo = _process_corpus_entry(entry, idx, config)
+                redo["retry_attempted"] = True
+                redo["first_attempt_failure_class"] = prev.get("failure_class")
+                if redo.get("passed"):
+                    rescued += 1
+                    report["entries"][idx] = redo
+                    print("    -> retry PASS", file=sys.stderr)
+                    break
+                # 重试仍败：保留首轮结果（首因归类稳定），只记重试痕迹
+                prev["retry_attempted"] = True
+                prev["retry_failure_class"] = redo.get("failure_class")
+                print("    -> retry FAIL", file=sys.stderr)
+        report["retry_policy"] = {
+            "retry_failed_positives": retry_n,
+            "retried_attempts": retried,
+            "rescued": rescued,
+        }
+
     # 计算统计
     report = _compute_statistics(report)
 
@@ -835,6 +1335,9 @@ def run_calibration(
         and report["live_positive_intake_raw_failures"] == 0
         and report["positive_live_pass_rate"] >= report["effective_live_positive_pass_floor"]
     )
+    # F10-D: A/B 双臂可追溯——记录本次运行的 maker/checker 族(env 覆盖后可区分 A/B 臂)。
+    report["maker_family"] = DISTILL_MODEL_FAMILY
+    report["checker_family"] = PRIMARY_GRADER_MODEL
 
     # 写报告
     out_path = Path(report_out)
@@ -1003,6 +1506,35 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_TIMEOUT_PER_ENTRY_SEC,
         help=f"每条超时秒数 (默认 {DEFAULT_TIMEOUT_PER_ENTRY_SEC})",
     )
+    parser.add_argument(
+        "--acceptance-mode",
+        choices=["factory", "quality-repair"],
+        default="factory",
+        help=(
+            "exit code 判定口径：factory（默认，出厂混池 0.9 factory_acceptance）；"
+            "quality-repair（§0.2/D5，本轮 repair_acceptance_gate，起步 0.30，"
+            "用于 quality-repair 验收避免 30% 仍 exit 1）"
+        ),
+    )
+    parser.add_argument(
+        "--no-raw-store",
+        action="store_true",
+        default=False,
+        help=(
+            "禁用 raw 留存（默认开启：写 <report_out 同级>/raw-store/<sha>.md "
+            "供失败样本离线复放 + 救率账审计）"
+        ),
+    )
+    parser.add_argument(
+        "--retry-failed-positives",
+        type=int,
+        default=0,
+        help=(
+            "失败正样本有界重试次数（默认 0=不重试，行为与旧版一致；"
+            f"硬上限 {RETRY_FAILED_POSITIVES_MAX}，宪法 P1 有界自动化）。"
+            "对策目标是 LLM 方差；重试走完整管线全部闸门，report 记 retry_policy 明示"
+        ),
+    )
 
     args = parser.parse_args(argv)
 
@@ -1013,6 +1545,10 @@ def main(argv: list[str] | None = None) -> int:
         config["raw_dir"] = os.path.join(args.vault_root, "raw")
     if args.preflight_report:
         config["preflight_report_path"] = args.preflight_report
+    if args.retry_failed_positives:
+        config["retry_failed_positives"] = max(
+            0, min(args.retry_failed_positives, RETRY_FAILED_POSITIVES_MAX)
+        )
 
     try:
         report = run_calibration(
@@ -1020,11 +1556,17 @@ def main(argv: list[str] | None = None) -> int:
             report_out=args.report_out,
             config=config,
             live_sample=args.live_sample,
+            persist_raw=not args.no_raw_store,
         )
     except Exception as exc:
         print(f"ERROR: 校准失败: {exc}", file=sys.stderr)
         return 1
 
+    # §0.2/D5：CLI exit 口径可切换——factory（出厂混池 0.9，默认）vs quality-repair
+    # （本轮 repair_acceptance_gate，起步 0.30）。report 同时保留两字段，验收只读对应口径。
+    if args.acceptance_mode == "quality-repair":
+        ra = report.get("repair_acceptance", {}) or {}
+        return 0 if ra.get("repair_acceptance_gate", False) else 1
     return 0 if report.get("factory_acceptance", False) else 1
 
 

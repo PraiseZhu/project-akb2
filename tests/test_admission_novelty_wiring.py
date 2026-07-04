@@ -81,7 +81,12 @@ class TestProductionLoadsWikiRefs:
         assert index["known_concepts"], "应装载 wiki/concepts slug"
         assert "loop-engineering" in index["known_concepts"]
         assert index["wiki_references"], "应装载 wiki 页 TLDR 摘要"
-        assert any("agent loops" in r or "loop engineering" in r.lower() for r in index["wiki_references"])
+        # P2 dict 化适配:wiki_references 现为 list[dict]({tldr,slug,...}),从 tldr 取摘要文本
+        assert any(
+            "agent loops" in r["tldr"] or "loop engineering" in r["tldr"].lower()
+            for r in index["wiki_references"]
+            if isinstance(r, dict)
+        )
 
     def test_loader_excludes_current_source_slug(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -154,8 +159,14 @@ class TestRewriteRejectedInRunnerPath:
 
         monkeypatch.setattr(router_mod, "route_llm", _mock_route)
 
-        # 含命令的 raw（确定性 procedural；novelty 仍据 wiki_references 判洗稿）
-        rewrite_raw = "# Rewrite\n\n1. Run npm test\n```bash\nmake deploy\n```\n"
+        # 含命令的洗稿 raw(与 wiki loop-engineering 内容 overlap → novelty 选到近邻 → LLM 判零增量拒)
+        # P2 修:原 raw '# Rewrite\n\n1. Run npm test\nmake deploy' 与 wiki 零 token overlap,
+        # 无近邻 → novelty 默认 pass → 未拒;改为真洗稿(overlap loop/agent/engineering)触发拒收路径
+        rewrite_raw = (
+            "# Loop Engineering Rewrite\n\n"
+            "Bounded convergent observable agent loops for engineering.\n\n"
+            "1. Run the agent loop\n```bash\nmake deploy\n```\n"
+        )
         result = runner._run_pipeline_segments(
             "raw/rewrite--raw--2026-06-26.md", rewrite_raw, config
         )

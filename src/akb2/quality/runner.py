@@ -41,8 +41,13 @@ SPOT_CHECK_PASS_THRESHOLD: float = 0.8  # 达标率阈值
 MAX_PROCESSING_LOCK_AGE_SEC: int = 3600  # 锁文件最大年龄（超时自动清理）
 DISTILL_TIMEOUT_S: float = 60.0
 DISTILL_MAX_RETRIES: int = 0
+# F10-D: A/B 双臂基建——env 覆盖模型族(与 distill.DISTILL_MODEL_FAMILY 同源,
+# ledger 记录实际使用的族,A/B 可追溯)。默认 deepseek-v4-pro 不变。
+DISTILL_MODEL_FAMILY: str = os.environ.get("AKB2_DISTILL_FAMILY", "deepseek-v4-pro")
 DISTILL_EXTRACT_WORKER_TIMEOUT_S: float = 210.0
 DISTILL_EXTRACT_WORKER_KILL_GRACE_S: float = 2.0
+# F2-B: traceability retake 子进程超时(distill 内部 60s + 子进程外层缓冲)
+TRACEABILITY_RETAKE_WORKER_TIMEOUT_S: float = 90.0
 DISTILL_EXTRACT_WORKER_MODULE: str = "src.akb2.quality.distill_worker"
 
 # 避让窗口定义：三链路 launchd 触发时刻 (UTC hour, UTC minute)
@@ -368,7 +373,7 @@ def _distill_abort_details(
     return {
         "error": error_detail,
         "error_class": _classify_distill_error(error_detail),
-        "model_family": "deepseek-v4-pro",
+        "model_family": DISTILL_MODEL_FAMILY,
         "timeout_s": DISTILL_TIMEOUT_S,
         "max_retries": DISTILL_MAX_RETRIES,
         "retries_used": 0,
@@ -387,8 +392,8 @@ LANE_INDEX_STATUS_FIRST_RUN = "first_run_no_index"
 LANE_INDEX_STATUS_EMPTY = "configured_but_empty"
 LANE_INDEX_STATUS_LOAD_ERROR = "load_error"
 
-# _check_novelty 只用前 5 条 wiki_references
-VAULT_WIKI_REFERENCES_MAX = 5
+# [N3] cap 语义定死:最多保留 200 条有元数据的 wiki_references(扫描全库,超限截尾记账)
+VAULT_WIKI_REFERENCES_SCAN_MAX = 200
 
 
 def _load_vault_concept_index(
@@ -449,17 +454,34 @@ def _load_vault_concept_index(
         source_slugs = [p.stem for p in (wiki_dir / "sources").glob("*.md")]
         known_concepts = sorted(set(concept_slugs) | set(source_slugs))
         wiki_pages = sorted(wiki_dir.rglob("*.md"))
-        wiki_references: list[str] = []
+        # §0.2/D10/G1：wiki_references 改结构化 {path,slug,title,tldr,source_url,taxonomy}
+        # 供 _select_novelty_neighbors 按 slug/url/title/topic top-k 选近邻（修 idx6/idx10
+        # 全库前 5 条无关引用导致 novelty 误拒）。
+        # [N3] 扫描全库(不再前-5 break),最多保留 200 条,超限截尾并在 counts 记 truncated。
+        wiki_references: list[dict[str, str]] = []
         source_paths: list[str] = []
+        truncated_refs = 0
         for page in wiki_pages:
             if exclude_slug and page.stem == exclude_slug:
                 continue  # 排除当前处理源自身，防自比对误判
             tldr = _read_page_tldr(page)
-            if tldr:
-                wiki_references.append(tldr)
-                source_paths.append(str(page))
-            if len(wiki_references) >= VAULT_WIKI_REFERENCES_MAX:
-                break
+            if not tldr:
+                continue
+            if len(wiki_references) >= VAULT_WIKI_REFERENCES_SCAN_MAX:
+                truncated_refs += 1  # 超过 200,后续截尾不保留(计数可见)
+                continue
+            meta = _read_wiki_page_meta(page)
+            wiki_references.append(
+                {
+                    "path": str(page),
+                    "slug": page.stem,
+                    "title": meta.get("title", "") or page.stem,
+                    "tldr": tldr,
+                    "source_url": meta.get("source_url", ""),
+                    "taxonomy": "concept" if "concepts" in page.parts else "source",
+                }
+            )
+            source_paths.append(str(page))
 
         pending_queue = _read_pending_concepts(
             staging_root / "pending" / "concept-backlinks.jsonl"
@@ -487,12 +509,41 @@ def _load_vault_concept_index(
             "known_concepts": len(known_concepts),
             "pending_queue": len(pending_queue),
             "wiki_references": len(wiki_references),
+            "truncated": truncated_refs,  # [N3] 超 200 截尾计数(可见)
         },
         "wiki_references": wiki_references,
         "known_concepts": known_concepts,
         "pending_queue": pending_queue,
         "source_paths": source_paths,
     }
+
+
+def _read_wiki_page_meta(page: Path) -> dict[str, str]:
+    """§0.2/D10/G1：读 wiki 页 frontmatter 的 title/source_url（结构化 wiki_references）。
+
+    确定性纯文本提取，无 LLM。取不到返回空字符串。
+    """
+    meta: dict[str, str] = {}
+    try:
+        text = page.read_text(encoding="utf-8")
+    except OSError:
+        return meta
+    if not text.lstrip().startswith("---"):
+        return meta
+    end = text.find("\n---", 3)
+    if end == -1:
+        return meta
+    fm = text[3:end]
+    for key in ("title", "source_url", "canonical_title"):
+        m = re.search(rf"^({key})\s*:\s*(.+?)\s*$", fm, re.M)
+        if m:
+            val = m.group(2).strip().strip("\"'")
+            if val and key not in meta:
+                meta[key] = val
+    # canonical_title fallback for title
+    if "title" not in meta and "canonical_title" in meta:
+        meta["title"] = meta["canonical_title"]
+    return meta
 
 
 def _read_page_tldr(page: Path) -> str:
@@ -599,6 +650,62 @@ def _run_admission_segment(
     return result.passed, result.reason, result.checks, result.content_lane, result.lane_reason
 
 
+def _raw_anchor_set(raw_content: str) -> set[str]:
+    """§0.2/F1-followup：raw 真实 §-anchor canonical 全集。
+
+    P1a:委托 ``raw_anchors.declared_anchor_set``——heading + marker 全 raw(认多 # 真实
+    raw 格式 + raw_archiver marker),table/rawline 只在 `## 锚点目录` 块;canonical 归一
+    (_CONTENT_START/_CONTENT_END 剥离,业务下划线保留)。不重复定义 regex 防漂移。
+    F4 eligible edge 的 evidence_anchor 须 ∈ 此集(不只 grounded claims),防 needs_retake
+    补抽的真边被误杀。
+    """
+    from src.akb2.quality.raw_anchors import declared_anchor_set
+
+    return declared_anchor_set(raw_content)
+
+
+def _compute_mechanism_rendering(
+    extract_data: dict[str, Any], candidate_text: str
+) -> dict[str, Any]:
+    """§0.2/F3：机制渲染信息——供 D12 hidden_mechanism_edges 真算。
+
+    - mechanism_section_rendered: 正文是否含 ## 机制组件与因果边证据 节
+    - rendered_edge_count: 渲染的因果边表行数（粗计 |from|to|...| 行）
+    - extract_source_causal_edge_count: extract_data 中 eligible edge 数
+    - hidden: extract 有 eligible edge 但正文未渲染机制表/边 → True
+    """
+    edges = extract_data.get("causal_edges", []) or []
+    eligible_count = sum(
+        1 for e in edges
+        if isinstance(e, dict)
+        and e.get("edge_kind") in ("source_causal", "llm_evidence")
+    )
+    section_rendered = "## 机制组件与因果边证据" in (candidate_text or "")
+    # 粗计渲染的边表行：机制节内以 | from | 或 |组件名| 开头的数据行
+    rendered_edge_count = 0
+    if section_rendered:
+        # 数机制节内 "因果边" 表的数据行（含 edge_kind 的行）
+        import re as _re
+        section_match = _re.search(
+            r"## 机制组件与因果边证据\s*(.*?)(?=\n## |\Z)",
+            candidate_text or "",
+            _re.DOTALL,
+        )
+        if section_match:
+            section = section_match.group(1)
+            edge_part = section.split("因果边：")[-1] if "因果边：" in section else ""
+            for line in edge_part.splitlines():
+                line = line.strip()
+                if line.startswith("|") and "---" not in line and "from" not in line.lower():
+                    rendered_edge_count += 1
+    return {
+        "mechanism_section_rendered": section_rendered,
+        "rendered_edge_count": rendered_edge_count,
+        "extract_source_causal_edge_count": eligible_count,
+        "hidden": bool(eligible_count > 0 and (not section_rendered or rendered_edge_count == 0)),
+    }
+
+
 def _run_distill_segment(
     raw_path: str,
     raw_content: str,
@@ -642,15 +749,89 @@ def _run_distill_segment(
                 "retries_used": extract_result.retries_used,
                 "maker_fallback_used": maker_fallback_used,
                 "maker_primary_error": maker_primary_error,
+                # §0.2/D9：fallback 失败路径也须携 fallback_quality_basis（不靠 error
+                # string 解析），供 calibration 漏斗归因。
+                "fallback_quality_basis": extract_result.data.get("fallback_quality_basis"),
             },
         )
 
     # step-3 SC-3b/SC-3h：完整性地板在 distill 段评估（持有结构化 extract，A-R4 保留）。
     # FloorResult 是小对象，随 distill_meta 携出（保持 5 元组契约，不扩 tuple arity 避免
     # 破坏既有 5 元组解包的存量调用方/测试）；评分段先看本结果 early-return（加权分不算）。
-    from src.akb2.quality.integrity_floor import evaluate_integrity_floor
+    from src.akb2.quality.integrity_floor import (
+        FLOOR_CORE_VALUE_F4,
+        evaluate_integrity_floor,
+    )
 
-    floor_result = evaluate_integrity_floor(extract_result.data, content_lane)
+    # §0.2/F1-followup：raw 真实 §-anchor 全集——F4 eligible edge 的 evidence_anchor 须
+    # ∈ 此集（不只 grounded claims），防 needs_retake 补抽的真边被误杀（口径与
+    # _build_real_causal_edges 的 _nearest_preceding_anchor 一致）。
+    raw_anchor_set = _raw_anchor_set(raw_content)
+    floor_result = evaluate_integrity_floor(
+        extract_result.data, content_lane, raw_anchors=raw_anchor_set
+    )
+
+    # §0.2/F1 太脆 + F2-A:concept LLM extract 成功但 F4 fail(0 eligible 或 <3 组件)→
+    # 确定性抽边 enrichment:补 _scan_real_mechanism_components 组件 + _build_real_causal_edges
+    # source_causal 边合并进 extract_data,重评 floor。仍 fail → fail-closed(不放松 F4)。
+    # F2-A 比原 needs_causal_edge_retake 更广:原仅 ≥3 组件 + "0 eligible" 才触发,致 <3 组件
+    # 或 LLM 漏组件的样本(如 idx3 Harness Eng)确定性抽边没机会跑;现 F4 fail 即触发。
+    if (
+        str(content_lane).lower() == "concept"
+        and extract_result.success
+        and FLOOR_CORE_VALUE_F4 in floor_result.failed_floors
+    ):
+        from src.akb2.quality.distill import _enrich_zero_eligible_with_deterministic
+
+        enrich_diag = _enrich_zero_eligible_with_deterministic(
+            extract_result.data, raw_content
+        )
+        if enrich_diag.get("enriched"):
+            # §0.2/F1-followup:重评传 raw_anchor_set(补抽边 anchor 来自 raw,须用 raw 全集判 trusted)
+            floor_result = evaluate_integrity_floor(
+                extract_result.data, content_lane, raw_anchors=raw_anchor_set
+            )
+            floor_result.meta["causal_edge_retake_applied"] = True
+            # F4-A fail-visible:ledger 记 enrichment 诊断(applied/edges_added/passed_after)
+            _log_event(
+                config, "distill_extract", "causal_edge_enrichment",
+                _compute_raw_hash(raw_path),
+                {"applied": True, **enrich_diag, "passed_after": floor_result.passed},
+            )
+
+    # F2-B: traceability 有界 retake — floor 仅因 traceability fail(其余 floor 全过)时,
+    # 重发 interpretation + grounded anchors 给 LLM 补 traces_to/改判 provenance,重评 floor。
+    # TRACEABILITY_RETAKE_MAX=1(具名,有界);不放宽 floor;retake 后仍 fail → fail-closed。
+    from src.akb2.quality.integrity_floor import FLOOR_INTERPRETATION_TRACEABILITY
+
+    if (
+        str(content_lane).lower() == "concept"
+        and extract_result.success
+        and floor_result.failed_floors == [FLOOR_INTERPRETATION_TRACEABILITY]
+        and not floor_result.meta.get("traceability_retake_applied")
+    ):
+        retaken, retake_diag = _run_traceability_retake_worker(
+            extract_result.data, raw_content, content_lane
+        )
+        if isinstance(retaken, dict):
+            extract_result.data = retaken
+            floor_result = evaluate_integrity_floor(
+                extract_result.data, content_lane, raw_anchors=raw_anchor_set
+            )
+            floor_result.meta["traceability_retake_applied"] = True
+            _log_event(
+                config, "distill_extract", "traceability_retake",
+                _compute_raw_hash(raw_path),
+                {"applied": True, "passed_after": floor_result.passed,
+                 "diagnostics": retake_diag},
+            )
+        else:
+            # F3-A fail-visible:失败路径也记 ledger(applied=False + reject_reason)
+            _log_event(
+                config, "distill_extract", "traceability_retake",
+                _compute_raw_hash(raw_path),
+                {"applied": False, "diagnostics": retake_diag},
+            )
 
     # 段 2: 成稿
     ts = _now().strftime("%Y-%m-%d-%H%M%S")
@@ -707,6 +888,24 @@ def _run_distill_segment(
             "maker_primary_error": maker_primary_error,
             # step-3 SC-3b/SC-3h：完整性地板结果随 distill_meta 携出，供评分段 early-return。
             "floor_result": floor_result,
+            # §0.2/D9：fallback 成功路径也携 fallback_quality_basis（机读质量基线）。
+            "fallback_quality_basis": extract_result.data.get("fallback_quality_basis"),
+            # §0.2/F3：机制渲染信息——供 D12 hidden_mechanism_edges 真算
+            # （source_causal_edge_count>0 但正文未渲染机制表/边 → hidden>0）。
+            "mechanism_rendering": _compute_mechanism_rendering(
+                extract_result.data, candidate_text
+            ),
+            # F8-A fail-visible:组件 evidence 回填诊断透传 ledger(确认 backfill 触发)。
+            "components_evidence_backfilled": extract_result.diagnostics.get(
+                "components_evidence_backfilled", 0
+            ),
+            "components_evidence_unlocated": extract_result.diagnostics.get(
+                "components_evidence_unlocated", 0
+            ),
+            # F8-C fail-visible:组件表垃圾条目过滤计数(祈使句/泛节名被滤)
+            "components_filtered": extract_result.diagnostics.get(
+                "components_filtered", 0
+            ),
         },
     )
 
@@ -796,6 +995,62 @@ def _run_extract_claims_worker(raw_content: str, content_lane: str = "") -> Any:
         retries_used=int(payload.get("retries_used") or 0),
         error=str(payload.get("error") or ""),
     )
+
+
+def _run_traceability_retake_worker(
+    extract_data: dict[str, Any], raw_content: str, content_lane: str = ""
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """F2-B/F3-A: traceability retake 子进程(加载 route_llm,调 distill.retake_traceability)。
+
+    floor 仅因 traceability fail 时 caller 触发。子进程内 retake_traceability 重发
+    interpretation + grounded anchors 给 LLM,补 traces_to/改判 provenance。
+    Returns:
+        (updated_data | None, diagnostics | None):data 有改动时非 None;diagnostics 始终
+        带(含 reject_reason),供 caller ledger 记录失败原因(F3-A fail-visible)。
+    """
+    cmd = [sys.executable, "-m", DISTILL_EXTRACT_WORKER_MODULE]
+    worker_input = json.dumps(
+        {
+            "mode": "traceability_retake",
+            "extract_data": extract_data,
+            "raw_content": raw_content,
+            "content_lane": content_lane,
+        },
+        ensure_ascii=False,
+    )
+    proc: subprocess.Popen[str] | None = None
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            text=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        stdout, stderr = proc.communicate(
+            input=worker_input, timeout=TRACEABILITY_RETAKE_WORKER_TIMEOUT_S
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        if proc is not None:
+            _kill_process_group(proc, DISTILL_EXTRACT_WORKER_KILL_GRACE_S)
+        return None, {"reject_reason": "worker_timeout_or_osperror"}
+
+    stdout = (stdout or "").strip()
+    if proc.returncode != 0:
+        return None, {"reject_reason": f"worker_exit_{proc.returncode}"}
+    try:
+        payload = json.loads(stdout)
+    except (json.JSONDecodeError, ValueError):
+        return None, {"reject_reason": "worker_invalid_json"}
+    diag = payload.get("diagnostics") if isinstance(payload, dict) else None
+    if not isinstance(diag, dict):
+        err = payload.get("error", "") if isinstance(payload, dict) else ""
+        diag = {"reject_reason": err}
+    if not isinstance(payload, dict) or not payload.get("success"):
+        return None, diag  # 失败也带 diagnostics(含 reject_reason)
+    data = payload.get("data")
+    return (data if isinstance(data, dict) else None), diag
 
 
 def _kill_process_group(proc: subprocess.Popen[Any], grace_s: float) -> None:
@@ -1073,7 +1328,14 @@ def _run_quality_segments(
         # 有 defects 进 repair（defects actionable），无 defects 才查 entailment/加权分。
 
     # 无缺陷 → 通过
-    all_defects = a_defects + b_defects
+    # rubric 1.4.0（用户裁决）：advisory 加分维缺陷(如「新颖增量」)不计 blocking——
+    # 初判只剩 advisory 缺陷时不进 repair(省一轮),直接走硬门;残留记入 meta 可见。
+    from src.akb2.quality.repair import _blocking_defects as _rl_blocking
+
+    all_defects = _rl_blocking(a_defects) + _rl_blocking(b_defects)
+    advisory_initial = [
+        d for d in (a_defects + b_defects) if d not in all_defects
+    ]
     if not all_defects:
         # step-3 SC-3c/SC-3d：concept 车道无 defects 后，判 F3 层② entailment + 加权分过阈
         # （initial 无 defects 路径；repair 收敛后路径在下方也调同一 helper——codex P1 修复）。
@@ -1103,6 +1365,9 @@ def _run_quality_segments(
             **grader_meta,
             "repair_rounds": 0, "final_defects_summary": [],
         }
+        if advisory_initial:
+            # rubric 1.4.0 fail-visible：advisory 残留(加分维未达)照记不卡
+            meta["advisory_residual_summary"] = _defect_summary(advisory_initial)
         return True, "", "", meta
 
     meta_b: dict[str, Any] = {
@@ -1303,7 +1568,7 @@ def _run_pipeline_segments(
         content_hash,
         {
             "status": "start",
-            "model_family": "deepseek-v4-pro",
+            "model_family": DISTILL_MODEL_FAMILY,
             "timeout_s": DISTILL_TIMEOUT_S,
             "max_retries": DISTILL_MAX_RETRIES,
             "content_lane": content_lane,
@@ -1324,6 +1589,9 @@ def _run_pipeline_segments(
         details["maker_fallback_used"] = distill_meta.get("maker_fallback_used", False)
         if distill_meta.get("maker_primary_error"):
             details["maker_primary_error"] = distill_meta.get("maker_primary_error")
+        # §0.2/D9：fallback 失败路径透传 fallback_quality_basis（不靠 error string）
+        if distill_meta.get("fallback_quality_basis"):
+            details["fallback_quality_basis"] = distill_meta.get("fallback_quality_basis")
         _log_event(config, "abort", failed_node, content_hash, details)
         return {
             "converged": False,
@@ -1335,15 +1603,27 @@ def _run_pipeline_segments(
             "content_lane": content_lane,
             "failed_node": failed_node,
             "error_class": "distill_failed",
+            # §0.2/D9：calibration 漏斗归因需 fallback_quality_basis（component/eligible edge 计数）
+            "fallback_quality_basis": distill_meta.get("fallback_quality_basis"),
+        "mechanism_rendering": distill_meta.get("mechanism_rendering"),
         }
 
     _log_event(config, "distill_extract", "distill_extract", content_hash,
                {"status": "success",
-                "model_family": "deepseek-v4-pro",
+                "model_family": DISTILL_MODEL_FAMILY,
                "timeout_s": DISTILL_TIMEOUT_S,
                "max_retries": DISTILL_MAX_RETRIES,
                "retries_used": distill_meta.get("retries_used", 0),
                 "maker_fallback_used": distill_meta.get("maker_fallback_used", False),
+                # F8-A fail-visible:组件 evidence 回填计数(确认 F6-D 触发 + 残留 unlocated)
+                "components_evidence_backfilled": distill_meta.get(
+                    "components_evidence_backfilled", 0
+                ),
+                "components_evidence_unlocated": distill_meta.get(
+                    "components_evidence_unlocated", 0
+                ),
+                # F8-C fail-visible:组件表垃圾条目过滤计数
+                "components_filtered": distill_meta.get("components_filtered", 0),
                 **(
                     {"maker_primary_error": distill_meta.get("maker_primary_error")}
                     if distill_meta.get("maker_primary_error")
@@ -1439,6 +1719,9 @@ def _run_pipeline_segments(
             "content_lane": content_lane,
             "failed_node": "grader" if str(error_class).startswith("grader_") else "repair_loop",
             "error_class": error_class,
+            # F-C fail-visible(P4):repair 不收敛时透出残留缺陷摘要,供 calibration
+            # 落 residual_defects(维度名列表)。不改判定,只让部分失败可见。
+            "final_defects_summary": final_defects_summary,
         }
 
     _log_event(config, "repair_loop", "repair_loop", content_hash,
@@ -1462,16 +1745,41 @@ def _run_pipeline_segments(
         _log_event(config, "abort", "promote", content_hash,
                    {"reason": promote_detail})
 
+    # §0.2/D4：promote 三分类——active_promoted / proposal_passed / promotion_blocked。
+    # active_promoted: AUTO_PROMOTE=1 + 真写 active（real_link+high）；proposal_passed:
+    # AUTO_PROMOTE=0 + proposal 口径过（含 proposed_node_only 灰区）；promotion_blocked:
+    # quality 过但 Gate-1/4/5/CLI 非允许失败或 AUTO_PROMOTE=1 proposed_node_only 二次拒
+    # （不计 positive pass，防 proposal_passed 虚高）。
+    _auto_promote_env = os.environ.get("AKB2_AUTO_PROMOTE", "0")
+    if promoted and _auto_promote_env == "1":
+        _promotion_outcome = "active_promoted"
+    elif promoted:
+        _promotion_outcome = "proposal_passed"
+    else:
+        _promotion_outcome = "promotion_blocked"
+    # §0.2/F4：final_status 从 promotion_outcome 派生（旧 blocked 时仍写 proposal_passed 矛盾）
+    _final_status = {
+        "active_promoted": "promoted",
+        "proposal_passed": "proposal_passed",
+        "promotion_blocked": "promotion_blocked",
+    }.get(_promotion_outcome, "proposal_passed")
+
     return {
         "converged": True,
         "rounds": rounds,
         "promoted": promoted,
         "promotion_mode": promotion_mode,
-        "final_status": "promoted" if promoted else "proposal_passed",
+        "final_status": _final_status,
+        "promotion_outcome": _promotion_outcome,
         "error": None if promoted else promote_detail,
         "content_lane": content_lane,
         "failed_node": None,
         "error_class": None,
+        # §0.2/D9：成功路径也透传 fallback_quality_basis（fallback 成功时为机读质量基线；
+        # LLM 成功时为 None）。calibration 漏斗归因可见。
+        "fallback_quality_basis": distill_meta.get("fallback_quality_basis"),
+        # §0.2/F3：机制渲染信息透传（D12 hidden_mechanism_edges 真算）
+        "mechanism_rendering": distill_meta.get("mechanism_rendering"),
     }
 
 

@@ -206,14 +206,20 @@ def evaluate_five_gates(
     candidate_path: Path,
     vault_root: Path,
     grader_result_path: Path | None = None,
+    allow_proposed_node_only: bool = False,
 ) -> tuple[bool, str, str]:
     """串行执行五闸判定。
 
     Gate 1: gate CLI 10/10 hard checks pass
-    Gate 2: decision_confidence == "high"
-    Gate 3: graph_readiness == "real_link"
+    Gate 2: decision_confidence == "high"（§0.2/D8：allow_proposed_node_only 时接受
+            "medium" + graph_readiness=="proposed_node_only"）
+    Gate 3: graph_readiness == "real_link"（§0.2/D8：allow 时接受 "proposed_node_only"）
     Gate 4: lint CLI 0 P0/P1 findings
     Gate 5: grader result PASS
+
+    §0.2/D8：allow_proposed_node_only 让冷启动 concept 候选（proposed_graph_nodes，
+    无 real_link）过 Gate-2/3 进 proposal；run_promote 在 AUTO_PROMOTE=1 时二次拒
+    proposed_node_only 写 active（底线：active 仍要 real_link + high confidence）。
 
     Returns:
         (all_passed, failed_gate_name, reason)
@@ -224,18 +230,32 @@ def evaluate_five_gates(
     if not gate_ok:
         return False, "Gate-1 (10/10 hard checks)", gate_detail
 
-    # Gate 2: decision_confidence
     confidence = gate_parsed.get("decision_confidence", "")
-    if confidence != "high":
+    graph = gate_parsed.get("graph_readiness", "")
+    is_proposed_node_only = graph == "proposed_node_only"
+
+    # Gate 2: decision_confidence
+    if confidence == "high":
+        pass  # 高置信，过
+    elif allow_proposed_node_only and confidence == "medium" and is_proposed_node_only:
+        pass  # §0.2/D8：proposal 模式接受 medium + proposed_node_only
+    else:
         return False, "Gate-2 (decision_confidence)", (
-            f"decision_confidence={confidence}, expected 'high'. {gate_detail}"
+            f"decision_confidence={confidence}, expected 'high'"
+            + (" (or 'medium'+proposed_node_only when allowed)" if allow_proposed_node_only else "")
+            + f". {gate_detail}"
         )
 
     # Gate 3: graph_readiness
-    graph = gate_parsed.get("graph_readiness", "")
-    if graph != "real_link":
+    if graph == "real_link":
+        pass  # 真实图谱链接，过
+    elif allow_proposed_node_only and is_proposed_node_only:
+        pass  # §0.2/D8：proposal 接受 proposed_node_only（待 adjudication）
+    else:
         return False, "Gate-3 (graph_readiness)", (
-            f"graph_readiness={graph}, expected 'real_link'. {gate_detail}"
+            f"graph_readiness={graph}, expected 'real_link'"
+            + (" (or 'proposed_node_only' when allowed)" if allow_proposed_node_only else "")
+            + f". {gate_detail}"
         )
 
     # Gate 4: lint
@@ -248,8 +268,10 @@ def evaluate_five_gates(
     if not grader_ok:
         return False, "Gate-5 (grader PASS)", grader_detail
 
+    # §0.2/D8：proposed_node_only 过闸时标 graph_pending（run_promote 据此二次拒 active）
+    pending_marker = " [graph_pending=true]" if is_proposed_node_only else ""
     return True, "ALL", (
-        f"Five gates passed: {gate_detail}; {lint_detail}; {grader_detail}"
+        f"Five gates passed: {gate_detail}; {lint_detail}; {grader_detail}{pending_marker}"
     )
 
 
@@ -932,9 +954,11 @@ def run_promote(
     auto_promote = os.environ.get("AKB2_AUTO_PROMOTE", "0")
     candidate_hash = _sha256_file(candidate_path) if candidate_path.exists() else ""
 
-    # 五闸判定
+    # 五闸判定（§0.2/D8：allow_proposed_node_only 让冷启动 concept 过 proposal 闸；
+    # run_promote 在 AUTO_PROMOTE=1 时二次拒 proposed_node_only 写 active）
     gates_ok, failed_gate, gates_detail = evaluate_five_gates(
-        candidate_path, vault_root, grader_result_path
+        candidate_path, vault_root, grader_result_path,
+        allow_proposed_node_only=True,
     )
 
     if not gates_ok:
@@ -944,6 +968,23 @@ def run_promote(
             {"failed_gate": failed_gate, "reason": gates_detail}
         )
         return False, f"Five gates failed at {failed_gate}: {gates_detail}", None
+
+    # §0.2/D8：AUTO_PROMOTE=1 二次拒 proposed_node_only 写 active
+    # （evaluate_five_gates 标 [graph_pending=true]；active 仍要 real_link + high confidence）
+    if auto_promote == "1" and "[graph_pending=true]" in gates_detail:
+        _write_ledger_event(
+            vault_root, "abort", "promote", candidate_hash,
+            {
+                "failed_gate": "auto_promote_proposed_node_only",
+                "reason": "graph_readiness=proposed_node_only (graph_pending), "
+                          "active requires real_link; use proposal mode",
+            }
+        )
+        return False, (
+            "Auto-promote refused: graph_readiness=proposed_node_only (graph_pending), "
+            "active requires real_link. Use proposal mode (AKB2_AUTO_PROMOTE=0). "
+            + gates_detail
+        ), None
 
     if auto_promote != "1":
         # 提议模式（fail-closed 默认）：只写 gate manifest

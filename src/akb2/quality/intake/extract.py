@@ -120,6 +120,30 @@ def _count_words(text: str) -> int:
     return len(text.split())
 
 
+def _apply_chrome_strip(extracted: dict[str, Any]) -> dict[str, Any]:
+    """WP-1/D1: 对抽取器返回的 content 剥 chrome + 重算 word_count。
+
+    在 ``wc >= MIN_CONTENT_LENGTH`` 判定之前应用 → 剥离后 <200 走 fail-closed
+    （对**剥离后**字数判定，非原始字数）。原地修改 extracted 的 content/word_count，
+    返回 diagnostics dict（含 pre/post wc，供 result.raw_metadata fail-visible）。
+
+    干净页零回归：clean prose 不命中任何 chrome 模式 → content/word_count 不变。
+    """
+    from src.akb2.quality.chrome_strip import strip_chrome_blocks
+
+    content = extracted.get("content", "") or ""
+    pre_wc = extracted.get("word_count") or _count_words(content)
+    clean, diag = strip_chrome_blocks(content)
+    post_wc = _count_words(clean)
+    extracted["content"] = clean
+    extracted["word_count"] = post_wc
+    diag_dict = diag.to_dict()
+    diag_dict["pre_strip_word_count"] = pre_wc
+    diag_dict["post_strip_word_count"] = post_wc
+    return diag_dict
+
+
+
 def _validate_metadata(result: ExtractResult) -> bool:
     """验证元数据 4 件齐。"""
     return all([result.title, result.author, result.published, result.url])
@@ -412,6 +436,8 @@ def extract_content(
     if _detect_pdf(url, content_type):
         extracted = _extract_via_docling(url, file_bytes)
         if extracted:
+            # WP-1: 注入锚点前剥 chrome + 重算 wc（剥离后 <200 走 fail-closed）
+            result.raw_metadata["chrome_strip"] = _apply_chrome_strip(extracted)
             result.method = ExtractMethod.DOCLING
             result.title = extracted.get("title", "")
             result.author = extracted.get("author", "")
@@ -435,6 +461,8 @@ def extract_content(
         if not is_anti_bot:
             extracted = _extract_via_defuddle(url, html)
             if extracted:
+                # WP-1: 剥 chrome + 重算 wc（在 wc >= MIN 判定前，剥离后 <200 走 fail-closed）
+                result.raw_metadata["chrome_strip"] = _apply_chrome_strip(extracted)
                 wc = extracted.get("word_count", 0)
                 if wc >= MIN_CONTENT_LENGTH:
                     result.method = ExtractMethod.DEFUDDLE
@@ -467,6 +495,8 @@ def extract_content(
                     f"Scrapling {'browser' if use_browser else 'adaptive'} returned empty"
                 )
                 continue
+            # WP-1: 剥 chrome + 重算 wc（在 wc 判定前，剥离后 <200 走 fail-closed）
+            result.raw_metadata["chrome_strip"] = _apply_chrome_strip(extracted)
             wc = extracted.get("word_count", 0)
             if wc < MIN_CONTENT_LENGTH:
                 result.error = (

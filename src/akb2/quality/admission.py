@@ -27,6 +27,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from src.akb2.quality.raw_anchors import ANCHOR_TOKEN_PAT
+
 # ---------------------------------------------------------------------------
 # 内容车道常量（spec FR-001：concept/procedural 二值）
 # ---------------------------------------------------------------------------
@@ -149,6 +151,10 @@ class AdmissionResult:
     # P1 语义审计的逐篇可读 trace（spec FR-008 / 宪法 P4 失败可见）。仅观测字段，
     # 不参与判定（lane 判定仍由 content_lane/lane_failed/lane_rejected 驱动）。
     lane_reason: str = ""
+    # §0.2/D11：lane reject 二次确认标记——how_tendency PASS + strong mechanism 时
+    # 降级 reject → concept（不直接拒），原 lane_reason 记此。仅观测，不参与判定。
+    lane_reject_recheck: bool = False
+    original_lane_reason: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +215,43 @@ def run_admission(
     # P0-c：非知识内容（新闻/营销/会议recap/纯观点）显式拒收门——不依赖 how_tendency。
     # 堵后门：lane 放松后新闻可能被判 concept → how_tendency 豁免 → 溜过准入（W5/w7 实证）。
     lane_rejected = content_lane == LANE_REJECT
+    lane_reject_recheck = False
+    original_lane_reason = ""
+
+    # §0.2/D11：lane reject 二次确认——how_tendency PASS + strong mechanism（strong
+    # signal≥1 或 strong_component≥3）时不直接拒，降级 reject → concept（继续走机制
+    # 信号门，由 mechanism_signal 决定，不放观点稿）。weak-only 不覆盖 reject（保持拒）。
+    # 修 idx6 how_tendency PASS 但 lane=reject 抖动误拒。
+    if lane_rejected:
+        original_lane_reason = lane_reason
+        mech_signals = _scan_mechanism_signals(body)
+        strong_signal = (
+            mech_signals["causal"] >= 1
+            or mech_signals["code_blocks"] >= 1
+            or mech_signals["source_operations"] >= 1
+        )
+        strong_component = mech_signals["components"] >= MECHANISM_COMPONENT_MIN
+        if how_check.passed and (strong_signal or strong_component):
+            lane_reject_recheck = True
+            content_lane = LANE_CONCEPT
+            lane_rejected = False
+            lane_reason = (
+                f"lane_reject_recheck: how_tendency PASS + strong mechanism"
+                f"（components={mech_signals['components']}, causal={mech_signals['causal']}, "
+                f"code={mech_signals['code_blocks']}, src_ops={mech_signals['source_operations']}）"
+                f" → 降级 concept（原 reject: {original_lane_reason}）"
+            )
+        # weak-only: 不覆盖 reject，保持 lane_rejected=True（LLM 窄仲裁或 fail-closed）
+
+    # 5. 机制信号准入门（WP-2/D2）：仅 concept 候选，确定性为主 + LLM 窄仲裁。
+    # 无机制散文（openai 政策/新闻/纯观点）在 admission 即拒（no_mechanism_signal），
+    # 不下传 distill 硬填模板（D8 maker fallback 造假机制源头）。procedural 不受此门
+    # （F4 H1 判）；lane_failed/reject 时已拒收，不跑。
+    if content_lane == LANE_CONCEPT and not lane_failed and not lane_rejected:
+        # F13-fix3（reviewer 三轮 blocking 定论）：mechanism 门无任何确定性 PASS——
+        # 无论是否经 D11 recheck,mechanism LLM 都是唯一放行人(编号标题/密度/普通 H2
+        # 计数全部可被营销文伪造,三轮反例实证);确定性只保留强反信号 FAIL(fail-closed)。
+        checks.append(_check_mechanism_signal(body, route_llm_fn))
 
     # how_tendency 路由化（spec FR-003）：concept 车道下其 fail 不使 passed=False。
     # 纯概念内容（无命令）天然 how_tendency=fail，旧逻辑会误拒——本改动让 how_tendency
@@ -225,9 +268,13 @@ def run_admission(
 
     reason = ""
     if not all_passed:
-        failed = [
-            c.name for c in checks if not _check_counts_for_admission(c)
-        ]
+        # WP-2：mechanism_signal 失败映射 no_mechanism_signal（runner 据此设 error_class）
+        failed: list[str] = []
+        for c in checks:
+            if not _check_counts_for_admission(c):
+                failed.append(
+                    "no_mechanism_signal" if c.name == "mechanism_signal" else c.name
+                )
         if lane_rejected:
             failed.append(f"non_knowledge({lane_reason})")
         elif lane_failed:
@@ -252,6 +299,9 @@ def run_admission(
         # lane_reason 全路径透出（pass/reject/fail 均可见，不止 reject），
         # 供 runner 落 ledger 做 P1 语义审计逐篇可读 trace。仅观测，不参与判定。
         lane_reason=lane_reason,
+        # §0.2/D11：lane reject 二次确认观测字段（ledger/calibration 透出）
+        lane_reject_recheck=lane_reject_recheck,
+        original_lane_reason=original_lane_reason,
     )
 
 
@@ -260,10 +310,16 @@ def run_admission(
 # ---------------------------------------------------------------------------
 
 # 正文起始锚点：raw_archiver 写入 §A_CONTENT_START（或 §X_CONTENT_START）标记正文开端
-_ANCHOR_DECL_RE = r"§[A-Z0-9]+"
+# P1a: token pattern 走 raw_anchors.ANCHOR_TOKEN_PAT（含下划线,认业务锚 §I_LIMITATIONS）
+_ANCHOR_DECL_RE = ANCHOR_TOKEN_PAT
 _CONTENT_START_RE = re.compile(rf"{_ANCHOR_DECL_RE}_CONTENT_START")
 
 _ANCHOR_HEADING_RE = re.compile(rf"(?m)^##\s+{_ANCHOR_DECL_RE}\.?\s+.+$")
+# F11-C: 任意 H2 标题切节(scraped blog 普通 ## 标题,非 ## §X 锚点标题)。
+# 旧 _split_heading_sections 只按 ## §X 切 → scraped blog 整篇 1 节 →
+# _build_keyword_aware_snippet 取前 8000(intro),机制段在末尾被截 → LLM 误判
+# no_mechanism_signal(idx0 long-running-agents)。改任意 H2 切,机制节单独成节被选入。
+_H2_HEADING_RE = re.compile(r"(?m)^##\s+\S.*$")
 _HOW_HEADING_RE = re.compile(
     r"(?im)^#{1,4}\s+.*(?:"
     r"how|step|workflow|configuration|template|example|code|"
@@ -272,7 +328,11 @@ _HOW_HEADING_RE = re.compile(
 )
 _LEGACY_HOW_ANCHOR_HEADING_RE = re.compile(r"(?im)^##\s+§[B-H]\b")
 _TOC_BLOCK_RE = re.compile(
-    rf"(?ms)^##\s*锚点目录\s*\n.*?(?=^---\s*$|^##\s+{_ANCHOR_DECL_RE}\.|\Z)"
+    # F11-C: 加 ^##\s+\S(任意 H2 标题)作停边界——idx8 lilian-weng 等 scraped blog
+    # 有 intake 加的 ## 锚点目录 但无 --- 分隔、body 是普通 ## H2 → 旧正则只停 ---
+    # 或 ## §X. → 从 ## 锚点目录 吃到 \Z,只剩 frontmatter → mechanism snippet=325
+    # 字符 → LLM 收空 body 误判 no_mechanism_signal。加 H2 停边界正确界定 TOC 块。
+    r"(?ms)^##\s*锚点目录\s*\n.*?(?=^---\s*$|^##\s+\S|\Z)"
 )
 
 
@@ -305,13 +365,19 @@ def _strip_raw_boilerplate(raw_content: str) -> str:
     return stripped if stripped else raw_content
 
 
-def _build_how_tendency_snippet(raw_content: str) -> str:
-    """构建 How 倾向专用窗口。
+def _build_keyword_aware_snippet(
+    raw_content: str,
+    section_filter: Any,
+    context_chars: int,
+    max_chars: int,
+) -> str:
+    """P2 通用关键词感知窗口:去 TOC + 短导语 + 命中 section_filter 的章节,限 max_chars。
 
-    真实 raw 归档可能没有 `§X_CONTENT_START`，且开头常含抓取说明、传播背景、
-    锚点目录和概念导语。机械前 4000 字会让 §B/§H 等 how 章节不可见，造成
-    `how_tendency` 误拒。这里保留短导语作为上下文，再优先拼入命中 how 关键词
-    的章节，仍限制总长度，避免把整篇文章无界送入轻量准入模型。
+    `_build_how_tendency_snippet` 的重构通用版(行为逐字节不变,测试锁);
+    `_build_mechanism_snippet` 复用同结构,换 section_filter(how ∪ mechanism 谓词)。
+
+    真实 raw 开头常含抓取说明/传播背景/锚点目录/概念导语,机械前 N 字让后段章节不可见
+    → 误拒。本函数保留短导语作上下文,再优先拼入命中 filter 的章节,限 max_chars。
     """
     text = _remove_anchor_toc(raw_content).strip()
     if not text:
@@ -320,27 +386,75 @@ def _build_how_tendency_snippet(raw_content: str) -> str:
         return text[:MAX_ADMISSION_CONTENT_CHARS]
 
     sections = _split_heading_sections(text)
-    selected = [
-        section.strip()
-        for section in sections
-        if _section_is_how_candidate(section)
-    ]
+    selected = [section.strip() for section in sections if section_filter(section)]
 
     if not selected:
         return text[:MAX_ADMISSION_CONTENT_CHARS]
 
-    parts = [text[:HOW_TENDENCY_CONTEXT_CHARS].strip()]
+    parts = [text[:context_chars].strip()]
     seen: set[str] = {parts[0]} if parts[0] else set()
     for section in selected:
         if not section or section in seen:
             continue
         parts.append(section)
         seen.add(section)
-        if len("\n\n".join(parts)) >= MAX_HOW_TENDENCY_CONTENT_CHARS:
+        if len("\n\n".join(parts)) >= max_chars:
             break
 
     snippet = "\n\n".join(part for part in parts if part).strip()
-    return snippet[:MAX_HOW_TENDENCY_CONTENT_CHARS]
+    return snippet[:max_chars]
+
+
+def _build_how_tendency_snippet(raw_content: str) -> str:
+    """构建 How 倾向专用窗口(P2 重构为 _build_keyword_aware_snippet 委托,行为逐字节不变)。"""
+    return _build_keyword_aware_snippet(
+        raw_content,
+        _section_is_how_candidate,
+        HOW_TENDENCY_CONTEXT_CHARS,
+        MAX_HOW_TENDENCY_CONTENT_CHARS,
+    )
+
+
+# P2: mechanism 仲裁窗口(how ∪ mechanism 谓词,cap 8000)
+MAX_MECHANISM_CONTENT_CHARS: int = 8000
+MECHANISM_CONTEXT_CHARS: int = 1200
+# mechanism 谓词关键词(标题/正文出现即算机制章节候选)
+_MECHANISM_HEADING_RE = re.compile(
+    r"(?im)^#{1,4}\s+.*(?:"
+    r"mechanism|component|architecture|pipeline|flow|graph|layer|runtime|"
+    r"scheduler|executor|coordinator|dispatcher|protocol|"
+    r"机制|组件|架构|管线|流程|图谱|层|运行时|调度|协调|协议"
+    r").*$"
+)
+
+
+def _section_is_mechanism_candidate(section: str) -> bool:
+    """P2: 章节是否值得送入 mechanism 仲裁窗口(how ∪ mechanism 谓词)。"""
+    if _section_is_how_candidate(section):
+        return True
+    if _MECHANISM_HEADING_RE.search(section):
+        return True
+    lower = section.lower()
+    return any(
+        kw in lower
+        for kw in (
+            "mechanism", "component", "architecture", "pipeline",
+            "机制", "组件", "架构", "管线",
+        )
+    )
+
+
+def _build_mechanism_snippet(raw_content: str) -> str:
+    """P2: mechanism 仲裁专用窗口(how ∪ mechanism 谓词,cap 8000)。
+
+    长文机制在后段(body[:4000] 截断漏判 idx0),改用关键词感知窗口拼入机制章节。
+    """
+    return _build_keyword_aware_snippet(
+        raw_content,
+        _section_is_mechanism_candidate,
+        MECHANISM_CONTEXT_CHARS,
+        MAX_MECHANISM_CONTENT_CHARS,
+    )
 
 
 def _remove_anchor_toc(raw_content: str) -> str:
@@ -349,12 +463,21 @@ def _remove_anchor_toc(raw_content: str) -> str:
 
 
 def _split_heading_sections(text: str) -> list[str]:
-    """按 `## §X` 章节切分；没有锚点标题时返回整篇。"""
-    matches = list(_ANCHOR_HEADING_RE.finditer(text))
+    """按 H2 章节切分(任意 ## 标题,含 ## §X 锚点 + scraped blog 普通 ##)。
+
+    F11-C: 旧版只按 ## §X 锚点切,scraped blog(无锚点,普通 ## 标题)整篇 1 节 →
+    snippet 取前 8000(intro),机制段在末尾被截 → LLM 误判 no_mechanism(idx0)。
+    改任意 H2 切,机制节单独成节被 _build_keyword_aware_snippet 选入。
+    """
+    matches = list(_H2_HEADING_RE.finditer(text))
     if not matches:
         return [text]
 
     sections: list[str] = []
+    # H2 之前的内容(frontmatter/导语)作为首节(若非空)
+    pre = text[: matches[0].start()].strip()
+    if pre:
+        sections.append(pre)
     for idx, match in enumerate(matches):
         start = match.start()
         end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
@@ -496,17 +619,133 @@ def _check_how_tendency(
     )
 
 
-def _check_novelty(
-    raw_content: str,
-    wiki_references: list[str] | None,
-    route_llm_fn: Any,
-) -> AdmissionCheck:
-    """新颖度判定：对既有 wiki 增量。
+def _normalize_wiki_references(
+    wiki_references: list[str] | list[dict] | None,
+) -> list[dict[str, str]]:
+    """§0.2/D10/G1：wiki_references 归一为结构化 list[dict]。
 
-    无既有 wiki 引用时默认 pass（首个入库内容）。
-    有引用时轻量 LLM 判定是否提供增量信息。
+    兼容旧 list[str]（TLDR 字符串 → {tldr: ref, slug/path: ""}）与新 list[dict]。
     """
     if not wiki_references:
+        return []
+    out: list[dict[str, str]] = []
+    for ref in wiki_references:
+        if isinstance(ref, dict):
+            out.append(
+                {
+                    "path": str(ref.get("path", "")),
+                    "slug": str(ref.get("slug", "")),
+                    "title": str(ref.get("title", "")),
+                    "tldr": str(ref.get("tldr", "")),
+                    "source_url": str(ref.get("source_url", "")),
+                    "taxonomy": str(ref.get("taxonomy", "")),
+                }
+            )
+        elif isinstance(ref, str):
+            out.append(
+                {"path": "", "slug": "", "title": "", "tldr": ref,
+                 "source_url": "", "taxonomy": ""}
+            )
+    return out
+
+
+def _raw_novelty_meta(raw_content: str) -> dict[str, str]:
+    """§0.2/D10/G1：从 raw frontmatter + 首个 H1 提取 slug/url/title 供 exact 匹配。"""
+    meta: dict[str, str] = {"slug": "", "source_url": "", "title": ""}
+    if not raw_content:
+        return meta
+    # frontmatter
+    if raw_content.lstrip().startswith("---"):
+        end = raw_content.find("\n---", 3)
+        if end != -1:
+            fm = raw_content[3:end]
+            for key in ("source_slug", "source_url", "source_title"):
+                m = re.search(rf"^({key})\s*:\s*(.+?)\s*$", fm, re.M)
+                if m:
+                    val = m.group(2).strip().strip("\"'")
+                    if key == "source_slug":
+                        meta["slug"] = val
+                    elif key == "source_url":
+                        meta["source_url"] = val
+                    elif key == "source_title":
+                        meta["title"] = val
+    # 首个 H1 作 title fallback
+    if not meta["title"]:
+        m = re.search(r"(?m)^#\s+(.+?)\s*$", raw_content)
+        if m:
+            meta["title"] = m.group(1).strip()
+    return meta
+
+
+def _tokenize_for_overlap(text: str) -> set[str]:
+    """轻量分词（小写 + 去标点 + 停用词），供 lexical/topic top-k 近邻选择。"""
+    if not text:
+        return set()
+    lower = re.sub(r"[^\w\s一-鿿]", " ", text.lower())
+    stop = {
+        "the", "a", "an", "to", "of", "and", "in", "for", "is", "are", "with",
+        "on", "by", "or", "as", "at", "it", "this", "that", "from", "be",
+    }
+    return {w for w in lower.split() if w and w not in stop and len(w) > 1}
+
+
+def _select_novelty_neighbors(
+    raw_content: str,
+    references: list[dict[str, str]],
+    k: int = 3,
+) -> tuple[list[dict[str, str]], str]:
+    """§0.2/D10/G1：选主题相关 top-k 近邻（修 idx6/idx10 全库前 5 条无关引用误拒）。
+
+    先 exact slug/source_url/near-title，再 lexical/topic top-k（tldr+title token overlap）。
+    无近邻 → 返回 ([], "no_relevant_baseline")。
+    命中 exact slug/url → "duplicate_same_claim" 候选（LLM 判重复 vs 新增）。
+    其余近邻 → "unrelated_baseline"（相关但不同源，LLM 判增量）。
+    """
+    if not references:
+        return [], "no_relevant_baseline"
+    raw_meta = _raw_novelty_meta(raw_content)
+    raw_tokens = _tokenize_for_overlap(
+        raw_content[:MAX_NOVELTY_CONTENT_CHARS] + " " + raw_meta.get("title", "")
+    )
+    # 1. exact slug / source_url 匹配（duplicate_same_claim 候选）
+    exact: list[dict[str, str]] = []
+    for ref in references:
+        rs = ref.get("slug", "")
+        ru = ref.get("source_url", "")
+        if (rs and rs == raw_meta["slug"]) or (ru and ru and ru == raw_meta["source_url"]):
+            ref = {**ref, "_match_type": "duplicate_same_claim"}
+            exact.append(ref)
+    if exact:
+        return exact[:k], "duplicate_same_claim"
+    # 2. near-title + lexical/topic top-k（token overlap）
+    scored: list[tuple[int, dict[str, str]]] = []
+    for ref in references:
+        ref_text = (ref.get("title", "") + " " + ref.get("tldr", "")).strip()
+        ref_tokens = _tokenize_for_overlap(ref_text)
+        overlap = len(raw_tokens & ref_tokens)
+        if overlap > 0:
+            scored.append((overlap, ref))
+    if not scored:
+        return [], "no_relevant_baseline"
+    scored.sort(key=lambda x: x[0], reverse=True)
+    neighbors = [{**r, "_match_type": "unrelated_baseline"} for _, r in scored[:k]]
+    return neighbors, "unrelated_baseline"
+
+
+def _check_novelty(
+    raw_content: str,
+    wiki_references: list[str] | list[dict] | None,
+    route_llm_fn: Any,
+) -> AdmissionCheck:
+    """§0.2/D10/G1：新颖度判定——top-k 近邻选择 + LLM 判增量。
+
+    无既有 wiki 引用 → 默认 pass。有引用时 _select_novelty_neighbors 选相关 top-k
+    （exact slug/url → duplicate_same_claim；lexical overlap → unrelated_baseline；
+    无近邻 → no_relevant_baseline，默认 pass 低置信）。reason 记比较对象 path/slug +
+    判定类型。洗稿（duplicate_same_claim）仍拒。
+    """
+    references = _normalize_wiki_references(wiki_references)
+    if not references:
         return AdmissionCheck(
             name="novelty",
             passed=True,
@@ -515,8 +754,21 @@ def _check_novelty(
 
     from src.akb2.quality.llm_router import RouterConfigError
 
-    refs_str = "\n---\n".join(ref[:800] for ref in wiki_references[:5])
+    neighbors, match_type = _select_novelty_neighbors(raw_content, references)
+    if not neighbors:
+        return AdmissionCheck(
+            name="novelty",
+            passed=True,
+            reason="no_relevant_baseline: 无相关既有 wiki 近邻，默认增量通过（低置信）",
+        )
+
+    refs_str = "\n---\n".join(
+        f"[{n.get('slug') or n.get('path')}] {n.get('tldr', '')[:600]}" for n in neighbors
+    )
     content_snippet = raw_content[:MAX_NOVELTY_CONTENT_CHARS]
+    compare_targets = ", ".join(
+        n.get("slug") or n.get("path") or "?" for n in neighbors
+    )
 
     messages = [
         {
@@ -525,6 +777,9 @@ def _check_novelty(
                 "你判断新内容是否对既有知识库提供增量信息（新颖度）。"
                 "如果新内容基本重复既有知识（洗稿），输出 pass=false。"
                 "如果新内容提供新视角、新方法、新代码、新数据，输出 pass=true。"
+                "注意：相关主题但核心概念不同（如同一作者的相邻主题、上下游概念、"
+                "同领域不同机制）属于增量，输出 pass=true——相关≠重复；"
+                "仅当核心论点与既有条目基本重合（洗稿/转述）才 pass=false。"
                 "输出 JSON: {\"pass\": true/false, \"reason\": \"...\"}。"
                 "reason 最多 150 字符。"
             ),
@@ -532,7 +787,7 @@ def _check_novelty(
         {
             "role": "user",
             "content": (
-                f"既有知识摘要:\n{refs_str}\n\n"
+                f"既有知识摘要（比较近邻）:\n{refs_str}\n\n"
                 f"新内容:\n{content_snippet}"
             ),
         },
@@ -548,14 +803,15 @@ def _check_novelty(
         return AdmissionCheck(
             name="novelty",
             passed=False,
-            reason=f"判定调用失败: {exc}",
+            reason=f"判定调用失败（比较 {compare_targets}, {match_type}）: {exc}",
         )
 
     result = _validate_and_normalize(response.content, "novelty")
+    reason = f"[{match_type}, compare={compare_targets}] {result['reason']}"
     return AdmissionCheck(
         name="novelty",
         passed=result["pass"],
-        reason=result["reason"],
+        reason=reason,
     )
 
 
@@ -625,6 +881,236 @@ def _has_strong_procedural_signal(body: str) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# 机制信号准入门（WP-2 / D2）—— 仅 concept 候选，确定性为主 + LLM 窄仲裁
+# ---------------------------------------------------------------------------
+
+# concept 候选在 admission 段预筛「机制存在性」：无机制散文（openai 政策 / 新闻 /
+# 纯观点）在 admission 即拒（error_class=no_mechanism_signal），不下传 distill 硬填
+# 模板组件（D8 maker fallback 造假机制的源头）。procedural 不受此门（F4 H1 判）。
+MECHANISM_COMPONENT_MIN: int = 3
+# §0.2/F8：长正文阈值——total==0 但 body_length ≥ 此值时走 LLM 窄仲裁（不 deterministic fail），
+# 救 long-running-agents 等长机制散文（无标题/连接词/code 但有机制内容）。短正文 total==0 仍 fail。
+MECHANISM_LONG_PROSE_THRESHOLD: int = 500
+# F14-B: mechanism 仲裁双次取或——首次 fail 再仲裁一次,任一 pass 即 pass(共 2 票)。
+# LLM 仍是本门唯一放行人,这是有界方差对冲(同 retry 哲学);强反信号(全0+短正文)
+# 已在前 deterministic fail,不可绕过。营销安全由证据 prompt(fix4 标题原文自证)+
+# lane/novelty/强反信号多层兜底。
+MECHANISM_ARBITRATION_MAX_VOTES: int = 2
+# F13-fix3（reviewer 三轮 blocking 定论）：词面/结构计数在确定性层面分不开"机制文"与
+# "营销文"（dense 密度 / weak_comp 结构 / `## 1. X` 编号标题伪装 comp>=3——三轮反例
+# 全部实证可伪造）。故 mechanism 门 **无任何确定性 PASS 分支**;全部信号计数降级为
+# 仲裁证据注入 mechanism LLM prompt,LLM 是唯一放行人;确定性只保留强反信号 FAIL
+# (fail-closed 方向不变)。idx8 lilian 类推理机制文靠证据增强争取,不开确定性后门。
+
+# 命名组件候选（strong）：编号 H2/H3/H4 标题（### 1. Captain / ## 2. Executor Pool / ### Step 1）
+_MECHANISM_COMPONENT_RE = re.compile(r"(?m)^#{2,4}\s+\d+[\.\)]\s+\S+")
+# §0.2/G2/C4：普通（非编号）H2/H3/H4 标题 → weak 机制候选（## Captain / ### Executor Pool）。
+# weak 信号不触发 deterministic pass（C4：3 泛技术标题观点稿不绕过 LLM 仲裁），只让
+# 普通 H2/H3 机制文不被 no_mechanism_signal 强反信号误拒（idx0/idx8）→ 走 LLM 窄仲裁。
+_PLAIN_MECHANISM_HEADING_RE = re.compile(r"(?m)^#{2,4}\s+(?!\d+[\.\)]\s*)\S+")
+# 因果连接词（机制组件间的因果关系）
+_CAUSAL_CONNECTOR_RE = re.compile(
+    r"(?i)\b(?:leads?\s+to|triggers?|causes?|because\s+of|therefore|"
+    r"results?\s+in|implies|produces?|enables?|prevents?|propagates?)\b"
+)
+# 编号步骤行（≥3 构成 how 信号，concept 机制也常编号列点）
+_NUMBERED_STEP_RE = re.compile(r"(?m)^\s*\d+\.\s+\S")
+
+
+def _scan_mechanism_signals(body: str) -> dict[str, int]:
+    """确定性扫描机制信号强度（命名组件 / 因果连接词 / 编号步 / code / source_operation）。
+
+    纯代码无 LLM：供 ``_check_mechanism_signal`` 确定性短路用。
+
+    §0.2/G2/C4：components = strong（编号标题）；weak_components = 普通 H2/H3 标题。
+    weak 不触发 deterministic pass，只计入 total 避免 no_mechanism_signal 误拒普通机制文。
+    """
+    components = len(_MECHANISM_COMPONENT_RE.findall(body))
+    weak_components = len(_PLAIN_MECHANISM_HEADING_RE.findall(body))
+    causal = len(_CAUSAL_CONNECTOR_RE.findall(body))
+    numbered_steps = len(_NUMBERED_STEP_RE.findall(body))
+    code_blocks = body.count("```") // 2
+    try:
+        from src.akb2.quality.source_ops_scanners import operations
+
+        src_ops = len(operations.scan(body))
+    except Exception:
+        src_ops = 0
+    return {
+        "components": components,
+        "weak_components": weak_components,
+        "causal": causal,
+        "numbered_steps": numbered_steps,
+        "code_blocks": code_blocks,
+        "source_operations": src_ops,
+    }
+
+
+# F13-fix4（e2e v4 实证）：仲裁证据样本上限（具名,宪法 P4）——只给计数时 deepseek
+# 仲裁系统性把"参考文档式真机制文"(memory/crewai/skills)误判为无机制(v4 admission
+# 误拒 9 条,重试不救=系统性)。把实际组件名/因果句样本注入 prompt:真机制文亮出
+# "Captain/Executor Pool/hooks lifecycle",营销文只能亮出"Faster onboarding"——
+# 证据升级,门语义不变(LLM 仍是唯一放行人)。
+_MECHANISM_EVIDENCE_HEADINGS_MAX: int = 10
+_MECHANISM_EVIDENCE_CAUSAL_MAX: int = 3
+_MECHANISM_EVIDENCE_SENT_CHARS: int = 160
+
+
+def _collect_mechanism_evidence(body: str) -> str:
+    """收集机制仲裁的文本证据(标题原文 + 因果句样本),供 LLM 仲裁 prompt 使用。
+
+    纯确定性抽样,不判定;空 body 返回空串。
+    """
+    if not body:
+        return ""
+    lines: list[str] = []
+    headings: list[str] = []
+    for m in re.finditer(r"(?m)^#{2,4}\s+(.+)$", body):
+        t = m.group(1).strip()
+        if t and t not in headings:
+            headings.append(t)
+        if len(headings) >= _MECHANISM_EVIDENCE_HEADINGS_MAX:
+            break
+    if headings:
+        lines.append("小节标题原文: " + " | ".join(headings))
+    causal_sents: list[str] = []
+    for sent in re.split(r"(?<=[.!?。])\s+", body):
+        if len(causal_sents) >= _MECHANISM_EVIDENCE_CAUSAL_MAX:
+            break
+        if _CAUSAL_CONNECTOR_RE.search(sent):
+            s = " ".join(sent.split())[:_MECHANISM_EVIDENCE_SENT_CHARS]
+            if s:
+                causal_sents.append(s)
+    if causal_sents:
+        lines.append("因果句样本: " + " || ".join(causal_sents))
+    return "\n".join(lines)
+
+
+def _check_mechanism_signal(body: str, route_llm_fn: Any) -> AdmissionCheck:
+    """WP-2/D2：concept 候选机制信号准入门。
+
+    F13-fix3（reviewer 三轮 blocking 定论）：**无任何确定性 PASS 分支**——
+    `## 1. Faster onboarding` 类编号标题会被 `_MECHANISM_COMPONENT_RE` 计成"命名
+    组件",词面/结构计数在确定性层面分不开机制文与营销文（三轮反例实证:dense 密度 /
+    weak_comp 结构 / comp>=3 编号标题全部可被营销文伪造）。故:
+
+    - 确定性 **强反信号 FAIL** 保留：全信号 = 0 且正文短（纯短散文/新闻 recap）
+      → ``no_mechanism_signal``，**LLM 不得绕过**（fail-closed 方向不变）。
+    - 其余一律 **LLM 仲裁**：mechanism LLM 是本门唯一放行人;确定性信号计数注入
+      仲裁 prompt 作证据（密度/组件数是证据不是通行证）。LLM 不可用 → fail-closed。
+
+    返回 AdmissionCheck(name="mechanism_signal")；失败时 reason 以
+    ``no_mechanism_signal`` 开头，runner 据此映射 error_class。
+    """
+    signals = _scan_mechanism_signals(body)
+    comp = signals["components"]
+    weak_comp = signals["weak_components"]
+    causal = signals["causal"]
+    steps = signals["numbered_steps"]
+    code = signals["code_blocks"]
+    src_ops = signals["source_operations"]
+
+    # 确定性 FAIL：全无信号 + 正文短（纯短散文/新闻 recap）—— LLM 不可绕过此强反信号
+    # §0.2/G2：weak_components（普通 H2/H3）计入 total，避免普通标题机制文被误拒
+    # （idx0/idx8：普通 H2/H3 机制文 → total>0 → 走 LLM 窄仲裁，不 deterministic fail）
+    # §0.2/F8：长正文（body_length ≥ MECHANISM_LONG_PROSE_THRESHOLD）即使 total==0 也走 LLM
+    # 窄仲裁（long-running-agents 等长机制散文无标题/连接词/code 但有机制内容）；
+    # 短正文 total==0 → 仍 deterministic fail（短新闻/营销 recap）。
+    total = comp + weak_comp + causal + steps + code + src_ops
+    body_length = len(body or "")
+    if total == 0 and body_length < MECHANISM_LONG_PROSE_THRESHOLD:
+        return AdmissionCheck(
+            name="mechanism_signal", passed=False,
+            reason="no_mechanism_signal: 无命名组件/因果边/编号步/code/source_operation 且正文短",
+        )
+
+    # 模糊（部分信号未达强信号）→ LLM 窄仲裁
+    from src.akb2.quality.llm_router import RouterConfigError
+
+    # P2: mechanism 仲裁用关键词感知窗口(how ∪ mechanism 谓词,cap 8000),非 body[:4000]
+    # (长文机制在后段,截断漏判 idx0)
+    content_snippet = _build_mechanism_snippet(body)
+    # F13-fix2：确定性信号计数注入仲裁 prompt——密度是证据不是通行证。idx8 lilian 类
+    # 推理机制文（causal/steps/小节标题三高）靠证据增强争取；同时明示"营销收益清单的
+    # 因果词不算机制因果",防计数被词面营销文借用。
+    signal_line = (
+        f"确定性信号计数（辅助证据，非判定依据）: 命名组件={comp}, "
+        f"小节标题={weak_comp}, 因果连接词={causal}, 编号步={steps}, "
+        f"code块={code}, source_ops={src_ops}"
+    )
+    # F13-fix4：文本证据样本(标题原文/因果句)——只给计数会把参考文档式真机制文
+    # 误判(v4 实证);给出实际名称让 LLM 分辨"Captain/Executor Pool"vs"Faster onboarding"。
+    evidence_block = _collect_mechanism_evidence(body)
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你判断内容是否阐述了一个可复用的「机制」（≥3 命名组件 + 因果关系），"
+                "而非纯政策/新闻/观点散文。机制组件 = 命名架构部件/流程阶段/算法步骤/协议层；"
+                "推理/验证/自我修正等认知过程机制（如 CoT、self-consistency、verification）"
+                "也属于机制，只要文中给出组件化的过程与因果关系；"
+                "工具/系统的组件化参考文档（配置项、生命周期、hooks、权限模型、子系统交互）"
+                "同样属于机制——判据是组件是否被命名且相互作用可追溯，不是文体。"
+                "注意：信号计数高不等于机制——营销/发布文的收益清单（faster/better 因果词堆叠、"
+                "benefit 式小节标题）不构成机制因果，应判 false。"
+                "输出 JSON: {\"pass\": true/false, \"reason\": \"...\"}。reason 最多 150 字符。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"{signal_line}\n{evidence_block}\n\n内容:\n{content_snippet}"
+                if evidence_block
+                else f"{signal_line}\n\n内容:\n{content_snippet}"
+            ),
+        },
+    ]
+    # F14-B: 双次取或——首次 fail 再仲裁一次(MECHANISM_ARBITRATION_MAX_VOTES=2),
+    # 任一 pass 即 pass;两次 fail 才 fail。LLM 仍唯一放行人,有界方差对冲。首次 pass
+    # 不发第二次(省调用)。强反信号(全0+短正文)已在前 deterministic fail,不可绕过。
+    votes: list[bool] = []
+    vote_reasons: list[str] = []
+    for _vote_i in range(MECHANISM_ARBITRATION_MAX_VOTES):
+        try:
+            response = route_llm_fn(
+                ADMISSION_MODEL, messages, response_schema=_ADMISSION_CHECK_SCHEMA,
+            )
+        except (RouterConfigError, RuntimeError) as exc:
+            # 信号识别不可用 → fail-closed(配置/超时错误不重试,直接拒)
+            return AdmissionCheck(
+                name="mechanism_signal", passed=False,
+                reason=f"no_mechanism_signal: 机制信号识别不可用 fail-closed: {exc}",
+            )
+        result = _validate_and_normalize(response.content, "mechanism_signal")
+        votes.append(bool(result["pass"]))
+        vote_reasons.append(str(result["reason"])[:80])
+        if result["pass"]:
+            break  # 任一 pass 即 pass,省第二次调用
+    passed = any(votes)
+    vote_summary = "/".join(
+        f"v{i+1}={'pass' if v else 'fail'}" for i, v in enumerate(votes)
+    )
+    if passed:
+        first_pass = votes.index(True)
+        base_reason = vote_reasons[first_pass]
+        return AdmissionCheck(
+            name="mechanism_signal", passed=True,
+            reason=(
+                f"mechanism_signal: 仲裁 {vote_summary}({len(votes)}票,任一pass即pass);"
+                f" {base_reason}"
+            ),
+        )
+    return AdmissionCheck(
+        name="mechanism_signal", passed=False,
+        reason=(
+            f"no_mechanism_signal: 仲裁 {vote_summary}({len(votes)}票全fail);"
+            f" {vote_reasons[-1]}"
+        ),
+    )
+
+
+
 def _classify_content_lane(
     body: str,
     route_llm_fn: Any,
@@ -657,7 +1143,8 @@ def _classify_content_lane(
         )
 
     # 2. 其余 → LLM 主判 intent（concept vs procedural）
-    content_snippet = body[:MAX_ADMISSION_CONTENT_CHARS]
+    # P2: lane 仲裁用 mechanism 窗口(how ∪ mechanism 谓词,cap 8000),非 body[:4000]
+    content_snippet = _build_mechanism_snippet(body)
     messages = [
         {
             "role": "system",
@@ -666,7 +1153,9 @@ def _classify_content_lane(
                 "概念型(concept): 主旨是阐述机制/架构/设计原则/模型，讲清「为什么/是什么」；"
                 "即便夹有示例代码、API 名或编号机制点，只要它们是为例证概念、"
                 "不是教操作，仍判 concept。"
-                "操作型(procedural): 主旨是教「怎么做」——可执行步骤、命令、配置、工作流是内容主线。"
+                "操作型(procedural): 主旨是教「怎么做」——可执行步骤、命令、配置、工作流是内容主线；"
+                "实操案例/项目移植记录/工具使用 walkthrough（叙述「我用 X 工具做成了 Y」"
+                "的过程、决策与步骤）即使夹叙夹议、无显式编号步骤，也判 procedural。"
                 "非知识(reject): 新闻播报/产品发布公告/会议 recap/融资动态/营销软文/纯观点抒发，"
                 "既不阐述可复用机制、也不教可执行操作 → 输出 reject；不得为二选一硬塞 concept。"
                 "按主要意图判，不要因出现代码就判 procedural。"

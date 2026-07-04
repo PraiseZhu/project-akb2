@@ -641,16 +641,21 @@ Therefore the reliable AI agent loop is: clone the evaluation harness, isolate
         )
 
         assert not result["converged"]
-        assert any(d.dimension == "SG-how-density" for d in result["final_defects"])
+        # WP-4: patch 引入新 SG-how-density（命令剥离后 ### 操作步骤 为空）→ 单调护栏
+        # 回退该轮（新 identity + 未严格下降）。final_defects 回到原解读分离，
+        # how_density 不持久化；但命令过滤器仍运行（trace 记录剥离）。
         assert not any(d.dimension == "SG-command-recheck" for d in result["final_defects"])
-        assert "`git diff --stat`" not in result["final_text"]
+        assert "`git diff --stat`" not in result["final_text"]  # 回退到原稿，无编造命令
         trace = json.loads(Path(result["trace_paths"][0]).read_text(encoding="utf-8"))
+        # 命令过滤器仍运行（trace 记录剥离 3 个编造命令）
         assert trace["command_filter"]["new_count"] == 3
         assert trace["command_filter"]["stripped_commands"] == [
             "git diff --stat",
             "grep -R TODO .",
             "npx made-up-cli audit",
         ]
+        # WP-4: 单调护栏回退该轮（非单调：新 SG-how-density identity 不在 prev）
+        assert trace["status"] == "rolled_back_no_monotonic_decrease"
 
 
 # ---------------------------------------------------------------------------
@@ -659,10 +664,14 @@ Therefore the reliable AI agent loop is: clone the evaluation harness, isolate
 
 
 class TestRepairLoopNoConverge:
-    def test_max_rounds_exhausted_fail_closed(
+    def test_idle_early_stop_fail_closed(
         self, candidate_with_defects, temp_failures_path
     ):
-        """3 轮修复后仍有缺陷 → fail-closed, 签名落盘。"""
+        """WP-4: 每轮返回原样（无改进=空转）→ 连续空转早停 fail-closed（非耗尽 3 轮）。
+
+        旧 test_max_rounds_exhausted 期望耗尽 3 轮；WP-4 单调护栏+早停让 idle 场景
+        在 consecutive_idle>=REPAIR_IDLE_EARLY_STOP 时早停（rounds<MAX_REPAIR_ROUNDS）。
+        """
 
         # 每轮修复都返回同样的有缺陷的文本（模拟始终修不好）
         def mock_always_broken(model_family, messages, response_schema=None):
@@ -722,17 +731,25 @@ class TestRepairLoopNoConverge:
             mock_route_llm=mock_always_broken,
         )
 
-        assert not result["converged"], "Should fail-closed after max rounds"
-        assert result["rounds"] == MAX_REPAIR_ROUNDS
+        assert not result["converged"], "Should fail-closed"
+        # WP-4: 连续空转早停（rounds < MAX_REPAIR_ROUNDS，不耗尽）
+        assert result["rounds"] <= MAX_REPAIR_ROUNDS
+        assert result["rounds"] < MAX_REPAIR_ROUNDS, (
+            "idle 场景应早停，不耗尽 MAX_REPAIR_ROUNDS"
+        )
         assert result["signature_written"]
         assert result["failure_signature"] is not None
-        assert "distill_no_converge" in result["failure_signature"]
+        assert "repair_idle_early_stop" in result["failure_signature"], (
+            f"应早停签名: {result['failure_signature']}"
+        )
+        # WP-4: 空转不计有效预算
+        assert result["effective_rounds"] == 0, "全空转场景 effective_rounds 应为 0"
 
         # 验证签名文件已写入
         failures_path = Path(temp_failures_path)
         assert failures_path.exists(), "Failures file should exist"
         content = failures_path.read_text()
-        assert "distill_no_converge" in content
+        assert "repair_idle_early_stop" in content
 
     def test_signature_follows_schema(self, temp_failures_path):
         """不收敛签名符合 failure-signature.schema.json。"""
@@ -1942,3 +1959,368 @@ class TestRepairWorkerProcessGroupKill:
         assert pidfile.exists(), "worker 应先启动 sleep 30 孙进程并写 pidfile"
         child_pid = int(pidfile.read_text(encoding="utf-8"))
         assert _wait_pid_gone(child_pid), f"sleep 30 孙进程仍存在: pid={child_pid}"
+
+
+# ---------------------------------------------------------------------------
+# WP-4: repair 收敛护栏（identity 单调 + 必备节保护 + 空转早停 + attempts 硬上限）
+# ---------------------------------------------------------------------------
+
+
+class TestRepairConvergenceGuardrail:
+    """WP-4/D5: 震荡回归 / patch 空转 / 吞节 三独立缺陷的护栏测试。"""
+
+    def test_required_h3_deletion_rolled_back(
+        self, candidate_with_defects, temp_failures_path
+    ):
+        """WP-4.3: patch 吞掉 ### 操作步骤 H3 → 独立必备节 guard 回退该轮（D5-3）。
+
+        _verify_unchanged_sections 豁免命名 H2 整 span（含内部 H3），漏检 H3 被删；
+        独立 _required_h3_deleted guard 检测到 → 回退该轮，不更新 current_text。
+        """
+        # patch 重写 论证与解释 但删了 ### 操作步骤 H3
+        def mock_llm(model_family, messages, response_schema=None, **kwargs):
+            if model_family == "deepseek-v4-pro":
+                return LLMResponse(
+                    content={
+                        "论证与解释": (
+                            "## 论证与解释\n\nRewritten content without the 操作步骤 subsection."
+                        )
+                    },
+                    model_used="deepseek-v4-pro",
+                    calls_used=1,
+                )
+            return LLMResponse(content={}, model_used=model_family)
+
+        result = run_repair_loop(
+            candidate_text=candidate_with_defects,
+            a_defects=[],
+            b_defects=[
+                Defect(
+                    dimension="解读分离",
+                    location="论证与解释",
+                    defect="操作步骤需重写",
+                    suggestion="保留操作步骤 H3",
+                )
+            ],
+            failures_path=temp_failures_path,
+            mock_route_llm=mock_llm,
+            raw_text=candidate_with_defects,
+        )
+        # H3 guard 回退（### 操作步骤 被吞）
+        trace = json.loads(Path(result["trace_paths"][0]).read_text(encoding="utf-8"))
+        assert trace["status"] == "rolled_back_required_h3_deleted"
+        assert "### 操作步骤" in trace["rolled_back_h3"]
+        # final_text 仍含 ### 操作步骤（回退到原稿，未接受吞节 patch）
+        assert "### 操作步骤" in result["final_text"]
+
+    def test_attempts_hard_ceiling_non_idle(
+        self, candidate_with_defects, temp_failures_path, monkeypatch
+    ):
+        """WP-4.2: 严格单调下降（非空转）不早停，耗尽 MAX_REPAIR_ROUNDS → distill_no_converge。
+
+        每轮 grader 返回严格子集+更少缺陷（3→2→1）→ 有效轮计入；第 3 轮同数（1==1）
+        → 回退但 consecutive_idle=1 < 阈值 → 不早停，耗尽 3 轮 → distill_no_converge。
+        """
+        from src.akb2.quality import checks_structural
+
+        # A 层总过（mock），让循环走 B grader 路径测单调+天花板
+        monkeypatch.setattr(
+            checks_structural, "run_candidate_self_gate", lambda *a, **kw: []
+        )
+
+        call_count = [0]
+
+        def mock_grader(model_family, messages, response_schema=None, **kwargs):
+            if model_family == "deepseek-v4-pro":
+                return LLMResponse(content={}, model_used="deepseek-v4-pro", calls_used=1)
+            if model_family == "gpt-5.4":
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    locs = [("TLDR", "TLDR 无锚点"), ("核心论点", "无锚点")]  # d1,d2 (2)
+                else:
+                    locs = [("TLDR", "TLDR 无锚点")]  # d1 (1); round 3 同数→回退
+                return LLMResponse(
+                    content={
+                        "dimensions": [
+                            {
+                                "dimension": "论断锚定率",
+                                "pass": False,
+                                "defects": [
+                                    {"location": loc, "defect": dep, "suggestion": "添加锚点"}
+                                    for loc, dep in locs
+                                ],
+                            }
+                        ]
+                        + [
+                            {"dimension": dim, "pass": True, "defects": []}
+                            for dim in [
+                                "How 密度", "How 可执行性", "证据诚实", "解读分离",
+                                "TLDR 密度", "新颖增量", "边强度匹配",
+                                "Future Questions 质量", "适用边界",
+                            ]
+                        ]
+                    },
+                    model_used="gpt-5.4",
+                    calls_used=1,
+                )
+            return LLMResponse(content={}, model_used=model_family)
+
+        d1 = Defect("论断锚定率", "TLDR", "TLDR 无锚点", "添加锚点")
+        d2 = Defect("论断锚定率", "核心论点", "无锚点", "添加锚点")
+        d3 = Defect("论断锚定率", "关键发现", "无锚点", "添加锚点")
+        result = run_repair_loop(
+            candidate_text=candidate_with_defects,
+            a_defects=[],
+            b_defects=[d1, d2, d3],
+            failures_path=temp_failures_path,
+            mock_route_llm=mock_grader,
+            raw_text=candidate_with_defects,
+        )
+        assert not result["converged"]
+        # 非空转（严格下降）不早停，耗尽 MAX_REPAIR_ROUNDS
+        assert result["rounds"] == MAX_REPAIR_ROUNDS, (
+            f"非空转应耗尽 3 轮不早停, got rounds={result['rounds']}"
+        )
+        assert "distill_no_converge" in result["failure_signature"]
+        # 严格下降轮计入有效预算（round 1+2 接受，round 3 回退）
+        assert result["effective_rounds"] >= 2, (
+            f"严格下降轮应计入 effective_rounds, got {result['effective_rounds']}"
+        )
+
+    def test_changed_sections_discard_counts_idle_early_stop(
+        self, candidate_with_defects, temp_failures_path, monkeypatch
+    ):
+        """P2-D: changed_sections discard（违规改未点名节）计入 consecutive_idle,
+        连续 ≥REPAIR_IDLE_EARLY_STOP → 早停 fail-closed（不让 wall-clock 空耗）。"""
+        from src.akb2.quality import repair
+        from src.akb2.quality.checks_structural import Defect
+        from src.akb2.quality.llm_router import LLMResponse
+
+        # mock _verify_unchanged_sections 总返回非空（每轮违规改未点名节 → discard）
+        monkeypatch.setattr(
+            repair,
+            "_verify_unchanged_sections",
+            lambda *a, **kw: ["some_unnamed_section"],
+        )
+
+        def mock_llm(model_family, messages, response_schema=None, **kwargs):
+            if model_family == "deepseek-v4-pro":
+                return LLMResponse(
+                    content={"论证与解释": "## 论证与解释\n\nRewritten content."},
+                    model_used="deepseek-v4-pro",
+                    calls_used=1,
+                )
+            return LLMResponse(content={}, model_used=model_family)
+
+        result = run_repair_loop(
+            candidate_text=candidate_with_defects,
+            a_defects=[],
+            b_defects=[
+                Defect(
+                    dimension="解读分离",
+                    location="论证与解释",
+                    defect="需重写",
+                    suggestion="重写",
+                )
+            ],
+            failures_path=temp_failures_path,
+            mock_route_llm=mock_llm,
+            raw_text=candidate_with_defects,
+        )
+        assert not result["converged"]
+        # changed_sections discard 计入 idle → 连续 2 次 → 早停
+        assert "repair_idle_early_stop" in (result.get("failure_signature") or ""), (
+            f"changed_sections 连续 discard 应早停: {result.get('failure_signature')}"
+        )
+        # 无有效轮（每轮都 discard，未单调下降）
+        assert result["effective_rounds"] == 0
+
+
+# ---------------------------------------------------------------------------
+# §0.2/D3 + A4：defect schema 分类 + hard_fail 早停
+# ---------------------------------------------------------------------------
+
+
+class TestD3DefectSchemaAndA4:
+    """§0.2/D3：_classify_defect_schema 结构化分类；§0.2/A4：hard_fail 全缺陷早停。"""
+
+    def test_classify_repairable_defect(self):
+        """确定性可修缺陷（如适用边界）→ repairable。"""
+        from src.akb2.quality.repair import _classify_defect_schema
+        d = Defect(dimension="A8-applicability-boundary", location="适用边界",
+                   defect="缺少不适用场景", suggestion="添加不适用场景")
+        schema = _classify_defect_schema(d)
+        assert schema["repairability"] == "repairable"
+        assert schema["retry_budget"] == "3"
+        assert schema["final_fallback"] == "repair_or_fail_closed"
+
+    def test_classify_hard_fail_no_mechanism(self):
+        """no_mechanism_signal → hard_fail（不进 repair）。"""
+        from src.akb2.quality.repair import _classify_defect_schema
+        d = Defect(dimension="mechanism_signal", location="正文",
+                   defect="no_mechanism_signal: 无命名组件", suggestion="添加机制组件")
+        schema = _classify_defect_schema(d)
+        assert schema["repairability"] == "hard_fail"
+        assert schema["retry_budget"] == "0"
+        assert schema["final_fallback"] == "fail_closed"
+
+    def test_classify_hard_fail_integrity_floor(self):
+        """integrity_floor / 0 eligible → hard_fail。"""
+        from src.akb2.quality.repair import _classify_defect_schema
+        d = Defect(dimension="A4-graph-edges", location="因果边",
+                   defect="integrity_floor: 0 eligible edge", suggestion="补 eligible edge")
+        schema = _classify_defect_schema(d)
+        assert schema["repairability"] == "hard_fail"
+
+    def test_a4_hard_fail_early_stop(self):
+        """§0.2/A4：ALL 剩余缺陷 hard_fail → fail-closed 早停（不烧 LLM 轮）。"""
+        from src.akb2.quality.repair import Defect, run_repair_loop
+
+        hard_defects = [
+            Defect(dimension="mechanism_signal", location="正文",
+                   defect="no_mechanism_signal: 无命名组件", suggestion="添加机制组件"),
+        ]
+        result = run_repair_loop(
+            candidate_text="---\nstatus: candidate\n---\n\n## TLDR\ntest [raw §A]\n",
+            a_defects=hard_defects,
+            b_defects=[],
+            raw_text="raw content",
+            golden_sample_text="",
+            failures_path="/tmp/_failures.jsonl",
+            mock_route_llm=None,
+        )
+        assert result["converged"] is False, "hard_fail 应 fail-closed"
+        # A4 早停：不调 LLM（rounds 小，不烧满 MAX_REPAIR_ROUNDS）
+        assert "a4" in str(result.get("error_class", "")) or "a4" in str(result.get("failure_signature", "")), (
+            f"应 a4 早停: {result.get('error_class')} / {result.get('failure_signature')}"
+        )
+
+    def test_f2_mixed_hard_fail_and_repairable_fail_closed_no_llm(self):
+        """§0.2/F2：hard_fail + repairable 混合 → 任一 hard_fail 即 fail-closed，不调 LLM。
+
+        旧 all(==hard_fail) 口径放水：混合缺陷把 hard_fail 写进 repair prompt。
+        改 any(==hard_fail) → 混合也早停，hard_fail 不写入 repair instruction。
+        """
+        from src.akb2.quality.repair import Defect, run_repair_loop
+
+        mixed_defects = [
+            # hard_fail（no_mechanism）
+            Defect(dimension="mechanism_signal", location="正文",
+                   defect="no_mechanism_signal: 无命名组件", suggestion="添加机制组件"),
+            # repairable（适用边界）
+            Defect(dimension="A8-applicability-boundary", location="适用边界",
+                   defect="缺少不适用场景", suggestion="添加不适用场景"),
+        ]
+        llm_called = []
+
+        def mock_route(messages, *a, **kw):
+            llm_called.append(True)
+            return type("R", (), {"content": {}})()
+
+        result = run_repair_loop(
+            candidate_text="---\nstatus: candidate\n---\n\n## TLDR\ntest [raw §A]\n",
+            a_defects=mixed_defects,
+            b_defects=[],
+            raw_text="raw content",
+            golden_sample_text="",
+            failures_path="/tmp/_failures.jsonl",
+            mock_route_llm=mock_route,
+        )
+        assert result["converged"] is False, "混合 hard_fail 应 fail-closed"
+        assert not llm_called, "混合 hard_fail 不应调 LLM（hard_fail 不写 repair instruction）"
+        assert "a4" in str(result.get("error_class", "")) or "a4" in str(result.get("failure_signature", ""))
+
+    def test_f2_repairable_only_no_hard_fail_goes_to_llm(self):
+        """§0.2/F2：仅 repairable（无 hard_fail）→ 不早停，走 LLM 修复路径。"""
+        from src.akb2.quality.repair import Defect, run_repair_loop
+
+        repairable_defects = [
+            Defect(dimension="A8-applicability-boundary", location="适用边界",
+                   defect="缺少不适用场景", suggestion="添加不适用场景"),
+        ]
+        llm_called = []
+
+        class _Resp:
+            content = {}
+
+        def mock_route(messages, *a, **kw):
+            llm_called.append(True)
+            return _Resp()
+
+        result = run_repair_loop(
+            candidate_text="---\nstatus: candidate\n---\n\n## TLDR\ntest [raw §A]\n\n## 适用边界\nx\n",
+            a_defects=repairable_defects,
+            b_defects=[],
+            raw_text="# §A raw content\n\nthe raw has §A anchor",  # 含 §A，避免 A3 hard_fail 触发
+            golden_sample_text="",
+            failures_path="/tmp/_failures.jsonl",
+            mock_route_llm=mock_route,
+        )
+        # 无 hard_fail → 不 A4 早停 → 走 LLM（mock 返空 patch → 不收敛 → fail-closed）
+        assert llm_called, "仅 repairable 应走 LLM 修复路径（不 A4 早停）"
+        assert result["converged"] is False, "mock 返空 patch → 不收敛 → fail-closed"
+
+    def test_f2_taxonomy_a3_anchor_mixed_hard_fail(self):
+        """§0.2/F2-taxonomy：A3-锚点真实 + A8-适用边界 混合 → hard_fail 早停不调 LLM。
+
+        A3-锚点真实（引用锚点 raw 不存在）是防伪底线，当前须列 hard_fail；否则混合缺陷
+        里 LLM 会"猜一个可用 anchor"洗掉伪引用。
+        """
+        from src.akb2.quality.repair import Defect, run_repair_loop
+
+        mixed = [
+            # A3-锚点真实（hard_fail）
+            Defect(dimension="A3-锚点真实", location="正文",
+                   defect="引用的锚点 §Z 在 raw 文件中不存在", suggestion="补真实 raw anchor"),
+            # A8-适用边界（repairable）
+            Defect(dimension="A8-applicability-boundary", location="适用边界",
+                   defect="缺少不适用场景", suggestion="添加不适用场景"),
+        ]
+        llm_called = []
+
+        class _Resp:
+            content = {}
+
+        def mock_route(messages, *a, **kw):
+            llm_called.append(True)
+            return _Resp()
+
+        result = run_repair_loop(
+            candidate_text="---\nstatus: candidate\n---\n\n## TLDR\ntest [raw §A]\n",
+            a_defects=mixed, b_defects=[],
+            raw_text="raw content", golden_sample_text="",
+            failures_path="/tmp/_failures.jsonl", mock_route_llm=mock_route,
+        )
+        assert result["converged"] is False, "A3 锚点真实混合 → hard_fail fail-closed"
+        assert not llm_called, "A3 hard_fail 不应调 LLM（不写入 repair instruction）"
+        assert "a4" in str(result.get("error_class", "")) or "a4" in str(result.get("failure_signature", ""))
+
+    def test_f2_taxonomy_sg_mechanism_fake_anchor_hard_fail(self):
+        """§0.2/F2-taxonomy：SG-mechanism-edge-evidence 伪 anchor → hard_fail。"""
+        from src.akb2.quality.repair import Defect, _classify_defect_schema
+
+        d = Defect(
+            dimension="SG-mechanism-edge-evidence",
+            location="正文.机制组件与因果边证据.edges[1]",
+            defect="eligible 边 evidence_anchor §Z 无对应 [raw §Z] 锚点（伪/合成 anchor 不计 eligible）",
+            suggestion="evidence_anchor 须指向真实 raw §-anchor",
+        )
+        schema = _classify_defect_schema(d)
+        assert schema["repairability"] == "hard_fail", (
+            "SG 伪/合成 anchor 缺陷须 hard_fail（不进 repair，防 LLM 洗伪引用）"
+        )
+
+    def test_f2_taxonomy_sg_mechanism_missing_render_repairable(self):
+        """§0.2/F2-taxonomy：SG-mechanism-edge-evidence 漏渲染（非伪 anchor）→ repairable（不一刀切）。"""
+        from src.akb2.quality.repair import Defect, _classify_defect_schema
+
+        d = Defect(
+            dimension="SG-mechanism-edge-evidence",
+            location="正文.机制组件与因果边证据",
+            defect="concept 候选缺机制组件与因果边证据节",
+            suggestion="渲染 ## 机制组件与因果边证据 两表",
+        )
+        schema = _classify_defect_schema(d)
+        assert schema["repairability"] != "hard_fail", (
+            "漏渲染（extract/raw 已支撑，非伪 anchor）应 repairable，不一刀切 hard_fail"
+        )
