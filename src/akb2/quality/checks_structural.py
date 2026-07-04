@@ -772,7 +772,8 @@ def check_a4_graph_edges(
                         # step-3 SC-3e/A3-8：concept 边 target 必须确定性 resolve（纯代码）。
                         # 未 resolve = 假边/悬空引用，报缺陷（weighted_score 据此把图谱分封顶）。
                         # F14-A: 冷启动 pending 边豁免——graph_pending=true 且 target ∈
-                        # proposed_graph_nodes ids(归一化口径)且 evidence 含 [raw §X](D8 proposal,非假边)
+                        # proposed_graph_nodes ids(归一化口径)且 evidence 含
+                        # [raw §X](D8 proposal,非假边)
                         # 且 target 在 evidence 文本中有词面支撑(F14-A-fix 第四条件,
                         # 防"假 target + 真锚证据句"混过——reviewer 反例实证)。
                         is_pending_exempt = (
