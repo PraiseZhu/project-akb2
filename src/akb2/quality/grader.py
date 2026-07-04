@@ -52,6 +52,16 @@ FALLBACK_GRADER_MODEL = "gemini-flash"
 MAX_GRADER_RETRIES = 2  # 评分重试次数（解析失败时）
 GRADER_TIMEOUT_S = 120
 
+# F18: schema-mismatch 专用额外重试预算（在 MAX_GRADER_RETRIES 基础上 +1）。
+# 背景：网关（litellm→Azure）不强制 strict json_schema（见 test_grader_concept_prompt.py
+# 注释 + 账本 2026-06-27/28 的 21 条"不符合 grader schema"——gpt-5.4 自由发挥返回
+# overall_decision/verdict/summary 等额外键）。Plan B（232fc01）用 prompt 写死字段名 +
+# enum 限定把主死因修了（改前基线 3 条 gpt-5.4 primary 全成功），但 prompt 软约束是
+# 概率性的——gpt-5.4 偶尔仍会返回错 keys。此预算给 schema-mismatch 一次额外重试机会，
+# 重试 prompt 附上次格式错误提示（_schema_mismatch_hint）帮模型修正，超预算 fail-closed
+# （不降级放行，gemini 兜底照旧不作通过条件——宪法 P7 不动）。
+SCHEMA_MISMATCH_RETRY_BUDGET: int = 1
+
 
 def _load_rubric_spec() -> dict[str, Any]:
     """加载机器可读量规 spec（rubric.yaml）→ dict（dimensions+weights+threshold+floor+version）。
@@ -288,9 +298,16 @@ def _concept_h3_fail_note(content_lane: str) -> str:
 
 
 def _build_grader_prompt(
-    candidate_text: str, rubric_text: str, content_lane: str = ""
+    candidate_text: str,
+    rubric_text: str,
+    content_lane: str = "",
+    schema_mismatch_hint: str = "",
 ) -> list[dict[str, str]]:
-    """构建评分 prompt（system + user）。lane-aware：concept 评 7 维、procedural 评 10 维。"""
+    """构建评分 prompt（system + user）。lane-aware：concept 评 7 维、procedural 评 10 维。
+
+    F18: schema_mismatch_hint 非空时（即 schema-mismatch 重试），system 消息末尾附上次
+    格式错误提示，帮 gpt-5.4 修正输出（网关不强制 strict，prompt 软约束 + 重试提示补缺口）。
+    """
     weight_floor_note = _build_grader_weight_floor_note(content_lane)
     # P3：维度按 lane 限定，修旧硬编码"10 维"对 concept（7 维）的语义漂移（w9）。
     dims = _dimensions_for_lane(content_lane)
@@ -350,6 +367,15 @@ def _build_grader_prompt(
 }}
 字段约束: "pass" 必须是布尔 true/false（不是 "pass"/"fail" 字符串）；"defects" 必须是数组，
 pass=true 时为空数组 []，pass=false 时至少一条，每条含 location/defect/suggestion 三个字符串。"""
+    if schema_mismatch_hint:
+        # F18: schema-mismatch 重试——附上次格式错误提示，帮模型修正（网关不强制 strict，
+        # 此提示是 prompt 软约束补缺口的关键）。
+        system_prompt += (
+            "\n\n## 上次输出格式错误（请避免重蹈覆辙）\n"
+            f"{schema_mismatch_hint}\n"
+            "请严格按上述 JSON 结构输出，只含 dimensions/interpretation_entailment 等上述字段，"
+            "不得附加 verdict/overall_decision/overall_score/summary 等任何额外字段。"
+        )
     user_prompt = f"""请评审以下候选页:
 
 {candidate_text}
@@ -761,6 +787,48 @@ def _parse_failure_reason(model_family: str, content: Any) -> str:
     return f"{model_family} 返回类型不符合 grader schema: {type(content).__name__}"
 
 
+def _schema_mismatch_hint(content: Any, content_lane: str = "") -> str:
+    """F18: 生成 schema-mismatch 提示（附到重试 prompt system 消息），严格度守恒——
+    请求侧 response_format 的 schema 约束（additionalProperties: False / required 全键 /
+    enum）因网关（litellm→Azure）不强制 strict 而无法在端点生效，此处用本地 jsonschema
+    在响应侧照常强制校验并生成具体错误提示。约束位置从请求侧挪到响应侧，不许消失
+    （工单铁律：严格度不降）。
+
+    注意：此函数仅生成诊断提示，不改变 _parse_grader_output 的 parse 决策——parse 仍
+    按现有逻辑（容忍无害顶层额外键、拒 dimensions 内部错形状）。jsonschema 校验给模型
+    下次输出具体修正方向（如"路径 dimensions.0 — 'pass' is required"），提升重试恢复力。
+
+    Args:
+        content: LLM 响应（str/dict），经 _coerce_grader_data 归一为 dict 后校验。
+        content_lane: 内容车道，决定 schema 的 dimension enum。
+
+    Returns:
+        短提示字符串（不泄露完整 schema，只报错处路径 + 原因）。
+    """
+    import jsonschema  # lazy import：pyproject 已列 jsonschema>=4.0，但 grader 模块顶层无此依赖
+
+    schema = _build_grader_schema(content_lane)
+    data = _coerce_grader_data(content)
+    if data is None:
+        return (
+            f"上次返回不是合法 JSON object（类型 {type(content).__name__}），"
+            "请只输出上述结构的 JSON，不要包裹 markdown 代码块，不要附加额外字段。"
+        )
+    try:
+        jsonschema.validate(data, schema)
+    except jsonschema.ValidationError as exc:
+        path = ".".join(str(p) for p in exc.absolute_path) or "(root)"
+        return f"上次返回不符合 schema：路径 {path} - {exc.message[:150]}"
+    # schema 校验通过但 _parse_grader_output 仍失败（罕见：维度名 enum 容差边界 /
+    # defects 结构细节）。给 keys + 维度名提示，帮模型下次输出对。
+    keys = sorted(str(k) for k in data.keys()) if isinstance(data, dict) else []
+    return (
+        f"上次返回 keys={keys} 通过 schema 但 parse 仍失败，请检查 dimensions 数组每项"
+        "含 dimension（本车道维度名逐字一致）/pass（布尔 true/false）/defects（数组）三键，"
+        "不得用 verdict/overall_decision 等其他字段名。"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 公开函数
 # ---------------------------------------------------------------------------
@@ -787,15 +855,27 @@ def run_grader_detailed(candidate_text: str, content_lane: str = "") -> GraderRe
         RuntimeError: 量规文件加载失败。
     """
     rubric_text = _load_rubric_text()
-    messages = _build_grader_prompt(candidate_text, rubric_text, content_lane=content_lane)
     response_schema = _build_grader_schema(content_lane)
 
     result = GraderResult(
         defects=[], model_used="none", suspended=True, content_lane=content_lane
     )
 
-    # 尝试 GPT-5.4（解析失败时按 MAX_GRADER_RETRIES 重试，耗尽再切兜底）
-    for _ in range(MAX_GRADER_RETRIES):
+    # F18: 尝试 GPT-5.4（首次 + schema-mismatch 有界重试）。
+    # 网关（litellm→Azure）不强制 strict json_schema，gpt-5.4 偶尔返回错 keys/额外键；
+    # parse 失败时附上次格式错误提示（_schema_mismatch_hint）重试——总尝试次数 =
+    # MAX_GRADER_RETRIES（基础预算）+ SCHEMA_MISMATCH_RETRY_BUDGET（schema-mismatch
+    # 专用额外预算）。超预算 fail-closed 走兜底。400/配置错误 break 不重试
+    # （Plan B 后 400 已修，但保持 break 语义——配置错误非 schema-mismatch）。
+    schema_mismatch_hint = ""
+    total_attempts = MAX_GRADER_RETRIES + SCHEMA_MISMATCH_RETRY_BUDGET
+    for _ in range(total_attempts):
+        messages = _build_grader_prompt(
+            candidate_text,
+            rubric_text,
+            content_lane=content_lane,
+            schema_mismatch_hint=schema_mismatch_hint,
+        )
         try:
             response = route_llm(
                 model_family=PRIMARY_GRADER_MODEL,
@@ -816,22 +896,28 @@ def run_grader_detailed(candidate_text: str, content_lane: str = "") -> GraderRe
                     dimension_scores=ext["dimension_scores"],
                     interpretation_entailment=ext["interpretation_entailment"],
                 )
-            # 解析失败：记录原因，继续重试（循环耗尽后退出走兜底）
+            # schema-mismatch：记录原因 + 生成 hint 附下次重试 prompt（严格度守恒——
+            # 约束位置从请求侧挪到响应侧本地 jsonschema 校验，见 _schema_mismatch_hint）
             result.primary_failed = True
             result.primary_failure_reason = _parse_failure_reason(
                 PRIMARY_GRADER_MODEL, response.content
             )
+            schema_mismatch_hint = _schema_mismatch_hint(response.content, content_lane)
         except (RouterConfigError, RuntimeError) as exc:
             result.primary_failed = True
             result.primary_failure_reason = f"{PRIMARY_GRADER_MODEL} 调用失败: {exc}"
-            break  # 配置/运行时错误非解析失败，不重试，直接走兜底
+            break  # 配置/运行时错误非 schema-mismatch，不重试，直接走兜底
 
-    # 兜底: gemini-flash
+    # 兜底: gemini-flash（用 fresh prompt，不带 primary 的 schema-mismatch hint——
+    # hint 是 gpt-5.4 的格式错误，跟 gemini 无关；gemini 兜底仍不作通过条件，宪法 P7 不动）
     if result.primary_failed:
+        fallback_messages = _build_grader_prompt(
+            candidate_text, rubric_text, content_lane=content_lane
+        )
         try:
             response = route_llm(
                 model_family=FALLBACK_GRADER_MODEL,
-                messages=messages,
+                messages=fallback_messages,
                 response_schema=response_schema,
             )
             defects, parse_ok = _parse_grader_output(response.content, content_lane)
