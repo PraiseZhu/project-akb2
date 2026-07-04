@@ -207,6 +207,22 @@ x
         a4_resolve = [d for d in defects if d.dimension == "A4-图谱resolve"]
         assert a4_resolve, "evidence 回显 target token 不构成 raw 支撑,不应豁免"
 
+    def test_domain_generic_target_still_reported(self):
+        """[reviewer 第八轮验收] 领域泛词 target:raw §A 只讲 'Subagents are
+        specialized agents...'(无 workflow 概念),target=agent-workflow 仅靠泛词
+        agents 命中 → stoplist 拦截,过滤后无非泛词 token → 不豁免照报。"""
+        raw = "§A_CONTENT_START\n\nSubagents are specialized agents with their own context window.\n"
+        for target in ("agent-workflow", "tool-framework"):
+            body = self._candidate(
+                target, "[raw §A] (akb_interpretation) agents evidence", True, [target],
+            )
+            defects = check_a4_graph_edges(
+                body, known_concepts=[], pending_queue=[], content_lane="concept",
+                raw_content=raw,
+            )
+            a4_resolve = [d for d in defects if d.dimension == "A4-图谱resolve"]
+            assert a4_resolve, f"领域泛词 target {target} 不应被豁免"
+
     def test_no_raw_content_no_exempt(self):
         """无 raw_content(调用方拿不到 raw)→ 豁免 fail-closed,照报。"""
         body = self._candidate(

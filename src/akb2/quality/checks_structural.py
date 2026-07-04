@@ -564,10 +564,18 @@ def _target_in_proposed_nodes(target: str, proposed_ids: set[str]) -> bool:
 
 # F14-A-fix(reviewer blocking:假 target + 真锚可混过):target 词面支撑校验常量。
 # 显著 token = len≥此值且非泛词;泛词单独出现不构成支撑(fake-concept 的 "concept")。
+# F14-A-fix3(reviewer 第八轮):补 AKB 领域高频泛词——agent 文档几乎必含 "agent(s)",
+# 让 agent-workflow/tool-framework 类泛化 target 仅靠领域泛词命中即豁免 = 假绿。
+# 全泛词 target 过滤后为空 → fail-closed 拒(loop-engineering 靠 loop、quality-gate
+# 靠 quality/gate 仍可过——它们是具体词)。
 _TARGET_SUPPORT_TOKEN_MIN_LEN: int = 4
 _TARGET_SUPPORT_GENERIC_TOKENS: frozenset[str] = frozenset({
     "concept", "system", "model", "based", "using", "with", "engineering",
     "framework", "pattern", "approach", "design", "method",
+    # F14-A-fix3 领域泛词(含复数形态,与朴素复数匹配对齐)
+    "agent", "agents", "tool", "tools", "workflow", "workflows",
+    "pipeline", "pipelines", "process", "processes", "component", "components",
+    "module", "modules",
 })
 
 
