@@ -4155,6 +4155,29 @@ def _build_fallback_quality_basis(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _is_vacuous_raw_text(text: str) -> bool:
+    """F19: 检测 raw anchor 文本是否无实质内容(导航/图片/视频/短文本/纯链接)。
+
+    fallback deterministic 路径不用这类文本当 claim text——宁缺勿假(工单 F19):
+    不把导航 ``[ Go back to blog`` / 图片 ``![](url)`` / 视频 ``![[id]]`` / 短文本
+    ``Share`` 当 source_grounded claim(填充凑数 + provenance 造假)。raw 无非 vacuous
+    anchor 可作 claim 时走既有 fail 路径(fallback raise,_validate 兜底 fail-closed)。
+    """
+    s = text.strip()
+    if len(s) < 20:
+        return True
+    # 图片/视频嵌入
+    if s.startswith("![[") or s.startswith("![]("):
+        return True
+    # 纯链接/导航碎片(如 "[ Go back to blog" / "](/blog)[Create agents](#)")
+    if s.startswith("[ ") or s.startswith("](") or s.startswith("[") and s.endswith("]"):
+        return True
+    # 纯 markdown 标题/符号(如 "## Get More Max Agency")
+    if re.match(r"^#+\s*\S*$", s):
+        return True
+    return False
+
+
 def _build_deterministic_extract_data(
     raw_content: str,
     raw_path: str = "",
@@ -4163,7 +4186,17 @@ def _build_deterministic_extract_data(
     """Turn anchored raw text into the same shape as LLM extraction output."""
     anchor_blocks = _extract_anchor_blocks(raw_content)
     anchors = list(anchor_blocks) or ["§A"]
-    primary = anchors[0]
+    # F19: primary 选第一个非 vacuous anchor(跳过导航/图片/视频/短文本)——
+    # 宁缺勿假:不用 §A 导航文本当 claim text(不填充凑数)。全 vacuous 时退 anchors[0],
+    # 后续 claim 循环跳过所有 vacuous → claims 空 → raise fail-closed。
+    primary = next(
+        (
+            a
+            for a in anchors
+            if not _is_vacuous_raw_text(_first_sentence(anchor_blocks.get(a, "")))
+        ),
+        anchors[0],
+    )
     anchor_b = _prefer_anchor(anchors, "§B")
     anchor_c = _prefer_anchor(anchors, "§C")
     anchor_d = _prefer_anchor(anchors, "§D")
@@ -4215,16 +4248,27 @@ def _build_deterministic_extract_data(
         "缺少：原文没有给出 checker fallback 被触发时的完整部署门禁样例。",
     ]
     claims = []
-    for idx, (anchor, fallback_text) in enumerate(claim_specs):
+    for idx, (anchor, _fallback_text) in enumerate(claim_specs):
         section_text = _first_sentence(anchor_blocks.get(anchor, ""))
-        text = section_text if section_text else fallback_text
+        # F19: 跳过 vacuous raw 文本(导航/图片/视频/短文本)——宁缺勿假:
+        # 不把导航文本当 source_grounded claim(不填充凑数)。也不用 _fallback_text
+        # (loop-engineering 模板,与 raw 主题不相关,产了是编造内容)。
+        if not section_text or _is_vacuous_raw_text(section_text):
+            continue
         claims.append(
             {
-                "text": text,
+                "text": section_text,
                 "anchor": anchor,
                 "provenance": "source_grounded",
                 "evidence_gap": gap_templates[idx],
             }
+        )
+    # F19: 所有 claim anchor 都 vacuous(raw 是导航/图片/无实质内容)→ fail-closed,
+    # 不填充凑数,走既有 fail 路径(distill_extract abort,不产 fallback claim)。
+    if not claims:
+        raise ValueError(
+            "deterministic fallback fail-closed: raw 无非 vacuous anchor 可作 claim"
+            "（raw 是导航/图片/无实质内容，不填充凑数）"
         )
 
     # 治本2（砍编造源）：deterministic fallback 提出一组候选操作命令，但这些命令是

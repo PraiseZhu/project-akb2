@@ -277,6 +277,18 @@ _NUMBERED_LIST_RE = re.compile(
 )
 
 
+def _is_vacuous_numbered_step(literal: str) -> bool:
+    """F19: 检测编号即内容的空步骤(如 ``1. 1``/``2. 2``/``Step 1: 1``)。
+
+    剥 ``N. `` 或 ``Step N: `` 前缀后剩纯数字/太短(<3 字符),不是真操作步骤——
+    原文里这类是占位编号(编号即内容),scan 不该当 source_operation 产。
+    宁缺勿假(工单 F19):产不出真步骤就不扫描(不渲染),走既有 fail 路径,
+    绝不生成貌似合理的编造内容凑步骤。
+    """
+    stripped = re.sub(r"^(?:Step\s+\d+\s*[:：]\s*|\d+\.\s+)", "", literal).strip()
+    return (not stripped) or stripped.isdigit() or len(stripped) < 3
+
+
 def scan_numbered_steps(raw_text: str) -> list[EvidenceItem]:
     """Scan for ``Step N:`` and ``N.`` numbered list items outside fenced code blocks."""
     block_spans = fenced_block_spans(raw_text)
@@ -285,6 +297,9 @@ def scan_numbered_steps(raw_text: str) -> list[EvidenceItem]:
         if is_in_fenced_block(m.start(), block_spans):
             continue
         step_text = m.group("step")
+        # F19: 跳过编号即内容的空步骤(如 "Step 1: 1")——宁缺勿假
+        if _is_vacuous_numbered_step(step_text):
+            continue
         items.append(
             EvidenceItem(
                 kind="source_operation",
@@ -298,6 +313,9 @@ def scan_numbered_steps(raw_text: str) -> list[EvidenceItem]:
         if is_in_fenced_block(m.start(), block_spans):
             continue
         item_text = m.group("item")
+        # F19: 跳过编号即内容的空步骤(如 "1. 1"/"2. 2")——宁缺勿假
+        if _is_vacuous_numbered_step(item_text):
+            continue
         items.append(
             EvidenceItem(
                 kind="source_operation",

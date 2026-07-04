@@ -1410,11 +1410,18 @@ def _normalize_must_cover_text(s: str) -> str:
     （满仓 simonwillison "1. **A computation graph**..." / code.claude 两条挂此）。
     归一化后只比"实质内容是否渲染"，tolerant 格式差异、仍 fail-closed 真缺失
     （内容根本没渲染时归一化后仍不匹配 → 仍报缺陷）。
+
+    F19：反引号 + 单引号（ASCII ' 与 typographic U+2018/2019）**去掉**（不变空格），
+    与渲染侧 _sanitize_must_cover_literal_for_command 同口径。旧版把这组字符变空格，
+    导致方括号内侧多空格（['MODEL'] → [ MODEL ]）+ definition's 编码不一致
+    （literal ASCII ' → definition s，section U+2019 → definition's）→ 已渲染字面量
+    被误报缺失（code.claude.com must_cover 3 条挂此）。去掉后两侧同口径，真缺失仍 fail。
     """
     s = re.sub(rf"\[raw\s*{ANCHOR_TOKEN_PAT}\]", " ", s)  # 去 [raw §X] 锚点
-    # P2-C：单引号 ' 与反引号 ` 同去——渲染侧 _sanitize 把 literal 反引号换成 '，
-    # 校验侧也消掉 '，两侧同口径（修 `Conv`→'Conv' 后 must_cover 失配，满仓 #6/#16）。
-    s = re.sub(r"[`'*#>_]", " ", s)  # 去 markdown 标记 + 单引号
+    # F19：反引号 + ASCII 单引号 + typographic 单引号(U+2018/2019)去掉(不变空格)——
+    # 渲染侧 _sanitize 把反引号换 ASCII '，raw 原文用 U+2019，归一化两侧必须同口径。
+    s = re.sub(r"[`'‘’]", "", s)
+    s = re.sub(r"[*#>]", " ", s)  # 其他 markdown 标记变空格
     s = re.sub(r"(?m)^\s*\d+\.\s*", " ", s)  # 去列表前缀 N.
     s = re.sub(r"\s+", " ", s)  # 压空白
     return s.strip().lower()
