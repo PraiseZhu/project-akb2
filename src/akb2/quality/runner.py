@@ -1328,7 +1328,14 @@ def _run_quality_segments(
         # 有 defects 进 repair（defects actionable），无 defects 才查 entailment/加权分。
 
     # 无缺陷 → 通过
-    all_defects = a_defects + b_defects
+    # rubric 1.4.0（用户裁决）：advisory 加分维缺陷(如「新颖增量」)不计 blocking——
+    # 初判只剩 advisory 缺陷时不进 repair(省一轮),直接走硬门;残留记入 meta 可见。
+    from src.akb2.quality.repair import _blocking_defects as _rl_blocking
+
+    all_defects = _rl_blocking(a_defects) + _rl_blocking(b_defects)
+    advisory_initial = [
+        d for d in (a_defects + b_defects) if d not in all_defects
+    ]
     if not all_defects:
         # step-3 SC-3c/SC-3d：concept 车道无 defects 后，判 F3 层② entailment + 加权分过阈
         # （initial 无 defects 路径；repair 收敛后路径在下方也调同一 helper——codex P1 修复）。
@@ -1358,6 +1365,9 @@ def _run_quality_segments(
             **grader_meta,
             "repair_rounds": 0, "final_defects_summary": [],
         }
+        if advisory_initial:
+            # rubric 1.4.0 fail-visible：advisory 残留(加分维未达)照记不卡
+            meta["advisory_residual_summary"] = _defect_summary(advisory_initial)
         return True, "", "", meta
 
     meta_b: dict[str, Any] = {

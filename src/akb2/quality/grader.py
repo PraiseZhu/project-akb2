@@ -121,6 +121,28 @@ def _rubric_dimension_names_by_lane(
 RUBRIC_DIMENSIONS_BY_LANE: dict[str, list[str]] = _rubric_dimension_names_by_lane()
 
 
+def _advisory_dimension_names(spec: dict[str, Any] | None = None) -> frozenset[str]:
+    """rubric 1.4.0（用户裁决）：advisory: true 的加分维名集合（全局 + 各 lane 汇总）。
+
+    advisory 维（如「新颖增量」）：有则加分,缺失不作为入库卡点——其缺陷不计
+    blocking、不阻断 repair 收敛（repair._blocking_defects 消费）,仍照常评分记录。
+    从 spec 动态派生,不硬编码维名（改 rubric.yaml 即生效）。
+    """
+    spec = spec or _load_rubric_spec()
+    names: set[str] = set()
+    for dim in spec.get("dimensions", []) or []:
+        if isinstance(dim, dict) and dim.get("advisory") and dim.get("name"):
+            names.add(str(dim["name"]))
+    for lane_cfg in (spec.get("lanes", {}) or {}).values():
+        for dim in (lane_cfg or {}).get("dimensions", []) or []:
+            if isinstance(dim, dict) and dim.get("advisory") and dim.get("name"):
+                names.add(str(dim["name"]))
+    return frozenset(names)
+
+
+ADVISORY_DIMENSIONS: frozenset[str] = _advisory_dimension_names()
+
+
 def _dimensions_for_lane(content_lane: str) -> list[str]:
     """按车道选维度集（未知/缺省 → procedural 旧行为，零回归）。"""
     return RUBRIC_DIMENSIONS_BY_LANE.get(

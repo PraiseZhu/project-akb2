@@ -45,7 +45,10 @@ from src.akb2.quality.checks_structural import (
     _extract_body_text,
     _normalize_must_cover_text,
 )
-from src.akb2.quality.grader import run_grader_with_fixture_detailed
+from src.akb2.quality.grader import (
+    ADVISORY_DIMENSIONS,
+    run_grader_with_fixture_detailed,
+)
 from src.akb2.quality.llm_router import RouterConfigError
 from src.akb2.quality.md_table import md_table_cell, split_md_table_row
 from src.akb2.quality.raw_anchors import (
@@ -146,6 +149,19 @@ def _defects_to_summary(defects: list[Defect]) -> list[dict[str, str]]:
             "suggestion": d.suggestion,
         }
         for d in defects
+    ]
+
+
+def _blocking_defects(defects: list[Defect]) -> list[Defect]:
+    """rubric 1.4.0（用户裁决 2026-07-04）：过滤 advisory 加分维缺陷。
+
+    advisory 维（rubric advisory: true,如「新颖增量」）= 有则加分,缺失不作为
+    入库卡点——其缺陷不计 blocking、不阻断 repair 收敛;仍随 final_defects/trace
+    记录（fail-visible,宪法 P4）。非 advisory 维缺陷全保留（收敛判定不放宽）。
+    """
+    return [
+        d for d in (defects or [])
+        if getattr(d, "dimension", "") not in ADVISORY_DIMENSIONS
     ]
 
 
@@ -1786,9 +1802,14 @@ def run_repair_loop(
                     )
                 current_defects = grader_result.defects
                 trace_payload["b_defects_after"] = _defects_to_summary(current_defects)
-                if not current_defects:
+                # rubric 1.4.0：advisory 加分维缺陷不阻断收敛（仍记录 fail-visible）
+                if not _blocking_defects(current_defects):
                     effective_rounds += 1
                     trace_payload["status"] = "converged_after_deterministic"
+                    if current_defects:
+                        trace_payload["advisory_residual"] = _defects_to_summary(
+                            current_defects
+                        )
                     trace_payload["after_text_hash"] = _compute_text_hash(current_text)
                     trace_paths.append(
                         _write_repair_trace(trace_root, round_num, trace_payload, current_defects)
@@ -1798,7 +1819,7 @@ def run_repair_loop(
                         "rounds": round_num,
                         "effective_rounds": effective_rounds,
                         "final_text": current_text,
-                        "final_defects": [],
+                        "final_defects": list(current_defects),
                         "signature_written": False,
                         "failure_signature": None,
                         "trace_paths": trace_paths,
@@ -2051,10 +2072,14 @@ def run_repair_loop(
         current_defects = grader_result.defects
         trace_payload["b_defects_after"] = _defects_to_summary(current_defects)
 
-        if not current_defects:
-            # 收敛: 无缺陷
+        # rubric 1.4.0：收敛 = 无 blocking 缺陷（advisory 加分维如「新颖增量」不卡
+        # 收敛,残留随 final_defects/trace 记录——fail-visible,宪法 P4）
+        if not _blocking_defects(current_defects):
+            # 收敛: 无 blocking 缺陷
             effective_rounds += 1
             trace_payload["status"] = "converged"
+            if current_defects:
+                trace_payload["advisory_residual"] = _defects_to_summary(current_defects)
             trace_payload["after_text_hash"] = _compute_text_hash(current_text)
             trace_paths.append(
                 _write_repair_trace(trace_root, round_num, trace_payload, current_defects)
@@ -2064,7 +2089,7 @@ def run_repair_loop(
                 "rounds": round_num,
                 "effective_rounds": effective_rounds,
                 "final_text": current_text,
-                "final_defects": [],
+                "final_defects": list(current_defects),
                 "signature_written": False,
                 "failure_signature": None,
                 "trace_paths": trace_paths,

@@ -12,7 +12,7 @@
 # calibration_status: initial —— 全部 concept 权重/阈值为初始结构占位，真实数值由后续
 # 满仓校准回填（spec FR-010），非终值。step-3 只读消费此表、不回写。
 
-rubric_version: "1.3.0"
+rubric_version: "1.4.0"
 
 # 全局默认维度集（= procedural 旧 10 维，等价旧行为）。lanes 内可覆盖。
 # 这是 grader 在无 lane 信息时的默认维度集，保证旧行为零回归。
@@ -31,6 +31,7 @@ dimensions:
     weight: 1.0
   - name: "新颖增量"
     weight: 1.0
+    advisory: true
   - name: "边强度匹配"
     weight: 1.0
   - name: "Future Questions 质量"
@@ -79,6 +80,7 @@ lanes:
         weight: 1.0
       - name: "新颖增量"
         weight: 1.0
+        advisory: true
       - name: "边强度匹配"
         weight: 1.0
       - name: "Future Questions 质量"
@@ -126,7 +128,8 @@ lanes:
         note: "2-3 条具体可研究问题"
       - name: "新颖增量"
         weight: 0.5
-        note: "对既有 wiki 的增量。冷启动校准（1.3.0）：无相邻 wiki 基线可比（比对集为空/未命中，属「缺少基线」非「证明无增量」）时按内容自证判——核心论点/机制自身成立且非常识复述 → pass；不得仅以「未发现相邻条目/无本地基线」为由 fail。与既有条目实际重合仍 fail。"
+        advisory: true
+        note: "对既有 wiki 的增量。冷启动校准（1.3.0）：无相邻 wiki 基线可比（比对集为空/未命中，属「缺少基线」非「证明无增量」）时按内容自证判——核心论点/机制自身成立且非常识复述 → pass；不得仅以「未发现相邻条目/无本地基线」为由 fail。与既有条目实际重合仍 fail。加分项（advisory，1.4.0 用户裁决 2026-07-04）：本维是加分项——有增量加分；缺失/未证不作为入库卡点（其 fail 不计 blocking 缺陷、不阻断 repair 收敛），仍照常评分与记录（fail-visible）。注意：真重复（洗稿）由 admission novelty 门拦截，不依赖本维。"
     integrity_floor:
       - name: "论断锚定率(raw-anchor)"
         hard: true

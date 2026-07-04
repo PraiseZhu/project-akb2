@@ -36,10 +36,12 @@ from src.akb2.quality.distill import (
 # hash 同步到 v1.2.0 锚定值（ad9d167d…）。
 # F13（lead 裁决 2026-07-03,合法升 1.3.0）：图谱可调用性/新颖增量冷启动校准判据——
 # 维度集/权重/阈值不动,仅冷启动情形判据措辞；hash 同步到 v1.3.0 锚定值（46d40baa…）。
+# v1.4.0（用户裁决 2026-07-04,合法升版）：新颖增量降为 advisory 加分项——缺失不作
+# 入库卡点(不计 blocking),照常评分记录；hash 同步到 v1.4.0 锚定值。
 # 后续任何再改 10-dimensions.md 的 step 必须同步更新此常量，否则本守护 fail-closed。
 _RUBRIC_PATH = "skillpack/quality/rubric/10-dimensions.md"
 _KNOWN_RUBRIC_HASH = (
-    "46d40baaa8c436a60935f7d88184ca4e873e2b33a43012815459ec1ae99047dd"
+    "71203705e5428ed444a61812531707b924c4c06a55687843aa98b401ba0cc466"
 )
 
 
