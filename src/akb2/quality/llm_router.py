@@ -120,6 +120,37 @@ class LLMProviderError(RuntimeError):
 # 内部辅助
 # ---------------------------------------------------------------------------
 
+# F20: enable_thinking 是 DeepSeek/Qwen 系参数,gpt-5.4(Azure via litellm)/gemini 不认。
+# 无差别注入导致 gpt-5.4 端点 400 Unknown parameter(账本 169 条 distill_extract 7-03/7-04,
+# content_hash 如 3c2bff1f7d020caa/2af524e463b565cf/460406a043bd70e7 等)。只对 deepseek 系
+# 保留 enable_thinking,gpt-5.4/gemini 剥离(deepseek 行为一字不变)。
+_THINKING_PARAM_MODEL_PREFIXES: tuple[str, ...] = ("deepseek",)
+
+
+def _filter_extra_body_for_model(
+    model_family: str, extra_body: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """F20: 按模型族过滤 extra_body——只保留端点支持的参数。
+
+    enable_thinking 只对 deepseek 系注入(关思维链,DeepSeek 推理模型专属);
+    gpt-5.4/gemini 端点不认此参数 → 剥离(否则 400 Unknown parameter)。
+    deepseek 行为一字不变(原样保留 extra_body)。
+
+    Args:
+        model_family: 模型家族标识(deepseek-v4-pro / gpt-5.4 / gemini-flash)。
+        extra_body: 调用方传入的额外字段(可能含 enable_thinking)。
+
+    Returns:
+        过滤后的 extra_body(gpt-5.4/gemini 剥离 enable_thinking;deepseek 原样)。
+    """
+    if not extra_body:
+        return None  # None 或 {} 都不传(空 extra_body 无意义,不向端点发空 dict)
+    if any(model_family.startswith(p) for p in _THINKING_PARAM_MODEL_PREFIXES):
+        return extra_body  # deepseek 系:原样保留(行为不变)
+    # 非 deepseek 系:剥离 enable_thinking(gpt-5.4/gemini 不认)
+    filtered = {k: v for k, v in extra_body.items() if k != "enable_thinking"}
+    return filtered or None
+
 
 def _normalise_openai_base_url(base_url: str) -> str:
     """归一化 OpenAI-compatible base URL，兼容 env 里带或不带 /v1。"""
@@ -525,8 +556,10 @@ def route_llm(
         kwargs["max_tokens"] = max_tokens
 
     # 透传额外字段（如关闭 DeepSeek 推理 enable_thinking=False）
+    # F20: 按模型族过滤——enable_thinking 只对 deepseek 系注入,gpt-5.4/gemini 剥离
+    # (否则 gpt-5.4 端点 400 Unknown parameter,账本 169 条 distill_extract 7-03/7-04)。
     if extra_body is not None:
-        kwargs["extra_body"] = extra_body
+        kwargs["extra_body"] = _filter_extra_body_for_model(model_family, extra_body)
 
     # 结构化输出（OpenAI 兼容端）
     if response_schema is not None:
@@ -575,11 +608,14 @@ def build_outbound_payload(
     *,
     reasoning_effort: str | None = _DEFAULT_REASONING_EFFORT,
     strict_schema: bool = True,
+    extra_body: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """构建出站请求体（供测试断言 reasoning_effort 透传）。
+    """构建出站请求体（供测试断言 reasoning_effort / extra_body 透传）。
 
     不发送请求，只返回将要发送的 payload dict。
-    用于 fixture 测试中验证 reasoning_effort 字段存在。
+    用于 fixture 测试中验证 reasoning_effort / extra_body 字段存在 + 按模型族过滤。
+    F20: extra_body 经 _filter_extra_body_for_model 过滤后透传(测试可断言 gpt-5.4 不含
+    enable_thinking / deepseek 保持现状)。
     """
     config = _validate_model_family(model_family)
     payload: dict[str, Any] = {
@@ -592,6 +628,9 @@ def build_outbound_payload(
             payload["reasoning_effort"] = "max"
     elif reasoning_effort is not None:
         payload["reasoning_effort"] = reasoning_effort
+
+    if extra_body is not None:
+        payload["extra_body"] = _filter_extra_body_for_model(model_family, extra_body)
 
     if response_schema is not None:
         payload["response_format"] = {

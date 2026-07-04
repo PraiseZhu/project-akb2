@@ -1,0 +1,20 @@
+[
+  {
+    "name": "ag2-captain-fixture",
+    "content_lane": "concept",
+    "distill_family": "deepseek-v4-pro",
+    "success": false,
+    "retries_used": 3,
+    "error": "抽取调用失败（3/3）: LLM 调用超时 (60.0s): deepseek-v4-pro",
+    "elapsed_s": 166.4
+  },
+  {
+    "name": "vercel-ai-sdk-fixture",
+    "content_lane": "procedural",
+    "distill_family": "deepseek-v4-pro",
+    "success": false,
+    "retries_used": 3,
+    "error": "抽取调用失败（3/3）: LLM 调用超时 (60.0s): deepseek-v4-pro",
+    "elapsed_s": 213.5
+  }
+]
