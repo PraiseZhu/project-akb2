@@ -28,7 +28,8 @@ class TestF14APendingEdgeRender:
     def test_pending_edge_with_evidence_recovered(self):
         """target ∈ proposed_graph_nodes + evidence 带 [raw §X] → 渲染为 pending 行,不丢。"""
         graph_edges = [
-            _edge("loop-engineering", "[raw §A] (akb_interpretation) some evidence"),
+            # F14-A-fix:evidence 须含 target 显著 token(loop)——词面支撑第四条件
+            _edge("loop-engineering", "[raw §A] (akb_interpretation) the loop keeps running until convergence"),
         ]
         # known 空 → 边被 resolve 丢;但 target ∈ proposed_graph_nodes → pending 恢复
         proposed = [{"slug": "loop-engineering", "label": "Loop Eng", "reason": "cold", "source_anchor": "§A"}]
@@ -61,6 +62,31 @@ class TestF14APendingEdgeRender:
         assert "pending" in graph_section.lower()
         # 不是"暂无可证实"(有空段)
         assert "暂无可证实的图谱边" not in graph_section
+
+    def test_fake_target_real_anchor_not_rendered(self):
+        """[reviewer blocking 验收·渲染侧] 假 target + 真锚:evidence 是真实 raw 句
+        (Captain/Executor Pool)但 target=fake-concept(∈proposed)→ 不渲染 pending 行。"""
+        graph_edges = [
+            _edge("fake-concept", "[raw §A] (akb_interpretation) Captain dispatches tasks to Executor Pool"),
+        ]
+        proposed = [{"slug": "fake-concept", "label": "F", "reason": "x", "source_anchor": "§A"}]
+        data = {
+            "claims": [{"text": "x", "anchor": "§A", "provenance": "source_grounded", "evidence_gap": "未提供"}],
+            "argumentation": [], "mechanism_components": [{"name": "A", "role": "x"}, {"name": "B", "role": "y"}, {"name": "C", "role": "z"}],
+            "causal_edges": [{"from": "A", "to": "B", "relation": "r", "edge_kind": "source_causal", "evidence": "ev", "evidence_anchor": "§A"}],
+            "how_steps": [], "tldr": "tldr here.", "params": {}, "referenced_concepts": [],
+            "applicability_boundary": "boundary text.", "graph_edges": graph_edges,
+            "proposed_graph_nodes": proposed, "graph_pending": True,
+        }
+        raw = "§A_CONTENT_START\n\nCaptain dispatches tasks to Executor Pool.\n"
+        body = _build_body(data, "test.md", None, must_cover=[], raw_content=raw,
+                           content_lane="concept", known_concepts=[], pending_queue=[])
+        graph_section = re.search(r"## 图谱关系\s+(.+?)(?:## )", body, re.S).group(1)
+        # fake-concept 不得作为 pending 表行出现(dropped 注释里出现可接受)
+        table_rows = [ln for ln in graph_section.split("\n") if ln.strip().startswith("|")]
+        assert not any("fake-concept" in r for r in table_rows), (
+            f"假 target 不应渲染为 pending 行: {table_rows}"
+        )
 
     def test_no_evidence_edge_still_dropped(self):
         """target ∈ proposed 但 evidence 无 [raw §X] → 仍丢(无证据不渲染 pending)。"""
@@ -108,11 +134,28 @@ x
 | 2026-07-03 | 初始 | x |"""
 
     def test_pending_exempt_no_defect(self):
-        """graph_pending=true + target∈proposed + evidence 含 [raw §X] → 不报 A4-图谱resolve。"""
-        body = self._candidate("loop-engineering", "[raw §A] (akb_interpretation) ev", True, ["loop-engineering"])
+        """四条件齐(pending+∈proposed+真锚+词面支撑) → 不报 A4-图谱resolve。"""
+        body = self._candidate(
+            "loop-engineering",
+            "[raw §A] (akb_interpretation) the loop keeps running until convergence",
+            True, ["loop-engineering"],
+        )
         defects = check_a4_graph_edges(body, known_concepts=[], pending_queue=[], content_lane="concept")
         a4_resolve = [d for d in defects if d.dimension == "A4-图谱resolve"]
         assert a4_resolve == [], f"pending 边应豁免却报了: {a4_resolve}"
+
+    def test_fake_target_real_anchor_still_reported(self):
+        """[reviewer blocking 验收] 假 target + 真锚证据句:fake-concept ∈ proposed +
+        evidence 带真实 [raw §A] 但内容讲 Captain/Executor Pool(零词面支撑)→ 仍报
+        A4-图谱resolve(第四条件拦截)。"""
+        body = self._candidate(
+            "fake-concept",
+            "[raw §A] (akb_interpretation) Captain dispatches tasks to Executor Pool",
+            True, ["fake-concept"],
+        )
+        defects = check_a4_graph_edges(body, known_concepts=[], pending_queue=[], content_lane="concept")
+        a4_resolve = [d for d in defects if d.dimension == "A4-图谱resolve"]
+        assert a4_resolve, "假 target(无词面支撑)不应被豁免"
 
     def test_target_not_in_proposed_still_reported(self):
         """target 不在 proposed_graph_nodes → 仍报 A4-图谱resolve(编造 target 照拒)。"""

@@ -861,8 +861,8 @@ def _build_traceability_retake_messages(
     )
     if arg_brief:
         user_msg += (
-            f", \"argumentation_retake\": [{{\"arg_index\": int, \"traces_to\": [\"§X\"], "
-            f"\"provenance\": \"akb_interpretation|source_grounded\"}}]"
+            ", \"argumentation_retake\": [{\"arg_index\": int, \"traces_to\": [\"§X\"], "
+            "\"provenance\": \"akb_interpretation|source_grounded\"}]"
         )
     user_msg += "}"
     return [
@@ -6753,8 +6753,13 @@ def _build_body(
         graph_edges, concepts, known_concepts, pending_queue
     )
     # F14-A: 冷启动 pending 边——被 resolve 丢弃但 target ∈ proposed_graph_nodes ids
-    # 且 evidence 带真实 raw 锚(∈声明集)的边,渲染为 pending 行(D8 proposal 语义落地)。
-    from src.akb2.quality.checks_structural import _target_in_proposed_nodes
+    # 且 evidence 带真实 raw 锚(∈声明集)且 target 在 evidence 文本中有词面支撑
+    # (F14-A-fix 第四条件,防"假 target + 真锚证据句"——reviewer 反例实证)的边,
+    # 渲染为 pending 行(D8 proposal 语义落地);无支撑不渲染(fail-closed)。
+    from src.akb2.quality.checks_structural import (
+        _target_in_proposed_nodes,
+        _target_supported_by_text,
+    )
     proposed_node_ids = {
         str(pn.get("slug", "")).strip()
         for pn in (extract_data.get("proposed_graph_nodes") or [])
@@ -6775,6 +6780,9 @@ def _build_body(
         if isinstance(e, dict)
         and _target_in_proposed_nodes(_edge_target_str(e), proposed_node_ids)
         and (a := _edge_evidence_anchor(e)) and (not _decl_for_pending or a in _decl_for_pending)
+        and _target_supported_by_text(
+            _edge_target_str(e), str(e.get("evidence", "") or "")
+        )
     ]
 
     supported_how_steps = _supported_how_steps(how_steps, claims, raw_anchor_texts)

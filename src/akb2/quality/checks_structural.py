@@ -561,6 +561,41 @@ def _target_in_proposed_nodes(target: str, proposed_ids: set[str]) -> bool:
     return any(tvars & _slug_normalize_variants(pid) for pid in proposed_ids)
 
 
+# F14-A-fix(reviewer blocking:假 target + 真锚可混过):target 词面支撑校验常量。
+# 显著 token = len≥此值且非泛词;泛词单独出现不构成支撑(fake-concept 的 "concept")。
+_TARGET_SUPPORT_TOKEN_MIN_LEN: int = 4
+_TARGET_SUPPORT_GENERIC_TOKENS: frozenset[str] = frozenset({
+    "concept", "system", "model", "based", "using", "with", "engineering",
+    "framework", "pattern", "approach", "design", "method",
+})
+
+
+def _target_supported_by_text(target: str, text: str) -> bool:
+    """F14-A-fix: pending 边 target 必须在 evidence 文本中有词面支撑。
+
+    reviewer 反例:raw §A 讲 "Captain dispatches tasks to Executor Pool",LLM 把
+    target 写成 fake-concept 并塞进 proposed_graph_nodes——三条件(graph_pending +
+    ∈proposed + 真锚)全过但语义零支撑。本校验为第四条件:target 标签的显著 token
+    (len≥4,非泛词)至少 1 个以词界形式(允许朴素复数)出现在该边 evidence 文本中;
+    无支撑 → 渲染侧不产 pending 行 + A4 侧不豁免(fail-closed,假 target 照拒)。
+    """
+    if not target or not text:
+        return False
+    text_lower = text.lower()
+    tokens = [
+        t
+        for t in re.split(r"[-_\s/]+", str(target).lower())
+        if len(t) >= _TARGET_SUPPORT_TOKEN_MIN_LEN
+        and t not in _TARGET_SUPPORT_GENERIC_TOKENS
+    ]
+    if not tokens:
+        return False  # 全泛词/全短词 target(如 fake "concept")→ 无从支撑,拒
+    return any(
+        re.search(rf"(?<![a-z0-9]){re.escape(t)}(?:s|es)?(?![a-z0-9])", text_lower)
+        for t in tokens
+    )
+
+
 def _resolve_graph_node(
     target: str,
     known_concepts: list[str] | None,
@@ -737,11 +772,14 @@ def check_a4_graph_edges(
                         # step-3 SC-3e/A3-8：concept 边 target 必须确定性 resolve（纯代码）。
                         # 未 resolve = 假边/悬空引用，报缺陷（weighted_score 据此把图谱分封顶）。
                         # F14-A: 冷启动 pending 边豁免——graph_pending=true 且 target ∈
-                        # proposed_graph_nodes ids(归一化口径)且 evidence 含 [raw §X](D8 proposal,非假边)。
+                        # proposed_graph_nodes ids(归一化口径)且 evidence 含 [raw §X](D8 proposal,非假边)
+                        # 且 target 在 evidence 文本中有词面支撑(F14-A-fix 第四条件,
+                        # 防"假 target + 真锚证据句"混过——reviewer 反例实证)。
                         is_pending_exempt = (
                             graph_pending
                             and _target_in_proposed_nodes(target, proposed_node_ids)
                             and bool(RAW_ANCHOR_RE.search(evidence))
+                            and _target_supported_by_text(target, evidence)
                         )
                         if (
                             resolve_enabled
