@@ -19,11 +19,13 @@ def _d(dim: str) -> Defect:
 def test_advisory_dims_derived_from_spec() -> None:
     """advisory 集从 rubric.yaml 动态派生:含「新颖增量」(concept+procedural+全局)。"""
     assert "新颖增量" in ADVISORY_DIMENSIONS
+    # 1.5.0(用户裁决):图谱可调用性也为 advisory——图谱补全由门控侧兜底链路承担
+    assert "图谱可调用性" in ADVISORY_DIMENSIONS
     # 非 advisory 核心维绝不在集内(标准不放宽)
-    for core in ("概念机制清晰度(H3)", "论断锚定率", "证据诚实", "图谱可调用性"):
+    for core in ("概念机制清晰度(H3)", "论断锚定率", "证据诚实", "实现机制说明(H2)"):
         assert core not in ADVISORY_DIMENSIONS
     spec = _load_rubric_spec()
-    assert str(spec.get("rubric_version")) == "1.4.0"
+    assert str(spec.get("rubric_version")) == "1.5.0"
 
 
 def test_blocking_filter_drops_only_advisory() -> None:
@@ -37,6 +39,7 @@ def test_blocking_filter_drops_only_advisory() -> None:
     blocking = _blocking_defects(defects)
     dims = [d.dimension for d in blocking]
     assert "新颖增量" not in dims
+    # 注:A4-图谱resolve 是 A 层结构缺陷(假边锁),非 grader「图谱可调用性」维——仍 blocking
     assert dims == ["概念机制清晰度(H3)", "A4-图谱resolve", "TLDR密度"]
 
 
@@ -97,4 +100,6 @@ def test_advisory_weight_and_dims_unchanged() -> None:
     assert len(dims) == 7
     assert dims["新颖增量"]["weight"] == 0.5
     assert dims["新颖增量"].get("advisory") is True
+    assert dims["图谱可调用性"]["weight"] == 2.0
+    assert dims["图谱可调用性"].get("advisory") is True
     assert concept.get("threshold") == 6.0

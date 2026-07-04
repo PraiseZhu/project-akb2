@@ -268,7 +268,7 @@ def test_run_admission_marketing_reject_not_resurrected(tmp_path: Any) -> None:
 def test_rubric_130_cold_start_notes_and_dims_frozen() -> None:
     """rubric 冷启动条款(1.3.0)+ advisory(1.4.0):concept 7 维名逐字不变(维度集不动)。"""
     spec = _load_rubric_spec()
-    assert str(spec.get("rubric_version")) == "1.4.0"
+    assert str(spec.get("rubric_version")) == "1.5.0"
     concept = (spec.get("lanes") or {}).get("concept") or {}
     dims = {str(d["name"]): d for d in concept.get("dimensions", [])}
     # 维度集逐字冻结(只动 note 判据措辞,不动名与权重结构)
