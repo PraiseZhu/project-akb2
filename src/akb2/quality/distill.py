@@ -6753,10 +6753,11 @@ def _build_body(
         graph_edges, concepts, known_concepts, pending_queue
     )
     # F14-A: 冷启动 pending 边——被 resolve 丢弃但 target ∈ proposed_graph_nodes ids
-    # 且 evidence 带真实 raw 锚(∈声明集)且 target 在 evidence 文本中有词面支撑
-    # (F14-A-fix 第四条件,防"假 target + 真锚证据句"——reviewer 反例实证)的边,
-    # 渲染为 pending 行(D8 proposal 语义落地);无支撑不渲染(fail-closed)。
+    # 且 evidence 带真实 raw 锚(∈声明集)且 target 在 **raw 锚段原文** 中有词面支撑
+    # (F14-A-fix2:信任源必须是 raw 段——LLM evidence 可自写 target 回显骗过,
+    # reviewer 第七轮反例)的边,渲染为 pending 行;无支撑/无 raw 段不渲染(fail-closed)。
     from src.akb2.quality.checks_structural import (
+        _anchor_block_texts,
         _target_in_proposed_nodes,
         _target_supported_by_text,
     )
@@ -6766,6 +6767,9 @@ def _build_body(
         if isinstance(pn, dict) and str(pn.get("slug", "")).strip()
     }
     _decl_for_pending = declared_anchor_set(raw_content) if raw_content else set()
+    # 支撑信任源:raw 锚段原文(raw_content 优先;无 raw_content 时退 raw_path 载入的
+    # raw_anchor_texts——同为 raw 原文来源;两者皆空 → 空映射 → pending 全拒 fail-closed)。
+    _pending_blocks = _anchor_block_texts(raw_content) or dict(raw_anchor_texts or {})
 
     def _edge_target_str(e: dict[str, Any]) -> str:
         return str(e.get("concept") or e.get("target") or e.get("target_id") or "")
@@ -6781,7 +6785,7 @@ def _build_body(
         and _target_in_proposed_nodes(_edge_target_str(e), proposed_node_ids)
         and (a := _edge_evidence_anchor(e)) and (not _decl_for_pending or a in _decl_for_pending)
         and _target_supported_by_text(
-            _edge_target_str(e), str(e.get("evidence", "") or "")
+            _edge_target_str(e), _pending_blocks.get(canonicalize_anchor(a), "")
         )
     ]
 

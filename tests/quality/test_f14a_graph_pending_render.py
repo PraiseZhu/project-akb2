@@ -53,7 +53,8 @@ class TestF14APendingEdgeRender:
             "proposed_graph_nodes": proposed,
             "graph_pending": True,
         }
-        raw = "§A_CONTENT_START\n\nsome evidence here.\n"
+        # F14-A-fix2:词面支撑信任源是 raw 锚段——§A 段须含 target 显著 token(loop)
+        raw = "§A_CONTENT_START\n\nthe loop keeps running until convergence.\n"
         body = _build_body(data, "test.md", None, must_cover=[], raw_content=raw,
                            content_lane="concept", known_concepts=[], pending_queue=[])
         # 图谱节含 pending 边行(target loop-engineering)
@@ -86,6 +87,30 @@ class TestF14APendingEdgeRender:
         table_rows = [ln for ln in graph_section.split("\n") if ln.strip().startswith("|")]
         assert not any("fake-concept" in r for r in table_rows), (
             f"假 target 不应渲染为 pending 行: {table_rows}"
+        )
+
+    def test_fake_target_echo_evidence_not_rendered(self):
+        """[reviewer 第七轮验收·渲染侧] LLM 把假 token 回显进自写 evidence:raw §A 只讲
+        Captain,evidence 写 'fake concept captures...' → 支撑只信 raw 段 → 不渲染行。"""
+        graph_edges = [
+            _edge("fake-concept", "[raw §A] (akb_interpretation) fake concept captures the dispatch pattern"),
+        ]
+        proposed = [{"slug": "fake-concept", "label": "F", "reason": "x", "source_anchor": "§A"}]
+        data = {
+            "claims": [{"text": "x", "anchor": "§A", "provenance": "source_grounded", "evidence_gap": "未提供"}],
+            "argumentation": [], "mechanism_components": [{"name": "A", "role": "x"}, {"name": "B", "role": "y"}, {"name": "C", "role": "z"}],
+            "causal_edges": [{"from": "A", "to": "B", "relation": "r", "edge_kind": "source_causal", "evidence": "ev", "evidence_anchor": "§A"}],
+            "how_steps": [], "tldr": "tldr here.", "params": {}, "referenced_concepts": [],
+            "applicability_boundary": "boundary text.", "graph_edges": graph_edges,
+            "proposed_graph_nodes": proposed, "graph_pending": True,
+        }
+        raw = "§A_CONTENT_START\n\nCaptain dispatches tasks to Executor Pool.\n"
+        body = _build_body(data, "test.md", None, must_cover=[], raw_content=raw,
+                           content_lane="concept", known_concepts=[], pending_queue=[])
+        graph_section = re.search(r"## 图谱关系\s+(.+?)(?:## )", body, re.S).group(1)
+        table_rows = [ln for ln in graph_section.split("\n") if ln.strip().startswith("|")]
+        assert not any("fake-concept" in r for r in table_rows), (
+            f"evidence 回显不构成 raw 支撑,不应渲染: {table_rows}"
         )
 
     def test_no_evidence_edge_still_dropped(self):
@@ -133,29 +158,67 @@ x
 |------|------|------|
 | 2026-07-03 | 初始 | x |"""
 
+    _RAW_LOOP = "§A_CONTENT_START\n\nthe loop keeps running until convergence.\n"
+    _RAW_CAPTAIN = "§A_CONTENT_START\n\nCaptain dispatches tasks to Executor Pool.\n"
+
     def test_pending_exempt_no_defect(self):
-        """四条件齐(pending+∈proposed+真锚+词面支撑) → 不报 A4-图谱resolve。"""
+        """四条件齐(pending+∈proposed+真锚+**raw 段**词面支撑) → 不报 A4-图谱resolve。"""
         body = self._candidate(
             "loop-engineering",
             "[raw §A] (akb_interpretation) the loop keeps running until convergence",
             True, ["loop-engineering"],
         )
-        defects = check_a4_graph_edges(body, known_concepts=[], pending_queue=[], content_lane="concept")
+        defects = check_a4_graph_edges(
+            body, known_concepts=[], pending_queue=[], content_lane="concept",
+            raw_content=self._RAW_LOOP,
+        )
         a4_resolve = [d for d in defects if d.dimension == "A4-图谱resolve"]
         assert a4_resolve == [], f"pending 边应豁免却报了: {a4_resolve}"
 
     def test_fake_target_real_anchor_still_reported(self):
         """[reviewer blocking 验收] 假 target + 真锚证据句:fake-concept ∈ proposed +
-        evidence 带真实 [raw §A] 但内容讲 Captain/Executor Pool(零词面支撑)→ 仍报
+        evidence 带真实 [raw §A] 但 raw 段讲 Captain/Executor Pool(零词面支撑)→ 仍报
         A4-图谱resolve(第四条件拦截)。"""
         body = self._candidate(
             "fake-concept",
             "[raw §A] (akb_interpretation) Captain dispatches tasks to Executor Pool",
             True, ["fake-concept"],
         )
-        defects = check_a4_graph_edges(body, known_concepts=[], pending_queue=[], content_lane="concept")
+        defects = check_a4_graph_edges(
+            body, known_concepts=[], pending_queue=[], content_lane="concept",
+            raw_content=self._RAW_CAPTAIN,
+        )
         a4_resolve = [d for d in defects if d.dimension == "A4-图谱resolve"]
         assert a4_resolve, "假 target(无词面支撑)不应被豁免"
+
+    def test_fake_target_echo_evidence_still_reported(self):
+        """[reviewer 第七轮验收] LLM 把假 token 回显进自写 evidence:raw §A 仍只讲
+        Captain,evidence 却写 'fake concept captures the dispatch pattern' → 支撑校验
+        只信 raw 段 → 仍报 A4-图谱resolve(回显骗术无效)。"""
+        body = self._candidate(
+            "fake-concept",
+            "[raw §A] (akb_interpretation) fake concept captures the dispatch pattern",
+            True, ["fake-concept"],
+        )
+        defects = check_a4_graph_edges(
+            body, known_concepts=[], pending_queue=[], content_lane="concept",
+            raw_content=self._RAW_CAPTAIN,
+        )
+        a4_resolve = [d for d in defects if d.dimension == "A4-图谱resolve"]
+        assert a4_resolve, "evidence 回显 target token 不构成 raw 支撑,不应豁免"
+
+    def test_no_raw_content_no_exempt(self):
+        """无 raw_content(调用方拿不到 raw)→ 豁免 fail-closed,照报。"""
+        body = self._candidate(
+            "loop-engineering",
+            "[raw §A] (akb_interpretation) the loop keeps running",
+            True, ["loop-engineering"],
+        )
+        defects = check_a4_graph_edges(
+            body, known_concepts=[], pending_queue=[], content_lane="concept",
+        )
+        a4_resolve = [d for d in defects if d.dimension == "A4-图谱resolve"]
+        assert a4_resolve, "无 raw_content 不应豁免(fail-closed)"
 
     def test_target_not_in_proposed_still_reported(self):
         """target 不在 proposed_graph_nodes → 仍报 A4-图谱resolve(编造 target 照拒)。"""

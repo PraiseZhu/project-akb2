@@ -31,6 +31,7 @@ from src.akb2.quality.raw_anchors import (
     ANCHOR_TOKEN_PAT,
     RAW_ANCHOR_REF_RE,
     canonicalize_anchor,
+    declared_anchor_positions,
     declared_anchor_set,
 )
 from src.akb2.quality.source_ops_scanners import scan_all as _scan_source_evidence
@@ -570,14 +571,31 @@ _TARGET_SUPPORT_GENERIC_TOKENS: frozenset[str] = frozenset({
 })
 
 
-def _target_supported_by_text(target: str, text: str) -> bool:
-    """F14-A-fix: pending 边 target 必须在 evidence 文本中有词面支撑。
+def _anchor_block_texts(raw_content: str | None) -> dict[str, str]:
+    """F14-A-fix2: raw 锚段文本映射(canonical anchor → 该锚至下一锚声明间原文)。
 
-    reviewer 反例:raw §A 讲 "Captain dispatches tasks to Executor Pool",LLM 把
-    target 写成 fake-concept 并塞进 proposed_graph_nodes——三条件(graph_pending +
-    ∈proposed + 真锚)全过但语义零支撑。本校验为第四条件:target 标签的显著 token
-    (len≥4,非泛词)至少 1 个以词界形式(允许朴素复数)出现在该边 evidence 文本中;
-    无支撑 → 渲染侧不产 pending 行 + A4 侧不豁免(fail-closed,假 target 照拒)。
+    词面支撑校验的**唯一信任源**——LLM evidence 字符串可自写 target token 回显
+    (reviewer 第七轮反例),raw 锚段原文不可变。无 raw → 空映射(调用方 fail-closed)。
+    """
+    if not raw_content:
+        return {}
+    decls = declared_anchor_positions(raw_content)
+    blocks: dict[str, str] = {}
+    for i, (pos, name) in enumerate(decls):
+        end = decls[i + 1][0] if i + 1 < len(decls) else len(raw_content)
+        blocks[name] = blocks.get(name, "") + raw_content[pos:end]
+    return blocks
+
+
+def _target_supported_by_text(target: str, text: str) -> bool:
+    """F14-A-fix2: pending 边 target 必须在 **raw 锚段原文** 中有词面支撑。
+
+    reviewer 两轮反例:(1) raw §A 讲 "Captain dispatches tasks to Executor Pool",
+    LLM 把 target 写成 fake-concept 塞进 proposed_graph_nodes;(2) LLM 再把
+    "fake concept" 回显进自己写的 evidence 字符串,骗过对 evidence 的校验。故本函数
+    的 text **必须传 raw 锚段原文**(_anchor_block_texts 取),不得传 LLM evidence。
+    判据:target 标签显著 token(len≥4,非泛词)至少 1 个以词界形式(允许朴素复数)
+    出现在 text;无支撑/无 raw 段 → 渲染不产行 + A4 不豁免(fail-closed)。
     """
     if not target or not text:
         return False
@@ -633,6 +651,7 @@ def check_a4_graph_edges(
     known_concepts: list[str] | None = None,
     pending_queue: list[str] | None = None,
     content_lane: str = "",
+    raw_content: str | None = None,
 ) -> list[Defect]:
     """检查图谱关系表中每条边是否列齐且 provenance 清晰。
 
@@ -663,6 +682,8 @@ def check_a4_graph_edges(
             slug = str(pn.get("slug", "")).strip()
             if slug:
                 proposed_node_ids.add(slug)
+    # F14-A-fix2:词面支撑的信任源 = raw 锚段原文;无 raw_content → 空映射 → 不豁免。
+    _a4_anchor_blocks = _anchor_block_texts(raw_content)
 
     # 检测表格行: | target | relation | strength | provenance | evidence |
     # 在 图谱关系 节中查找表格
@@ -774,13 +795,22 @@ def check_a4_graph_edges(
                         # F14-A: 冷启动 pending 边豁免——graph_pending=true 且 target ∈
                         # proposed_graph_nodes ids(归一化口径)且 evidence 含
                         # [raw §X](D8 proposal,非假边)
-                        # 且 target 在 evidence 文本中有词面支撑(F14-A-fix 第四条件,
-                        # 防"假 target + 真锚证据句"混过——reviewer 反例实证)。
+                        # 且 target 在 **raw 锚段原文** 中有词面支撑(F14-A-fix2:
+                        # 信任源必须是 raw 段,LLM evidence 可自写回显骗过——reviewer
+                        # 第七轮反例;无 raw_content → 空块 → 不豁免 fail-closed)。
+                        _ev_anchor_m = RAW_ANCHOR_RE.search(evidence)
+                        _ev_block = (
+                            _a4_anchor_blocks.get(
+                                canonicalize_anchor(_ev_anchor_m.group(1)), ""
+                            )
+                            if _ev_anchor_m
+                            else ""
+                        )
                         is_pending_exempt = (
                             graph_pending
                             and _target_in_proposed_nodes(target, proposed_node_ids)
-                            and bool(RAW_ANCHOR_RE.search(evidence))
-                            and _target_supported_by_text(target, evidence)
+                            and _ev_anchor_m is not None
+                            and _target_supported_by_text(target, _ev_block)
                         )
                         if (
                             resolve_enabled
@@ -1112,6 +1142,7 @@ def run_structural_checks(
             known_concepts=known_concepts,
             pending_queue=pending_queue,
             content_lane=content_lane,
+            raw_content=raw_content,
         )
     )
     defects.extend(check_a5_wikilinks(text, pending_queue, known_concepts))
