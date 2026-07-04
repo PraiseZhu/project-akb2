@@ -430,9 +430,17 @@ class TestGraderRetryAndIsolation:
     def test_run_grader_detailed_retry_exhausted_to_degraded(
         self, monkeypatch, valid_candidate_page
     ):
-        """SC-6.1: primary 持续返回坏 JSON → 重试（≤MAX_GRADER_RETRIES），耗尽走兜底标 degraded。"""
+        """SC-6.1: primary 持续返回坏 JSON → 重试有界，耗尽走兜底标 degraded。
+
+        F18: 重试上限 = MAX_GRADER_RETRIES + SCHEMA_MISMATCH_RETRY_BUDGET
+        （schema-mismatch 专用 +1 预算，工单 F18）。仍 fail-closed（不降级放行）。
+        """
         from src.akb2.quality import grader as grader_mod
-        from src.akb2.quality.grader import MAX_GRADER_RETRIES, run_grader_detailed
+        from src.akb2.quality.grader import (
+            MAX_GRADER_RETRIES,
+            SCHEMA_MISMATCH_RETRY_BUDGET,
+            run_grader_detailed,
+        )
         from src.akb2.quality.llm_router import LLMResponse
         from tests.quality.conftest import make_mock_route_llm
 
@@ -449,11 +457,12 @@ class TestGraderRetryAndIsolation:
         result = run_grader_detailed(valid_candidate_page)
 
         gpt_calls = mock_llm.call_counts.get("gpt-5.4", 0)
+        total_budget = MAX_GRADER_RETRIES + SCHEMA_MISMATCH_RETRY_BUDGET
         # 重试发生：至少 2 次（初试 + 重试）
         assert gpt_calls >= 2, f"应触发重试，实际 gpt-5.4 调用 {gpt_calls} 次"
-        # 重试上限 ≤ MAX_GRADER_RETRIES
-        assert gpt_calls <= MAX_GRADER_RETRIES, (
-            f"重试次数超上限：{gpt_calls} > {MAX_GRADER_RETRIES}"
+        # 重试上限 ≤ MAX_GRADER_RETRIES + SCHEMA_MISMATCH_RETRY_BUDGET（F18 +1）
+        assert gpt_calls <= total_budget, (
+            f"重试次数超上限：{gpt_calls} > {total_budget}"
         )
         # 耗尽后走 gemini 兜底 → degraded（fallback_used=True）
         assert result.fallback_used is True
