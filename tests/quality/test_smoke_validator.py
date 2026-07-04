@@ -236,10 +236,10 @@ def _write_source_config(path: Path) -> None:
     )
 
 
-def _source_rows() -> list[dict]:
+def _source_rows(n: int = 82) -> list[dict]:
     now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     rows = []
-    for i in range(76):
+    for i in range(n):
         rows.append(
             {
                 "slug": f"s{i}",
@@ -703,9 +703,9 @@ def test_validate_source_ledger_gate(tmp_path: Path) -> None:
 
     result = validate_source_ledger(ledger, config)
 
-    assert result["rows"] == 76
-    assert result["reachable"] == 76
-    assert result["rich_count"] == 76
+    assert result["rows"] == 82
+    assert result["reachable"] == 82
+    assert result["rich_count"] == 82
 
 
 def test_validate_source_ledger_rejects_generic_failed_error(tmp_path: Path) -> None:
@@ -787,3 +787,25 @@ def test_validate_root_isolation_metadata(tmp_path: Path) -> None:
     after.write_text(json.dumps({"changed": True}), encoding="utf-8")
     with pytest.raises(SmokeValidationError, match="metadata changed"):
         validate_root_isolation(before, after)
+
+
+def test_source_ledger_count_follows_config_not_hardcoded(tmp_path: Path) -> None:
+    """源数门跟随 config 条目数，不写死 82：扩到 90 源、ledger 90 行也应通过。"""
+    rows = _source_rows(90)
+    ledger = tmp_path / "sources-ledger.jsonl"
+    config = tmp_path / "main_sources.yaml"
+    _write_ledger(ledger, rows)
+    _write_source_config_for_rows(config, rows)
+    result = validate_source_ledger(ledger, config)
+    assert result["rows"] == 90
+
+
+def test_source_ledger_count_mismatch_config_rejected(tmp_path: Path) -> None:
+    """ledger 行数与 config 源数不一致 → 拒（防 ledger/config 漂移）。"""
+    rows = _source_rows(90)
+    ledger = tmp_path / "sources-ledger.jsonl"
+    config = tmp_path / "main_sources.yaml"
+    _write_ledger(ledger, rows)
+    _write_source_config_for_rows(config, rows[:88])
+    with pytest.raises(SmokeValidationError, match="config source count"):
+        validate_source_ledger(ledger, config)

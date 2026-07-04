@@ -645,7 +645,7 @@ def validate_sources(
 def main(argv: list[str] | None = None) -> int:
     """CLI 入口。"""
     parser = argparse.ArgumentParser(
-        description="AKB2 逐源验证 CLI — 76 源 feed 可达性 + 试抓",
+        description="AKB2 逐源验证 CLI — 82 源 feed 可达性 + 试抓",
     )
     parser.add_argument(
         "--config",

@@ -237,15 +237,25 @@ def _source_config_urls(config_path: Path) -> set[str]:
     return urls
 
 
+def _source_config_count(config_path: Path) -> int:
+    """配置里的源条目数（ledger 应一源一行；源数变更时门槛自动跟随，无需改硬编码）。"""
+    data = _read_yaml(config_path)
+    sources = data.get("sources", []) if isinstance(data, dict) else []
+    return sum(1 for source in sources if isinstance(source, dict))
+
+
 def validate_source_ledger(
     ledger_path: str | Path,
     config_path: str | Path,
     max_age_hours: int = DEFAULT_SOURCE_LEDGER_MAX_AGE_HOURS,
 ) -> dict[str, Any]:
-    """Validate 76-source ledger for deployment preflight."""
+    """Validate source ledger against config source count for deployment preflight."""
     rows = _read_jsonl(Path(ledger_path))
-    if len(rows) != 76:
-        raise SmokeValidationError(f"source ledger rows != 76: {len(rows)}")
+    expected_count = _source_config_count(Path(config_path))
+    if len(rows) != expected_count:
+        raise SmokeValidationError(
+            f"source ledger rows != config source count ({expected_count}): {len(rows)}"
+        )
 
     run_ids = {row.get("run_id") for row in rows}
     if len(run_ids) != 1 or None in run_ids or "" in run_ids:
