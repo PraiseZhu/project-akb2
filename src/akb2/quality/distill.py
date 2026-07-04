@@ -592,6 +592,21 @@ class ComposeResult:
     error: str = ""
 
 
+def _is_non_retryable_api_error(exc: Exception) -> bool:
+    """F20: 不可重试的 API 错误(400/invalid_request/unknown parameter)——
+    参数错误重试结果必然相同,烧满重试预算是确定性浪费(与 F18 grader 侧 400 break 同语义)。
+
+    检测 LLMProviderError(LLM API 错误)message 含 400/BadRequest/Unknown parameter/
+    invalid_request(账本 169 条 enable_thinking 400 烧 3/3 重试即此浪费)。立即 break,
+    不重试,直接走 maker fallback(不降级放行,宪法 P7 不动)。
+    """
+    msg = str(exc).lower()
+    return any(
+        kw in msg
+        for kw in ("400", "badrequest", "unknown parameter", "invalid_request", "invalid request")
+    )
+
+
 # ---------------------------------------------------------------------------
 # 段 1: 结构化抽取
 # ---------------------------------------------------------------------------
@@ -688,6 +703,14 @@ def extract_claims(
                 )
             continue
         except Exception as exc:
+            # F20: 不可重试的 400/invalid_request 立即 break,不烧满重试预算
+            # (参数错误重试结果必然相同,与 F18 grader 侧 400 break 同语义)。
+            if _is_non_retryable_api_error(exc):
+                return ExtractResult(
+                    success=False,
+                    retries_used=attempt,
+                    error=f"抽取调用失败（{attempt}/{MAX_EXTRACT_RETRIES}）不可重试: {exc}",
+                )
             if attempt >= MAX_EXTRACT_RETRIES:
                 return ExtractResult(
                     success=False,
