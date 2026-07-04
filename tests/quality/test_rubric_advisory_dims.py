@@ -46,6 +46,49 @@ def test_advisory_only_list_is_nonblocking() -> None:
     assert _blocking_defects([]) == []
 
 
+def test_repair_loop_advisory_only_converges_without_llm(tmp_path) -> None:
+    """[F15-fix,e2e v7 idx17 死因回归] 初始缺陷仅 advisory → 轮首短路收敛,
+    不进 LLM repair(否则修不动 advisory 触发空转早停把样本判死)。"""
+    from src.akb2.quality.repair import run_repair_loop
+
+    def _llm_must_not_run(*_a, **_k):
+        raise AssertionError("advisory-only 不应调用 repair LLM")
+
+    result = run_repair_loop(
+        candidate_text="# t\n\n## 图谱关系\n\nx\n",
+        a_defects=[],
+        b_defects=[_d("新颖增量")],
+        failures_path=str(tmp_path / "f.jsonl"),
+        mock_route_llm=_llm_must_not_run,
+        content_lane="concept",
+    )
+    assert result["converged"] is True
+    assert result["rounds"] == 0
+    assert [d.dimension for d in result["final_defects"]] == ["新颖增量"]
+
+
+def test_repair_loop_blocking_defect_still_enters_loop(tmp_path) -> None:
+    """blocking 缺陷仍进 repair 循环(不因 advisory 机制放宽):LLM 被调用即证明。"""
+    from src.akb2.quality.repair import run_repair_loop
+
+    calls: list = []
+
+    def _llm_probe(*_a, **_k):
+        calls.append(1)
+        raise RuntimeError("probe stop")  # 进入循环即停,不跑全程
+
+    result = run_repair_loop(
+        candidate_text="# t\n\n## 论证与解释\n\nx\n",
+        a_defects=[],
+        b_defects=[_d("概念机制清晰度(H3)"), _d("新颖增量")],
+        failures_path=str(tmp_path / "f.jsonl"),
+        mock_route_llm=_llm_probe,
+        content_lane="concept",
+    )
+    assert result["converged"] is False  # probe 打断 → 未收敛(fail-closed 保持)
+    assert calls, "blocking 缺陷必须进入 repair LLM 路径"
+
+
 def test_advisory_weight_and_dims_unchanged() -> None:
     """1.4.0 只加 advisory 标记:concept 维度集/权重/threshold 不动(标准冻结)。"""
     spec = _load_rubric_spec()

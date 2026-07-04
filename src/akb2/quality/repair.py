@@ -1708,6 +1708,22 @@ def run_repair_loop(
     consecutive_idle = 0
 
     for round_num in range(1, MAX_REPAIR_ROUNDS + 1):
+        # rubric 1.4.0 F15-fix（e2e v7 实证漏洞）：轮首 advisory-only 短路——若当前
+        # 缺陷全为 advisory 加分维(如「新颖增量」),不进本轮 repair(LLM 修不动
+        # advisory 会触发空转早停,把本该收敛的样本判死,v7 idx17 死因)。直接收敛,
+        # advisory 残留随 final_defects 记录(fail-visible)。
+        if not _blocking_defects(current_defects):
+            return {
+                "converged": True,
+                "rounds": round_num - 1,
+                "effective_rounds": effective_rounds,
+                "final_text": current_text,
+                "final_defects": list(current_defects),
+                "signature_written": False,
+                "failure_signature": None,
+                "trace_paths": trace_paths,
+                "final_grader_meta": final_grader_meta,
+            }
         before_hash = _compute_text_hash(current_text)
         # 根因①②:定位认 H2+H3 + location 归一化匹配
         # 标题归一预算一次(消 D×T 重算);body 本轮不变,apply 段复用
