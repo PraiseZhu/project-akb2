@@ -109,6 +109,9 @@ class TestPlistValid:
         env = data["EnvironmentVariables"]
         assert env["PYTHONPATH"] == "__AKB2_REPO_ROOT__/src"
         assert "__AKB2_HOME__/.pyenv/shims" in env["PATH"]
+        # F21-fix: defuddle 装在 ~/.npm-global/bin,launchd env PATH 不含它时
+        # extract 全线 fallback → Required anchors not hit → archived=0(首跑实测)
+        assert "__AKB2_HOME__/.npm-global/bin" in env["PATH"]
         assert "__AKB2_VAULT_ROOT__/Praise Space/AKB2.0" == env["AKB2_VAULT_ROOT"]
 
 
