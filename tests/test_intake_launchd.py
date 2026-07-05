@@ -162,7 +162,7 @@ class TestBootstrapScript:
             f'sed -e "s|__AKB2_REPO_ROOT__|{repo_root}|g" '
             f'-e "s|__AKB2_VAULT_ROOT__|{vault_root}|g" '
             f'-e "s|__AKB2_HOME__|{home}|g" '
-            f'{PLIST} > {rendered}'
+            f'"{PLIST}" > "{rendered}"'  # 引号:主仓路径含空格(Project AKB2)
         )
         subprocess.run(sed_cmd, shell=True, check=True)
         rendered_text = rendered.read_text(encoding="utf-8")
