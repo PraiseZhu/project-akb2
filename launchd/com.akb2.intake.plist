@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  AKB2 intake 抓取链路 — 每日定时抓源落 raw
+
+  ==== 安装 ====
+  ⚠️ 本文件含 __AKB2_REPO_ROOT__ / __AKB2_VAULT_ROOT__ / __AKB2_HOME__ 占位符,
+     不要直接 launchctl bootstrap/load 本模板(会加载未渲染的占位符路径)。
+     用 scripts/bootstrap_intake_launchd.sh 渲染后加载。
+
+  # 卸载(对已渲染加载的服务):
+  launchctl bootout gui/$(id -u)/com.akb2.intake
+
+  # 查看状态:
+  launchctl list | grep com.akb2.intake
+
+  ==== 触发时间 ====
+  每日 Asia/Shanghai 05:30 (CST UTC+8) = UTC 21:30 前日
+  避开 briefing 07:30;抓完料 main-pipeline daemon KeepAlive 自然消化
+  (与 github_briefing 05:30 同时——两者抓取链路独立,网络并行可接受;
+   main-pipeline AVOID_WINDOW 21:15-21:45 UTC 内暂停取新队列,21:45 后消化 intake 料)
+
+  ==== 有界(宪法 P1) ====
+  limit=30 (ProgramArguments 带 limit 30) 每次最多抓 30 篇(跨所有源),
+  超时由 launchd 侧/脚本侧兜底,无界跑不允许
+
+  ==== 路径 ====
+  sources:      __AKB2_REPO_ROOT__/config/main_sources.yaml (164 源)
+  output-dir:   __AKB2_VAULT_ROOT__/Praise Space/AKB2.0/raw (vault raw,与 6-29 跑同)
+  state-file:   __AKB2_REPO_ROOT__/reports/intake/intake-state.jsonl
+                (持久化,续 6-29 跑同路径保 dedup 连续性,绝不在 /tmp)
+  failures-path: __AKB2_REPO_ROOT__/logs/intake-failures.jsonl
+
+  ==== 日志 ====
+  stdout/stderr 重定向到 logs/intake.log
+
+  ==== 软依赖 ====
+  scrapling/defuddle 必需(preflight fail-closed);playwright chromium 软依赖
+  (StealthyFetcher 用,缺失只 warn 不 fail,装载阶段 lead 处理)
+
+  ==== 用户授权 ====
+  用户新增自动化触发器已明确批准(宪法"新增自动化触发器必须人工确认"已满足)。
+  RunAtLoad=false——首跑由 lead 装载后手动 kickstart 验证,不搞装载即自动跑。
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.akb2.intake</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__AKB2_HOME__/.pyenv/shims/python3</string>
+        <string>-m</string>
+        <string>akb2.quality.intake.orchestrator</string>
+        <string>--sources-config</string>
+        <string>__AKB2_REPO_ROOT__/config/main_sources.yaml</string>
+        <string>--state-file</string>
+        <string>__AKB2_REPO_ROOT__/reports/intake/intake-state.jsonl</string>
+        <string>--output-dir</string>
+        <string>__AKB2_VAULT_ROOT__/Praise Space/AKB2.0/raw</string>
+        <string>--failures-path</string>
+        <string>__AKB2_REPO_ROOT__/logs/intake-failures.jsonl</string>
+        <string>--limit</string>
+        <string>30</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__AKB2_REPO_ROOT__</string>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>5</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>__AKB2_REPO_ROOT__/logs/intake.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__AKB2_REPO_ROOT__/logs/intake.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONPATH</key>
+        <string>__AKB2_REPO_ROOT__/src</string>
+        <key>PATH</key>
+        <string>__AKB2_HOME__/.pyenv/shims:__AKB2_HOME__/.pyenv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>AKB2_VAULT_ROOT</key>
+        <string>__AKB2_VAULT_ROOT__/Praise Space/AKB2.0</string>
+    </dict>
+</dict>
+</plist>
