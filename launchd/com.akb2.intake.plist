@@ -89,7 +89,7 @@
         <key>PYTHONPATH</key>
         <string>__AKB2_REPO_ROOT__/src</string>
         <key>PATH</key>
-        <string>__AKB2_HOME__/.pyenv/shims:__AKB2_HOME__/.pyenv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <string>__AKB2_HOME__/.pyenv/shims:__AKB2_HOME__/.pyenv/bin:__AKB2_HOME__/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>AKB2_VAULT_ROOT</key>
         <string>__AKB2_VAULT_ROOT__/Praise Space/AKB2.0</string>
     </dict>
