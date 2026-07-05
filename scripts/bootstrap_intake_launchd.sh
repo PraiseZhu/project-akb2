@@ -89,15 +89,15 @@ echo "  Bootstrapped from $PLIST_TMP"
 rm -f "$PLIST_TMP"
 
 # ---------------------------------------------------------------------------
-# Verify(断言绑本 plist 可观测特征:orchestrator + Hour=5)
+# Verify(断言绑本 plist 可观测特征:orchestrator + StartInterval 7200)
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== Verification ==="
-launchctl print "gui/$(id -u)/$PLIST_LABEL" | grep -E 'intake\.orchestrator|hour = 5' || {
-    echo "ERROR: Verification failed — plist does not reference intake.orchestrator or hour != 5" >&2
+launchctl print "gui/$(id -u)/$PLIST_LABEL" | grep -E 'intake\.orchestrator|run interval = 2h|7200' || {
+    echo "ERROR: Verification failed — plist does not reference intake.orchestrator or interval != 7200" >&2
     exit 2
 }
-echo "  OK: intake.orchestrator detected + hour = 5 (CST 05:30,避开 briefing 07:30)"
+echo "  OK: intake.orchestrator detected + StartInterval=7200(每 2 小时)"
 
 echo ""
 echo "=== Done ==="

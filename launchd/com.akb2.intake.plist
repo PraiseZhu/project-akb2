@@ -15,10 +15,9 @@
   launchctl list | grep com.akb2.intake
 
   ==== 触发时间 ====
-  每日 Asia/Shanghai 05:30 (CST UTC+8) = UTC 21:30 前日
-  避开 briefing 07:30;抓完料 main-pipeline daemon KeepAlive 自然消化
-  (与 github_briefing 05:30 同时——两者抓取链路独立,网络并行可接受;
-   main-pipeline AVOID_WINDOW 21:15-21:45 UTC 内暂停取新队列,21:45 后消化 intake 料)
+  每 2 小时一次(StartInterval=7200s,用户 2026-07-05 指定,替代原每日 05:30)
+  抓完料 main-pipeline daemon KeepAlive 自然消化;intake 不调 LLM,
+  与 briefing/github_briefing 无预算冲突;state dedup(archived 终态)防重抓
 
   ==== 有界(宪法 P1) ====
   limit=30 (ProgramArguments 带 limit 30) 每次最多抓 30 篇(跨所有源),
@@ -67,13 +66,8 @@
     <key>WorkingDirectory</key>
     <string>__AKB2_REPO_ROOT__</string>
 
-    <key>StartCalendarInterval</key>
-    <dict>
-        <key>Hour</key>
-        <integer>5</integer>
-        <key>Minute</key>
-        <integer>30</integer>
-    </dict>
+    <key>StartInterval</key>
+    <integer>7200</integer>
 
     <key>RunAtLoad</key>
     <false/>
