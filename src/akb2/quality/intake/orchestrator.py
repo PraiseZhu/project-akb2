@@ -41,6 +41,7 @@ import argparse
 import json
 import logging
 import sys
+import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -63,7 +64,11 @@ logger = logging.getLogger(__name__)
 # 具名常量（宪法 P4：预算显式）
 # ---------------------------------------------------------------------------
 
-RATE_LIMIT_PER_RUN = 50  # 单源单次运行最多处理文章数
+RATE_LIMIT_PER_RUN = 50  # 单源单次运行最多处理文章数（跨轮 daily 兜底,实际 cap 先触发）
+# F22: 每源每轮上限(防单源垄断)——limit 30 + cap 5 下每轮至少 6 源有份。
+# 旧版仅 RATE_LIMIT_PER_RUN=50,但全局 --limit 30 < 50,单源(openai-blog 历史存量大)
+# 吃满 30 名额,其余 163 源永远排不上(账本 78/78 全 openai-blog)。cap 5 强制每轮多源有份。
+PER_SOURCE_PER_RUN_CAP: int = 5
 DEFAULT_SOURCES_CONFIG = "config/main_sources.yaml"
 DEFAULT_STATE_FILE = "reports/intake/intake-state.jsonl"
 DEFAULT_OUTPUT_DIR = "reports/intake/raw/"
@@ -184,7 +189,31 @@ def _process_article(
         seen_ids.add(article_id)
         return "skipped_quarantine"
 
-    # rate_limit 检查（SC-8）
+    # F22: 每源每轮上限(防单源垄断)—limit 30 + cap 5 下每轮至少 6 源有份。
+    # 旧版仅 RATE_LIMIT_PER_RUN=50,--limit 30 < 50 时单源(openai-blog 历史存量大)
+    # 吃满 30 名额,其余 163 源永远排不上(账本 78/78 全 openai-blog)。cap 5 强制多源有份。
+    if source_daily_count >= PER_SOURCE_PER_RUN_CAP:
+        logger.info(
+            "Source %s per-run capped (count=%d/%d), skipping %s",
+            article.source_slug,
+            source_daily_count,
+            PER_SOURCE_PER_RUN_CAP,
+            article_id,
+        )
+        if not dry_run:
+            write_ledger_entry(
+                state_file,
+                run_id=run_id,
+                source_slug=article.source_slug,
+                article_id=article_id,
+                status="skipped_rate_limit",
+                daily_count=source_daily_count,
+                quarantine_status=False,
+            )
+        seen_ids.add(article_id)
+        return "skipped_rate_limit"
+
+    # rate_limit 检查（SC-8,跨轮 daily 兜底;实际 cap=5 先触发,RATE_LIMIT=50 兜底防 cap 调高）
     if source_daily_count >= RATE_LIMIT_PER_RUN:
         logger.info(
             "Source %s rate limited (count=%d), skipping %s",
@@ -283,6 +312,19 @@ def _process_article(
 # ---------------------------------------------------------------------------
 
 
+def _source_rotation_offset(num_sources: int, interval_s: int = 7200) -> int:
+    """F22: 每轮轮转起点——按时间(interval_s)轮转,保证后排源不饿死。
+
+    cap=5 解决单源垄断(每轮 6 源有份),但 sources 顺序固定时每轮同前 6 源,
+    后排源(第 7+)永远排不上。轮转起点每 interval_s 秒 +1,163 源 / 6 源每轮 ≈ 27 轮
+    周期全覆盖(实际 cap+limit 下每天 4 轮,~40 天全覆盖后排源;比固定顺序强)。
+    生产 intake 定时器 StartInterval=7200(2h),与此 interval_s 对齐。
+    """
+    if num_sources <= 0:
+        return 0
+    return (int(time.time()) // interval_s) % num_sources
+
+
 def run_intake(
     sources_config: str | Path = DEFAULT_SOURCES_CONFIG,
     state_file: str | Path = DEFAULT_STATE_FILE,
@@ -290,6 +332,7 @@ def run_intake(
     dry_run: bool = False,
     limit: int = 0,
     failures_path: str | Path | None = None,
+    source_offset: int | None = None,
 ) -> dict[str, int]:
     """执行一次完整的 intake 流程。
 
@@ -300,6 +343,8 @@ def run_intake(
         dry_run: 不写任何文件，仅统计
         failures_path: 归档失败签名 jsonl 路径（None 时不写签名）
         limit: 最多处理文章总数（0=不限）
+        source_offset: 源遍历起点轮转(F22 轮转公平,None=按时间自动算,0=不轮转)。
+            防 sources 顺序固定时前 cap 源垄断每轮名额,后排源饿死。
 
     Returns:
         {"discovered": N, "skipped": M, "archived": K, "discovery_errors": E} 统计字典。
@@ -315,6 +360,18 @@ def run_intake(
     except FileNotFoundError as exc:
         logger.error("Sources config not found: %s", exc)
         raise
+
+    # F22: 源轮转公平——按时间轮转起点,防 sources 顺序固定时前 cap 源垄断每轮名额。
+    # cap=5 + limit=30 下每轮 6 源有份,轮转保证后排源也能排上(不饿死)。
+    if source_offset is None:
+        source_offset = _source_rotation_offset(len(sources))
+    if source_offset:
+        sources = sources[source_offset:] + sources[:source_offset]
+        logger.info(
+            "Source rotation offset=%d (first=%s)",
+            source_offset,
+            sources[0].get("slug", "?") if sources else "?",
+        )
 
     # 加载已处理 article_id（幂等）
     seen_ids = load_seen_article_ids(state_file)
@@ -469,6 +526,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="归档失败签名 jsonl 路径（不传则不写签名）",
     )
     parser.add_argument(
+        "--source-offset",
+        type=int,
+        default=None,
+        metavar="N",
+        help="源遍历起点轮转(F22 轮转公平;不传=按时间自动算,0=不轮转)",
+    )
+    parser.add_argument(
         "--log-level",
         default="WARNING",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -496,6 +560,7 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=args.dry_run,
             limit=args.limit,
             failures_path=args.failures_path,
+            source_offset=args.source_offset,
         )
     except Exception as exc:
         logger.error("Intake run failed: %s", exc)
