@@ -57,12 +57,11 @@ class TestPlistValid:
         assert "/Users/praise" not in text
         assert "/Volumes/AKB2" not in text
 
-    def test_plist_schedule_0530_cst(self) -> None:
-        """调度 Asia/Shanghai 05:30 = Hour=5 Minute=30(避开 briefing 07:30)。"""
+    def test_plist_schedule_every_2h(self) -> None:
+        """调度每 2 小时(StartInterval=7200s,用户 2026-07-05 指定,替代原每日 05:30)。"""
         data = _load_plist()
-        interval = data["StartCalendarInterval"]
-        assert interval["Hour"] == 5, f"应 Hour=5(05:30 CST),实际 {interval['Hour']}"
-        assert interval["Minute"] == 30
+        assert "StartCalendarInterval" not in data  # 旧日历调度已移除
+        assert data["StartInterval"] == 7200
 
     def test_plist_run_at_load_false(self) -> None:
         """RunAtLoad=false(首跑由 lead 装载后手动 kickstart,不搞装载即自动跑)。"""
