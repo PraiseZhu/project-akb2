@@ -180,9 +180,9 @@ class TestBootstrapScript:
         assert "launchctl bootout" in text
         assert "launchctl bootstrap" in text
         assert "launchctl print" in text
-        # 验证断言绑本 plist 可观测特征(orchestrator + hour=5)
+        # 验证断言绑本 plist 可观测特征(orchestrator + StartInterval=7200)
         assert "intake.orchestrator" in text
-        assert "hour = 5" in text
+        assert "7200" in text
 
 
 if __name__ == "__main__":
