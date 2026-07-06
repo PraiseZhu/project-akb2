@@ -6649,7 +6649,9 @@ def _edge_kind_label(kind: str) -> str:
     return k
 
 
-def _build_mechanism_evidence_section(extract_data: dict[str, Any]) -> str:
+def _build_mechanism_evidence_section(
+    extract_data: dict[str, Any], raw_content: str | None = None
+) -> str:
     """§0.2/D7/C1：渲染机制组件与因果边证据表（grader H3 + A 层 SG-mechanism-edge-evidence 消费）。
 
     components 表：component_id | name | role | evidence_anchor | evidence_sentence
@@ -6657,15 +6659,32 @@ def _build_mechanism_evidence_section(extract_data: dict[str, Any]) -> str:
     inferred_from_structure 边标 weak（不计 F4，供 grader H3 审语义；
     eligible 边带 evidence+anchor）。
     无 mechanism_components → 返空串（procedural 不渲染该节）。
+
+    F27 bug A:组件/边 evidence_anchor 归一到 raw 声明全称(§D → §D_ARGUMENT),
+    与正文/证据地图逐字一致(消"anchor 缩写不一致"可追溯性扣分)。raw_content 缺
+    或 anchor 不在声明集时退原值(兼容旧调用 + 不造假)。
     """
     components = extract_data.get("mechanism_components") or []
     edges = extract_data.get("causal_edges") or []
     if not components:
         return ""
+    decl = declared_anchor_set(raw_content) if raw_content else set()
+
+    def _norm_anchor(a: Any) -> str:
+        """F27 bug A:归一 anchor 到 raw 声明全称(§D → §D_ARGUMENT)。"""
+        s = str(a or "").strip()
+        if not s or not decl:
+            return s
+        c = canonicalize_anchor(s)
+        if c in decl:
+            return c
+        r = resolve_anchor_ref(c, decl)
+        return r if r else s
+
     comp_rows = "\n".join(
         f"| {c.get('component_id') or _slugify_component_id(str(c.get('name', '')))} | "
         f"{_md_table_cell(c.get('name', ''))} | "
-        f"{_md_table_cell(c.get('role', ''))} | {c.get('evidence_anchor', '')} | "
+        f"{_md_table_cell(c.get('role', ''))} | {_norm_anchor(c.get('evidence_anchor', ''))} | "
         f"{_md_table_cell(_sanitize_backticks(c.get('evidence_sentence', '')))} |"
         for c in components
         if isinstance(c, dict)
@@ -6674,7 +6693,7 @@ def _build_mechanism_evidence_section(extract_data: dict[str, Any]) -> str:
         f"| {e.get('from', '')} | {e.get('to', '')} | "
         f"{_md_table_cell(e.get('relation', ''))} | "
         f"{_edge_kind_label(e.get('edge_kind', ''))} | "
-        f"{e.get('evidence_anchor', '')} | "
+        f"{_norm_anchor(e.get('evidence_anchor', ''))} | "
         f"{_md_table_cell(_sanitize_backticks(e.get('evidence', '')))} |"
         for e in edges
         if isinstance(e, dict)
@@ -6744,49 +6763,59 @@ def _render_concept_mechanism_walkthrough(
 def _render_mechanism_narrative(
     extract_data: dict[str, Any], raw_content: str | None
 ) -> str:
-    """F8-D: 机制叙述段落——用 eligible 边确定性生成连贯段落(每边一句,按锚顺序)。
+    """F8-D+F27: 机制叙述段落——用 eligible 边 + 带证据组件确定性生成连贯段落。
 
-    grader H3 抱怨:'正文重复罗列来源句子,缺少因果解释/机制闭环不足'。机制组件与因果边
-    证据表只罗列 from/to/evidence,缺因果叙述。本函数在表后追加确定性叙述:每条 eligible
-    source_causal 边一句 '{from} 通过 {relation} 导致 {to}（证据：[raw §X] {evidence}）',
-    按 evidence_anchor 在 raw 中的出现顺序排序(机制叙述顺序 = raw 叙述顺序)。
+    F27 主刀增强:grader H3 抱怨'组件名有了但正文未把组件组织成可读因果机制说明'/
+    '机制叙述仅一句'/'大多数边 inferred_from_structure 弱边'。增强:
+    1. eligible 边扩到 llm_evidence(不只 source_causal,两类都带 evidence+anchor)。
+    2. 带证据组件(name+role+evidence_sentence+anchor)无边时渲染"组件(职责,证据)"句
+       织进叙述,不只留表格——消"组件只进表不进叙述"。
 
-    零编造:evidence/anchor/from/to 全来自 eligible 边(已过 floor 校验);anchor 走 P1a
-    统一 parser(canonicalize + resolve_anchor_ref),∈ raw 声明集,不在则跳过该边(不造假)。
-    ≤6 句(有界预算)。无 eligible 边 → 返空串(不硬凑)。
+    零编造(宁缺勿假):evidence/anchor/from/to/name/role 全来自已校验结构字段;
+    anchor 走 P1a 统一 parser(canonicalize+resolve),∈ raw 声明集,不在则跳过(不造假)。
+    ≤8 句(有界)。无 eligible 边且无带证据组件 → 空(不硬凑,fail-closed)。
     """
     edges = extract_data.get("causal_edges", []) or []
     eligible = [
         e for e in edges
         if isinstance(e, dict)
-        and e.get("edge_kind") == "source_causal"
+        and e.get("edge_kind") in ("source_causal", "llm_evidence")
         and e.get("evidence")
         and e.get("evidence_anchor")
     ]
-    if not eligible:
+    components = extract_data.get("mechanism_components") or []
+    # 带证据组件(name + evidence_sentence + anchor)——F27 织叙述用
+    evidenced_comps = [
+        c for c in components
+        if isinstance(c, dict)
+        and c.get("name")
+        and c.get("evidence_sentence")
+        and c.get("evidence_anchor")
+    ]
+    if not eligible and not evidenced_comps:
         return ""
     decl = declared_anchor_set(raw_content)
     if not decl:
         return ""
-    # 按 anchor 在 raw 中的位置排序(机制叙述顺序 = raw 叙述顺序)
     anchor_positions = _raw_anchor_positions(raw_content)
     pos_map = {a: p for a, p in anchor_positions}
 
-    def _anchor_pos(e: dict[str, Any]) -> int:
-        a = canonicalize_anchor(str(e.get("evidence_anchor", "")).strip())
-        if a not in pos_map and decl:
-            resolved = resolve_anchor_ref(a, decl)
-            if resolved:
-                a = resolved
-        return pos_map.get(a, 0)
+    def _resolve(anchor: str) -> str:
+        a = canonicalize_anchor(anchor.strip())
+        if a not in decl:
+            r = resolve_anchor_ref(a, decl)
+            a = r if r else a
+        return a
 
-    eligible.sort(key=_anchor_pos)
+    def _anchor_pos(anchor: str) -> int:
+        return pos_map.get(_resolve(anchor), 0)
+
     sentences: list[str] = []
-    for e in eligible[:6]:  # ≤6 句(有界)
-        anchor = canonicalize_anchor(str(e.get("evidence_anchor", "")).strip())
-        if anchor not in decl:
-            resolved = resolve_anchor_ref(anchor, decl)
-            anchor = resolved if resolved else anchor
+    comp_in_edges: set[str] = set()
+    # 1. eligible 边渲染因果句(按锚顺序,≤6 句)
+    eligible.sort(key=lambda e: _anchor_pos(str(e.get("evidence_anchor", ""))))
+    for e in eligible[:6]:
+        anchor = _resolve(str(e.get("evidence_anchor", "")))
         if anchor not in decl:
             continue  # 不在声明集 → 跳过(不造假 anchor)
         frm = str(e.get("from", "")).strip()
@@ -6796,14 +6825,140 @@ def _render_mechanism_narrative(
         if len(ev) > 120:
             ev = ev[:117] + "..."  # 段落可读性截断(保留核心)
         ev = _sanitize_backticks(ev)  # F10-A: 消毒不成对反引号
-        # F10-C: relation 用实际因果动词(dispatches/feeds/...),去 "A 通过 raw_causal 导致 B"
-        # 机器味。rel 是英文动词时用 "{frm} {rel} {to}" 自然句式;ev 原句补充证据。
+        comp_in_edges.add(frm)
+        comp_in_edges.add(to)
         sentences.append(
             f"{frm} {rel} {to}（证据：[raw {anchor}] {ev}）。"
+        )
+    # 2. F27 主刀:带证据组件无边时渲染"组件(职责,证据)"——按锚顺序,总 ≤8 句
+    evidenced_comps.sort(key=lambda c: _anchor_pos(str(c.get("evidence_anchor", ""))))
+    for c in evidenced_comps:
+        if len(sentences) >= 8:
+            break
+        name = str(c.get("name", "")).strip()
+        if name in comp_in_edges:
+            continue  # 已在边叙述里,不重复
+        anchor = _resolve(str(c.get("evidence_anchor", "")))
+        if anchor not in decl:
+            continue
+        role = str(c.get("role", "")).strip()
+        ev = re.sub(r"\s+", " ", str(c.get("evidence_sentence", ""))).strip()
+        if len(ev) > 100:
+            ev = ev[:97] + "..."
+        ev = _sanitize_backticks(ev)
+        role_clause = f"（{role}，" if role else "（"
+        sentences.append(
+            f"{name}{role_clause}证据：[raw {anchor}] {ev}）。"
         )
     if not sentences:
         return ""
     return "\n\n机制叙述：\n\n" + " ".join(sentences) + "\n\n"
+
+
+def _clean_tldr_noise(tldr: str) -> str:
+    """F27 bug B:清洗 TLDR 表格碎片噪音(中英混杂/格式噪音)。
+
+    账本证据(New SW Lifecycle):TLDR 含 "Terminal Bench 2;0"、"13;7" 等分号数字对
+    ——表格碎片(benchmark 行列坐标)混入 TLDR。确定性清洗:
+    - 去分号数字对(\\d+;\\d+ 表格坐标,正常 TLDR 不会有此模式)
+    - 去孤立分号残留 + 压多余空白
+    不改 TLDR ≤3 句判据(只清洗噪音,不改生成侧)。
+    """
+    # 去分号数字对(表格碎片,如 "Terminal Bench 2;0" → "Terminal Bench")
+    tldr = re.sub(r"\s*\d+\s*;\s*\d+", "", tldr)
+    # 去孤立分号残留(前一步去掉数字后可能留 " ; ")
+    tldr = re.sub(r"\s*;\s*", " ", tldr)
+    # 压多余空白
+    tldr = re.sub(r"\s+", " ", tldr).strip()
+    return tldr
+
+
+def _normalize_anchors_in_extract_data(
+    extract_data: dict[str, Any], raw_content: str | None
+) -> None:
+    """F27 bug A:归一 extract_data 所有 anchor 到 raw 声明全称(§E → §E_CLAIMS)。
+
+    账本证据:compose A3-锚点真实 fail(正文 [raw §E]/§D/§P 不在 raw 声明集——raw 声明
+    全名 §E_CLAIMS/§D_ARGUMENT/§P_RESULTS,LLM 产缩写)。in-place 归一:
+      claims.anchor / argumentation.claim_anchor /
+      mechanism_components.evidence_anchor / causal_edges.evidence_anchor
+    消 compose A3-锚点真实 fail(正文 [raw §X] 与 raw 声明逐字一致)。
+    raw_content 缺或 anchor 已全称 → 不变(兼容 + 不造假)。
+    """
+    if not raw_content:
+        return
+    decl = declared_anchor_set(raw_content)
+    if not decl:
+        return
+
+    def _norm(a: Any) -> str:
+        s = str(a or "").strip()
+        if not s:
+            return s
+        c = canonicalize_anchor(s)
+        if c in decl:
+            return c
+        r = resolve_anchor_ref(c, decl)
+        return r if r else s
+
+    def _norm_text(text: Any) -> str:
+        """归一文本里 [raw §X] 引用到全称(§E → §E_CLAIMS)。
+
+        LLM 常在 evidence_sentence/explanation/claim text 里写 [raw §E](缩写),
+        A3-锚点真实用 canonicalize(不解析前缀)→ §E 不在 raw_anchors(含全名)→ fail。
+        此处把文本里 [raw §X] 替换为全称,消 A3 fail。
+        """
+        s = str(text or "")
+
+        def _repl(m: re.Match) -> str:
+            a = m.group(1)
+            c = canonicalize_anchor(a)
+            if c in decl:
+                return f"[raw {c}]"
+            r = resolve_anchor_ref(c, decl)
+            return f"[raw {r}]" if r else m.group(0)
+
+        return re.sub(r"\[raw\s+(§[A-Z0-9_]+)\]", _repl, s)
+
+    for c in extract_data.get("claims", []) or []:
+        if isinstance(c, dict):
+            c["anchor"] = _norm(c.get("anchor", ""))
+            c["text"] = _norm_text(c.get("text", ""))
+            c["evidence_gap"] = _norm_text(c.get("evidence_gap", ""))
+    for a in extract_data.get("argumentation", []) or []:
+        if isinstance(a, dict):
+            a["claim_anchor"] = _norm(a.get("claim_anchor", ""))
+            a["explanation"] = _norm_text(a.get("explanation", ""))
+    for c in extract_data.get("mechanism_components", []) or []:
+        if isinstance(c, dict):
+            c["evidence_anchor"] = _norm(c.get("evidence_anchor", ""))
+            c["evidence_sentence"] = _norm_text(c.get("evidence_sentence", ""))
+            c["role"] = _norm_text(c.get("role", ""))
+    for e in extract_data.get("causal_edges", []) or []:
+        if isinstance(e, dict):
+            e["evidence_anchor"] = _norm(e.get("evidence_anchor", ""))
+            e["evidence"] = _norm_text(e.get("evidence", ""))
+    # tldr 可能含 [raw §X] 引用,也归一
+    if "tldr" in extract_data:
+        extract_data["tldr"] = _norm_text(extract_data.get("tldr", ""))
+    # graph_edges: anchor + evidence(可能含 [raw §X])
+    for e in extract_data.get("graph_edges", []) or []:
+        if isinstance(e, dict):
+            e["anchor"] = _norm(e.get("anchor", ""))
+            e["evidence"] = _norm_text(e.get("evidence", ""))
+    # how_steps: anchor + instruction/command(可能含 [raw §X])
+    for h in extract_data.get("how_steps", []) or []:
+        if isinstance(h, dict):
+            h["anchor"] = _norm(h.get("anchor", ""))
+            if "instruction" in h:
+                h["instruction"] = _norm_text(h.get("instruction", ""))
+            if "command" in h:
+                h["command"] = _norm_text(h.get("command", ""))
+    # applicability_boundary 可能含 [raw §X]
+    if "applicability_boundary" in extract_data:
+        extract_data["applicability_boundary"] = _norm_text(
+            extract_data.get("applicability_boundary", "")
+        )
 
 
 def _build_body(
@@ -6836,6 +6991,9 @@ def _build_body(
     source_conclusion→TLDR。LLM segment 仅补充语义，不决定 operation 是否出现。
     """
     must_cover = must_cover or []
+    # F27 bug A:归一 extract_data 所有 anchor 到 raw 声明全称(§E → §E_CLAIMS),
+    # 消 compose A3-锚点真实 fail(正文 [raw §X] 与 raw 声明逐字一致)。
+    _normalize_anchors_in_extract_data(extract_data, raw_content)
     claims = list(extract_data.get("claims", []))
     how_steps = extract_data.get("how_steps", [])
     concepts = extract_data.get("referenced_concepts", [])
@@ -6968,6 +7126,8 @@ def _build_body(
     tldr = _sanitize_backticks(tldr)
     if raw_full_text:
         tldr = _strip_ungrounded_backtick_commands(tldr, raw_full_text)
+    # F27 bug B:清洗 TLDR 表格碎片噪音(分号数字对,如 "2;0"/"13;7")
+    tldr = _clean_tldr_noise(tldr)
 
     # 论证与解释：argumentation 字段逐条展开。
     # source_grounded 条目回到 claim 文本本身，避免把 LLM 的归纳解释伪装成来源事实。
@@ -7195,7 +7355,7 @@ def _build_body(
     _now_date_str = datetime.now(UTC).strftime("%Y-%m-%d")
 
     # §0.2/D7/C1：机制组件与因果边证据表（grader H3 + A 层 SG-mechanism-edge-evidence 消费）
-    mechanism_section = _build_mechanism_evidence_section(extract_data)
+    mechanism_section = _build_mechanism_evidence_section(extract_data, raw_content)
     # F8-D: 机制叙述段落——表后追加 eligible 边确定性叙述(每边一句,按锚顺序),
     # 消 '正文重复罗列来源句子,缺少因果解释/机制闭环不足'。无 eligible → 空(不硬凑)。
     mechanism_narrative = _render_mechanism_narrative(extract_data, raw_content)
