@@ -224,12 +224,18 @@ def _existing_source_page_for_raw(
 
 
 def _is_processed(content_hash: str, ledger_path: str) -> bool:
-    """检查 content_hash 在账本中是否有 finalize 或 abort 事件。"""
+    """检查 content_hash 是否处于终态(finalize/abort 之后无 requeue)。
+
+    F26(有界 re-enqueue):`requeue` 事件出现在最近一次终态**之后** → 视为
+    未处理,daemon 下轮 poll 重审;重审产生的新终态再次生效(可再 requeue,
+    每次都需显式手动 CLI,无自动循环)。按账本行序判定,幂等。
+    """
     ledger = Path(ledger_path)
     if not ledger.exists():
         return False
 
     terminal_events = {"finalize", "abort"}
+    processed = False
     try:
         with open(ledger, encoding="utf-8") as fh:
             for line in fh:
@@ -240,15 +246,16 @@ def _is_processed(content_hash: str, ledger_path: str) -> bool:
                     entry = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if (
-                    entry.get("content_hash") == content_hash
-                    and entry.get("event") in terminal_events
-                ):
-                    return True
+                if entry.get("content_hash") != content_hash:
+                    continue
+                if entry.get("event") in terminal_events:
+                    processed = True
+                elif entry.get("event") == "requeue":
+                    processed = False
     except OSError:
         return False
 
-    return False
+    return processed
 
 
 def _scan_queue(config: RunnerConfig) -> list[str]:
