@@ -1,0 +1,24 @@
+[
+  {
+    "name": "addy-long-running",
+    "raw_path": "/Volumes/AKB2/Obsidian/Praise Space/AKB2.0/raw/addy-osmani--de4f29655cc7--raw--2026-07-05.md",
+    "extract_success": true,
+    "extract_retries": 1,
+    "extract_elapsed": 28.4,
+    "component_count": 6,
+    "edge_count": 6,
+    "compose_success": false,
+    "compose_error": "compose_self_gate_failed: A4-图谱resolve@图谱关系/loop-engineering: 图谱边 target 'loop-engineering' 未 resolve 到已知概念，pending 共指也 <3（假边/悬空）; A4-图谱resolve@图谱关系/quality-gate: 图谱边 target 'quality-gate' 未 resolve 到"
+  },
+  {
+    "name": "new-sw-lifecycle",
+    "raw_path": "/Volumes/AKB2/Obsidian/Praise Space/AKB2.0/raw/addy-osmani--6db52aeb5bef--raw--2026-07-05.md",
+    "extract_success": true,
+    "extract_retries": 1,
+    "extract_elapsed": 31.0,
+    "component_count": 9,
+    "edge_count": 8,
+    "compose_success": false,
+    "compose_error": "compose_self_gate_failed: A4-图谱resolve@图谱关系/Agent: 图谱边 target 'Agent' 未 resolve 到已知概念，pending 共指也 <3（假边/悬空）; A4-图谱resolve@图谱关系/Harness: 图谱边 target 'Harness' 未 resolve 到已知概念，pending 共指也 <3（假边/悬空）; A4-图"
+  }
+]
