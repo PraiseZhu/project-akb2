@@ -2333,7 +2333,8 @@ def _ground_claims_to_raw(merged: dict[str, Any], raw_content: str | None) -> No
                         grounded_anchors.add(new_anchor)
                 # 无强匹配 → 留 interpretation;不补造 traces_to(fail-closed,由 floor 裁)
 
-    # [B2] argumentation: F11-D 同步 claim_anchor(全 provenance)+ 保守补填 traces_to(akb_interpretation)
+    # [B2] argumentation: F11-D 同步 claim_anchor(全 provenance)+ 保守补填
+    # traces_to(akb_interpretation)
     arg = merged.get("argumentation")
     if isinstance(arg, list):
         # F11-D: 同步 claim_anchor 到接地后的新锚(全 provenance,防 validation 不匹配)。
@@ -3109,6 +3110,28 @@ _AUX_VERB_WORDS: frozenset[str] = frozenset({
 _APOSTROPHE_CHARS: str = "'’´`"
 
 
+def _plain_h2_titles(raw_content: str) -> set[str]:
+    """Return exact plain H2 titles so fallback can reject title-shaped components."""
+    titles: set[str] = set()
+    for match in re.finditer(r"(?m)^##\s+(.+?)\s*$", raw_content or ""):
+        title = match.group(1).strip().rstrip(".").strip()
+        if title and not title.startswith("§") and not re.match(r"^\d+[.)]", title):
+            titles.add(title)
+    return titles
+
+
+def _is_heading_shaped_component_name(name: str, h2_titles: set[str]) -> bool:
+    """Reject deterministic fallback components that are section headings, not components."""
+    cleaned = name.strip().rstrip(".").strip()
+    if not cleaned:
+        return True
+    if cleaned in h2_titles:
+        return True
+    if re.search(r":\s+\S.*(?:,|\bthen\b|/)", cleaned, flags=re.IGNORECASE):
+        return True
+    return False
+
+
 def _item_has_mechanism_entity(item_text: str) -> bool:
     """编号列表项是否含可识别机制实体名（区别于政策承诺动词列表）。"""
     lower = item_text.lower()
@@ -3223,7 +3246,7 @@ def _filter_llm_component_names(extract_data: dict[str, Any]) -> int:
 
 
 def _scan_plain_title_components(raw_content: str) -> list[str]:
-    """F-B: 扫普通 H2/H3 标题(非编号/非 §-锚/非表格)取机制组件名。
+    """F-B: 扫普通 H2/H3 标题(非编号/非 §-锚/非表格)取组件候选名。
 
     优先级最低(在编号标题/§-锚标题/表格/编号列表之后),供 memory 等纯散文标题型 raw
     补足组件。去重保序。
@@ -3328,6 +3351,7 @@ def _scan_real_mechanism_components(raw_content: str) -> list[dict[str, str]]:
          （"1. Establish safety standards" 无实体名 → 不纳）。
     散文/政策承诺无实体名编号项 → 0 组件 → fail-closed。全局上限 FALLBACK_MAX_COMPONENTS=12。
     """
+    h2_titles = _plain_h2_titles(raw_content or "")
     components: list[dict[str, str]] = []
     seen: set[str] = set()
     # 1. 编号 H2/H3/H4 标题（显式结构，信任）
@@ -3375,10 +3399,8 @@ def _scan_real_mechanism_components(raw_content: str) -> list[dict[str, str]]:
             components.append({"name": name, "role": "raw 命名机制组件"})
             if len(components) >= CONCEPT_MIN_MECHANISM_COMPONENTS:
                 break
-    # 3. F-B: 普通 H2/H3 标题(最低优先级,编号列表之后)——供 memory 等纯散文标题型 raw
-    # 补足组件。须过 _is_plain_title_component 过滤(实体关键词 OR title-case 命名短语,
-    # 挡 Introduction/Conclusion/FAQ/祈使句/疑问句)。不卡 MIN=3(取到全局 12 上限),
-    # 因 P1b-3 边抽取需更多组件共现机会——MIN=3 会让 vercel 只取 3 组件致 0 边。
+    # 3. F-B: 普通 H2/H3 标题(最低优先级,编号列表之后)——仅作为候选信号。
+    # 最终会过滤与 H2 原文逐字同名/冒号列举式标题的条目，宁缺勿假。
     if len(components) < CONCEPT_MIN_MECHANISM_COMPONENTS:
         for name in _scan_plain_title_components(raw_content or ""):
             name = name.strip().rstrip(".").strip()
@@ -3388,6 +3410,11 @@ def _scan_real_mechanism_components(raw_content: str) -> list[dict[str, str]]:
                 if len(components) >= FALLBACK_MAX_COMPONENTS:
                     break
     # P1b-2: 全局上限(防长表格/编号列表灌水;有界预算)
+    components = [
+        comp
+        for comp in components
+        if not _is_heading_shaped_component_name(str(comp.get("name", "")), h2_titles)
+    ]
     if len(components) > FALLBACK_MAX_COMPONENTS:
         components = components[:FALLBACK_MAX_COMPONENTS]
     return components
@@ -3943,7 +3970,8 @@ def _normalize_extract_payload(
     is_fallback(lead F9-A 同一入口,fallback 路径标记):F3-B 在 fallback 跳过——fallback
     的 how_steps 命令是 AKB 合成占位(_build_deterministic_extract_data 硬编码,非 raw 来源),
     由 render-time ``_ground_how_step_commands_in_raw`` 统一在渲染层剥(不接地→降级 executable=False,
-    SG-how-density fail-closed)。extract 时 F3-B 剥会破 procedural validate(≥3 executable 阈值不动)。
+    SG-how-density fail-closed)。extract 时 F3-B 剥会破 procedural validate
+    (≥3 executable 阈值不动)。
     其余 7 步两路径一致(fallback 收 F8-A 回填/F8-C 过滤/F8-D 命名归一/F-A/P1b-1 等收益)。
     """
     diag = {
@@ -6640,7 +6668,8 @@ def _build_mechanism_evidence_section(extract_data: dict[str, Any]) -> str:
         f"| {e.get('from', '')} | {e.get('to', '')} | "
         f"{_md_table_cell(e.get('relation', ''))} | "
         f"{_edge_kind_label(e.get('edge_kind', ''))} | "
-        f"{e.get('evidence_anchor', '')} | {_md_table_cell(_sanitize_backticks(e.get('evidence', '')))} |"
+        f"{e.get('evidence_anchor', '')} | "
+        f"{_md_table_cell(_sanitize_backticks(e.get('evidence', '')))} |"
         for e in edges
         if isinstance(e, dict)
     ) or "|  |  |  |  |  |  |"
@@ -7031,7 +7060,8 @@ def _build_body(
     # cell 经 _md_table_cell 转义 |（否则 evidence 含 | 会拆列 + A4 假绿）
     _GAP_FALLBACK = "未覆盖：原文未提供该论点的独立验证、量化结果或失败样本。"
     evidence_rows = "\n".join(
-        f"| {_md_table_cell(c['anchor'])} | {_md_table_cell(_sanitize_backticks(c['text'][:60]))}... "
+        f"| {_md_table_cell(c['anchor'])} | "
+        f"{_md_table_cell(_sanitize_backticks(c['text'][:60]))}... "
         f"| {c['provenance']} "
         f"| {_md_table_cell(c.get('evidence_gap') or _GAP_FALLBACK)} |"
         for c in claims
@@ -7148,7 +7178,8 @@ def _build_body(
     # F6-C: must_cover boundary 字面量注入(适用边界节)
     boundary_text = _inject_missing_must_cover(boundary_text, must_cover_bounds)
     # F11-A: boundary 注入后消毒——与 how/TLDR 节对齐(must_cover literal 可能含反引号命令,
-    # 注入后无 strip → SG 误报)。_sanitize_backticks 平衡 + _strip_ungrounded_backtick_commands 剥不接地命令。
+    # 注入后无 strip → SG 误报)。_sanitize_backticks 平衡 +
+    # _strip_ungrounded_backtick_commands 剥不接地命令。
     boundary_text = _sanitize_backticks(boundary_text)
     if raw_full_text:
         boundary_text = _strip_ungrounded_backtick_commands(boundary_text, raw_full_text)

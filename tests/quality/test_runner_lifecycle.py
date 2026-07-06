@@ -453,6 +453,27 @@ class TestRunnerLifelineSegments:
         child_pid = int(pidfile.read_text(encoding="utf-8"))
         assert _wait_pid_gone(child_pid), f"sleep 30 孙进程仍存在: pid={child_pid}"
 
+    def test_distill_worker_timeout_budget_tiers_are_named_and_capped(self) -> None:
+        """长文 worker 总时限按词数分级，且硬顶有界。"""
+        from src.akb2.quality import runner as runner_mod
+
+        assert runner_mod.DISTILL_EXTRACT_WORKER_TIMEOUT_S == 210.0
+        assert runner_mod.DISTILL_EXTRACT_WORKER_LONG_DOC_WORDS == 3_000
+        assert runner_mod.DISTILL_EXTRACT_WORKER_LONG_DOC_TIMEOUT_S == 360.0
+        assert runner_mod.DISTILL_EXTRACT_WORKER_HARD_TIMEOUT_CAP_S == 360.0
+        assert (
+            runner_mod._distill_extract_worker_timeout_s("word " * 3_000)
+            == runner_mod.DISTILL_EXTRACT_WORKER_TIMEOUT_S
+        )
+        assert (
+            runner_mod._distill_extract_worker_timeout_s("word " * 3_001)
+            == runner_mod.DISTILL_EXTRACT_WORKER_LONG_DOC_TIMEOUT_S
+        )
+        assert (
+            runner_mod._distill_extract_worker_timeout_s("word " * 10_000)
+            <= runner_mod.DISTILL_EXTRACT_WORKER_HARD_TIMEOUT_CAP_S
+        )
+
     def test_distill_worker_timeout_can_use_maker_fallback(self, tmp_path: Path, monkeypatch) -> None:
         """maker fallback 开启时，DeepSeek timeout 可转为候选，但必须继续过质量门。"""
         from src.akb2.quality.distill import ExtractResult
