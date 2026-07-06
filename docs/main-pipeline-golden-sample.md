@@ -40,7 +40,14 @@
 | 7 | **gate 复跑至 pass** | 修订候选 | ① `proposed_gate_decision: active` + `decision_confidence: high` + `graph_readiness: real_link`;② 达不到 → 回步骤 6;轮次耗尽 → 留 staging,**不入库**(fail-closed) | pass 报告 | 第 2 轮即 pass(10/10 硬检查) |
 | 8 | **manifest 落账** | pass 的候选 | ① `--write-manifest --allow-l3-manifest-write` 双 flag 显式授权;② jsonl 记录含 10 项硬检查逐项结果(可审计);③ manifest 只记提议,不改 active | `manifests/ingest/<date>.jsonl` | 1 条记录,hard_checks 数组完整留痕 |
 
-### 阶段 4:升格(步骤 9-10)→ 永远人批,不自动化
+### 阶段 4:升格(步骤 9-10)→ 五闸自动升格(修宪 2026-07-06)
+
+> **修宪记录(2026-07-06,用户裁决原话「那就改宪法 我要自动化」)**:步骤 9 逐条人批废除,
+> 由五闸自动升格全面接管(gate 10/10 + confidence + graph + lint 0 + GPT-5.4 复核 PASS,
+> 承接 loops-design-decisions「取消逐条人批」既定方向);且冷启动 graph_pending
+> (proposed_node_only)候选**同样允许 auto-active**——缺失概念落 pending 队列,由图谱
+> 兜底链路(D8 pending 共指 → 图谱校准补边)补全。graph_pending 升格必落账(fail-visible)。
+> 质量五闸与 wiki 内容标准零放宽。下表步骤 9 行保留为历史原文,以本注记 supersede。
 
 | # | 动作 | 输入 | 标准(验收) | 输出 | 本次样张证据 |
 |---|------|------|-----------|------|-------------|
@@ -63,7 +70,7 @@
 | 1-2 抓取 | ✅ Loop A | schedule | 抓取失败 → 记日志跳过,显式计数 |
 | 3-4 提炼 | ✅ DeepSeek 两段式 | Loop A 串联 | 锚点 assert 失败 / 模板节缺失 → 不出候选 |
 | 5-8 门控 | ✅ gate CLI(现成) | Loop A 串联 | needs_repair 且修复轮次耗尽 → 留 staging |
-| 9 人批 | ❌ **永不自动化** | manual | — |
+| 9 人批 | ✅ 已废除(修宪 2026-07-06,五闸自动升格含 graph_pending) | Loop A 串联 | 五闸任一不过 → 留 staging |
 | 10-14 升格+图谱+lint | ✅ 批准后一键(本次手动脚本可直接固化) | 人批触发 | lint 非 0 → 不声明完成 |
 
 ## 已知坑(样张实测踩到的)

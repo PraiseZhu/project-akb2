@@ -386,8 +386,12 @@ class TestD8ProposedNodeOnly:
             f"默认模式 proposed_node_only 应被 Gate-2/3 拒: {failed}"
         )
 
-    def test_run_promote_auto_promote_refuses_proposed_node_only(self, tmp_path, monkeypatch):
-        """§0.2/D8：AUTO_PROMOTE=1 + proposed_node_only → 二次拒写 active（落账可见）。"""
+    def test_run_promote_auto_promote_accepts_proposed_node_only(self, tmp_path, monkeypatch):
+        """[修宪 2026-07-06,用户裁决「那就改宪法 我要自动化」] AUTO_PROMOTE=1 +
+        proposed_node_only → **允许**写 active(旧二次拒废除,冷启动死锁打破)。
+
+        质量底线不变:五闸仍须全过(本测试 mock lint/grader pass,gate CLI 真跑);
+        graph_pending 落账可见(fail-visible);缺失概念进 pending 队列。"""
         from src.akb2.quality.promote import run_promote
 
         vault = _cold_start_vault(tmp_path)
@@ -402,12 +406,15 @@ class TestD8ProposedNodeOnly:
             lambda p: (True, "mock grader pass"),
         )
         success, detail, snapshot_id = run_promote(cand, vault, None)
-        assert success is False, "AUTO_PROMOTE=1 + proposed_node_only 应二次拒写 active"
-        assert snapshot_id is None
-        assert "proposed_node_only" in detail or "graph_pending" in detail
-        # active 未写入
+        assert success is True, f"修宪后 proposed_node_only 应可 auto-active: {detail}"
+        # active 已写入(第一篇冷启动条目)
         active = vault / "wiki" / "sources" / "test-gates.md"
-        assert not active.exists(), "proposed_node_only 不应写 active"
+        assert active.exists(), "修宪后 proposed_node_only 应写 active"
+        # 账本可见 graph_pending 升格事件(fail-visible,非静默)
+        ledger = vault / "staging" / "quality-ledger.jsonl"
+        if ledger.exists():
+            content = ledger.read_text(encoding="utf-8")
+            assert "auto_active_graph_pending" in content
 
     def test_run_promote_proposal_mode_accepts_proposed_node_only(self, tmp_path, monkeypatch):
         """§0.2/D8：AUTO_PROMOTE=0 + proposed_node_only → proposal 成功（不写 active）。"""

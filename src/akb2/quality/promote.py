@@ -218,8 +218,9 @@ def evaluate_five_gates(
     Gate 5: grader result PASS
 
     §0.2/D8：allow_proposed_node_only 让冷启动 concept 候选（proposed_graph_nodes，
-    无 real_link）过 Gate-2/3 进 proposal；run_promote 在 AUTO_PROMOTE=1 时二次拒
-    proposed_node_only 写 active（底线：active 仍要 real_link + high confidence）。
+    无 real_link）过 Gate-2/3。[修宪 2026-07-06,用户裁决] 旧「AUTO_PROMOTE=1 二次拒
+    proposed_node_only 写 active」已废除——五闸全过即可 auto-active,graph_pending
+    落账可见,缺失概念进 pending 队列由图谱兜底链路补全。
 
     Returns:
         (all_passed, failed_gate_name, reason)
@@ -969,22 +970,22 @@ def run_promote(
         )
         return False, f"Five gates failed at {failed_gate}: {gates_detail}", None
 
-    # §0.2/D8：AUTO_PROMOTE=1 二次拒 proposed_node_only 写 active
-    # （evaluate_five_gates 标 [graph_pending=true]；active 仍要 real_link + high confidence）
+    # [修宪 2026-07-06,用户裁决「那就改宪法 我要自动化」] §0.2/D8 旧二次拒废除:
+    # AUTO_PROMOTE=1 + graph_readiness=proposed_node_only(graph_pending)**允许**写
+    # active——冷启动死锁(wiki 空 → 无 real_link 可指 → 第一篇永远进不来)由此打破。
+    # 质量底线不变:候选仍须五闸全过(gate 10/10 + lint 0 + grader PASS);缺失概念
+    # 落 pending 队列,图谱由 D8 兜底链路(pending 共指累积 → 图谱校准补边)补全。
+    # fail-visible:graph_pending 状态随 gates_detail 落账,不静默。
     if auto_promote == "1" and "[graph_pending=true]" in gates_detail:
         _write_ledger_event(
-            vault_root, "abort", "promote", candidate_hash,
+            vault_root, "promote", "promote", candidate_hash,
             {
-                "failed_gate": "auto_promote_proposed_node_only",
-                "reason": "graph_readiness=proposed_node_only (graph_pending), "
-                          "active requires real_link; use proposal mode",
+                "mode": "auto_active_graph_pending",
+                "note": "修宪 2026-07-06:proposed_node_only 允许 auto-active,"
+                        "概念落 pending 队列由图谱兜底链路补全",
+                "gates_detail": gates_detail,
             }
         )
-        return False, (
-            "Auto-promote refused: graph_readiness=proposed_node_only (graph_pending), "
-            "active requires real_link. Use proposal mode (AKB2_AUTO_PROMOTE=0). "
-            + gates_detail
-        ), None
 
     if auto_promote != "1":
         # 提议模式（fail-closed 默认）：只写 gate manifest
