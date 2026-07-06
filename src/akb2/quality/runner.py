@@ -45,6 +45,9 @@ DISTILL_MAX_RETRIES: int = 0
 # ledger 记录实际使用的族,A/B 可追溯)。默认 deepseek-v4-pro 不变。
 DISTILL_MODEL_FAMILY: str = os.environ.get("AKB2_DISTILL_FAMILY", "deepseek-v4-pro")
 DISTILL_EXTRACT_WORKER_TIMEOUT_S: float = 210.0
+DISTILL_EXTRACT_WORKER_LONG_DOC_WORDS: int = 3_000
+DISTILL_EXTRACT_WORKER_LONG_DOC_TIMEOUT_S: float = 360.0
+DISTILL_EXTRACT_WORKER_HARD_TIMEOUT_CAP_S: float = 360.0
 DISTILL_EXTRACT_WORKER_KILL_GRACE_S: float = 2.0
 # F2-B: traceability retake 子进程超时(distill 内部 60s + 子进程外层缓冲)
 TRACEABILITY_RETAKE_WORKER_TIMEOUT_S: float = 90.0
@@ -379,6 +382,24 @@ def _distill_abort_details(
         "retries_used": 0,
         "node": node,
     }
+
+
+def _distill_extract_worker_timeout_s(raw_content: str) -> float:
+    """Return the hard subprocess deadline for distill extract.
+
+    Long concept posts exercise two serial extract segments; each segment has a
+    60s model-call budget and the extract loop may retry up to three attempts.
+    Keep the default 210s for ordinary posts, but give long documents a bounded
+    360s worker envelope so retries can finish or fail explicitly before the
+    outer process killer fires.
+    """
+    words = len(str(raw_content or "").split())
+    if words > DISTILL_EXTRACT_WORKER_LONG_DOC_WORDS:
+        return min(
+            DISTILL_EXTRACT_WORKER_LONG_DOC_TIMEOUT_S,
+            DISTILL_EXTRACT_WORKER_HARD_TIMEOUT_CAP_S,
+        )
+    return min(DISTILL_EXTRACT_WORKER_TIMEOUT_S, DISTILL_EXTRACT_WORKER_HARD_TIMEOUT_CAP_S)
 
 
 # ---------------------------------------------------------------------------
@@ -928,6 +949,7 @@ def _run_extract_claims_worker(raw_content: str, content_lane: str = "") -> Any:
         {"raw_content": raw_content, "content_lane": content_lane},
         ensure_ascii=False,
     )
+    worker_timeout_s = _distill_extract_worker_timeout_s(raw_content)
     proc: subprocess.Popen[str] | None = None
     try:
         proc = subprocess.Popen(
@@ -940,7 +962,7 @@ def _run_extract_claims_worker(raw_content: str, content_lane: str = "") -> Any:
         )
         stdout, stderr = proc.communicate(
             input=worker_input,
-            timeout=DISTILL_EXTRACT_WORKER_TIMEOUT_S,
+            timeout=worker_timeout_s,
         )
     except subprocess.TimeoutExpired:
         if proc is not None:
@@ -950,7 +972,7 @@ def _run_extract_claims_worker(raw_content: str, content_lane: str = "") -> Any:
             retries_used=0,
             error=(
                 "extract_worker_timeout: "
-                f"抽取子进程超过总时限 {DISTILL_EXTRACT_WORKER_TIMEOUT_S}s"
+                f"抽取子进程超过总时限 {worker_timeout_s}s"
             ),
         )
     except OSError as exc:

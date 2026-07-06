@@ -6,18 +6,19 @@
     - 负:Introduction/Conclusion/FAQ/Overview/Summary 泛节名 → 拒
     - 负:祈使句/疑问句标题(How it works/Choose where...)→ 拒
     - 负:含收缩词(isn't/it's)或小写助动词(is/are)的句子标题 → 拒
-    - 集成:title 型 raw → ≥3 组件 + P1b-3 ≥1 eligible 边
+    - 集成:plain H2 标题只作为候选信号,最终 deterministic fallback 不把它当组件
 """
 
 from __future__ import annotations
 
 from src.akb2.quality.distill import (
-    _build_real_causal_edges,
+    _build_deterministic_extract_data,
+    _build_fallback_quality_basis,
     _is_plain_title_component,
     _scan_plain_title_components,
     _scan_real_mechanism_components,
+    build_deterministic_extract_result,
 )
-from src.akb2.quality.raw_anchors import declared_anchor_set
 
 
 class TestIsPlainTitleComponent:
@@ -106,8 +107,8 @@ class TestScanPlainTitleComponents:
 
 
 class TestIntegrationWithCausalEdges:
-    def test_title_raw_yields_components_and_eligible_edge(self):
-        """集成:title 型 raw → ≥3 组件 + P1b-3 ≥1 eligible edge(evidence_anchor ∈ 声明集)。"""
+    def test_plain_h2_titles_do_not_become_real_components(self):
+        """普通 H2 标题候选可被扫描到,但最终不作为机制组件入 fallback。"""
         raw = (
             "## 锚点目录\n\n- §A: START\n- §B: FLOW\n\n---\n\n"
             "§A_CONTENT_START\n\n"
@@ -115,10 +116,42 @@ class TestIntegrationWithCausalEdges:
             "## Tool Invocation Flow\n\nThe flow dispatches to the Loop Structure.\n\n"
             "## Loop Structure\n\nloop body.\n"
         )
+        plain = _scan_plain_title_components(raw)
+        assert "Tool Registration" in plain
+        assert "Tool Invocation Flow" in plain
         comps = _scan_real_mechanism_components(raw)
-        assert len(comps) >= 3
-        decl = declared_anchor_set(raw)
-        edges = _build_real_causal_edges(comps, raw)
-        causal = [e for e in edges if e["edge_kind"] == "source_causal"]
-        eligible = [e for e in causal if e.get("evidence_anchor") in decl]
-        assert len(eligible) >= 1, f"应 ≥1 eligible 边,实际 {len(eligible)}"
+        names = [c["name"] for c in comps]
+        assert "Tool Registration" not in names
+        assert "Tool Invocation Flow" not in names
+        assert "Loop Structure" not in names
+
+    def test_colon_heading_components_are_filtered_and_fail_closed(self):
+        """冒号列举式 H2 标题被过滤,滤后 <3 组件走既有 concept fail-closed。"""
+        raw = (
+            "---\nartifact_type: raw\n---\n\n"
+            "## §A_INTRO\n"
+            "This article explains long-running agent loops with enough substantive "
+            "source text to create grounded fallback claims.\n\n"
+            "1. Call the agent\n"
+            "2. Go back to step 1\n\n"
+            "## Anthropic: harnesses, then the brain/hands/session split\n"
+            "Anthropic discusses the brain, hands, and session mechanics.\n\n"
+            "## Cursor: planners, workers, judges\n"
+            "Cursor discusses planners, workers, and judges.\n\n"
+            "## Google: long-running agents on the Agent Platform\n"
+            "Google discusses platform support for long-running agents.\n\n"
+            "## §B_MORE\n"
+            "Budgets, fallback policy, checker separation, and repair limits are "
+            "covered as production constraints.\n"
+        )
+
+        data = _build_deterministic_extract_data(raw, content_lane="concept")
+        names = [c["name"] for c in data["mechanism_components"]]
+        assert names == ["Call the agent", "Go back to step 1"]
+        basis = _build_fallback_quality_basis(data)
+        assert basis["component_count"] == 2
+
+        result = build_deterministic_extract_result(raw, content_lane="concept")
+        assert result.success is False
+        assert result.data["fallback_quality_basis"]["component_count"] < 3
+        assert "concept deterministic fallback fail-closed" in result.error
