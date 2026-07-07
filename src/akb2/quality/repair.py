@@ -1619,8 +1619,11 @@ def _defect_identity(defects: list[Defect]) -> set[str]:
     for d in defects or []:
         dim = str(getattr(d, "dimension", "") or "").strip()
         loc = _normalize_loc(str(getattr(d, "location", "") or ""))
-        defect = str(getattr(d, "defect", "") or "").strip()[:80]
-        identity.add(f"{dim}|{loc}|{defect}")
+        # F30: identity 只取 (dimension, location),丢弃易变的 defect 描述文本——
+        # grader 每轮换措辞描述同一缺陷会制造伪"新 identity"触发回滚
+        # (LR 六轮实锤:刀3 后 patch 已瞄准合法节仍 rolled_back)。
+        # WP-4.1 防震荡语义保留:同维同位缺陷集不新增 + blocking 总数严格下降。
+        identity.add(f"{dim}|{loc}")
     return identity
 
 

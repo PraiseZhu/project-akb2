@@ -1456,7 +1456,8 @@ def _build_extract_segment_messages(
             "- provenance 只能是 source_grounded 或 akb_interpretation，"
             "akb_interpretation 占比必须 ≤40%。\n"
             "- evidence_gap 写原文未覆盖/未证明/未量化/未比较的具体盲区，"
-            "须含盲区词(未提供/未量化/未覆盖/缺少/没有/未验证/未比较)。\n"
+            "须含盲区词(未提供/未量化/未覆盖/缺少/没有/未验证/未比较/未说明/"
+            "未交代/未列明/未给出/未解释/未披露)。\n"
             "- akb_interpretation claim 必带 traces_to：指向它所解读的 "
             "source_grounded claim 的 anchor"
             "（如 [\"§A\"]），source_grounded claim 可省 traces_to。\n"
@@ -2956,7 +2957,11 @@ def _validate_extract_output(data: dict[str, Any], content_lane: str = "") -> No
 
     # 3.1 evidence_gap 校验：每条 claim 必须有非空证据盲区(含规定盲区词)。
     # 防"未覆盖"列退化成论证摘要/背景释义——必须写原文未覆盖/未证明/未量化/未比较。
-    gap_words = ("未提供", "未量化", "未覆盖", "缺少", "没有", "未验证", "未比较")
+    # F30: 扩充盲区词(SW 六轮实锤:LLM 写"未说明 85%...来源"语义合规却不在表
+    # → 3/3 重试烧光 → fallback 0组件 fail-closed。词表校验意图是"逼真实盲区
+    # 不许空话",同义否定词应全收;判定语义不变)。
+    gap_words = ("未提供", "未量化", "未覆盖", "缺少", "没有", "未验证", "未比较",
+                 "未说明", "未交代", "未列明", "未给出", "未解释", "未披露")
     for i, claim in enumerate(claims):
         gap = str(claim.get("evidence_gap", "")).strip()
         if not gap:
