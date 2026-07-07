@@ -1487,6 +1487,14 @@ def _build_extract_segment_messages(
             "writes_to 等，evidence 写原文因果句，evidence_anchor 写 §X）；"
             "llm_evidence=LLM 推断因果（akb 解读，须带 evidence 句 + §X anchor）；"
             "inferred_from_structure=结构顺序推断弱边（无 evidence，不计 F4，少用）。\n"
+            "  [F29] relation 词必须能从 evidence 句**直接读出**：句子只说 spawns "
+            "sub-agents 就不得写 harness→model(spawns)；宁可换更弱但被句子支撑的"
+            "relation（如 mentions/coordinates），不得语义跳跃。\n"
+            "  [F29] 别只抽组件间的边——原文若有**问题陈述**（挑战/瓶颈/三堵墙类）与"
+            "**量化结果**（延迟降 X%/成功率/可恢复性），须抽成边或组件证据："
+            "问题→机制（addresses/mitigates）与机制→结果（reduces/enables，evidence "
+            "写含数字的原句）。H3 判『因果说明可追溯』，只有组件互调而无问题/结果侧"
+            "证据时机制链讲不完整。\n"
             "  宁少勿强：无原文支撑的因果不编造（F4 0 eligible 会 fail，不靠弱边凑）。\n"
             "- 只抽取原文明确给出的步骤、组件、流程或配置，不要补 AKB 自己的命令。\n"
             "- param_entries: 参数/配置/选项数组，每项 {key, value}；value 统一写成字符串。"
@@ -6852,7 +6860,11 @@ def _render_mechanism_narrative(
         )
     if not sentences:
         return ""
-    return "\n\n机制叙述：\n\n" + " ".join(sentences) + "\n\n"
+    # F29: 提为独立 H3 节——repair 的动作空间是 H2/H3 整节替换(repair.py
+    # _apply_section_patches),旧"机制叙述："纯文本标签在节内段落,repair 结构上
+    # 够不着(F28-B 实锤:四轮 changed_sections=[] 全空)。H3 化后 repair 可定点重写;
+    # 内容仍确定性生成,零编造语义不变。
+    return "\n\n### 机制叙述\n\n" + " ".join(sentences) + "\n\n"
 
 
 def _clean_tldr_noise(tldr: str) -> str:
