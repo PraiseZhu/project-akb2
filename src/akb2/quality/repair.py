@@ -1988,10 +1988,15 @@ def run_repair_loop(
             continue
 
         # WP-4.1: 捕获本轮接受前状态，供单调护栏比较（防震荡回归，D5-1）
+        # F29: identity/count 只计 blocking 缺陷——advisory 维(图谱可调用性/新颖增量,
+        # rubric 明示不计卡点)在冷启动下不可修,计入会把分母撑死 + grader 每轮换措辞
+        # 使同一 advisory 缺陷变"新 identity"→ 永远 rolled_back(LR 四轮 6→6 实锤根因)。
+        # prev_defects 保留全量(回滚恢复用),仅护栏比较按 blocking。
         prev_text = current_text
         prev_defects = list(current_defects)
-        prev_identity = _defect_identity(prev_defects)
-        prev_count = len(prev_defects)
+        _prev_blocking = _blocking_defects(prev_defects)
+        prev_identity = _defect_identity(_prev_blocking)
+        prev_count = len(_prev_blocking)
 
         # 更新当前文本
         current_text = repaired_text
@@ -2112,9 +2117,13 @@ def run_repair_loop(
                 "final_grader_meta": final_grader_meta,
             }
         # WP-4.1: B 缺陷单调护栏 —— 同 A 路径
-        new_identity = _defect_identity(current_defects)
+        # F29: 只比 blocking(advisory 残留照记 trace/final_defects,fail-visible,
+        # 但不作为回滚依据——与 2093 行收敛判据同口径,消"收敛看 blocking、
+        # 回滚看全量"的自相矛盾)。
+        _new_blocking = _blocking_defects(current_defects)
+        new_identity = _defect_identity(_new_blocking)
         new_ids = new_identity - prev_identity
-        if new_ids or len(current_defects) >= prev_count:
+        if new_ids or len(_new_blocking) >= prev_count:
             current_text = prev_text
             current_defects = prev_defects
             trace_payload["status"] = "rolled_back_no_monotonic_decrease"

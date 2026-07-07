@@ -292,8 +292,13 @@ def _concept_h3_fail_note(content_lane: str) -> str:
     return (
         "6. concept H3（概念机制清晰度）fail 条件：仅 1 条 inferred_from_structure 弱边、"
         "其余组件无因果说明 → H3 fail；无 evidence 的边不作机制清晰度证据；"
-        "eligible 边（source_causal/llm_evidence）须带 evidence + evidence_anchor，"
-        "读 ## 机制组件与因果边证据 两表判定。\n"
+        "eligible 边（source_causal/llm_evidence）须带 evidence + evidence_anchor 且 "
+        "relation 可从 evidence 句直接推出，读 ## 机制组件与因果边证据 两表判定"
+        "（含 ### 机制叙述 小节）。\n"
+        "   [F29 判据边界] H3 按上述成文判据判：有足量 eligible 边 + 可读因果说明即 "
+        "pass 侧证据。不得以量规之外的额外结构要求扣分——量规不要求"
+        "『闭环』或『问题→机制→结果三元组』文体，缺此文体本身不构成 defect"
+        "（因果说明不可追溯/边无证据才是 defect）。\n"
     )
 
 
