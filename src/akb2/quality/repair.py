@@ -2013,9 +2013,12 @@ def run_repair_loop(
 
         if new_a_defects:
             # WP-4.1: 单调护栏 —— 新 identity 必须是 prev 子集 + 总数严格下降，否则回退
-            new_identity = _defect_identity(new_a_defects)
+            # F29-R 采纳:A 路也 _blocking_defects 化——当前 A 层无 advisory 维(等价),
+            # 防未来 A 层新增 advisory 时两路口径漂移(reviewer CONCERN-1)。
+            _new_a_blocking = _blocking_defects(new_a_defects)
+            new_identity = _defect_identity(_new_a_blocking)
             new_ids = new_identity - prev_identity
-            if new_ids or len(new_a_defects) >= prev_count:
+            if new_ids or len(_new_a_blocking) >= prev_count:
                 # 非单调（新增 identity 或未严格下降）→ 回退该轮，不更新 current_text
                 current_text = prev_text
                 current_defects = prev_defects
