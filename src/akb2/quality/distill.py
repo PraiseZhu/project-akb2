@@ -747,6 +747,10 @@ def extract_claims(
 
 TRACEABILITY_RETAKE_MAX: int = 1  # 具名常量:只 retake 一次(有界)
 TRACEABILITY_RETAKE_TIMEOUT_S: float = 60.0
+# F31: retake 超时专用重试预算(+1,有界)。第七轮 SW 实锤:grader 0 缺陷的文章
+# 因 retake 唯一一次 LLM 调用撞 LLMTimeoutError(deepseek 端点 60s 抖动)而死于
+# floor——一次网络抖动不该葬送整篇。仅超时类可重试;400/schema 类不重试(同 F20)。
+TRACEABILITY_RETAKE_TIMEOUT_RETRY: int = 1
 
 # retake 响应 schema:每条 interpretation claim 补 traces_to 或改判 provenance
 # F4-B: 扩展 new_grounded_claim(verbatim 引文)路径——LLM 可返回该出处锚的逐字原文,
@@ -1096,19 +1100,34 @@ def retake_traceability(
         remaining_interp, grounded_anchors, raw_content or "",
         interp_argumentation=remaining_args,
     )
-    try:
-        with _distill_attempt_deadline(TRACEABILITY_RETAKE_TIMEOUT_S):
-            response = _default(
-                DISTILL_MODEL_FAMILY,
-                messages,
-                response_schema=_TRACEABILITY_RETAKE_SCHEMA,
-                timeout_s=TRACEABILITY_RETAKE_TIMEOUT_S,
-                max_retries=DISTILL_MAX_RETRIES,
-                reasoning_effort=None,
-                strict_schema=True,
-                extra_body={"enable_thinking": False} if DISTILL_DISABLE_THINKING else None,
-            )
-    except Exception as exc:
+    response = None
+    _last_exc: Exception | None = None
+    for _attempt in range(1 + TRACEABILITY_RETAKE_TIMEOUT_RETRY):
+        try:
+            with _distill_attempt_deadline(TRACEABILITY_RETAKE_TIMEOUT_S):
+                response = _default(
+                    DISTILL_MODEL_FAMILY,
+                    messages,
+                    response_schema=_TRACEABILITY_RETAKE_SCHEMA,
+                    timeout_s=TRACEABILITY_RETAKE_TIMEOUT_S,
+                    max_retries=DISTILL_MAX_RETRIES,
+                    reasoning_effort=None,
+                    strict_schema=True,
+                    extra_body=(
+                        {"enable_thinking": False} if DISTILL_DISABLE_THINKING else None
+                    ),
+                )
+            _last_exc = None
+            break
+        except Exception as exc:  # noqa: PERF203
+            _last_exc = exc
+            # F31: 仅超时类重试(网络抖动);400/invalid 类立即放弃(同 F20 语义)
+            _is_timeout = "timeout" in type(exc).__name__.lower()
+            if not _is_timeout or _attempt >= TRACEABILITY_RETAKE_TIMEOUT_RETRY:
+                break
+            diag["timeout_retried"] = _attempt + 1
+    if _last_exc is not None or response is None:
+        exc = _last_exc if _last_exc is not None else RuntimeError("no response")
         diag["reject_reason"] = f"llm_failed: {type(exc).__name__}"
         for c in claims:
             if isinstance(c, dict):
