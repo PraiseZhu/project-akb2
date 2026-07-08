@@ -41,6 +41,15 @@ class TestMonotonicGuardBlockingOnly:
         assert len(ids) == 1
         assert all("图谱" not in i and "新颖" not in i for i in ids)
 
+    def test_reworded_blocking_creates_no_new_identity(self) -> None:
+        """[F30 刀2 锁,reviewer CONCERN-2] blocking 缺陷换措辞不制造伪新 identity——
+        identity=(dim|loc),丢弃易变描述文本(LR 六轮 rolled_back 死因核心场景)。"""
+        prev = [_d("概念机制清晰度(H3)", "叙述罗列")]
+        curr = [_d("概念机制清晰度(H3)", "叙述罗列且完全换了一种措辞描述")]
+        new_ids = (_defect_identity(_blocking_defects(curr))
+                   - _defect_identity(_blocking_defects(prev)))
+        assert new_ids == set(), "同维同位换措辞不得触发回滚(F30)"
+
     def test_reworded_advisory_creates_no_new_identity(self) -> None:
         """[LR 四轮 6→6 根因回归] grader 换措辞的 advisory 缺陷不再制造伪新 identity。"""
         prev = [_d("概念机制清晰度(H3)", "叙述罗列"), _d("图谱可调用性", "边为空")]
