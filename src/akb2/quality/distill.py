@@ -58,6 +58,11 @@ from src.akb2.quality.source_ops_scanners.raw_verify import (
 # ---------------------------------------------------------------------------
 
 MAX_EXTRACT_RETRIES: int = 3
+# F32: concept 车道抽取质量重试(+1,具名有界)。第八轮实锤:同一篇 SW 提炼
+# 产出在 2 与 9 组件间掷骰子;<3 组件下游 F4 必死,当场重抽一次把废轮救回。
+# 不碰 F4 阈值(仍 CONCEPT_MIN=3 由 floor 硬判);预算独立于 MAX_EXTRACT_RETRIES。
+EXTRACT_QUALITY_RETRY_CONCEPT: int = 1
+_CONCEPT_MIN_COMPONENTS_FOR_RETRY: int = 3  # 与 integrity_floor.CONCEPT_MIN 同语义
 # 截断保护：raw 喂给抽取的字符上限（旧截断阈值过小，截掉 §D-§J 约 53% 正文；
 # 提到具名常量并放大到 50k，避免裸魔数 + 减少截断失真）
 MAX_EXTRACT_CHARS: int = 50_000
@@ -657,7 +662,8 @@ def extract_claims(
 
     content_snippet = raw_content[:MAX_EXTRACT_CHARS]  # 截断保护（具名常量，旧阈值截掉半数正文）
 
-    for attempt in range(1, MAX_EXTRACT_RETRIES + 1):
+    _quality_retries_used = 0  # F32: concept 质量重试计数(独立预算)
+    for attempt in range(1, MAX_EXTRACT_RETRIES + EXTRACT_QUALITY_RETRY_CONCEPT + 1):
         try:
             with _distill_attempt_deadline(DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S):
                 parsed_segments: dict[str, dict[str, Any]] = {}
@@ -717,6 +723,16 @@ def extract_claims(
                     retries_used=attempt,
                     error=f"抽取调用失败（{attempt}/{MAX_EXTRACT_RETRIES}）: {exc}",
                 )
+            continue
+
+        # F32: concept 车道组件 <3 → 下游 F4 必死;预算内当场重抽一次(方差减震)。
+        _comp_n = len(merged.get("mechanism_components") or [])
+        if (
+            str(content_lane or "").strip().lower() == "concept"
+            and _comp_n < _CONCEPT_MIN_COMPONENTS_FOR_RETRY
+            and _quality_retries_used < EXTRACT_QUALITY_RETRY_CONCEPT
+        ):
+            _quality_retries_used += 1
             continue
 
         return ExtractResult(
