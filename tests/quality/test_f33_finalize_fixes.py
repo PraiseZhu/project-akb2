@@ -108,14 +108,28 @@ _FM_WITH_PROPOSED = (
 
 
 class TestProposedNodeLabelParsing:
-    def test_labels_extracted_in_order(self) -> None:
+    def test_slugs_extracted_in_order(self) -> None:
+        """[F33-R CONCERN-1] slug 优先(_slugify_component_id 保证单 token 机器安全)。"""
         assert _parse_proposed_graph_node_labels(_FM_WITH_PROPOSED) == [
-            "loop-engineering", "quality-gate",
+            "loop_engineering", "quality_gate",
         ]
 
-    def test_slug_fallback_when_label_missing(self) -> None:
-        fm = "proposed_graph_nodes:\n  - slug: foo_bar\n    reason: x\n"
-        assert _parse_proposed_graph_node_labels(fm) == ["foo_bar"]
+    def test_label_fallback_when_slug_missing(self) -> None:
+        fm = "proposed_graph_nodes:\n  - label: foo-bar\n    reason: x\n"
+        assert _parse_proposed_graph_node_labels(fm) == ["foo-bar"]
+
+    def test_multiword_label_not_truncated(self) -> None:
+        """[F33-R CONCERN-1] 多词/带引号值全行捕获,不截断到首 token。"""
+        fm = (
+            "proposed_graph_nodes:\n"
+            "  - label: Reinforcement Learning\n"
+            "    reason: x\n"
+            "  - label: 'a: b'\n"
+            "    reason: y\n"
+        )
+        assert _parse_proposed_graph_node_labels(fm) == [
+            "Reinforcement Learning", "a: b",
+        ]
 
     def test_no_block_returns_empty(self) -> None:
         assert _parse_proposed_graph_node_labels("status: candidate\n") == []

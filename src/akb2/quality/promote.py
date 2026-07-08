@@ -501,11 +501,16 @@ def _flip_frontmatter(text: str, slug: str) -> str:
 
 
 def _parse_proposed_graph_node_labels(fm_text: str) -> list[str]:
-    """从 frontmatter 的 proposed_graph_nodes block 提取节点 label(缺 label 回退 slug)。
+    """从 frontmatter 的 proposed_graph_nodes block 提取节点名(slug 优先,缺则 label)。
 
     [F33 Bug-B 方案①,用户裁决] auto_active(graph_pending)路径 related_concepts
     恒空 → R14 必炸 + pending 概念队列(修宪图谱兜底链路唯一进水口)永远断供。
     材料取自候选自身(Gate-3 proposed_node_only 保证该 block 非空),非编造。
+
+    [F33-R reviewer CONCERN-1] slug 优先:distill `_slugify_component_id` 保证
+    slug 为单 token 机器安全值,而多词 label(如 "Reinforcement Learning")用
+    `\\S+` 捕获会截断;下游 `_slug_normalize_variants` 已做 `_↔-` 归一,slug 与
+    hyphen label 等价。值捕获到行尾再剥引号,防任何形态截断。
     """
     block_match = re.search(r"^proposed_graph_nodes:\n((?:[ \t]+.*\n?)+)", fm_text, re.M)
     if not block_match:
@@ -514,8 +519,8 @@ def _parse_proposed_graph_node_labels(fm_text: str) -> list[str]:
     for item in re.split(r"^[ \t]+-[ \t]", block_match.group(1), flags=re.M):
         if not item.strip():
             continue
-        val = (re.search(r"^\s*label:\s*(\S+)", item, re.M)
-               or re.search(r"^\s*slug:\s*(\S+)", item, re.M))
+        val = (re.search(r"^\s*slug:[ \t]*(.+?)[ \t]*$", item, re.M)
+               or re.search(r"^\s*label:[ \t]*(.+?)[ \t]*$", item, re.M))
         if val:
             name = val.group(1).strip().strip('"').strip("'")
             if name and name not in labels:
