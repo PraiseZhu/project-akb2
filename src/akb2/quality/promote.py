@@ -799,6 +799,11 @@ def _lint_reverify(
     for fpath in touched_paths:
         if not fpath.exists():
             continue
+        # F34:vault 笔记 lint 只适用于 markdown 内容页;touched 里的机器文件
+        # (pending 队列 concept-backlinks.jsonl 等)不进复验——Bug-B 打通供水后
+        # 该文件首次进 touched,即被误 lint 判 P1 整体回滚(2026-07-08T20:10 账本)
+        if fpath.suffix != ".md":
+            continue
         ok, detail = _run_lint_check(fpath, vault_root)
         if not ok:
             all_findings.append(f"{fpath.name}: {detail}")
@@ -1108,6 +1113,10 @@ def run_promote(
     index_path = vault_root / "wiki" / "sources" / "00-Index.md"
     if index_path.exists():
         affected.append(index_path)
+    # F34:pending 队列文件也进快照——finalize Step-3 会追加行,失败回滚须
+    # 连同还原(既存则 restore,不存在则 created_files 删除,Bug-A 机制兜住),
+    # 否则失败轮次的 stale 供水残留(2026-07-08T20:10 实测残留 2 行)
+    affected.append(vault_root / "staging" / "pending" / "concept-backlinks.jsonl")
     for cs in related_concepts:
         cp = vault_root / "wiki" / "concepts" / f"{cs}.md"
         if cp.exists():
