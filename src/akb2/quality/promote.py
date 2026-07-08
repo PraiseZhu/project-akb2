@@ -318,13 +318,18 @@ def snapshot_before_promote(
     snapshot_dir.mkdir(parents=True, exist_ok=True)
 
     manifest: dict[str, dict[str, str]] = {}
+    created_files: list[str] = []
     for fpath in affected_paths:
-        if not fpath.exists():
-            continue
         try:
             rel = fpath.relative_to(vault_root)
         except ValueError:
             # 文件不在 vault 下，跳过
+            continue
+        if not fpath.exists():
+            # promote 前不存在 → 记为"将新建";回滚语义 = 删除该文件,
+            # 恢复"promote 前不存在"的状态(F33 Bug-A:此前直接跳过,
+            # 回滚后新建 active 页残留成孤儿)
+            created_files.append(str(rel))
             continue
 
         dest = snapshot_dir / rel
@@ -344,6 +349,7 @@ def snapshot_before_promote(
         "vault_root": str(vault_root),
         "file_count": len(manifest),
         "files": manifest,
+        "created_files": created_files,
     }
     manifest_path = snapshot_dir / "rollback-manifest.json"
     manifest_path.write_text(
@@ -421,6 +427,19 @@ def rollback_snapshot(snapshot_id: str) -> bool:
             )
             success = False
 
+    # F33 Bug-A: promote 期间新建的文件,回滚 = 删除(旧 manifest 无此 key 时跳过)
+    for rel_path_str in manifest.get("created_files", []):
+        target = vault_root / rel_path_str
+        if target.exists():
+            try:
+                target.unlink()
+            except OSError as exc:
+                print(
+                    f"WARN: failed to remove created file {rel_path_str}: {exc}",
+                    file=sys.stderr,
+                )
+                success = False
+
     if success:
         print(f"Rollback complete: {len(files)} file(s) restored from snapshot {snapshot_id}")
     else:
@@ -478,6 +497,57 @@ def _flip_frontmatter(text: str, slug: str) -> str:
     else:
         fm_text += f"\nreviewed_at: {reviewed_at}"
 
+    return f"---\n{fm_text}\n---\n{body}"
+
+
+def _parse_proposed_graph_node_labels(fm_text: str) -> list[str]:
+    """从 frontmatter 的 proposed_graph_nodes block 提取节点名(slug 优先,缺则 label)。
+
+    [F33 Bug-B 方案①,用户裁决] auto_active(graph_pending)路径 related_concepts
+    恒空 → R14 必炸 + pending 概念队列(修宪图谱兜底链路唯一进水口)永远断供。
+    材料取自候选自身(Gate-3 proposed_node_only 保证该 block 非空),非编造。
+
+    [F33-R reviewer CONCERN-1] slug 优先:distill `_slugify_component_id` 保证
+    slug 为单 token 机器安全值,而多词 label(如 "Reinforcement Learning")用
+    `\\S+` 捕获会截断;下游 `_slug_normalize_variants` 已做 `_↔-` 归一,slug 与
+    hyphen label 等价。值捕获到行尾再剥引号,防任何形态截断。
+    """
+    block_match = re.search(r"^proposed_graph_nodes:\n((?:[ \t]+.*\n?)+)", fm_text, re.M)
+    if not block_match:
+        return []
+    labels: list[str] = []
+    for item in re.split(r"^[ \t]+-[ \t]", block_match.group(1), flags=re.M):
+        if not item.strip():
+            continue
+        val = (re.search(r"^\s*slug:[ \t]*(.+?)[ \t]*$", item, re.M)
+               or re.search(r"^\s*label:[ \t]*(.+?)[ \t]*$", item, re.M))
+        if val:
+            name = val.group(1).strip().strip('"').strip("'")
+            if name and name not in labels:
+                labels.append(name)
+    return labels
+
+
+def _inject_related_concepts(active_text: str, labels: list[str]) -> str:
+    """active 文本的空/缺失 related_concepts 用 labels 回填(F33 Bug-B)。
+
+    仅当现值为空 inline list 或字段缺失时写入;已有非空值(inline 或 block)
+    一律不动。labels 为空时原样返回——留给 finalize lint 复验 R14 阻断,fail-closed。
+    """
+    if not labels:
+        return active_text
+    fm_match = re.match(r"^---\n(.*?)\n---\n", active_text, re.DOTALL)
+    if not fm_match:
+        return active_text
+    fm_text = fm_match.group(1)
+    body = active_text[fm_match.end():]
+    inline = f"related_concepts: [{', '.join(labels)}]"
+    if re.search(r"^related_concepts:\s*\[\s*\]\s*$", fm_text, re.M):
+        fm_text = re.sub(r"^related_concepts:\s*\[\s*\]\s*$", inline, fm_text, flags=re.M)
+    elif not re.search(r"^related_concepts:", fm_text, re.M):
+        fm_text += f"\n{inline}"
+    else:
+        return active_text
     return f"---\n{fm_text}\n---\n{body}"
 
 
@@ -802,6 +872,11 @@ def finalize_promotion(
             related_concepts = re.findall(r"^\s+-\s+(.+)", rc_block.group(1), re.M)
             related_concepts = [c.strip().strip('"').strip("'") for c in related_concepts]
 
+    # F33 Bug-B(方案①):related 为空时用候选自身 proposed_graph_nodes 回填,
+    # 同时给 Step-3 pending 队列供水;仍为空则 R14 在 lint 复验阻断(fail-closed)
+    if not related_concepts:
+        related_concepts = _parse_proposed_graph_node_labels(fm_text)
+
     # 确定 source_label
     if not source_label:
         source_label = title or slug
@@ -816,8 +891,9 @@ def finalize_promotion(
 
     gate_result = "gate: active (five-gate auto-promote)"
 
-    # Step 1: frontmatter 翻转 → active 页
+    # Step 1: frontmatter 翻转 → active 页(+ F33 Bug-B related 回填)
     active_text = _flip_frontmatter(candidate_text, slug)
+    active_text = _inject_related_concepts(active_text, related_concepts)
     active_path = vault_root / "wiki" / "sources" / f"{slug}.md"
     active_path.parent.mkdir(parents=True, exist_ok=True)
     active_path.write_text(active_text, encoding="utf-8")
@@ -1021,6 +1097,10 @@ def run_promote(
                 for c in rc_match.group(1).split(",")
                 if c.strip()
             ]
+        # F33 Bug-B:与 finalize 同口径的 effective 列表,保证若回填概念
+        # 恰好已存在对应页,也会被快照覆盖(回滚完整性)
+        if not related_concepts:
+            related_concepts = _parse_proposed_graph_node_labels(fm_text)
 
     affected = [candidate_path]
     active_target = vault_root / "wiki" / "sources" / f"{slug}.md"

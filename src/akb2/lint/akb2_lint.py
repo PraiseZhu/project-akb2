@@ -487,6 +487,12 @@ def rule_r5_wiki_tools_call_contract_leak(path, fm, body, ctx):
 def rule_r6_body_quality_missing_structure(path, fm, body, ctx):
     if ctx.get("template_type") in ("tool-understanding", "query-result"):
         return []
+    # F33 Bug-C:主索引/导航文件(FOLDER-STRUCTURE §1 固定名 00-Index.md,或
+    # frontmatter doc_type: index)不是内容页,9 必备节规则不适用。修误报
+    # (finalize lint 复验被 00-Index.md 既有 P1 连坐,确定性阻断修宪
+    # auto_active 路径),非放宽:内容页行为零变化。
+    if path.name == "00-Index.md" or re.search(r"^doc_type:\s*index\b", fm, re.M):
+        return []
     missing = [k for k, ps in ALIASES.items() if find_section(body, ps) is None]
     if missing:
         return [make_finding(
@@ -501,8 +507,15 @@ def rule_r6_body_quality_missing_structure(path, fm, body, ctx):
 
 
 def rule_r7_source_grounded_missing_field(path, fm, body, ctx):
-    """LINT-RULES §11.2: active 缺 evidence_provenance."""
+    """LINT-RULES §11.2: active 缺 evidence_provenance.
+
+    F33(同 F8-B 判例):规则名/docstring 均为 active-only,代码漏 status==active
+    守卫致 00-Index.md 等非 active 文件误报——补守卫是 bug 对齐,非标准放宽
+    (active 页行为零变化;candidate 缺字段仍被 flip 后的 finalize 复验拦截)。
+    """
     if ctx.get("template_type") == "query-result":
+        return []
+    if not ACTIVE_MARK.search(fm):
         return []
     val = parse_fm_field_raw(fm, "evidence_provenance")
     if not val:
@@ -572,8 +585,14 @@ def rule_r10_source_key_findings_missing_prose(path, fm, body, ctx):
 
 
 def rule_r11_graph_role_missing(path, fm, body, ctx):
-    """GRAPH-LINKING §6.1: active 缺 graph_role."""
+    """GRAPH-LINKING §6.1: active 缺 graph_role.
+
+    F33(同 F8-B 判例):docstring 为 active-only,补 status==active 守卫,
+    非 active 文件(索引/candidate)不再误报;active 页行为零变化。
+    """
     if ctx.get("template_type") == "query-result":
+        return []
+    if not ACTIVE_MARK.search(fm):
         return []
     val = parse_fm_field_raw(fm, "graph_role")
     if not val:
