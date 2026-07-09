@@ -804,10 +804,25 @@ def _run_distill_segment(
     # source_causal 边合并进 extract_data,重评 floor。仍 fail → fail-closed(不放松 F4)。
     # F2-A 比原 needs_causal_edge_retake 更广:原仅 ≥3 组件 + "0 eligible" 才触发,致 <3 组件
     # 或 LLM 漏组件的样本(如 idx3 Harness Eng)确定性抽边没机会跑;现 F4 fail 即触发。
+    # F35 刀1:再扩——eligible < ENRICH_MIN_ELIGIBLE_EDGES(=2)的"料薄但 F4 压线过"
+    # 也触发(replit R4/SW R9 死面:1 条 eligible 绕过增援直送 grader 被 H3 击毙)。
+    # 计数用 integrity_floor.count_eligible_edges 与 F4 判定同一口径;F4 阈值零动,
+    # 增援只加真料(evidence 逐字来自 raw + 真锚)不改任何判定。
+    from src.akb2.quality.distill import ENRICH_MIN_ELIGIBLE_EDGES
+    from src.akb2.quality.integrity_floor import count_eligible_edges
+
+    _eligible_before = (
+        count_eligible_edges(extract_result.data, raw_anchors=raw_anchor_set)["eligible"]
+        if extract_result.success and isinstance(extract_result.data, dict)
+        else 0
+    )
     if (
         str(content_lane).lower() == "concept"
         and extract_result.success
-        and FLOOR_CORE_VALUE_F4 in floor_result.failed_floors
+        and (
+            FLOOR_CORE_VALUE_F4 in floor_result.failed_floors
+            or _eligible_before < ENRICH_MIN_ELIGIBLE_EDGES
+        )
     ):
         from src.akb2.quality.distill import _enrich_zero_eligible_with_deterministic
 
@@ -824,7 +839,8 @@ def _run_distill_segment(
             _log_event(
                 config, "distill_extract", "causal_edge_enrichment",
                 _compute_raw_hash(raw_path),
-                {"applied": True, **enrich_diag, "passed_after": floor_result.passed},
+                {"applied": True, "eligible_before": _eligible_before,
+                 **enrich_diag, "passed_after": floor_result.passed},
             )
 
     # F2-B: traceability 有界 retake — floor 仅因 traceability fail(其余 floor 全过)时,

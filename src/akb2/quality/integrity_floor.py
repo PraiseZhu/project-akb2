@@ -195,6 +195,52 @@ def _trusted_raw_anchors(
     return set()
 
 
+def count_eligible_edges(
+    extract_data: dict,
+    raw_anchors: set[str] | None = None,
+) -> dict[str, int]:
+    """F4 口径的因果边分类计数(单一权威口径)。
+
+    [F35] 抽出自 _core_value_f4_failed 内联循环,供两处共用:
+    ① F4 地板判定(本模块,阈值/语义零变化);② runner 增援触发(material
+    thinness 检测——eligible < ENRICH_MIN_ELIGIBLE_EDGES 时提前跑确定性抽边,
+    防"1 条弱 eligible 压线过 F4 → 薄料直送 grader 被 H3 击毙"的 R4 死面)。
+    口径:eligible = edge_kind ∈ {source_causal, llm_evidence} + evidence 非空
+    + evidence_anchor ∈ 可信 raw anchor 集 + 两端点 ∈ 唯一命名组件集且非自环。
+
+    Returns {"eligible": n, "weak": n, "untrusted_anchor": n}。
+    """
+    components = extract_data.get("mechanism_components", []) or []
+    named_set = {
+        str(c.get("name", "")).strip()
+        for c in components
+        if isinstance(c, dict) and str(c.get("name", "")).strip()
+    }
+    edges = extract_data.get("causal_edges", []) or []
+    eligible_kinds = {"source_causal", "llm_evidence"}
+    trusted_anchors = _trusted_raw_anchors(extract_data, raw_anchors)
+    counts = {"eligible": 0, "weak": 0, "untrusted_anchor": 0}
+    for e in edges:
+        if not isinstance(e, dict):
+            continue
+        src = str(e.get("from", "")).strip()
+        dst = str(e.get("to", "")).strip()
+        if src not in named_set or dst not in named_set or src == dst:
+            continue
+        kind = str(e.get("edge_kind", "")).strip()
+        evidence = str(e.get("evidence", "")).strip()
+        evidence_anchor = str(e.get("evidence_anchor", "")).strip()
+        if kind in eligible_kinds and evidence and evidence_anchor:
+            # §0.2/F1：evidence_anchor 必须是真实 raw anchor
+            if evidence_anchor in trusted_anchors:
+                counts["eligible"] += 1
+            else:
+                counts["untrusted_anchor"] += 1
+        elif kind == "inferred_from_structure":
+            counts["weak"] += 1
+    return counts
+
+
 def _core_value_f4_failed(
     extract_data: dict,
     content_lane: str,
@@ -226,35 +272,13 @@ def _core_value_f4_failed(
                 f"{CONCEPT_MIN_MECHANISM_COMPONENTS}"
                 f"（输入 {len(named)} 条，去重后 {len(named_set)}）"
             )
-        edges = extract_data.get("causal_edges", []) or []
-        # §0.2/D1 + F1 + F1-followup：统计 eligible edge（弱边不计；
-        # evidence_anchor 须 ∈ raw 真实 anchor 全集，不只 grounded claims）
-        eligible_kinds = {"source_causal", "llm_evidence"}
-        trusted_anchors = _trusted_raw_anchors(extract_data, raw_anchors)
-        eligible_count = 0
-        weak_count = 0
-        untrusted_anchor_count = 0
-        eligible_components: set[str] = set()
-        for e in edges:
-            if not isinstance(e, dict):
-                continue
-            src = str(e.get("from", "")).strip()
-            dst = str(e.get("to", "")).strip()
-            if src not in named_set or dst not in named_set or src == dst:
-                continue
-            kind = str(e.get("edge_kind", "")).strip()
-            evidence = str(e.get("evidence", "")).strip()
-            evidence_anchor = str(e.get("evidence_anchor", "")).strip()
-            if kind in eligible_kinds and evidence and evidence_anchor:
-                # §0.2/F1：evidence_anchor 必须是真实 raw anchor（∈ grounded claims anchors）
-                if evidence_anchor in trusted_anchors:
-                    eligible_count += 1
-                    eligible_components.add(src)
-                    eligible_components.add(dst)
-                else:
-                    untrusted_anchor_count += 1
-            elif kind == "inferred_from_structure":
-                weak_count += 1
+        # §0.2/D1 + F1 + F1-followup：统计 eligible edge（弱边不计；evidence_anchor
+        # 须 ∈ raw 真实 anchor 全集）。F35:计数抽出为 count_eligible_edges 公共口径
+        # (floor 判定与 runner 增援触发共用,防口径分裂);阈值/语义/消息零变化。
+        _edge_counts = count_eligible_edges(extract_data, raw_anchors)
+        eligible_count = _edge_counts["eligible"]
+        weak_count = _edge_counts["weak"]
+        untrusted_anchor_count = _edge_counts["untrusted_anchor"]
         if eligible_count == 0:
             return True, (
                 f"concept F4：0 eligible 因果边（source_causal/llm_evidence 带 evidence + "
