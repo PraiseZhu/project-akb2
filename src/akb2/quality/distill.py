@@ -4939,8 +4939,11 @@ def _build_frontmatter(
         # status=='active' 守卫后,candidate(非 active)空 related 不再误报 R14,
         # 冷启动 related 空是诚实状态(frontmatter 语义不失真,不硬塞 component 名)。
 
-    # future_questions 2-3 条
-    questions = _generate_questions(claims, extract_data.get("how_steps", []))
+    # future_questions 2-3 条(F36:传 causal_edges,从本文机制材料生发)
+    questions = _generate_questions(
+        claims, extract_data.get("how_steps", []),
+        extract_data.get("causal_edges", []),
+    )
 
     # gate_reason 截断到 150 字符
     first_anchor = str(claims[0].get("anchor", "§A")).strip() if claims else "§A"
@@ -5085,66 +5088,88 @@ def _page_evidence_provenance(extract_data: dict[str, Any]) -> str:
     return "source_grounded"
 
 
-def _topic_phrase(claims: list[dict[str, Any]]) -> str:
-    """从首条 claim 提取短主题词(≤8 字符),用于 future_questions 的领域问题。
-
-    取首个标点前的核心名词短语或已知概念词——避免旧实现把整句论点塞进括号致语病
-    (codex 必修2:维度9 Future Questions 质量扣分根因之一)。
-    """
-    if not claims:
-        return ""
-    text = str(claims[0].get("text", "")).strip()
-    # 优先匹配已知概念词(大小写不敏感)
-    known = (
-        "Loop engineering", "Agent loop", "agent loop", "Harness",
-        "Pipeline", "Workflow", "Orchestration", "Loop", "Agent",
-        "循环工程", "代理循环", "质量门", "故障签名",
-    )
-    for kw in known:
-        if kw.lower() in text.lower():
-            return kw
-    if re.search(r"[\u4e00-\u9fff]", text):
-        return "该方案"
-    # 否则取首个标点前的片段(≤8 字符,避免整句)
-    for sep in ("，", "。", "：", ",", ".", "；", "、"):
-        if sep in text:
-            text = text.split(sep)[0]
-    return text[:8]
+def _fq_fragment(text: str, limit: int) -> str:
+    """future_questions 引用片段消毒:去反引号/竖线/换行,截断(表格与 YAML 安全)。"""
+    t = re.sub(r"\s+", " ", str(text or "")).replace("`", "").replace("|", "/").strip()
+    return t[:limit].strip()
 
 
 def _generate_questions(
     claims: list[dict[str, Any]],
     how_steps: list[str],
+    causal_edges: list[dict[str, Any]] | None = None,
 ) -> list[str]:
-    """生成 future_questions 2-3 条:领域工程问题(codex 必修2)。
+    """生成 future_questions 2-3 条:从**本文真实材料**生发(F36 刀1)。
 
-    禁止生成提取/模板元问题(旧实现的「how_steps N 步骤哪些刚性」「多个论点优先级」
-    「该文缺少可执行步骤」都是关于提取流程的自指问题,grader 维度9 扣分合理)。
-    改为面向该主题真实工程问题的领域问题:失败模式/边界、停止条件与预算、
-    并发冲突与恢复——不引用 how_steps 数量、论点优先级、模板、提取规则、字段。
+    [F36] 旧实现是三条硬编码通用模板(失败模式/停止条件预算/并发重试漂移)只塞
+    一个主题词——修复后 12 篇尸检中 5 条 Future Questions 缺陷全部由它确定性产出
+    (grader:「均是通用自动化/流程治理问题,与本文机制不贴合」,三篇不同主题文章
+    问题一字不差)。改为按优先级从本文材料生发,每条引用真实锚点与原文片段:
+      ① claim 盲区(evidence_gap)→ 该缺口如何度量补足
+      ② eligible 因果边 → 该机制关系的边界与退化条件
+      ③ interpretation claim → 该解读的适用前提与反例
+      ④ grounded claim → 迁移时须重验的前提
+    材料全空才落通用兜底(此类文章本会死在地板,极少触达)。仍禁止提取/模板
+    元问题(不引用 how_steps 数量、论点优先级、字段)。
     """
-    topic = _topic_phrase(claims)
-    head = f"{topic}" if topic else "该方案"
-    anchor_a = claims[0].get("anchor", "§A") if claims else "§A"
-    anchor_b = claims[1].get("anchor", anchor_a) if len(claims) > 1 else anchor_a
-    anchor_j = "§J" if any(c.get("anchor") == "§J" for c in claims) else anchor_b
-    questions = [
-        f"[raw {anchor_a}] (akb_interpretation) {head} "
-        "在真实工程中的失败模式、适用边界与回退策略有哪些？",
-        f"[raw {anchor_j}] (akb_interpretation) "
-        "该方案的停止条件、预算上限与失败升级路径应如何设计，避免自动化失控？",
-        f"[raw {anchor_b}] (akb_interpretation) "
-        "在并发、重试与状态漂移场景下，如何检测冲突、重复劳动并保持一致与可恢复？",
+    questions: list[str] = []
+    used_anchors: set[tuple[str, str]] = set()
+
+    def _add(kind: str, anchor: str, q: str) -> None:
+        a = str(anchor or "").strip()
+        if not a or len(questions) >= FUTURE_QUESTIONS_MAX:
+            return
+        if (kind, a) in used_anchors:
+            return
+        used_anchors.add((kind, a))
+        questions.append(f"[raw {a}] (akb_interpretation) {q}")
+
+    # ① 真实盲区:原文自己承认没覆盖的点,是最贴合本文的开放问题
+    for c in claims or []:
+        gap = _fq_fragment(c.get("evidence_gap", ""), 70)
+        if gap:
+            _add("gap", c.get("anchor", ""),
+                 f"原文盲区「{gap}」——该缺口在生产部署中应如何度量与补足？")
+    # ② 机制边:本文自己的组件与关系,问其边界条件
+    for e in causal_edges or []:
+        if not isinstance(e, dict):
+            continue
+        if str(e.get("edge_kind", "")).strip() not in ("source_causal", "llm_evidence"):
+            continue
+        src = _fq_fragment(e.get("from", ""), 40)
+        dst = _fq_fragment(e.get("to", ""), 40)
+        rel = _fq_fragment(e.get("relation", ""), 20)
+        if src and dst and e.get("evidence_anchor"):
+            _add("edge", e.get("evidence_anchor", ""),
+                 f"「{src} → {dst}（{rel or '关联'}）」这一机制在何种规模或失效"
+                 "条件下不再成立？其边界与退化行为是什么？")
+    # ③ 解读论点:问其适用前提与反例
+    for c in claims or []:
+        if str(c.get("provenance", "")).strip() == "akb_interpretation":
+            frag = _fq_fragment(c.get("text", ""), 50)
+            if frag:
+                _add("interp", c.get("anchor", ""),
+                     f"「{frag}」——该解读的适用前提与反例场景是什么？")
+    # ④ 接地论点:问迁移前提
+    for c in claims or []:
+        frag = _fq_fragment(c.get("text", ""), 50)
+        if frag:
+            _add("claim", c.get("anchor", ""),
+                 f"「{frag}」迁移到其他技术栈或组织环境时，哪些前提必须重新验证？")
+
+    # 兜底:材料全空(此类候选本会死在地板)才落通用问题,保 FUTURE_QUESTIONS_MIN
+    anchor_a = str(claims[0].get("anchor", "§A")).strip() if claims else "§A"
+    generic = [
+        f"[raw {anchor_a}] (akb_interpretation) "
+        "该方案在真实工程中的失败模式、适用边界与回退策略有哪些？",
+        f"[raw {anchor_a}] (akb_interpretation) "
+        "该方案的可靠性如何度量，哪些缺陷必须升级给人类判断？",
     ]
-    # 裁到 2-3 条(默认即 3 条,留 min/max 兜底以防未来调整)
-    if len(questions) > FUTURE_QUESTIONS_MAX:
-        questions = questions[:FUTURE_QUESTIONS_MAX]
-    if len(questions) < FUTURE_QUESTIONS_MIN:
-        questions.append(
-            f"[raw {anchor_a}] (akb_interpretation) "
-            "该方案的可靠性如何度量，哪些缺陷必须升级给人类判断？"
-        )
-    return questions
+    for g in generic:
+        if len(questions) >= FUTURE_QUESTIONS_MIN:
+            break
+        questions.append(g)
+    return questions[:FUTURE_QUESTIONS_MAX]
 
 
 def _render_how_step(idx: int, step: Any) -> str:
@@ -6166,9 +6191,20 @@ def _build_how_boundary_table(
     how_steps: list[Any],
     raw_anchor_texts: dict[str, str] | None = None,
     rendered_how_steps: list[tuple[int, Any, str]] | None = None,
+    *,
+    content_lane: str = "",
+    causal_edges: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Map AKB operation steps to source support and explicit evidence gaps."""
-    if not how_steps:
+    """Map AKB operation steps to source support and explicit evidence gaps.
+
+    [F36 刀2] 零数据行时旧行为渲染"只有表头的空表"(修复后尸检 3 篇 + SW R9
+    的 H2「表格为空」缺陷确定性来源)。现:concept 车道零行时从真实机制边
+    (source_causal/llm_evidence 带 evidence+anchor)渲染边界行(零编造,evidence
+    逐字来自 raw);仍无材料 → 返 ""(省略 H3 节,比空表诚实)。
+    """
+    if not how_steps and not (
+        str(content_lane).strip().lower() == "concept" and causal_edges
+    ):
         return ""
     claim_by_anchor = {str(c.get("anchor", "")): c for c in claims}
     rows: list[str] = [
@@ -6212,6 +6248,39 @@ def _build_how_boundary_table(
             f"| {idx} | {_md_table_cell(support)} | "
             f"{_md_table_cell(operation)} | {_md_table_cell(gap)} |"
         )
+    _HEADER_ROWS = 4  # 标题/空行/表头/分隔线
+    if len(rows) == _HEADER_ROWS and str(content_lane).strip().lower() == "concept":
+        # F36 刀2:concept 零步骤行 → 从真实机制边渲染边界行(evidence 逐字 + 真锚)
+        claim_by_anchor2 = {str(c.get("anchor", "")): c for c in claims}
+        idx2 = 0
+        for e in causal_edges or []:
+            if not isinstance(e, dict):
+                continue
+            if str(e.get("edge_kind", "")).strip() not in (
+                "source_causal", "llm_evidence"
+            ):
+                continue
+            ev = str(e.get("evidence", "")).strip()
+            ea = str(e.get("evidence_anchor", "")).strip()
+            src_n = str(e.get("from", "")).strip()
+            dst_n = str(e.get("to", "")).strip()
+            if not (ev and ea and src_n and dst_n):
+                continue
+            idx2 += 1
+            rel = str(e.get("relation", "")).strip() or "关联"
+            gap2 = (
+                str((claim_by_anchor2.get(ea) or {}).get("evidence_gap", "")).strip()
+                or "未验证：原文未给出该机制关系的量化边界与失效条件。"
+            )
+            rows.append(
+                f"| {idx2} | {_md_table_cell(f'[raw {ea}] {ev[:90]}')} | "
+                f"{_md_table_cell(f'机制边界：{src_n} → {dst_n}（{rel}）的适用范围与退化行为')} | "
+                f"{_md_table_cell(gap2)} |"
+            )
+            if idx2 >= 5:
+                break
+    if len(rows) == _HEADER_ROWS:
+        return ""  # 无任何数据行 → 不渲染空表(F36)
     return "\n".join(rows)
 
 
@@ -7295,6 +7364,14 @@ def _build_body(
         how_steps,
         raw_anchor_texts,
         supported_how_steps,
+        content_lane=content_lane,
+        causal_edges=extract_data.get("causal_edges", []),
+    )
+    _fq_lines = "\n".join(
+        f"- {q}"
+        for q in _generate_questions(
+            claims, how_steps, extract_data.get("causal_edges", [])
+        )
     )
     if how_boundary:
         how_text = f"{how_text}\n\n{how_boundary}"
@@ -7491,7 +7568,7 @@ def _build_body(
 {graph_rows}
 {mechanism_section}{mechanism_narrative}## Future Questions
 
-{chr(10).join(f'- {q}' for q in _generate_questions(claims, how_steps))}
+{_fq_lines}
 
 ## 维护记录
 
