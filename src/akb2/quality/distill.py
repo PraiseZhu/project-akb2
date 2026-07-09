@@ -747,6 +747,9 @@ def extract_claims(
                     "components_evidence_unlocated", 0
                 ),
                 "components_filtered": _norm_diag.get("components_filtered", 0),
+                "components_dropped_unlocated": _norm_diag.get(
+                    "components_dropped_unlocated", 0
+                ),
             },
         )
 
@@ -4055,7 +4058,36 @@ def _normalize_extract_payload(
     # fallback 跳过(合成占位命令由 render-time _ground_how_step_commands_in_raw 处理)。
     if not is_fallback:
         _strip_fabricated_how_commands(data, raw_content)
+    # 9. F35 刀2:concept 车道(仅 LLM 路径)F8-A 回填后仍无 evidence 的组件剔除
+    # (宁缺勿假)。replit R4 实锤:幻觉组件 "a_concrete_example"(名字在 raw 任何
+    # 位置定位不到,回填两遍搜索全空)活到 grader 被 H3 点名"无证据组件"。名字
+    # 不在原文的 LLM"命名机制组件"即编造,剔除;剔后重闭合边端点(指向被剔组件
+    # 的边一并丢弃)。剔后组件 <3 → F32 质量重试/增援 det 组件接手,不硬留假料。
+    # fallback 跳过:det 组件按构造来自 raw 扫描(含标题/表格行),不存在幻觉,
+    # 而 F8-A 回填跳标题行可能定位不到 → 误剔会反向弄死 fallback。
+    diag["components_dropped_unlocated"] = 0
+    if not is_fallback and str(content_lane or "").strip().lower() == "concept":
+        _comps = data.get("mechanism_components", []) or []
+        _kept: list[Any] = []
+        for _c in _comps:
+            if isinstance(_c, dict):
+                _ea = str(_c.get("evidence_anchor", "")).strip()
+                _es = str(_c.get("evidence_sentence", "")).strip()
+                if not (_ea and _es):
+                    diag["components_dropped_unlocated"] += 1
+                    continue
+            _kept.append(_c)
+        if diag["components_dropped_unlocated"]:
+            data["mechanism_components"] = _kept
+            _close_edge_endpoints(data)
     return diag
+
+
+# F35 刀1:增援触发的料薄阈值(runner 用)。旧触发仅 F4 fail(0 eligible/<3 组件),
+# 致"恰好 1 条弱 eligible 压线过 F4"的薄料(replit R4/SW R9 死面)绕过确定性增援
+# 直送 grader 被 H3 击毙。现 eligible < 2 即增援(免费、零 LLM、evidence 逐字来自
+# raw)。F4 地板阈值(≥1)零动——增援只加真料,不改任何判定。
+ENRICH_MIN_ELIGIBLE_EDGES: int = 2
 
 
 def _enrich_zero_eligible_with_deterministic(
