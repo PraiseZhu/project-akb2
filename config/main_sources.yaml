@@ -1,4 +1,4 @@
-# AKB2 主源清单 — 90 源配置(82 + 循环4 换血扩充 8)
+# AKB2 主源清单 — 95 源配置(82 + 循环4 扩充 8 + F38 域内修正 5)
 #
 # 来源: docs/loops-design-decisions.md §11 (23 核心 + 29 补充 + 24 源头权威扩充)
 #       + awesome-evals seeds.json 扩充 6 (interconnects/arxiv-agent-eval/latent-space/leehanchung/openai-news/hf-papers)
@@ -782,45 +782,45 @@ sources:
     feed_url: https://danluu.com/atom.xml
     listing_url: https://danluu.com
     rate_limit: 3600
-    status: trial
+    status: down
     category: supplementary
-    notes: "Dan Luu — 系统深度分析长文;机制密度极高"
+    notes: "Dan Luu — 系统深度分析长文;机制密度极高;[F38 数据降级 2026-07-10] 近日 5 进 0 过(topic_relevance×5):通用系统深文,不在领域 taxonomy"
 
   - slug: brandur
     domain: brandur.org
     feed_url: https://brandur.org/articles.atom
     listing_url: https://brandur.org/articles
     rate_limit: 3600
-    status: trial
+    status: down
     category: supplementary
-    notes: "Brandur Leach — 基础设施/架构深文(Stripe/Crunchy)"
+    notes: "Brandur Leach — 基础设施/架构深文(Stripe/Crunchy);[F38 数据降级 2026-07-10] 近日 5 进 0 过(topic_relevance×5):基础设施深文,不在领域 taxonomy"
 
   - slug: fly-io-blog
     domain: fly.io
     feed_url: https://fly.io/blog/feed.xml
     listing_url: https://fly.io/blog
     rate_limit: 3600
-    status: trial
+    status: down
     category: authority
-    notes: "Fly.io — 基础设施机制深文(编排/网络/虚拟化)"
+    notes: "Fly.io — 基础设施机制深文(编排/网络/虚拟化);[F38 数据降级 2026-07-10] discovery 0 篇(feed 时效窗外)+ 基础设施主题不在 taxonomy"
 
   - slug: tailscale-blog
     domain: tailscale.com
     feed_url: https://tailscale.com/blog/index.xml
     listing_url: https://tailscale.com/blog
     rate_limit: 3600
-    status: trial
+    status: down
     category: authority
-    notes: "Tailscale — 网络机制深文(NAT 穿透/WireGuard)"
+    notes: "Tailscale — 网络机制深文(NAT 穿透/WireGuard);[F38 数据降级 2026-07-10] 同批同类源全灭(网络机制不在 taxonomy),预防性降级"
 
   - slug: mitchell-hashimoto
     domain: mitchellh.com
     feed_url: https://mitchellh.com/feed.xml
     listing_url: https://mitchellh.com/writing
     rate_limit: 3600
-    status: trial
+    status: down
     category: supplementary
-    notes: "Mitchell Hashimoto — 系统/工具链深文(Terraform/Ghostty 作者)"
+    notes: "Mitchell Hashimoto — 系统/工具链深文(Terraform/Ghostty 作者);[F38 数据降级 2026-07-10] 近日 13 进 0 过(topic_relevance×9):系统/工具链深文,不在领域 taxonomy"
 
   - slug: answer-ai
     domain: answer.ai
@@ -848,3 +848,56 @@ sources:
     status: trial
     category: supplementary
     notes: "Shrivu Shankar — LLM/Agent 工程实践深文"
+
+  # =========================================================================
+  # F38 域内修正扩充 (5) — 2026-07-10
+  # F37 教训:选源须同时卡两维——领域 taxonomy 命中(AI Agent/LLM 工程,admission
+  # topic_relevance 的判定锚点)× 机制密度。上批通用系统源(dan-luu 等)机制密度
+  # 高但域外,admission 全拒(判罚正确)。本批 5 源均为 taxonomy 域内深文作者,
+  # feed 实测 200+XML。
+  # =========================================================================
+
+  - slug: eleuther-ai
+    domain: blog.eleuther.ai
+    feed_url: https://blog.eleuther.ai/index.xml
+    listing_url: https://blog.eleuther.ai
+    rate_limit: 3600
+    status: trial
+    category: authority
+    notes: "EleutherAI — 开源 LLM 研究/可解释性深文"
+
+  - slug: jason-liu
+    domain: jxnl.co
+    feed_url: https://jxnl.co/feed_rss_created.xml
+    listing_url: https://jxnl.co/writing
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Jason Liu — RAG/结构化输出/LLM 工程实践(instructor 作者)"
+
+  - slug: sourcegraph-blog
+    domain: sourcegraph.com
+    feed_url: https://sourcegraph.com/blog/rss.xml
+    listing_url: https://sourcegraph.com/blog
+    rate_limit: 3600
+    status: trial
+    category: authority
+    notes: "Sourcegraph — AI coding/代码智能工程(Cody/Amp 团队)"
+
+  - slug: drew-breunig
+    domain: dbreunig.com
+    feed_url: https://www.dbreunig.com/feed.xml
+    listing_url: https://www.dbreunig.com
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Drew Breunig — context engineering 专题深文(taxonomy 直接命中)"
+
+  - slug: cameron-wolfe
+    domain: cameronrwolfe.substack.com
+    feed_url: https://cameronrwolfe.substack.com/feed
+    listing_url: https://cameronrwolfe.substack.com
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Cameron Wolfe — LLM 机制原理长文(架构/训练/推理拆解)"
