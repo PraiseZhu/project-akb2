@@ -903,6 +903,40 @@ def _run_distill_segment(
                  **enrich_diag, "passed_after": floor_result.passed},
             )
 
+    # F43: procedural H1 命令级步骤确定性兜底——floor 因 procedural F4(H1<1)fail 时,
+    # 扫 raw 的 fenced shell 命令 + inline backtick 命令 token,逐字作 how_level=H1 的
+    # how_step 并入 extract_data.how_steps,重评 floor。不放宽 floor;不造假 command
+    # (逐字来自 raw);无真命令 → 0 H1 加 → fail-closed。
+    # 离线复现暴露(全链路排查):dino game pt.4/pt.5 的 raw 有 `deno run --tunnel dev` /
+    # `deno task dev` 但 LLM extract 漏标 H1 → floor 死。此兜底在 maker 侧补这一刀。
+    # 触发门:仅 procedural lane + extract 成功 + core_value_f4 fail + 未跑过。
+    if (
+        str(content_lane).lower() == "procedural"
+        and extract_result.success
+        and FLOOR_CORE_VALUE_F4 in floor_result.failed_floors
+        and not floor_result.meta.get("procedural_h1_backfill_applied")
+    ):
+        from src.akb2.quality.distill import _backfill_procedural_h1_steps
+
+        h1_diag = _backfill_procedural_h1_steps(
+            extract_result.data, raw_content
+        )
+        if h1_diag.get("h1_added"):
+            floor_result = evaluate_integrity_floor(
+                extract_result.data, content_lane, raw_anchors=raw_anchor_set
+            )
+            floor_result.meta["procedural_h1_backfill_applied"] = True
+            _log_event(
+                config, "distill_extract", "procedural_h1_backfill",
+                _compute_raw_hash(raw_path),
+                {
+                    "applied": True,
+                    "commands_found": h1_diag.get("commands_found", 0),
+                    "h1_added": h1_diag.get("h1_added", 0),
+                    "passed_after": floor_result.passed,
+                },
+            )
+
     # F2-B: traceability 有界 retake — floor 因 traceability fail 时,重发
     # interpretation + grounded anchors 给 LLM 补 traces_to/改判 provenance,重评 floor。
     # TRACEABILITY_RETAKE_MAX=1(具名,有界);不放宽 floor;retake 后仍 fail → fail-closed。

@@ -1508,10 +1508,20 @@ def _build_extract_segment_messages(
             "- how_level: 标注每步的机制层级——H1=命令级（可直接执行的命令/调用）；"
             "H2=数据流/状态/接口说明级（讲清数据怎么流、状态怎么变、接口怎么对接）；"
             "H3=命名机制组件+因果边级（讲清是哪几个命名组件、组件间因果如何驱动）。\n"
+            "  [F43] procedural/how-to 原文:每个编号命令步骤（\"1. Navigate to Databases → "
+            "Provision\"）与 fenced 代码块里的 shell 命令（`deno run --tunnel dev`、"
+            "`npm install`、`git clone`）必须逐条抽为 how_level=H1 的 how_step，"
+            "command 逐字复制命令本身（含参数/标志），instruction 写步骤说明；"
+            "若原文有终端命令/代码操作而你产 how_steps 无 H1 → 提取失败（H1<1 地板会拦）。\n"
             "- mechanism_components: 命名机制组件数组，概念型原文须 ≥3 个命名组件。\n"
             "  \"命名组件\"=原文用专有名词/加粗/大写首字母/引号命名的角色或部分"
             "(如 Brain/Hands/Session、planners/workers/judges、Ralph loop),"
             "不是泛词(agent/loop)或操作步骤(Call the agent/Go back to step 1)。\n"
+            "  [F43] 组件必须包含**参与因果/依赖关系的实体**——被 dispatch/trigger/feed/"
+            "check/before/when/if/ensures/prevents 连接的角色（如 Fresh 的 islands/partials、"
+            "Deno Sandbox 的 secrets/placeholder/egress），不只是章节标题的框架特性名；"
+            "逐节读正文因果句挖参与者，否则 causal_edges 抽不出 eligible 边"
+            "（F4 0 eligible 会拦）。\n"
             "  组件常藏在章节正文句子里(如\"X 由 A/B/C 三部分组成:A 是...,"
             "B 是...,C 是...\"),必须逐节读正文挖,不停在章节标题或首句碎片。\n"
             "  每项含:{name(必填,原文逐字命名), role(职责), aliases(可选,同义名/简称数组), "
@@ -3477,10 +3487,102 @@ def _scan_real_mechanism_components(raw_content: str) -> list[dict[str, str]]:
     return components
 
 
+# F43: 代码实体 stoplist——inline backtick token / fenced 代码块 object-key 扫描时剔除的
+# 代码关键字 + 通用配置泛词（非机制实体）。这些是 verbatim raw 代码标识符里最常见的
+# 非机制噪声（return/import/await/options/config/...），剔除以守"宁缺勿假"——只把真正
+# 的机制旋钮/参数/特性名收为组件候选。
+_CODE_ENTITY_STOPLIST: frozenset[str] = frozenset({
+    # 代码关键字 / 控制流
+    "return", "await", "import", "from", "const", "let", "var", "function",
+    "async", "export", "default", "new", "class", "this", "self", "def",
+    "nil", "null", "true", "false", "none", "void", "typeof", "instanceof",
+    "yield", "break", "continue", "throw", "try", "catch", "finally",
+    "switch", "case", "public", "private", "protected", "static", "get",
+    "set", "if", "else", "for", "while", "with",
+    # 通用配置/参数泛词（非机制旋钮）
+    "key", "value", "name", "type", "data", "result", "ctx", "app", "req",
+    "res", "err", "error", "options", "config", "props", "args", "params",
+    "env", "out", "build", "production", "dev", "test", "src", "dist",
+    "host", "port", "path", "url", "method", "status", "code", "id",
+})
+
+# fenced 代码块内 shell 命令前缀——procedural H1 兜底扫描只认这些 CLI 的真实命令行，
+# 剔除 JS `export function` / `return ctx` 等代码语句被误当 shell 命令（F43 prototype 暴露）。
+_SHELL_CMD_PREFIX_RE: re.Pattern[str] = re.compile(
+    r"^(?:deno|npm|npx|pnpm|yarn|cargo|go|python|python3|pip|pip3|node|git|"
+    r"curl|wget|docker|kubectl|make|cmake|aws|gcloud|az|brew|apt|rustup|"
+    r"cargo|tsc|eslint|prettier|vitest|pytest|bash|sh)\s+\S"
+)
+
+
+def _scan_code_entities(raw_content: str) -> list[dict[str, str]]:
+    """F43: 扫 raw 的代码实体作机制组件候选（concept 0-eligible 救援）。
+
+    离线复现暴露：concept floor-death（Fresh 2.3 / Deno Sandbox）的根因是
+    ``_scan_real_mechanism_components`` 只认编号标题/§-anchor 标题/表格/编号列表形态，
+    对散文体博文返回 0 组件 → ``_build_real_causal_edges`` 因 <2 组件共现产 0 eligible 边。
+    但这类博文的机制参与者（islands/partials/nonce/secrets/allowNet/hosts）以 **inline
+    backtick 代码 token** 或 **fenced 代码块 object key** 形式逐字存在于 raw——这是
+    verbatim raw、显式标注为代码/技术术语的强信号，收为组件候选不造假。
+
+    返回 ``[{name, role}]``（去重保序，上限 FALLBACK_MAX_COMPONENTS）：
+      1. inline backtick 标识符（`` `nonce` `` / `` `f-client-nav` ``）——identifier 形态
+         （字母/下划线起 + 含字母数字/下划线/连字符，len 2-40），剔除 _CODE_ENTITY_STOPLIST；
+      2. fenced 代码块内 object key（行 ``  secrets: {`` / ``  allowNet: [``）——SDK 配置
+         旋钮/参数名，是机制旋钮的强信号，剔除 stoplist。
+
+    纯散文无代码实体 → 返空集（fail-closed，不凑数）。所有 name 逐字来自 raw，不合成。
+    """
+    if not raw_content:
+        return []
+    components: list[dict[str, str]] = []
+    seen: set[str] = set()
+    # 1. inline backtick identifiers
+    for tok in re.findall(r"`([a-zA-Z_][a-zA-Z0-9_-]{1,39})`", raw_content):
+        tl = tok.lower()
+        if tl in _CODE_ENTITY_STOPLIST or tl in _COMPONENT_VARIANT_STOPLIST:
+            continue
+        if tok in seen:
+            continue
+        seen.add(tok)
+        components.append({"name": tok, "role": "raw 代码机制实体"})
+        if len(components) >= FALLBACK_MAX_COMPONENTS:
+            return components
+    # 2. fenced 代码块 object keys（  ident:  形态，缩进 ≥2）
+    in_fence = False
+    for line in raw_content.splitlines():
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if not in_fence:
+            continue
+        m = re.match(r"\s{2,}([a-zA-Z_][a-zA-Z0-9_]{1,39})\s*:", line)
+        if not m:
+            continue
+        tok = m.group(1)
+        tl = tok.lower()
+        if tl in _CODE_ENTITY_STOPLIST or tl in _COMPONENT_VARIANT_STOPLIST:
+            continue
+        if tok in seen:
+            continue
+        seen.add(tok)
+        components.append({"name": tok, "role": "raw 代码机制实体"})
+        if len(components) >= FALLBACK_MAX_COMPONENTS:
+            break
+    return components
+
+
 # P1-A: 真实因果/依赖/触发语言连接词（禁排版顺序边替代因果边）
 # §0.2/F7：因果连接词集——增强以覆盖 ag2 等真实 raw 的显式关系动词
 # （dispatch/collect/feeds/register/spawn/route/forward/return 等）。
 # 旧集只认 "dispatches to"（须带 to）/feeds? 等，ag2 "dispatch"/"collect" 抽不到 → 0 source_causal。
+# F43: 扩条件-因果连接词（when/if/then/unless/so that/therefore/because/since/ensures/
+# prevents/allows/requires/in order to/only when/materializes/never enter/exfiltrate/
+# ships with/stops/generates/adds/overrides/restricts/calls out）——离线复现暴露 concept
+# floor-death（Fresh 2.3 / Deno Sandbox）的因果句 "only when the sandbox makes an outbound
+# request" / "secrets never enter the environment" 用 when/never enter 表因果，旧集不认 → 漏抽。
+# 安全口径：连接词只决定"哪些句被扫"，仍须 ≥2 组件共现 + 真实 §-anchor 才产 eligible 边
+# （count_eligible_edges 双门），无原文支撑不编造（宁缺勿假红线不越）。
 _CAUSAL_CONNECTOR_RE = re.compile(
     r"(?i)\b(?:leads?\s+to|triggers?|feeds?(?:\s+(?:to|into))?|enables?|activates?|"
     r"depends?\s+on|before|after|causes?|results?\s+in|produces?|"
@@ -3489,7 +3591,11 @@ _CAUSAL_CONNECTOR_RE = re.compile(
     r"→|consumes?|notifies|"
     r"collects?|registers?|spawns?|terminates?|returns?|routes?|forwards?|"
     r"delegates?|assigns?|publishes?|subscribes?|emits?|delivers?|"
-    r"handoffs?|hand\s+offs?|transmits?|relays?)\b"
+    r"handoffs?|hand\s+offs?|transmits?|relays?|"
+    r"when|if|then|unless|so\s+that|therefore|thus|because|since|"
+    r"ensures?|prevents?|allows?|requires?|in\s+order\s+to|only\s+when|"
+    r"materializes?|never\s+enter|exfiltrate|ships?\s+with|stops?|"
+    r"generates?|adds?|overrides?|restricts?|calls?\s+out)\b"
 )
 
 
@@ -4117,6 +4223,23 @@ def _enrich_zero_eligible_with_deterministic(
         return diag
     # 1. 确定性组件,合并(别名感知 dedup)
     det_components = _scan_real_mechanism_components(raw_content)
+    # F43: 合并代码实体（inline backtick + fenced object-key）——散文体博文（Fresh 2.3 /
+    # Deno Sandbox）的结构性组件扫描返 0，但机制参与者以代码 token 逐字存在于 raw。
+    # 这些 verbatim raw 实体并入 det_components 后，_build_real_causal_edges 才有 ≥2
+    # 组件共现可产 source_causal eligible 边（concept 0-eligible 救援）。不造假：name 逐字来自 raw。
+    det_components = det_components + _scan_code_entities(raw_content)
+    # F43: det_components 内部按小写 dedup——防 struct 扫描的 heading 名（"Secrets"）与
+    # code entity（"secrets"）case 碰撞被 _component_match_variants [N1]a 歧义弃用两方，
+    # 导致因果句 <2 组件共现 → 0 eligible 边。保留首个出现（struct 优先于 code）。
+    _det_seen: set[str] = set()
+    _det_deduped: list[dict[str, str]] = []
+    for dc in det_components:
+        nl = str(dc.get("name", "")).strip().lower()
+        if not nl or nl in _det_seen:
+            continue
+        _det_seen.add(nl)
+        _det_deduped.append(dc)
+    det_components = _det_deduped
     existing_comps: list[dict[str, Any]] = list(
         extract_data.get("mechanism_components", []) or []
     )
@@ -4161,6 +4284,22 @@ def _enrich_zero_eligible_with_deterministic(
         for e in _build_real_causal_edges(comps_src, raw_content):
             if e.get("edge_kind") == "source_causal":
                 det_edges.append(e)
+    # F43: 跨集兜底——前两趟分离跑各自 0 边时，试合并集(det + LLM)抽边。散文体博文
+    # （Deno Sandbox）的因果句常跨集："Deno Sandbox"(LLM comp) + "secrets"(code 实体)
+    # 同句，分离跑各只 1 命中 <2 → 0 边。合并跑让跨集对成边；[N1]a 仍护真碰撞
+    # （slug vs 原名同名弃用两方，安全）。仅 0 边时触发，保守。
+    if not det_edges:
+        _merged_seen: set[str] = set()
+        merged_comps: list[dict[str, str]] = []
+        for dc in (*det_components, *original_llm_comps):
+            nl = str(dc.get("name", "")).strip().lower()
+            if not nl or nl in _merged_seen:
+                continue
+            _merged_seen.add(nl)
+            merged_comps.append(dc)
+        for e in _build_real_causal_edges(merged_comps, raw_content):
+            if e.get("edge_kind") == "source_causal":
+                det_edges.append(e)
     if not det_edges:
         diag["enriched"] = added_comp  # 加了组件但没边 → 仍需重评(组件数可能救 <3 那条)
         return diag
@@ -4190,6 +4329,108 @@ def _enrich_zero_eligible_with_deterministic(
     # F8-D: 边端点命名归一(det 边用原名,LLM 边可能小写/别名→统一 canonical name)
     _normalize_edge_endpoints_to_canonical(extract_data)
     diag["enriched"] = added_comp or added_edge or diag["edges_dropped_endpoint"] > 0
+    return diag
+
+
+# F43: procedural H1 兜底扫描的 how_step 上限（有界预算，防 changelog 类长清单灌水）
+PROCEDURAL_H1_BACKFILL_MAX: int = 6
+
+
+def _backfill_procedural_h1_steps(
+    extract_data: dict[str, Any], raw_content: str | None
+) -> dict[str, Any]:
+    """F43: procedural H1 命令级步骤确定性兜底（floor-death 救援）。
+
+    离线复现暴露：procedural floor-death（dino game pt.4/pt.5）的根因是 LLM extract 产
+    how_steps 时漏标 how_level=H1（"无 H1 命令级步骤（H1<1）"），即便 raw 有明示的
+    fenced shell 命令（``deno run --tunnel dev``）与 inline backtick 命令（``deno task dev``）。
+    本函数在 maker 侧补这一刀：扫 raw 的 fenced 代码块 shell 命令行 + inline backtick
+    命令 token，逐字作 how_level=H1 的 how_step 并入 extract_data.how_steps，重评 floor。
+
+    安全口径（宁缺勿假红线不越）：
+      - command 逐字复制自 raw（fenced 行原文 / backtick 内原文），不合成、不补 AKB 自己的命令；
+      - 只认 _SHELL_CMD_PREFIX_RE 命中的真实 CLI 命令行（deno/npm/npx/git/curl/... + 空格 + 参数），
+        剔除 JS ``export function`` / ``return ctx`` 等代码语句被误当 shell 命令（prototype 暴露）；
+      - evidence_anchor 映射到真实 raw §-anchor（_nearest_preceding_anchor），不造假 anchor；
+      - provenance=source_grounded（逐字来自 raw）。
+    无真命令 → 0 H1 加 → floor 仍 fail-closed（不靠编造蒙混）。
+
+    Returns: {h1_added, commands_found}。caller(runner)记 ledger + 重评 floor。
+    """
+    diag: dict[str, Any] = {"h1_added": 0, "commands_found": 0}
+    if not raw_content:
+        return diag
+    anchor_positions = _raw_anchor_positions(raw_content)
+    raw_steps: list[tuple[str, str, str]] = []  # (instruction, command, anchor)
+    seen_cmd: set[str] = set()
+    in_fence = False
+    for line in raw_content.splitlines():
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        stripped = line.strip()
+        if in_fence:
+            # fenced 代码块内的 shell 命令行
+            if _SHELL_CMD_PREFIX_RE.match(stripped):
+                cmd = stripped
+                if cmd in seen_cmd:
+                    continue
+                seen_cmd.add(cmd)
+                pos = raw_content.find(line)
+                anc = (
+                    _nearest_preceding_anchor(pos, anchor_positions)
+                    if pos >= 0
+                    else "§A"
+                )
+                raw_steps.append((f"Run: {cmd[:80]}", cmd, anc or "§A"))
+        else:
+            # inline backtick 命令 token（须含 CLI 前缀 + 空格 + 参数，4-80 字符）
+            for m in re.finditer(r"`([^`]{4,80})`", line):
+                tok = m.group(1).strip()
+                if not _SHELL_CMD_PREFIX_RE.match(tok):
+                    continue
+                if tok in seen_cmd:
+                    continue
+                seen_cmd.add(tok)
+                pos = raw_content.find(m.group(0))
+                anc = (
+                    _nearest_preceding_anchor(pos, anchor_positions)
+                    if pos >= 0
+                    else "§A"
+                )
+                raw_steps.append((f"Run: {tok[:80]}", tok, anc or "§A"))
+    diag["commands_found"] = len(raw_steps)
+    if not raw_steps:
+        return diag
+    existing: list[dict[str, Any]] = list(extract_data.get("how_steps", []) or [])
+    existing_cmds: set[str] = {
+        str(s.get("command", "")).strip()
+        for s in existing
+        if isinstance(s, dict)
+    }
+    added = 0
+    for instr, cmd, anc in raw_steps:
+        if cmd in existing_cmds:
+            continue
+        if len(existing) >= PROCEDURAL_H1_BACKFILL_MAX:
+            break
+        existing_cmds.add(cmd)
+        norm = _normalize_how_step(
+            {
+                "instruction": instr,
+                "command": cmd,
+                "executable": True,
+                "anchor": anc,
+                "provenance": "source_grounded",
+                "how_level": "H1",
+            },
+            len(existing) + 1,
+        )
+        existing.append(norm)
+        added += 1
+    if added:
+        extract_data["how_steps"] = existing
+    diag["h1_added"] = added
     return diag
 
 
