@@ -114,6 +114,13 @@ _DEFAULT_DOMAIN_TAXONOMY: list[str] = [
     "MCP",
     "A2A",
     "LangGraph",
+    # [F39 扩锚 2026-07-11,用户授权"直接修正"] LLM 内部机制类知识纳入库 scope:
+    # F38 域内批次 6/25 死于 topic_relevance,死者全是 LLM 架构/可解释性/RAG 深文
+    # (Raschka/EleutherAI/dbreunig)。扩的是收录学科范围,机制/证据/新颖度标准零动。
+    # 与 skillpack/quality/concept-index-injection.md 保持两端同步。
+    "LLM Architecture & Training",
+    "LLM Inference & Interpretability",
+    "RAG & Retrieval Engineering",
 ]
 
 # ---------------------------------------------------------------------------

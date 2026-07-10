@@ -34,6 +34,12 @@ status: active
 
 14. **Game Design** — 游戏设计方法论、机制设计、关卡设计
 
+### LLM 系统机制(F39 扩锚 2026-07-11)
+
+15. **LLM Architecture & Training** — LLM 架构、训练机制、微调、对齐方法
+16. **LLM Inference & Interpretability** — 推理优化、量化、可解释性、机制分析
+17. **RAG & Retrieval Engineering** — 检索增强生成、embedding、重排、知识管道
+
 ### 工程基础设施
 
 15. **Knowledge Engineering** — 知识工程、知识图谱、信息抽取
