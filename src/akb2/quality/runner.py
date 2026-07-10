@@ -223,6 +223,66 @@ def _existing_source_page_for_raw(
     return None
 
 
+# ---------------------------------------------------------------------------
+# F39: 基础设施性 abort 自动重审(有界,质量零影响)
+# ---------------------------------------------------------------------------
+
+# 具名预算:每篇基础设施性死亡自动 requeue 一次(宪法 P1 有界)
+AUTO_INFRA_REQUEUE_MAX: int = 1
+_AUTO_INFRA_REASON_PREFIX = "auto_infra_retry(F39)"
+# 基础设施性错误指纹:LLM 服务宕机/超时/传输失败——文章未被任何质量判定否决,
+# 纯撞故障窗口。内容性死因(fallback fail-closed 组件不足/地板/评分缺陷)不触发。
+_INFRA_ERROR_MARKERS: tuple[str, ...] = (
+    "裁判不可用",          # grader_fallback_not_allowed(GPT-5.4 宕机,fail-closed)
+    "LLMTimeout",          # 超时异常类名
+    "timed out",
+    "抽取调用失败",         # extract LLM transport 硬失败(F20 语义)
+    "llm_failed",
+    "评分器双不可用",       # grader_all_down
+)
+
+
+def _is_infra_error(error_text: str) -> bool:
+    t = str(error_text or "")
+    return any(m in t for m in _INFRA_ERROR_MARKERS)
+
+
+def _maybe_auto_infra_requeue(
+    config: RunnerConfig, content_hash: str, error_text: str
+) -> bool:
+    """abort 后若属基础设施性死亡 → 自动追加 requeue 事件一次(F26 语义重开)。
+
+    质量零影响:重审重跑全部闸门(admission/地板/评分/五闸原样);预算
+    AUTO_INFRA_REQUEUE_MAX=1——账本已有本篇 auto_infra_retry 标记则不再追加,
+    防故障窗口内无限循环(宪法 P1)。fail-visible:requeue reason 携原错误。
+    """
+    if not _is_infra_error(error_text):
+        return False
+    try:
+        ledger = Path(config.ledger_path)
+        if ledger.exists():
+            with open(ledger, encoding="utf-8") as fh:
+                for line in fh:
+                    try:
+                        e = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if (
+                        e.get("content_hash") == content_hash
+                        and e.get("event") == "requeue"
+                        and str(e.get("details", {}).get("reason", "")).startswith(
+                            _AUTO_INFRA_REASON_PREFIX
+                        )
+                    ):
+                        return False  # 预算已用(一生一次)
+    except OSError:
+        return False  # 账本不可读 → 不重审(fail-closed,不盲目追加)
+    return _log_event(
+        config, "requeue", "requeue", content_hash,
+        {"reason": f"{_AUTO_INFRA_REASON_PREFIX}: {str(error_text)[:140]}"},
+    )
+
+
 def _is_processed(content_hash: str, ledger_path: str) -> bool:
     """检查 content_hash 是否处于终态(finalize/abort 之后无 requeue)。
 
@@ -1638,6 +1698,8 @@ def _run_pipeline_segments(
         if distill_meta.get("fallback_quality_basis"):
             details["fallback_quality_basis"] = distill_meta.get("fallback_quality_basis")
         _log_event(config, "abort", failed_node, content_hash, details)
+        # F39: 基础设施性死亡(LLM 宕机/超时)自动重审一次;内容性死因不触发
+        _maybe_auto_infra_requeue(config, content_hash, str(error_detail))
         return {
             "converged": False,
             "rounds": rounds,
@@ -1754,6 +1816,9 @@ def _run_pipeline_segments(
                         quality_meta.get("repair_trace_paths", []) if quality_meta else []
                     ),
                 })
+        # F39: 裁判宕机(grader_fallback_not_allowed/grader_all_down)等基础设施性
+        # 死亡自动重审一次;修复不收敛等内容性死因不触发
+        _maybe_auto_infra_requeue(config, content_hash, str(error_detail))
         return {
             "converged": False,
             "rounds": rounds,
