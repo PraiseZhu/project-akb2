@@ -292,7 +292,8 @@ def check_a2_frontmatter(
     A2: source_refs≥1, future_questions 2-3, related_concepts≥2,
         gate_decision 必须 null, gate_reason≤150 字符
 
-    §0.2/D8：concept + proposal 模式接受 ``related_concepts>=2 OR proposed_graph_nodes>=1``
+    §0.2/D8：proposal 模式（concept 与 procedural,F40 车道对齐）接受
+    ``related_concepts>=2 OR proposed_graph_nodes>=1``
     （冷启动：resolver 未 resolve 足够 related 时，写 proposed_graph_nodes 待 adjudication）。
     active/lint（promotion_mode != proposal）仍要求真实 related_concepts>=2（proposed
     不替代 active 的 real_link）。
@@ -388,17 +389,23 @@ def check_a2_frontmatter(
                     )
                 )
 
-    # related_concepts >= 2  （§0.2/D8：concept+proposal 接受 proposed_graph_nodes>=1 替代）
+    # related_concepts >= 2  （§0.2/D8：proposal 模式接受 proposed_graph_nodes>=1 替代）
+    # [F40 2026-07-11] D8 冷启动豁免扩到 procedural 车道:冷启动 vault 无概念可
+    # resolve 与车道无关,compose 侧 D8 块本就 lane-agnostic 写 proposed_graph_nodes,
+    # 但本检查旧版只认 concept → procedural 候选确定性团灭(全修复时代 2.2 天内
+    # 22 篇 compose 自审门死亡全是 procedural,其中 11 篇唯一死因即本条)。
+    # 语义对齐非放宽:替代仍要求 proposed_graph_nodes>=1(真实引用概念);
+    # 非 proposal 模式(active 写入)仍要求真实 related>=2(D8 底线不动)。
     rc = fm.get("related_concepts", [])
     proposed_nodes = fm.get("proposed_graph_nodes", [])
-    is_concept_proposal = (
-        str(content_lane).lower() == "concept"
+    is_coldstart_proposal = (
+        str(content_lane).lower() in ("concept", "procedural")
         and str(promotion_mode).lower() == "proposal"
     )
     if isinstance(rc, list):
         rc_ok = len(rc) >= MIN_RELATED_CONCEPTS
         proposed_ok = (
-            is_concept_proposal
+            is_coldstart_proposal
             and isinstance(proposed_nodes, list)
             and len(proposed_nodes) >= 1
         )
@@ -410,15 +417,15 @@ def check_a2_frontmatter(
                     defect=(
                         f"related_concepts 数量不足: {len(rc)} < {MIN_RELATED_CONCEPTS}"
                         + (
-                            "（concept+proposal 可用 proposed_graph_nodes>=1 替代）"
-                            if is_concept_proposal
+                            "（proposal 冷启动可用 proposed_graph_nodes>=1 替代）"
+                            if is_coldstart_proposal
                             else ""
                         )
                     ),
                     suggestion=(
                         "添加至少 2 个可 resolve 的相关概念"
-                        + ("，或 concept 冷启动写 proposed_graph_nodes>=1"
-                           if is_concept_proposal else "")
+                        + ("，或冷启动写 proposed_graph_nodes>=1"
+                           if is_coldstart_proposal else "")
                     ),
                 )
             )
