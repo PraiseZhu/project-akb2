@@ -903,15 +903,21 @@ def _run_distill_segment(
                  **enrich_diag, "passed_after": floor_result.passed},
             )
 
-    # F2-B: traceability 有界 retake — floor 仅因 traceability fail(其余 floor 全过)时,
-    # 重发 interpretation + grounded anchors 给 LLM 补 traces_to/改判 provenance,重评 floor。
+    # F2-B: traceability 有界 retake — floor 因 traceability fail 时,重发
+    # interpretation + grounded anchors 给 LLM 补 traces_to/改判 provenance,重评 floor。
     # TRACEABILITY_RETAKE_MAX=1(具名,有界);不放宽 floor;retake 后仍 fail → fail-closed。
+    # [F42 2026-07-11 全链路排查] 触发门放宽两处(glm 审计:retake 触发 15 次救回
+    # 15 次=100%,但旧门挡掉 12 例可救案例):
+    #   ① lane 门 concept→(concept|procedural):procedural 的 traceability fail 旧版
+    #     永不 retake(4 例 interp-only 白死);
+    #   ② 单一 fail 门 ==[traceability] → in failed_floors:trace+F4 同 fail(8 例)
+    #     先补 trace 再全量重评——F4 仍 fail 则照死,floor 零放宽。
     from src.akb2.quality.integrity_floor import FLOOR_INTERPRETATION_TRACEABILITY
 
     if (
-        str(content_lane).lower() == "concept"
+        str(content_lane).lower() in ("concept", "procedural")
         and extract_result.success
-        and floor_result.failed_floors == [FLOOR_INTERPRETATION_TRACEABILITY]
+        and FLOOR_INTERPRETATION_TRACEABILITY in floor_result.failed_floors
         and not floor_result.meta.get("traceability_retake_applied")
     ):
         retaken, retake_diag = _run_traceability_retake_worker(
