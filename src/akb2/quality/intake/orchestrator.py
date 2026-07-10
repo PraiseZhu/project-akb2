@@ -312,13 +312,13 @@ def _process_article(
 # ---------------------------------------------------------------------------
 
 
-def _source_rotation_offset(num_sources: int, interval_s: int = 7200) -> int:
+def _source_rotation_offset(num_sources: int, interval_s: int = 900) -> int:
     """F22: 每轮轮转起点——按时间(interval_s)轮转,保证后排源不饿死。
 
     cap=5 解决单源垄断(每轮 6 源有份),但 sources 顺序固定时每轮同前 6 源,
     后排源(第 7+)永远排不上。轮转起点每 interval_s 秒 +1,163 源 / 6 源每轮 ≈ 27 轮
     周期全覆盖(实际 cap+limit 下每天 4 轮,~40 天全覆盖后排源;比固定顺序强)。
-    生产 intake 定时器 StartInterval=7200(2h),与此 interval_s 对齐。
+    生产 intake 定时器 StartInterval=900(15min,F41 用户明令 7×24 连续),与此 interval_s 对齐。
     """
     if num_sources <= 0:
         return 0

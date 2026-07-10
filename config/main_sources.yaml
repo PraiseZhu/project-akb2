@@ -1,4 +1,4 @@
-# AKB2 主源清单 — 95 源配置(82 + 循环4 扩充 8 + F38 域内修正 5)
+# AKB2 主源清单 — 100 源配置(95 + F41 连续抓取扩池 5)
 #
 # 来源: docs/loops-design-decisions.md §11 (23 核心 + 29 补充 + 24 源头权威扩充)
 #       + awesome-evals seeds.json 扩充 6 (interconnects/arxiv-agent-eval/latent-space/leehanchung/openai-news/hf-papers)
@@ -901,3 +901,53 @@ sources:
     status: trial
     category: supplementary
     notes: "Cameron Wolfe — LLM 机制原理长文(架构/训练/推理拆解)"
+
+  # =========================================================================
+  # F41 连续抓取扩池 (5) — 2026-07-11(用户明令:7×24 + 补同标准源,目标 50/天)
+  # 全部 taxonomy 域内(LLM 机制/工程)× feed 实测 200+XML
+  # =========================================================================
+
+  - slug: phil-schmid
+    domain: philschmid.de
+    feed_url: https://www.philschmid.de/rss
+    listing_url: https://www.philschmid.de
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Phil Schmid — LLM 部署/微调/推理工程实操(Google DeepMind)"
+
+  - slug: oxen-ai
+    domain: ghost.oxen.ai
+    feed_url: https://ghost.oxen.ai/rss/
+    listing_url: https://ghost.oxen.ai
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Oxen AI — arXiv Dives 论文机制逐段拆解系列"
+
+  - slug: maarten-grootendorst
+    domain: newsletter.maartengrootendorst.com
+    feed_url: https://newsletter.maartengrootendorst.com/feed
+    listing_url: https://newsletter.maartengrootendorst.com
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Maarten Grootendorst — LLM 机制可视化长文(BERTopic 作者)"
+
+  - slug: kexue-fm
+    domain: kexue.fm
+    feed_url: https://kexue.fm/feed
+    listing_url: https://kexue.fm
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "苏剑林(科学空间)— LLM 架构/注意力/位置编码数理机制深文"
+
+  - slug: explosion-ai
+    domain: explosion.ai
+    feed_url: https://explosion.ai/feed
+    listing_url: https://explosion.ai/blog
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Explosion — NLP 工程/spaCy 团队(工业级管线设计)"
