@@ -252,3 +252,45 @@ Ring 3 进化循环(月):功能架构自我迭代
 - `plans/gd/2026-06-12-content-quality-loop`(Plan 1 主链路):step-4(质量评估与修复)需重写 repair;SC-3「≥90% 正样本 ≤3 轮」受 repair 阻塞,C+ 收敛是解锁前提。
 - `plans/gd/2026-06-14-cql-intake`:已交付(archived 0→4),非阻塞。
 - `plans/gd/2026-06-15-cql-backhalf`:已实测出 repair 空转;C+ repair 重写是其自然续作(见该计划 v4 修订)。
+
+## 13. F46 needs_repair 驻留通路(2026-07-12,用户明令)
+
+### 背景
+CONTENT-LIFECYCLE §2 早已定义 `needs_repair` 状态("有价值但未达 active 标准,留 staging,
+修复后重新过门控"),但 runner 短路成 abort——repair 不收敛即永久出局。近 24h 数据:
+~50 篇/天死于修复不收敛,同文重掷 grader 转正概率经验值 20-50%(replit 四掷两中)。
+补齐后:不收敛候选驻留,低频重掷 grader+repair,收敛走正常门控入库,超龄淘汰。
+
+### 预算(宪法 P1 有界,具名常量)
+- `NEEDS_REPAIR_MAX_RETAKES = 3` —— 每篇一生最多 3 次重掷(驻留次数上限)。
+- `NEEDS_REPAIR_MIN_INTERVAL_H = 20` —— 两掷间隔 ≥20h,让 grader 骰子跨会话。
+- `NEEDS_REPAIR_PER_CYCLE = 2` —— 每轮主循环空闲期最多掷 2 篇(新文章优先,驻留池吃空闲)。
+
+### 停止条件
+- 收敛 → 走完全链下游(A 层结构校验 → 硬门 → promote 五闸 → finalize,同函数同判定不开旁门),
+  清理驻留文件。
+- 3 次重掷耗尽 → 记 `abort`(reason=`needs_repair_expired`),清理驻留文件,恢复可被
+  F26 requeue 手动重开(语义不变)。
+- 驻留扫描异常 → catch + ledger `abort needs_repair`(reason=`residency_rethrow_error`),
+  **不得杀死主循环**(7×24 daemon 生命线)。
+
+### 分流边界(判定链零动)
+非收敛分流只看 `failure_signature`:
+- `distill_no_converge`(repair 跑完缺陷残留,内容性)→ needs_repair 驻留。
+- 其余(`repair_route_failed`/`repair_worker_*` 子进程崩溃、`grader_all_down`/`grader_fallback_not_allowed`
+  裁判宕机、`repair_idle_early_stop` 早停等过程性死亡)→ 现有 `abort` + F39 requeue(全链重跑)。
+- `integrity_floor_failed`(不可补偿硬证)→ reject(不变)。
+- 判定链零动:grader/floor/A 层/五闸/promote 全不碰,驻留只给"再掷一轮"的入口。
+
+### 与 F26 requeue 的区别
+| 维度 | F26 requeue | F46 needs_repair 驻留 |
+|------|------------|----------------------|
+| 触发 | infra 死亡(裁判宕机/worker 崩溃)自动 1 次;或手动 CLI | 内容不收敛(repair 跑完缺陷残留)自动驻留 |
+| 重跑范围 | 全链重跑(admission→提炼→评分→修复) | 只重跑 grader+repair(从 final_text 续,不重新 intake/提炼) |
+| 进度 | 推倒重来 | 已修好的不推倒(final_text 持久化 `<staging>/needs-repair/<hash>.md`) |
+| 预算 | 一生 1 次(AUTO_INFRA_REQUEUE_MAX=1) | 一生 3 次(NEEDS_REPAIR_MAX_RETAKES=3),间隔 ≥20h |
+| 终态 | 重审产生新终态(可再 requeue) | 收敛→finalize / 超龄→expired abort(后可被 F26 requeue 手动重开) |
+
+### _is_processed 三态语义
+主扫描(`_scan_queue`)跳过:终态(finalize/abort 无后续 requeue) OR 驻留中(needs_repair 无后续终态)。
+驻留 hash `_is_resident=True`(由驻留扫描接管);终态 hash `_is_resident=False`;未处理 both=False。
