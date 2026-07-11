@@ -627,7 +627,10 @@ class TestRunnerLifelineSegments:
                     )
 
         assert result["converged"] is False
-        assert result["final_status"] in ("failed", "quarantined")
+        # F46: 内容不收敛(distill_no_converge)路由到 needs_repair 驻留(非 abort),
+        # 仍停链(无 promote);infra/过程性死亡才走 failed。
+        assert result["final_status"] in ("needs_repair", "failed", "quarantined")
+        assert not result.get("promoted")
 
     def test_repair_route_failed_writes_abort_without_promote(self, tmp_path: Path) -> None:
         """repair LLM route/worker 失败必须及时落主账本 abort。"""

@@ -39,6 +39,16 @@ WEEKLY_SPOT_CHECK_DAY: int = 6  # 周日 (0=Mon, 6=Sun)
 SPOT_CHECK_SAMPLE_SIZE: int = 3  # 周抽检样本数
 SPOT_CHECK_PASS_THRESHOLD: float = 0.8  # 达标率阈值
 MAX_PROCESSING_LOCK_AGE_SEC: int = 3600  # 锁文件最大年龄（超时自动清理）
+
+# F46 needs_repair 驻留通路预算（宪法 P1 有界）：
+#   repair 不收敛(内容性,非 infra/floor) → 驻留(非 abort),低频重掷 grader+repair,
+#   收敛走正常门控入库,超龄淘汰。重掷从上次 repair 的 final_text 续(已修好的不推倒),
+#   不重新 intake/提炼。与 F26 requeue 的区别:requeue=全链重跑,驻留=从 final_text 续掷。
+NEEDS_REPAIR_MAX_RETAKES: int = 3       # 每篇一生最多 3 次重掷（驻留次数上限）
+NEEDS_REPAIR_MIN_INTERVAL_H: int = 20   # 两掷间隔 ≥20h（让 grader 骰子跨会话）
+NEEDS_REPAIR_PER_CYCLE: int = 2          # 每轮主循环空闲期最多掷 2 篇（新文章优先,驻留池吃空闲）
+NEEDS_REPAIR_SUBDIR: str = "needs-repair"  # 驻留 final_text 持久化子目录（相对 staging）
+
 DISTILL_TIMEOUT_S: float = 60.0
 DISTILL_MAX_RETRIES: int = 0
 # F10-D: A/B 双臂基建——env 覆盖模型族(与 distill.DISTILL_MODEL_FAMILY 同源,
@@ -284,11 +294,17 @@ def _maybe_auto_infra_requeue(
 
 
 def _is_processed(content_hash: str, ledger_path: str) -> bool:
-    """检查 content_hash 是否处于终态(finalize/abort 之后无 requeue)。
+    """检查 content_hash 是否应被主扫描跳过（终态 或 F46 驻留中）。
 
     F26(有界 re-enqueue):`requeue` 事件出现在最近一次终态**之后** → 视为
     未处理,daemon 下轮 poll 重审;重审产生的新终态再次生效(可再 requeue,
     每次都需显式手动 CLI,无自动循环)。按账本行序判定,幂等。
+
+    F46(needs_repair 驻留):`needs_repair` 事件(非 abort)且无后续终态 → 视为
+    已处理,主扫描跳过(不重新 intake 全链),由驻留扫描 `_run_residency_cycle`
+    接管重掷;收敛记 finalize / 超龄记 abort 后恢复可被 F26 requeue 手动重开
+    (语义不变)。三态:终态(processed=True,resident=False)/ 驻留中
+    (processed=True,resident=True)/ 未处理(both=False)。
     """
     ledger = Path(ledger_path)
     if not ledger.exists():
@@ -308,14 +324,227 @@ def _is_processed(content_hash: str, ledger_path: str) -> bool:
                     continue
                 if entry.get("content_hash") != content_hash:
                     continue
-                if entry.get("event") in terminal_events:
+                ev = entry.get("event")
+                if ev in terminal_events:
                     processed = True
-                elif entry.get("event") == "requeue":
+                elif ev == "requeue":
                     processed = False
+                elif ev == "needs_repair":
+                    # F46: 驻留中 → 主扫描跳过,由驻留扫描接管。
+                    processed = True
     except OSError:
         return False
 
     return processed
+
+
+# ---------------------------------------------------------------------------
+# F46 needs_repair 驻留通路
+# ---------------------------------------------------------------------------
+
+
+def _is_resident(content_hash: str, ledger_path: str) -> bool:
+    """F46: hash 是否处于 needs_repair 驻留中(有 needs_repair 事件,且无后续终态/requeue)。
+
+    与 _is_processed 的区别:终态 hash _is_resident=False;驻留 hash _is_resident=True。
+    用于驻留扫描筛选可重掷的候选。
+    """
+    ledger = Path(ledger_path)
+    if not ledger.exists():
+        return False
+    terminal_events = {"finalize", "abort"}
+    has_needs_repair = False
+    try:
+        with open(ledger, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("content_hash") != content_hash:
+                    continue
+                ev = entry.get("event")
+                if ev == "needs_repair":
+                    has_needs_repair = True
+                elif ev in terminal_events:
+                    has_needs_repair = False  # 收敛入库 / 超龄 abort 后不再是驻留
+                elif ev == "requeue":
+                    has_needs_repair = False  # F26 手动重开 → 重新 intake 全链
+    except OSError:
+        return False
+    return has_needs_repair
+
+
+def _needs_repair_event_count(content_hash: str, ledger_path: str) -> int:
+    """F46: 该 hash 已记的 needs_repair 事件数（= 已驻留次数,用于预算判定）。"""
+    ledger = Path(ledger_path)
+    if not ledger.exists():
+        return 0
+    count = 0
+    try:
+        with open(ledger, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (
+                    entry.get("content_hash") == content_hash
+                    and entry.get("event") == "needs_repair"
+                ):
+                    count += 1
+    except OSError:
+        return 0
+    return count
+
+
+def _last_needs_repair_ts(content_hash: str, ledger_path: str) -> str | None:
+    """F46: 最近一次 needs_repair 事件的 ts（ISO Z 字符串），用于间隔守卫。无则 None。"""
+    ledger = Path(ledger_path)
+    if not ledger.exists():
+        return None
+    last_ts: str | None = None
+    try:
+        with open(ledger, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (
+                    entry.get("content_hash") == content_hash
+                    and entry.get("event") == "needs_repair"
+                    and entry.get("ts")
+                ):
+                    last_ts = entry["ts"]
+    except OSError:
+        return None
+    return last_ts
+
+
+def _needs_repair_dir(config: RunnerConfig) -> Path:
+    """F46: 驻留 final_text 持久化目录 <staging>/needs-repair/。"""
+    return Path(config.staging_dir) / NEEDS_REPAIR_SUBDIR
+
+
+def _resident_meta_path(config: RunnerConfig, content_hash: str) -> Path:
+    return _needs_repair_dir(config) / f"{content_hash}.json"
+
+
+def _resident_text_path(config: RunnerConfig, content_hash: str) -> Path:
+    return _needs_repair_dir(config) / f"{content_hash}.md"
+
+
+def _persist_resident(
+    config: RunnerConfig,
+    content_hash: str,
+    raw_path: str,
+    candidate_path: str,
+    final_text: str,
+    content_lane: str,
+    slug: str,
+    final_defects_summary: list[Any],
+    repair_rounds: int,
+) -> None:
+    """F46: 持久化驻留候选（final_text + 上下文 meta），供重掷从 final_text 续。
+
+    不丢进度为硬要求：final_text 写 <staging>/needs-repair/<hash>.md,
+    上下文(raw_path/candidate_path/content_lane/slug/retake/defects)写同名 .json。
+    重掷只重跑 grader+repair,不重新 intake/提炼。
+    """
+    nr_dir = _needs_repair_dir(config)
+    nr_dir.mkdir(parents=True, exist_ok=True)
+    _resident_text_path(config, content_hash).write_text(
+        final_text, encoding="utf-8"
+    )
+    meta = {
+        "content_hash": content_hash,
+        "raw_path": raw_path,
+        "candidate_path": candidate_path,
+        "content_lane": content_lane,
+        "slug": slug,
+        "final_defects_summary": final_defects_summary,
+        "repair_rounds": repair_rounds,
+        "retake_count": _needs_repair_event_count(
+            content_hash, config.ledger_path
+        ),
+        "persisted_at": _now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    _resident_meta_path(config, content_hash).write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def _load_resident(config: RunnerConfig, content_hash: str) -> dict[str, Any] | None:
+    """F46: 载入驻留候选（final_text + meta）。无则 None。"""
+    text_path = _resident_text_path(config, content_hash)
+    meta_path = _resident_meta_path(config, content_hash)
+    if not text_path.exists() or not meta_path.exists():
+        return None
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["final_text"] = text_path.read_text(encoding="utf-8")
+        return meta
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _purge_resident(config: RunnerConfig, content_hash: str) -> None:
+    """F46: 收敛入库 / 超龄淘汰后清理驻留文件（防目录膨胀）。"""
+    for p in (
+        _resident_text_path(config, content_hash),
+        _resident_meta_path(config, content_hash),
+    ):
+        try:
+            p.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _scan_residency(config: RunnerConfig) -> list[str]:
+    """F46: 扫驻留池,返回可重掷的 content_hash 列表（≤ NEEDS_REPAIR_PER_CYCLE）。
+
+    筛选:needs_repair 驻留中(无后续终态) + 间隔 ≥ NEEDS_REPAIR_MIN_INTERVAL_H
+    + 驻留次数 < NEEDS_REPAIR_MAX_RETAKES。新文章优先（主循环只在 queue 空时调本函数）。
+    """
+    nr_dir = _needs_repair_dir(config)
+    if not nr_dir.exists():
+        return []
+    candidates: list[tuple[str, str]] = []  # (content_hash, last_ts)
+    for meta_path in nr_dir.glob("*.json"):
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        ch = meta.get("content_hash")
+        if not ch or not _is_resident(ch, config.ledger_path):
+            continue  # 已收敛/超龄/手动 requeue 后不再是驻留
+        if _needs_repair_event_count(ch, config.ledger_path) >= NEEDS_REPAIR_MAX_RETAKES:
+            continue  # 预算耗尽（应由 rethrow 路径记 expired abort,此处跳过防重复）
+        last_ts = _last_needs_repair_ts(ch, config.ledger_path)
+        if last_ts:
+            try:
+                last_dt = datetime.fromisoformat(last_ts.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if (_now() - last_dt).total_seconds() < NEEDS_REPAIR_MIN_INTERVAL_H * 3600:
+                continue  # 间隔守卫:让 grader 骰子跨会话
+        candidates.append((ch, last_ts or ""))
+    # 稳定排序(按 last_ts,最久未掷的优先)
+    candidates.sort(key=lambda x: x[1])
+    return [ch for ch, _ in candidates[:NEEDS_REPAIR_PER_CYCLE]]
+
+
+
 
 
 def _scan_queue(config: RunnerConfig) -> list[str]:
@@ -1561,6 +1790,8 @@ def _run_quality_segments(
             "failure_signature", "distill_no_converge"
         )
         remaining = len(final_defects)
+        # F46: 携 final_text 供驻留持久化（重掷从 final_text 续,已修好的不推倒）。
+        meta_final["final_text"] = repair_result.get("final_text") or candidate_text
         return False, error_class, f"修复不收敛: {remaining} 项缺陷残留", meta_final
 
     # 问题2(Codex):repair 收敛后把 final_text 写回 candidate 文件
@@ -1848,31 +2079,50 @@ def _run_pipeline_segments(
                 "failed_node": "integrity_floor",
                 "error_class": error_class,
             }
-        _log_event(config, "abort", "repair_loop", content_hash,
-                   {"error_class": error_class, "error": error_detail,
-                    "repair_rounds": rounds,
-                    "final_defects": final_defects_summary,
-                    "repair_trace_paths": (
-                        quality_meta.get("repair_trace_paths", []) if quality_meta else []
-                    ),
-                })
-        # F39: 裁判宕机(grader_fallback_not_allowed/grader_all_down)等基础设施性
-        # 死亡自动重审一次;修复不收敛等内容性死因不触发
-        _maybe_auto_infra_requeue(config, content_hash, str(error_detail))
-        return {
-            "converged": False,
-            "rounds": rounds,
-            "promoted": False,
-            "promotion_mode": "none",
-            "final_status": "failed",
-            "error": f"质量不达标: {error_class} — {error_detail}",
-            "content_lane": content_lane,
-            "failed_node": "grader" if str(error_class).startswith("grader_") else "repair_loop",
-            "error_class": error_class,
-            # F-C fail-visible(P4):repair 不收敛时透出残留缺陷摘要,供 calibration
-            # 落 residual_defects(维度名列表)。不改判定,只让部分失败可见。
-            "final_defects_summary": final_defects_summary,
-        }
+        # F46: repair 不收敛分流——仅 distill_no_converge(repair 跑完缺陷残留,内容性)
+        # 走 needs_repair 驻留(从 final_text 续掷,预算内)或 expired abort;
+        # 其余(repair_route_failed/worker 子进程崩溃/grader 宕机/idle 早停等过程性死亡)
+        # 走现有 abort + F39 requeue(全链重跑)。判定链零动,只分流路由。
+        if error_class != "distill_no_converge":
+            _log_event(config, "abort", "repair_loop", content_hash,
+                       {"error_class": error_class, "error": error_detail,
+                        "repair_rounds": rounds,
+                        "final_defects": final_defects_summary,
+                        "repair_trace_paths": (
+                            quality_meta.get("repair_trace_paths", []) if quality_meta else []
+                        ),
+                    })
+            # F39: 裁判宕机(grader_fallback_not_allowed/grader_all_down)/repair worker
+            # 超时等基础设施性死亡自动重审一次;内容性不收敛不触发(走下方驻留)
+            _maybe_auto_infra_requeue(config, content_hash, str(error_detail))
+            return {
+                "converged": False,
+                "rounds": rounds,
+                "promoted": False,
+                "promotion_mode": "none",
+                "final_status": "failed",
+                "error": f"质量不达标(infra): {error_class} — {error_detail}",
+                "content_lane": content_lane,
+                "failed_node": (
+                    "grader" if str(error_class).startswith("grader_") else "repair_loop"
+                ),
+                "error_class": error_class,
+                "final_defects_summary": final_defects_summary,
+            }
+        # F46: 内容不收敛 → needs_repair 驻留通路
+        return _route_to_residency(
+            config=config,
+            content_hash=content_hash,
+            raw_path=raw_path,
+            candidate_path=candidate_path,
+            content_lane=content_lane,
+            slug=_derive_raw_slug(raw_path),
+            rounds=rounds,
+            final_defects_summary=final_defects_summary,
+            quality_meta=quality_meta if quality_meta else {},
+            error_class=error_class,
+            error_detail=error_detail,
+        )
 
     _log_event(config, "repair_loop", "repair_loop", content_hash,
                {"converged": True,
@@ -2157,6 +2407,211 @@ def _run_weekly_spot_check(
 # ---------------------------------------------------------------------------
 
 
+# 主循环
+# ---------------------------------------------------------------------------
+
+
+def _route_to_residency(
+    *,
+    config: RunnerConfig,
+    content_hash: str,
+    raw_path: str,
+    candidate_path: str,
+    content_lane: str,
+    slug: str,
+    rounds: int,
+    final_defects_summary: list[Any],
+    quality_meta: dict[str, Any],
+    error_class: str,
+    error_detail: str,
+) -> dict[str, Any]:
+    """F46: repair 内容不收敛 → 驻留(预算内)或超龄 abort。
+
+    判定链零动:不碰 grader/floor/A层/五闸。驻留只给"再掷一轮"的入口。
+    - 驻留次数 < NEEDS_REPAIR_MAX_RETAKES → 持久化 final_text + 记 needs_repair 事件
+      (非 abort,含 round 计数 + final_defects 摘要,fail-visible),final_status=needs_repair。
+    - 预算耗尽 → 记 abort(reason 含 needs_repair_expired),清理驻留文件,恢复可被 F26 requeue。
+    """
+    prior_count = _needs_repair_event_count(content_hash, config.ledger_path)
+    if prior_count < NEEDS_REPAIR_MAX_RETAKES:
+        final_text = quality_meta.get("final_text") or ""
+        if not final_text:
+            # 兜底:meta 未携 final_text 时读候选文件(防不丢进度硬要求被破)
+            try:
+                final_text = Path(candidate_path).read_text(encoding="utf-8")
+            except OSError:
+                final_text = ""
+        _persist_resident(
+            config, content_hash, raw_path, candidate_path, final_text,
+            content_lane, slug, final_defects_summary, rounds,
+        )
+        _log_event(
+            config, "needs_repair", "repair_loop", content_hash,
+            {
+                "retake_count": prior_count + 1,
+                "max_retakes": NEEDS_REPAIR_MAX_RETAKES,
+                "repair_rounds": rounds,
+                "error_class": error_class,
+                "error": error_detail,
+                "final_defects": final_defects_summary,
+                "repair_trace_paths": quality_meta.get("repair_trace_paths", []),
+                "candidate_path": candidate_path,
+                "content_lane": content_lane,
+            },
+        )
+        return {
+            "converged": False,
+            "rounds": rounds,
+            "promoted": False,
+            "promotion_mode": "none",
+            "final_status": "needs_repair",
+            "error": (
+                f"修复不收敛,驻留待重掷(retake {prior_count + 1}/"
+                f"{NEEDS_REPAIR_MAX_RETAKES}): {error_detail}"
+            ),
+            "content_lane": content_lane,
+            "failed_node": "repair_loop",
+            "error_class": error_class,
+            "final_defects_summary": final_defects_summary,
+            "needs_repair_retake": prior_count + 1,
+        }
+    # 预算耗尽 → expired abort(清理驻留文件,恢复可被 F26 requeue 手动重开)
+    _log_event(
+        config, "abort", "repair_loop", content_hash,
+        {
+            "error_class": error_class,
+            "error": error_detail,
+            "reason": "needs_repair_expired",
+            "retake_count": prior_count,
+            "max_retakes": NEEDS_REPAIR_MAX_RETAKES,
+            "repair_rounds": rounds,
+            "final_defects": final_defects_summary,
+            "repair_trace_paths": quality_meta.get("repair_trace_paths", []),
+        },
+    )
+    _purge_resident(config, content_hash)
+    return {
+        "converged": False,
+        "rounds": rounds,
+        "promoted": False,
+        "promotion_mode": "none",
+        "final_status": "failed",
+        "error": (
+            f"修复不收敛超龄淘汰(retake {prior_count}/"
+            f"{NEEDS_REPAIR_MAX_RETAKES} 耗尽): {error_detail}"
+        ),
+        "content_lane": content_lane,
+        "failed_node": "repair_loop",
+        "error_class": error_class,
+        "final_defects_summary": final_defects_summary,
+        "needs_repair_expired": True,
+    }
+
+
+def _run_residency_rethrow(config: RunnerConfig, content_hash: str) -> dict[str, Any]:
+    """F46: 重掷单篇驻留候选——从 final_text 续,只重跑 grader+repair(不重新 intake/提炼)。
+
+    收敛 → 写 final_text 回 candidate_path + 走完全链下游(promote 五闸 → finalize),
+    与正常路径同函数同判定,不开旁门;清理驻留文件。
+    不收敛 → _route_to_residency(再驻留或 expired abort)。
+    """
+    resident = _load_resident(config, content_hash)
+    if resident is None:
+        return {"final_status": "missing", "error": "resident not found"}
+    raw_path = resident.get("raw_path", "")
+    candidate_path = resident.get("candidate_path", "")
+    final_text = resident.get("final_text", "")
+    content_lane = resident.get("content_lane", "")
+    slug = resident.get("slug", "")
+    if not final_text or not candidate_path or not raw_path:
+        return {"final_status": "missing", "error": "resident incomplete"}
+    try:
+        raw_content = Path(raw_path).read_text(encoding="utf-8")
+    except OSError as exc:
+        return {"final_status": "error", "error": f"raw read error: {exc}"}
+    # 装载 vault 概念索引(与主链路同 loader;exclude 自身 slug 防 novelty 自证)
+    vault_index = _load_vault_concept_index(
+        config, exclude_slug=slug or _derive_raw_slug(raw_path)
+    )
+    grader_result_path = (
+        Path(config.grader_result_dir) / f"{Path(candidate_path).stem}.grader.json"
+    )
+    # 重掷:floor_result=None(驻留已过 floor,不重新提炼);A层+grader+repair 从 final_text 续
+    converged, error_class, error_detail, quality_meta = _run_quality_segments(
+        final_text, candidate_path, raw_content, config, grader_result_path,
+        content_lane=content_lane, floor_result=None,
+        known_concepts=vault_index.get("known_concepts"),
+        pending_queue=vault_index.get("pending_queue"),
+    )
+    rounds = quality_meta.get("repair_rounds", 0) if quality_meta else 0
+    final_defects_summary = (
+        quality_meta.get("final_defects_summary", []) if quality_meta else []
+    )
+    if not converged:
+        # 不收敛 → 再次驻留或 expired(同 _route_to_residency,但 final_text 取本次重掷结果)
+        return _route_to_residency(
+            config=config, content_hash=content_hash, raw_path=raw_path,
+            candidate_path=candidate_path, content_lane=content_lane, slug=slug,
+            rounds=rounds, final_defects_summary=final_defects_summary,
+            quality_meta=quality_meta if quality_meta else {},
+            error_class=error_class, error_detail=error_detail,
+        )
+    # 收敛 → 走完全链下游(promote 五闸 → finalize),与正常路径同函数同判定
+    _log_event(config, "repair_loop", "repair_loop", content_hash,
+               {"converged": True, "repair_rounds": rounds,
+                "needs_repair_resolved": True,
+                "repair_trace_paths": (
+                    quality_meta.get("repair_trace_paths", []) if quality_meta else []
+                )})
+    promoted, promotion_mode, promote_detail = _run_promote_segment(
+        candidate_path, config, grader_result_path
+    )
+    if promoted:
+        _log_event(config, "promote", "promote", content_hash, {"mode": promotion_mode})
+        _log_event(config, "finalize", "finalize", content_hash, {"mode": promotion_mode})
+        _purge_resident(config, content_hash)
+        return {
+            "converged": True, "rounds": rounds, "promoted": True,
+            "promotion_mode": promotion_mode, "final_status": "promoted",
+            "error": None, "content_lane": content_lane,
+            "needs_repair_resolved": True,
+        }
+    _log_event(config, "abort", "promote", content_hash, {"reason": promote_detail})
+    _purge_resident(config, content_hash)
+    return {
+        "converged": True, "rounds": rounds, "promoted": False,
+        "promotion_mode": "none", "final_status": "promotion_blocked",
+        "error": promote_detail, "content_lane": content_lane,
+        "failed_node": "promote", "needs_repair_resolved": True,
+    }
+
+
+def _run_residency_cycle(config: RunnerConfig) -> list[dict[str, Any]]:
+    """F46: 主循环空闲期跑驻留重掷(新文章优先,驻留池吃空闲)。
+
+    每轮最多 NEEDS_REPAIR_PER_CYCLE 篇。异常兜底:单篇重掷抛错不得杀死主循环,
+    catch + ledger 记 fail-visible(abort needs_repair reason=residency_rethrow_error)。
+    """
+    results: list[dict[str, Any]] = []
+    for content_hash in _scan_residency(config):
+        try:
+            r = _run_residency_rethrow(config, content_hash)
+            r["content_hash"] = content_hash
+            results.append(r)
+        except Exception as exc:
+            # 驻留扫描异常不得杀死主循环(7×24 daemon 生命线)——catch + fail-visible
+            _log_event(
+                config, "abort", "needs_repair", content_hash,
+                {"reason": "residency_rethrow_error", "error": str(exc)[:200]},
+            )
+            results.append({
+                "content_hash": content_hash,
+                "final_status": "error",
+                "error": f"residency_rethrow_error: {exc}",
+            })
+    return results
+
+
 def _run_main_loop(config: RunnerConfig) -> int:
     """主轮询循环：扫描队列 → 处理 → sleep → 重复。
 
@@ -2194,6 +2649,21 @@ def _run_main_loop(config: RunnerConfig) -> int:
         # 扫描队列
         queue = _scan_queue(config)
         if not queue:
+            # F46: 空闲期跑驻留重掷(新文章优先,驻留池吃空闲)。
+            # 异常兜底:驻留扫描抛错不得杀死主循环(catch + ledger fail-visible)。
+            try:
+                residency_results = _run_residency_cycle(config)
+                for r in residency_results:
+                    status = r.get("final_status", "unknown")
+                    print(f"[runner] 驻留重掷: {status} — {r.get('content_hash','')[:12]}",
+                          file=sys.stderr)
+            except Exception as exc:
+                # 主循环 7×24 生命线:驻留扫描异常不杀主循环
+                _log_event(
+                    config, "abort", "needs_repair", "",
+                    {"reason": "residency_scan_error", "error": str(exc)[:200]},
+                )
+                print(f"[runner] 驻留扫描异常: {exc}", file=sys.stderr)
             time.sleep(config.poll_interval_seconds)
             continue
 
