@@ -951,3 +951,461 @@ sources:
     status: trial
     category: supplementary
     notes: "Explosion — NLP 工程/spaCy 团队(工业级管线设计)"
+
+  # =========================================================================
+  # F45 扩容 50 (2026-07-12,用户明令) — 同质量级机制密度工程深文源
+  # 选源双维硬标准: ① taxonomy 命中(AI Agent/Loop/Context/Harness/Eval/
+  #   Multi-Agent/AI Coding/MCP/A2A/LangGraph + LLM Arch/Inference/RAG + 设计域)
+  #   ② 机制密度(工程复盘/拆解/数理机制型,非发版通稿/纯观点)
+  # 每源 feed curl 实测通过(200 + XML/RSS/Atom);slug+domain 双查重无碰撞。
+  # =========================================================================
+
+  - slug: adam-wathan
+    domain: adamwathan.me
+    feed_url: https://adamwathan.me/rss/index.xml
+    listing_url: https://adamwathan.me/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Adam Wathan — Tailwind/设计系统工程  [设计工程]"
+
+  - slug: ai2-blog
+    domain: allenai.org
+    feed_url: https://allenai.org/rss.xml
+    listing_url: https://allenai.org/blog
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Allen AI — 开源 LLM/研究工程  [AI/ML 研究实验室]"
+
+  - slug: airbnb-tech
+    domain: medium.com
+    feed_url: https://medium.com/feed/airbnb-engineering
+    listing_url: https://medium.com/airbnb-engineering
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Airbnb 工程 — 数据/ML/后端深文  [infra 团队工程]"
+
+  - slug: aphyr
+    domain: aphyr.com
+    feed_url: https://aphyr.com/posts.atom
+    listing_url: https://aphyr.com/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Kyle Kingsbury(Jepsen) — 分布式系统一致性深文  [个人系统深文]"
+
+  - slug: apple-ml-research
+    domain: machinelearning.apple.com
+    feed_url: https://machinelearning.apple.com/rss.xml
+    listing_url: https://machinelearning.apple.com/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Apple ML — 设备端推理/隐私 ML 研究  [AI/ML 研究实验室]"
+
+  - slug: arize-blog
+    domain: arize.com
+    feed_url: https://arize.com/blog/feed/
+    listing_url: https://arize.com/blog/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Arize — LLM 可观测/eval  [agent/RAG/eval 工具]"
+
+  - slug: aws-ml-blog
+    domain: aws.amazon.com
+    feed_url: https://aws.amazon.com/blogs/machine-learning/feed/
+    listing_url: https://aws.amazon.com/blogs/machine-learning/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "AWS ML — 训练/推理/Serving 工程  [AI/ML 研究实验室]"
+
+  - slug: brendan-gregg
+    domain: brendangregg.com
+    feed_url: https://brendangregg.com/blog/rss.xml
+    listing_url: https://brendangregg.com/blog/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Brendan Gregg — 系统性能/SRE/可观测深文  [个人系统深文]"
+
+  - slug: catonmat
+    domain: catonmat.net
+    feed_url: https://catonmat.net/feed
+    listing_url: https://catonmat.net/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Peteris Krumins — 编程/命令行深文  [个人系统深文]"
+
+  - slug: clickhouse-blog
+    domain: clickhouse.com
+    feed_url: https://clickhouse.com/rss.xml
+    listing_url: https://clickhouse.com/blog
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "ClickHouse — 列式 DB 工程深文  [infra 团队工程]"
+
+  - slug: confluent-blog
+    domain: confluent.io
+    feed_url: https://www.confluent.io/rss.xml
+    listing_url: https://www.confluent.io/blog/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Confluent — Kafka/流处理工程  [infra 团队工程]"
+
+  - slug: databricks-engineering
+    domain: databricks.com
+    feed_url: https://www.databricks.com/blog/feed.xml
+    listing_url: https://www.databricks.com/blog/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Databricks — 数据/AI 工程深文  [数据/AI 平台工程]"
+
+  - slug: datadog-engineering
+    domain: datadoghq.com
+    feed_url: https://www.datadoghq.com/blog/engineering/index.xml
+    listing_url: https://www.datadoghq.com/blog/engineering/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Datadog — 可观测/infra 工程深文  [infra 团队工程]"
+
+  - slug: discord-blog
+    domain: discord.com
+    feed_url: https://discord.com/blog/rss.xml
+    listing_url: https://discord.com/blog
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Discord 工程 — 实时通信/基础设施  [infra 团队工程]"
+
+  - slug: dlib-blog
+    domain: dlib.net
+    feed_url: https://blog.dlib.net/feeds/posts/default
+    listing_url: https://blog.dlib.net/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Davis King — C++ ML/Dlib 工程深文  [个人 ML 工程深文]"
+
+  - slug: docker-blog
+    domain: docker.com
+    feed_url: https://www.docker.com/blog/feed/
+    listing_url: https://www.docker.com/blog/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Docker — 容器/构建工程  [infra 团队工程]"
+
+  - slug: drew-devault
+    domain: drewdevault.com
+    feed_url: https://drewdevault.com/blog/index.xml
+    listing_url: https://drewdevault.com/blog/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Drew DeVault — 系统编程/开源工程深文  [个人系统深文]"
+
+  - slug: dropbox-tech
+    domain: dropbox.tech
+    feed_url: https://dropbox.tech/feed
+    listing_url: https://dropbox.tech/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Dropbox 工程 — infra/存储深文  [infra 团队工程]"
+
+  - slug: elastic-blog
+    domain: elastic.co
+    feed_url: https://www.elastic.co/blog/feed
+    listing_url: https://www.elastic.co/blog/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Elastic — 搜索/可观测工程  [infra 团队工程]"
+
+  - slug: fastly-blog
+    domain: fastly.com
+    feed_url: https://www.fastly.com/blog_rss.xml
+    listing_url: https://www.fastly.com/blog/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Fastly — 边缘计算/网络工程  [infra 团队工程]"
+
+  - slug: github-blog
+    domain: github.blog
+    feed_url: https://github.blog/feed/
+    listing_url: https://github.blog/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "GitHub 工程 — 开发者工具/安全/基础设施  [infra 团队工程]"
+
+  - slug: gitlab-blog
+    domain: about.gitlab.com
+    feed_url: https://about.gitlab.com/releases.xml
+    listing_url: https://about.gitlab.com/blog/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "GitLab 工程 — DevOps/CI 系统  [infra 团队工程]"
+
+  - slug: google-research-ai
+    domain: research.google
+    feed_url: https://research.google/blog/rss/
+    listing_url: https://research.google/blog/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Google Research — AI/ML 系统研究  [AI/ML 研究实验室]"
+
+  - slug: grafana-blog
+    domain: grafana.com
+    feed_url: https://grafana.com/blog/index.xml
+    listing_url: https://grafana.com/blog/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Grafana Labs — 可观测/时序工程  [infra 团队工程]"
+
+  - slug: hashicorp-blog
+    domain: hashicorp.com
+    feed_url: https://www.hashicorp.com/blog/feed.xml
+    listing_url: https://www.hashicorp.com/blog
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "HashiCorp — 基础设施即代码工程  [infra 团队工程]"
+
+  - slug: high-scalability
+    domain: highscalability.com
+    feed_url: http://highscalability.com/rss/
+    listing_url: https://highscalability.com/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "High Scalability — 架构/可扩展性案例深文  [个人系统深文]"
+
+  - slug: hillel-wayne
+    domain: hillelwayne.com
+    feed_url: https://www.hillelwayne.com/index.xml
+    listing_url: https://www.hillelwayne.com/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Hillel Wayne — 形式化方法/软件工程深文  [个人系统深文]"
+
+  - slug: hynek-me
+    domain: hynek.me
+    feed_url: https://hynek.me/feed.xml
+    listing_url: https://hynek.me/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Hynek Schlawack — Python/infra 工程  [个人系统深文]"
+
+  - slug: jay-alammar
+    domain: jalammar.github.io
+    feed_url: https://jalammar.github.io/feed.xml
+    listing_url: https://jalammar.github.io/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Jay Alammar — LLM 架构可视化拆解  [个人 LLM 工程深文]"
+
+  - slug: mark-dalgleish
+    domain: markdalgleish.com
+    feed_url: https://markdalgleish.com/atom.xml
+    listing_url: https://markdalgleish.com/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Mark Dalgleish — 前端工具/设计工程  [设计工程]"
+
+  - slug: martin-heinz
+    domain: martinheinz.dev
+    feed_url: https://martinheinz.dev/rss
+    listing_url: https://martinheinz.dev/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Martin Heinz — 软件工程/ML/infra 深文  [个人 LLM 工程深文]"
+
+  - slug: miguel-grinberg
+    domain: blog.miguelgrinberg.com
+    feed_url: https://blog.miguelgrinberg.com/feed
+    listing_url: https://blog.miguelgrinberg.com/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Miguel Grinberg — Python/Web/后端工程  [个人系统深文]"
+
+  - slug: modal-blog
+    domain: modal.com
+    feed_url: https://modal.com/blog/atom.xml
+    listing_url: https://modal.com/blog/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Modal — 云端 ML 基础设施工程  [AI/ML 推理/服务]"
+
+  - slug: mongodb-blog
+    domain: mongodb.com
+    feed_url: https://www.mongodb.com/blog/rss
+    listing_url: https://www.mongodb.com/blog
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "MongoDB — DB 工程深文  [infra 团队工程]"
+
+  - slug: nvidia-technical
+    domain: blogs.nvidia.com
+    feed_url: https://blogs.nvidia.com/feed/
+    listing_url: https://blogs.nvidia.com/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "NVIDIA — AI/系统/GPU 工程深文  [AI/ML 研究实验室]"
+
+  - slug: paul-robert-lloyd
+    domain: paulrobertlloyd.com
+    feed_url: https://paulrobertlloyd.com/feed.xml
+    listing_url: https://paulrobertlloyd.com/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Paul Robert Lloyd — 设计系统工程  [设计工程]"
+
+  - slug: qdrant-blog
+    domain: qdrant.tech
+    feed_url: https://qdrant.tech/blog/index.xml
+    listing_url: https://qdrant.tech/blog/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Qdrant — 向量搜索工程深文  [agent/RAG/eval 工具]"
+
+  - slug: rachel-andrew
+    domain: rachelandrew.co.uk
+    feed_url: https://rachelandrew.co.uk/feed/
+    listing_url: https://rachelandrew.co.uk/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Rachel Andrew — CSS/Web 工程深文  [设计工程]"
+
+  - slug: samwho-dev
+    domain: samwho.dev
+    feed_url: https://samwho.dev/rss.xml
+    listing_url: https://samwho.dev/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Sam Rose — 系统/可视化工程深文  [个人系统深文]"
+
+  - slug: sawyer-hood
+    domain: sawyerhood.com
+    feed_url: https://sawyerhood.com/rss.xml
+    listing_url: https://sawyerhood.com/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "LLM/agent 工程  [个人 LLM 工程深文]"
+
+  - slug: sentry-blog
+    domain: blog.sentry.io
+    feed_url: https://blog.sentry.io/feed.xml
+    listing_url: https://blog.sentry.io/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Sentry — 可观测/错误追踪工程  [infra 团队工程]"
+
+  - slug: slack-engineering
+    domain: slack.engineering
+    feed_url: https://slack.engineering/feed/
+    listing_url: https://slack.engineering/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Slack 工程 — 后端/实时/可观测  [infra 团队工程]"
+
+  - slug: stability-ai
+    domain: stability.ai
+    feed_url: https://stability.ai/news-updates?format=rss
+    listing_url: https://stability.ai/news
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Stability AI — 生成模型工程  [AI/ML 研究实验室]"
+
+  - slug: thoughtworks-insights
+    domain: thoughtworks.com
+    feed_url: https://www.thoughtworks.com/rss/insights.xml
+    listing_url: https://www.thoughtworks.com/insights
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "ThoughtWorks — 工程实践/架构深文  [infra 团队工程]"
+
+  - slug: timescale-blog
+    domain: timescale.com
+    feed_url: https://www.timescale.com/blog/feed/
+    listing_url: https://www.timescale.com/blog/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "TimescaleDB — 时序 DB 工程  [infra 团队工程]"
+
+  - slug: together-ai-blog
+    domain: together.ai
+    feed_url: https://www.together.ai/blog/rss.xml
+    listing_url: https://www.together.ai/blog/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Together AI — 推理服务/开源模型  [AI/ML 推理/服务]"
+
+  - slug: vasilis
+    domain: vasilis.nl
+    feed_url: https://vasilis.nl/rss.xml
+    listing_url: https://vasilis.nl/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Vasilis — 前端/设计工程深文  [设计工程]"
+
+  - slug: vllm-blog
+    domain: blog.vllm.ai
+    feed_url: https://vllm.ai/blog/rss.xml
+    listing_url: https://blog.vllm.ai/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "vLLM — 推理引擎工程深文  [AI/ML 推理/服务]"
+
+  - slug: weaviate-blog
+    domain: weaviate.io
+    feed_url: https://weaviate.io/blog/rss.xml
+    listing_url: https://weaviate.io/blog/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Weaviate — 向量搜索/RAG 工程  [agent/RAG/eval 工具]"
+
+  - slug: yugabyte-blog
+    domain: yugabyte.com
+    feed_url: https://www.yugabyte.com/blog/feed/
+    listing_url: https://www.yugabyte.com/blog/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "YugabyteDB — 分布式 SQL 工程  [infra 团队工程]"
