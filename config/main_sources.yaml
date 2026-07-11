@@ -953,11 +953,11 @@ sources:
     notes: "Explosion — NLP 工程/spaCy 团队(工业级管线设计)"
 
   # =========================================================================
-  # F45 扩容 50 (2026-07-12,用户明令) — 同质量级机制密度工程深文源
-  # 选源双维硬标准: ① taxonomy 命中(AI Agent/Loop/Context/Harness/Eval/
-  #   Multi-Agent/AI Coding/MCP/A2A/LangGraph + LLM Arch/Inference/RAG + 设计域)
-  #   ② 机制密度(工程复盘/拆解/数理机制型,非发版通稿/纯观点)
-  # 每源 feed curl 实测通过(200 + XML/RSS/Atom);slug+domain 双查重无碰撞。
+  # F45 扩容(一轮,2026-07-12,用户明令) — 25 源经 lead 审保留
+  # 原 F45 一轮 50 源中 25 源被 lead 砍除(16 通用 infra 厂商 + 9 通用系统/编程个人作者,
+  # 全因维度① taxonomy 命中跑偏:admission topic 门会成建制拒收。保留 25 源为 AI/ML
+  # 研究+推理+数据平台/AI coding 团队/LLM 工程个人/agent-RAG 工具/设计工程,域内。
+  # 选源双维硬标准: ① taxonomy 命中 ② 机制密度。每源 feed curl 实测通过。
   # =========================================================================
 
   - slug: adam-wathan
@@ -985,8 +985,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
-    notes: "Airbnb 工程 — 数据/ML/后端深文  [infra 团队工程]"
-
+    notes: "Airbnb 工程 — 数据/ML/后端深文  [数据/ML 工程团队]"
 
   - slug: apple-ml-research
     domain: machinelearning.apple.com
@@ -1015,10 +1014,6 @@ sources:
     category: supplementary
     notes: "AWS ML — 训练/推理/Serving 工程  [AI/ML 研究实验室]"
 
-
-
-
-
   - slug: databricks-engineering
     domain: databricks.com
     feed_url: https://www.databricks.com/blog/feed.xml
@@ -1027,8 +1022,6 @@ sources:
     status: trial
     category: supplementary
     notes: "Databricks — 数据/AI 工程深文  [数据/AI 平台工程]"
-
-
 
   - slug: dlib-blog
     domain: dlib.net
@@ -1039,11 +1032,6 @@ sources:
     category: supplementary
     notes: "Davis King — C++ ML/Dlib 工程深文  [个人 ML 工程深文]"
 
-
-
-
-
-
   - slug: github-blog
     domain: github.blog
     feed_url: https://github.blog/feed/
@@ -1051,8 +1039,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
-    notes: "GitHub 工程 — 开发者工具/安全/基础设施  [infra 团队工程]"
-
+    notes: "GitHub 工程 — 开发者工具/安全/基础设施  [AI coding/infra 工程团队]"
 
   - slug: google-research-ai
     domain: research.google
@@ -1062,11 +1049,6 @@ sources:
     status: trial
     category: supplementary
     notes: "Google Research — AI/ML 系统研究  [AI/ML 研究实验室]"
-
-
-
-
-
 
   - slug: jay-alammar
     domain: jalammar.github.io
@@ -1095,7 +1077,6 @@ sources:
     category: supplementary
     notes: "Martin Heinz — 软件工程/ML/infra 深文  [个人 LLM 工程深文]"
 
-
   - slug: modal-blog
     domain: modal.com
     feed_url: https://modal.com/blog/atom.xml
@@ -1104,7 +1085,6 @@ sources:
     status: trial
     category: supplementary
     notes: "Modal — 云端 ML 基础设施工程  [AI/ML 推理/服务]"
-
 
   - slug: nvidia-technical
     domain: blogs.nvidia.com
@@ -1142,7 +1122,6 @@ sources:
     category: supplementary
     notes: "Rachel Andrew — CSS/Web 工程深文  [设计工程]"
 
-
   - slug: sawyer-hood
     domain: sawyerhood.com
     feed_url: https://sawyerhood.com/rss.xml
@@ -1151,8 +1130,6 @@ sources:
     status: trial
     category: supplementary
     notes: "LLM/agent 工程  [个人 LLM 工程深文]"
-
-
 
   - slug: stability-ai
     domain: stability.ai
@@ -1170,8 +1147,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
-    notes: "ThoughtWorks — 工程实践/架构深文  [infra 团队工程]"
-
+    notes: "ThoughtWorks — 工程实践/架构深文  [工程实践/架构团队]"
 
   - slug: together-ai-blog
     domain: together.ai
@@ -1209,3 +1185,229 @@ sources:
     category: supplementary
     notes: "Weaviate — 向量搜索/RAG 工程  [agent/RAG/eval 工具]"
 
+  # =========================================================================
+  # F45b 二轮扩容(2026-07-12,用户明令) — 24 源补 lead 砍除的 25 域内源
+  # 硬圈 7 方向:LLM/agent 工程个人作者/agent 框架团队/RAG-向量-eval 工具/
+  # LLM 推理训练 infra/AI coding 工具厂/中文 LLM 机制博客/设计工程深文。
+  # 每源 feed curl 实测通过(三试法:主 feed→备用路径→HTML <link> 发现);
+  # slug+domain 双查重无碰撞。凑满 24(<25):52nlp/paperweekly 从本环境
+  # 实测 000(DNS/连接失败,疑 GeoIP/网络限制),弃;agent 框架(autogen/dspy/
+  # letta/crewai/llamaindex)与向量 DB(milvus/pinecone/chroma)多无公开 RSS
+  # 或 JS 渲染无 <link> feed,弃——宁缺毋滥不凑数。
+  # =========================================================================
+
+  - slug: aider-blog
+    domain: aider.chat
+    feed_url: https://aider.chat/feed.xml
+    listing_url: https://aider.chat/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Aider(Paul Gauthier) — 终端 AI 编码工程  [AI coding 工具厂]"
+
+  - slug: continue-dev
+    domain: continue.dev
+    feed_url: https://www.continue.dev/blog/feed.xml
+    listing_url: https://continue.dev/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Continue — AI 编码插件工程  [AI coding 工具厂]"
+
+  - slug: distill
+    domain: distill.pub
+    feed_url: https://distill.pub/rss.xml
+    listing_url: https://distill.pub/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Distill — ML 机制可视化深文  [LLM/agent 工程个人作者]"
+
+  - slug: dvc-blog
+    domain: dvc.org
+    feed_url: https://dvc.org/blog/feed
+    listing_url: https://dvc.org/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "DVC/Iterative — ML 数据版本工程  [RAG/向量/eval 工具]"
+
+  - slug: inferless-blog
+    domain: inferless.com
+    feed_url: https://inferless.com/blog/rss.xml
+    listing_url: https://inferless.com/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Inferless — GPU 推理 infra 工程  [LLM 推理/训练 infra]"
+
+  - slug: kilian-valkhof
+    domain: kilianvalkhof.com
+    feed_url: https://kilianvalkhof.com/rss.xml
+    listing_url: https://kilianvalkhof.com/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Kilian Valkhof — 前端/设计工程深文  [设计工程深文]"
+
+  - slug: lambda-labs-blog
+    domain: lambdalabs.com
+    feed_url: https://lambdalabs.com/blog/rss.xml
+    listing_url: https://lambdalabs.com/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Lambda Labs — GPU/训练 infra 深文  [LLM 推理/训练 infra]"
+
+  - slug: marimo-blog
+    domain: marimo.io
+    feed_url: https://marimo.io/api/rss
+    listing_url: https://marimo.io/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "marimo — Python notebook/LLM 工程  [AI coding 工具厂]"
+
+  - slug: ml-mastery
+    domain: machinelearningmastery.com
+    feed_url: https://machinelearningmastery.com/feed/
+    listing_url: https://machinelearningmastery.com/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Jason Brownlee — ML/LLM 机制教程深文  [LLM/agent 工程个人作者]"
+
+  - slug: ollama-blog
+    domain: ollama.com
+    feed_url: https://ollama.com/blog/rss.xml
+    listing_url: https://ollama.com/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Ollama — 本地 LLM 运行时工程  [LLM 推理/训练 infra]"
+
+  - slug: openrouter-blog
+    domain: openrouter.ai
+    feed_url: https://openrouter.ai/blog/feed.xml
+    listing_url: https://openrouter.ai/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "OpenRouter — LLM 推理路由工程  [LLM 推理/训练 infra]"
+
+  - slug: portkey-blog
+    domain: portkey.ai
+    feed_url: https://portkey.ai/blog/rss/
+    listing_url: https://portkey.ai/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Portkey — LLM 网关/可观测工程  [RAG/向量/eval 工具]"
+
+  - slug: promptfoo
+    domain: promptfoo.dev
+    feed_url: https://www.promptfoo.dev/blog/rss.xml
+    listing_url: https://promptfoo.dev/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "promptfoo — LLM eval/red-team 工程  [RAG/向量/eval 工具]"
+
+  - slug: ragas-blog
+    domain: docs.ragas.io
+    feed_url: https://blog.ragas.io/feed
+    listing_url: https://blog.ragas.io/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Ragas — RAG eval 框架  [RAG/向量/eval 工具]"
+
+  - slug: runpod-blog
+    domain: runpod.io
+    feed_url: https://www.runpod.io/blog/rss.xml
+    listing_url: https://runpod.io/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "RunPod — GPU 推理 infra 工程  [LLM 推理/训练 infra]"
+
+  - slug: sarasoueidan
+    domain: www.sarasoueidan.com
+    feed_url: https://www.sarasoueidan.com/blog/index.xml
+    listing_url: https://www.sarasoueidan.com/blog/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Sara Soueidan — SVG/可访问性/设计工程  [设计工程深文]"
+
+  - slug: semantic-kernel
+    domain: devblogs.microsoft.com
+    feed_url: https://devblogs.microsoft.com/semantic-kernel/feed/
+    listing_url: https://devblogs.microsoft.com/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Microsoft Semantic Kernel — agent 编排框架  [agent 框架/编排团队]"
+
+  - slug: stefan-judis
+    domain: www.stefanjudis.com
+    feed_url: https://www.stefanjudis.com/rss.xml
+    listing_url: https://www.stefanjudis.com/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Stefan Judis — Web/前端工程深文  [设计工程深文]"
+
+  - slug: stephen-wolfram
+    domain: wolfram.com
+    feed_url: https://blog.wolfram.com/feed/
+    listing_url: https://blog.wolfram.com/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Stephen Wolfram — LLM/计算科学/机制拆解  [LLM/agent 工程个人作者]"
+
+  - slug: tabnine-blog
+    domain: tabnine.com
+    feed_url: https://www.tabnine.com/blog/feed/
+    listing_url: https://tabnine.com/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Tabnine — AI 编码工程  [AI coding 工具厂]"
+
+  - slug: towards-data
+    domain: towardsdatascience.com
+    feed_url: https://towardsdatascience.com/feed
+    listing_url: https://towardsdatascience.com/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Towards Data Science — 数据/ML 深文(审,部分观点)  [LLM/agent 工程个人作者]"
+
+  - slug: turbopuffer
+    domain: turbopuffer.com
+    feed_url: https://turbopuffer.com/blog/rss.xml
+    listing_url: https://turbopuffer.com/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Turbopuffer — 向量检索 infra 工程  [RAG/向量/eval 工具]"
+
+  - slug: vespa-blog
+    domain: vespa.ai
+    feed_url: https://blog.vespa.ai/feed.xml
+    listing_url: https://blog.vespa.ai/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Vespa — 向量检索/排序 at scale 工程  [RAG/向量/eval 工具]"
+
+  - slug: zed-blog
+    domain: zed.dev
+    feed_url: https://zed.dev/blog.rss
+    listing_url: https://zed.dev/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Zed — 编辑器/AI 编码工程  [AI coding 工具厂]"
