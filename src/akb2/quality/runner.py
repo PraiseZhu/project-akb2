@@ -342,6 +342,20 @@ def _is_processed(content_hash: str, ledger_path: str) -> bool:
 # F46 needs_repair 驻留通路
 # ---------------------------------------------------------------------------
 
+# F48: 内容性不收敛签名族(驻留适格)。repair 的 _fail_closed 落账的是
+# record_failure 完整签名 "loop1/repair_loop/<class>"(signatures.py),F46 原门
+# 只认裸 "distill_no_converge" → 上线后驻留通路 0 触发(账本实锤:62 例
+# repair_idle_early_stop 全部误走终态 abort,其中 9 例仅 1 项缺陷残留)。
+# 空转早停(连续无有效进展)与轮数耗尽同为内容性不收敛——文本完好、
+# final_text/final_defects 俱全,均适格驻留续掷;过程性死亡
+# (repair_route_failed/grader_all_down 等)仍走 abort + F39。
+_RESIDENCY_ELIGIBLE_CLASSES = frozenset({"distill_no_converge", "repair_idle_early_stop"})
+
+
+def _is_content_no_converge(error_class: object) -> bool:
+    """F48: error_class(裸类名或 loop/node/class 全签名)是否内容性不收敛。"""
+    return str(error_class or "").rsplit("/", 1)[-1] in _RESIDENCY_ELIGIBLE_CLASSES
+
 
 def _is_resident(content_hash: str, ledger_path: str) -> bool:
     """F46: hash 是否处于 needs_repair 驻留中(有 needs_repair 事件,且无后续终态/requeue)。
@@ -2079,11 +2093,12 @@ def _run_pipeline_segments(
                 "failed_node": "integrity_floor",
                 "error_class": error_class,
             }
-        # F46: repair 不收敛分流——仅 distill_no_converge(repair 跑完缺陷残留,内容性)
-        # 走 needs_repair 驻留(从 final_text 续掷,预算内)或 expired abort;
-        # 其余(repair_route_failed/worker 子进程崩溃/grader 宕机/idle 早停等过程性死亡)
-        # 走现有 abort + F39 requeue(全链重跑)。判定链零动,只分流路由。
-        if error_class != "distill_no_converge":
+        # F46/F48: repair 不收敛分流——内容性不收敛(缺陷残留轮数耗尽 /
+        # 空转早停,签名族见 _RESIDENCY_ELIGIBLE_CLASSES,兼容 loop/node/class
+        # 全签名前缀)走 needs_repair 驻留(从 final_text 续掷,预算内)或 expired
+        # abort;其余(repair_route_failed/worker 子进程崩溃/grader 宕机等过程性
+        # 死亡)走现有 abort + F39 requeue(全链重跑)。判定链零动,只分流路由。
+        if not _is_content_no_converge(error_class):
             _log_event(config, "abort", "repair_loop", content_hash,
                        {"error_class": error_class, "error": error_detail,
                         "repair_rounds": rounds,
