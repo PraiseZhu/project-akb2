@@ -46,7 +46,9 @@ MAX_PROCESSING_LOCK_AGE_SEC: int = 3600  # 锁文件最大年龄（超时自动�
 #   不重新 intake/提炼。与 F26 requeue 的区别:requeue=全链重跑,驻留=从 final_text 续掷。
 NEEDS_REPAIR_MAX_RETAKES: int = 3       # 每篇一生最多 3 次重掷（驻留次数上限）
 NEEDS_REPAIR_MIN_INTERVAL_H: int = 20   # 两掷间隔 ≥20h（让 grader 骰子跨会话）
-NEEDS_REPAIR_PER_CYCLE: int = 2          # 每轮主循环空闲期最多掷 2 篇（新文章优先,驻留池吃空闲）
+# F49 提速(2→4):驻留池 ~102 篇(07-16 账本实测),旧 2 篇/cycle 需 51 cycle 轮一遍,
+# 按主循环空闲期节奏约 20+ 天;提速 4 → 26 cycle,周期数减半。MAX_RETAKES/MIN_INTERVAL_H 不动。
+NEEDS_REPAIR_PER_CYCLE: int = 4          # 每轮主循环空闲期最多掷 4 篇（新文章优先,驻留池吃空闲）
 NEEDS_REPAIR_SUBDIR: str = "needs-repair"  # 驻留 final_text 持久化子目录（相对 staging）
 
 DISTILL_TIMEOUT_S: float = 60.0
