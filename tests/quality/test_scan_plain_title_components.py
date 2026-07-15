@@ -80,6 +80,67 @@ class TestIsPlainTitleComponent:
         # 注:'maxSteps Budget' 因含 'step' 实体关键词被接受(entity-keyword 路径优先)
 
 
+class TestF49ParseToleranceGarbageTitles:
+    """F49 刀2:concept deterministic fallback 死案归因发现 _scan_real_mechanism_components
+    收了句子型/泛节名/gerund-起首标题当机制组件端点(实测:'Acknowledgements'/'The full picture'
+    /'Limiting file writes'/'Replacing The Vision Encoder'/'Authors'),撑高 component_count 但
+    0 eligible edge → fail-closed。本测试绑定行为:这类畸形标题→解析时被拒(宁缺勿假,不凑数)。"""
+
+    def test_acknowledgements_authors_rejected(self):
+        """论文/博客泛节名(Acknowledgements/Authors)→ 拒(实测死案端点)。"""
+        for name in ("Acknowledgements", "Acknowledgement", "Authors", "Author",
+                     "About the Authors", "Author Bios", "Biographies", "Biography"):
+            assert not _is_plain_title_component(name), f"{name!r} 应被拒(泛节名)"
+
+    def test_article_led_nonentity_sentence_rejected(self):
+        """'The full picture'(article 起首 + >2 词 + 无 entity)→ 拒(句子型标题)。"""
+        assert not _is_plain_title_component("The full picture")
+        assert not _is_plain_title_component("A unified, encoder-free multimodal model!")
+
+    def test_gerund_led_nonentity_sentence_rejected(self):
+        """'Limiting file writes'/'Replacing The Vision Encoder'(gerund 起首 + >2 词 + 无 entity)
+        → 拒(实测死案端点,非机制组件)。注:含 entity 词(如 'setup step')按设计由 entity 路径放行。"""
+        assert not _is_plain_title_component("Limiting file writes")
+        assert not _is_plain_title_component("Replacing The Vision Encoder")
+        assert not _is_plain_title_component("Building the system from scratch")
+
+    def test_real_gerund_entity_components_not_killed(self):
+        """真组件含 entity 词优先放行:'Routing Layer'(layer)/'Encoding Pipeline'(pipeline)
+        → 不误杀(entity-keyword 路径在上行 return True,不进 gerund 拒判)。"""
+        assert _is_plain_title_component("Routing Layer")  # 'layer' entity
+        assert _is_plain_title_component("Encoding Pipeline")  # 'pipeline' entity
+
+    def test_two_word_gerund_noun_kept_conservative(self):
+        """2 词 gerund-noun(如 'Caching Strategy')保守留作命名短语(>2 词守卫不触发)。"""
+        assert _is_plain_title_component("Caching Strategy")
+        assert _is_plain_title_component("Vision Encoder")
+
+    def test_scan_real_mechanism_components_rejects_garbage_titles(self):
+        """集成:含泛节名/句子型 H2 标题的 raw → _scan_real_mechanism_components 不把它们
+        当机制组件(端点不冒充组件,fail-closed 的 component_count 诚实)。"""
+        raw = (
+            "## §A_INTRO\n"
+            "Some substantive intro about a real mechanism here.\n\n"
+            "## Acknowledgements\n"
+            "Thanks to everyone.\n\n"
+            "## Authors\n"
+            "Xuchao Zhang, Molly Xia.\n\n"
+            "## The full picture\n"
+            "We now need a first-class setup step.\n\n"
+            "## Limiting file writes\n"
+            "Limiting file writes is important.\n\n"
+            "## Routing Layer\n"
+            "The routing layer dispatches.\n"
+        )
+        comps = _scan_real_mechanism_components(raw)
+        names = [c["name"] for c in comps]
+        # 畸形/泛节名标题不该冒充机制组件
+        assert "Acknowledgements" not in names
+        assert "Authors" not in names
+        assert "The full picture" not in names
+        assert "Limiting file writes" not in names
+
+
 class TestScanPlainTitleComponents:
     def test_title_type_raw_extracts_components(self):
         """title-case 标题型 raw → 抽出组件(去重保序,跳过 §-锚/编号/表格)。"""
