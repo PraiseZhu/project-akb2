@@ -81,9 +81,9 @@ class TestF10DCalibrationRecordsFamilies:
         monkeypatch.setenv("AKB2_DISTILL_FAMILY", "gpt-5.4")
         monkeypatch.setenv("AKB2_GRADER_FAMILY", "gpt-5.4")
         # 须 reload distill+grader(env 在 import 时读),calibration lazy import 才拿到同族值
+        import src.akb2.quality.calibration as calib_mod
         import src.akb2.quality.distill as distill_mod
         import src.akb2.quality.grader as grader_mod
-        import src.akb2.quality.calibration as calib_mod
         importlib.reload(distill_mod)
         importlib.reload(grader_mod)
         importlib.reload(calib_mod)

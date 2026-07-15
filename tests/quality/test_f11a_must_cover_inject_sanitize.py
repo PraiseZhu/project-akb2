@@ -70,7 +70,7 @@ class TestF11AMustCoverInjectSanitize:
                            raw_content=_RAW, content_lane="concept")
         import re
         boundary = re.search(r"## 适用边界\s+(.+?)(?:\n## )", body, re.S).group(1)
-        assert boundary.count("`") % 2 == 0, f"boundary 反引号不平衡"
+        assert boundary.count("`") % 2 == 0, "boundary 反引号不平衡"
 
     def test_tldr_must_cover_command_not_false_positive(self):
         """TLDR 注入的 must_cover 命令不在 raw → strip 剥反引号,SG 不误报。"""
