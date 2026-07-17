@@ -13,7 +13,6 @@ ag2 fallback 离线验证:组件 evidence 回填非 0。
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 from src.akb2.quality.distill import (

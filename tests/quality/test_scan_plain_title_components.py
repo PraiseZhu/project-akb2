@@ -14,6 +14,7 @@ from __future__ import annotations
 from src.akb2.quality.distill import (
     _build_deterministic_extract_data,
     _build_fallback_quality_basis,
+    _is_garbage_component_name,
     _is_plain_title_component,
     _scan_plain_title_components,
     _scan_real_mechanism_components,
@@ -78,6 +79,75 @@ class TestIsPlainTitleComponent:
         """首词小写且无实体关键词(foo bar)→ 拒(非 title-case 命名短语)。"""
         assert not _is_plain_title_component("foo bar budget")
         # 注:'maxSteps Budget' 因含 'step' 实体关键词被接受(entity-keyword 路径优先)
+
+
+class TestF49ComponentHygieneNoFalseKill:
+    """F49 刀2(reviewer 返工 P2-1/P2-2/P2-3):定位为「防虚高组件计数的质量卫生」,
+    **非 yield 修复**(reviewer 回放证明 0-edge 死案真死因不在垃圾端点,而在无
+    source_causal 边/超时/内容真不行;宽泛 article/gerund 拒判把 maarten 死案从
+    旧 5 组件/0 边变成 0/0,删了真组件却没提升 yield)。
+
+    P2-1:撤宽泛 article/endswith('ing') 结构拒判(误杀 The Vision Encoder/Sliding
+    Window Attention/Ring Buffer Allocation Strategy/The Residual Stream 等真机制组件)。
+    P2-2:泛节名清单拆出 plain-title 专用集合(_PLAIN_TITLE_EXTRA_GENERIC_NAMES),
+    不进 LLM 主路径(防 'Author' 角色组件被 _filter_llm_component_names 删)。
+    P2-3:测试用 H3(真实死案层级,不被 _is_heading_shaped_component_name 的 H2 同名
+    剔除),断言 _build_fallback_quality_basis 最终可观测结果。本测试在宽泛拒判的
+    旧实现上 FAIL(真组件被杀→0 组件),在收窄实现上 PASS——断言绑定修复行为。
+    """
+
+    def test_p2_1_real_mechanism_titles_not_killed(self):
+        """P2-1:无 entity、article/gerund 起首的真机制标题不许被宽泛结构拒判误杀。
+        reviewer 实锤反例(全部须 True,宽泛实现全 False)。"""
+        for name in ("The Vision Encoder", "The Audio Encoder", "The Residual Stream",
+                     "Sliding Window Attention", "Ring Buffer Allocation Strategy"):
+            assert _is_plain_title_component(name), f"{name!r} 不许误杀(真机制组件)"
+
+    def test_plain_title_generic_section_names_rejected(self):
+        """P2-1/P2-2:泛节名(Acknowledgements/Authors/Biographies)plain-title 扫描拒。"""
+        for name in ("Acknowledgements", "Acknowledgement", "Authors", "Author",
+                     "About the Authors", "Author Bios", "Biographies", "Biography"):
+            assert not _is_plain_title_component(name), f"{name!r} 应拒(plain-title 泛节名)"
+
+    def test_p2_2_author_role_not_filtered_in_llm_path(self):
+        """P2-2:'Author' 作合法角色组件(Author/Editor/Reviewer 工作流)在 LLM 主路径
+        (_is_garbage_component_name→_filter_llm_component_names)不许被删。泛节名清单已
+        拆出 plain-title 专用集合,不进 LLM 黑名单。"""
+        assert not _is_garbage_component_name("Author"), "'Author' 角色组件不许被 LLM 路径删"
+        assert not _is_garbage_component_name("Authors"), "'Authors' 不许被 LLM 路径删"
+
+    def test_p2_3_h3_real_components_survive_in_deterministic_fallback(self):
+        """P2-3:H3(真实死案层级)真机制组件不被误杀,泛节名被拒;最终
+        _build_fallback_quality_basis 可观测。镜像 maarten-grootendorst--e9942fdace88
+        死案 raw(07-10,旧实现 5 组件/0 边,宽泛拒判实现 0/0——本测试在宽泛实现上
+        names 不含 'The Vision Encoder' → FAIL,绑定修复)。"""
+        raw = (
+            "## 锚点目录\n\n- §A: START\n\n---\n\n"
+            "§A_CONTENT_START\n\n"
+            "### The Vision Encoder\n\nThe vision encoder encodes image tokens.\n\n"
+            "### The Audio Encoder\n\nThe audio encoder processes audio.\n\n"
+            "### Sliding Window Attention\n\n"
+            "Sliding window attention feeds into the audio encoder.\n\n"
+            "### Acknowledgements\n\nThanks to everyone.\n\n"
+            "### Authors\n\nXuchao Zhang, Molly Xia.\n"
+        )
+        comps = _scan_real_mechanism_components(raw)
+        names = [c["name"] for c in comps]
+        # P2-1:真机制组件(H3,无 entity,article/gerund 起首)不许误杀
+        assert "The Vision Encoder" in names, f"真组件被误杀: {names}"
+        assert "The Audio Encoder" in names, f"真组件被误杀: {names}"
+        assert "Sliding Window Attention" in names, f"真组件被误杀: {names}"
+        # P2-2:泛节名拒
+        assert "Acknowledgements" not in names
+        assert "Authors" not in names
+        # P2-3:最终可观测结果——basis component_count 反映真组件(非 0,非虚高)
+        data = _build_deterministic_extract_data(raw, content_lane="concept")
+        basis = _build_fallback_quality_basis(data)
+        assert basis["component_count"] >= 3, f"组件数虚低: {basis}"
+        # build_deterministic_extract_result 不崩,携 basis 可观测(成败皆可,关键是真组件在)
+        result = build_deterministic_extract_result(raw, content_lane="concept")
+        assert result.data.get("fallback_quality_basis") is not None or result.success
+
 
 
 class TestScanPlainTitleComponents:

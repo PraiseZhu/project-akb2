@@ -3152,6 +3152,17 @@ _GENERIC_PLAIN_TITLE_NAMES: frozenset[str] = frozenset({
     "configuration", "config", "settings", "options", "parameters",
     "defaults", "environment variables", "fields", "metadata",
 })
+# F49 刀2 P2-2:plain-title 扫描专用泛节名清单(只 _is_plain_title_component 用,
+# 不进 _is_garbage_component_name/_filter_llm_component_names 的 LLM 主路径)。
+# reviewer 实锤:共享集合会泄漏进 LLM 主路径,把合法角色组件 "Author"(Author/Editor/
+# Reviewer 工作流)误删,可能跌破组件数门。故拆出专用集合:plain-title 扫描拒
+# acknowledgements/authors 等 H2/H3 节名(它们不是机制组件),但 LLM 主路径仍保留
+# "Author" 作角色组件。定位:防虚高组件计数的质量卫生,非 yield 修复(reviewer 回放
+# 证明 0-edge 死案真死因不在垃圾端点,而在无 source_causal 边/超时/内容真不行)。
+_PLAIN_TITLE_EXTRA_GENERIC_NAMES: frozenset[str] = frozenset({
+    "acknowledgements", "acknowledgement", "authors", "author",
+    "about the authors", "author bios", "biographies", "biography",
+})
 # 句子起始词(动词/疑问词):以这些词开头的标题是祈使句/疑问句,非命名短语
 _SENTENCE_STARTER_WORDS: frozenset[str] = frozenset({
     "how", "when", "why", "what", "where", "who", "which", "choose", "write",
@@ -3226,6 +3237,9 @@ def _is_plain_title_component(title: str) -> bool:
         return False
     low = t.lower()
     if low in _GENERIC_PLAIN_TITLE_NAMES:
+        return False
+    # F49 刀2 P2-2:plain-title 专用泛节名拒(不进 LLM 主路径,见 _PLAIN_TITLE_EXTRA_GENERIC_NAMES)
+    if low in _PLAIN_TITLE_EXTRA_GENERIC_NAMES:
         return False
     # F5-C: 祈使句/疑问句首词检查在 entity keyword 之前(防 'Invoke subagents explicitly'
     # 含 'agent' 被 entity 路径先接受)

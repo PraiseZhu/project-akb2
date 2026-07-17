@@ -60,9 +60,9 @@ sources:
     feed_url: https://simonwillison.net/atom/everything/
     listing_url: https://simonwillison.net
     rate_limit: 3600
-    status: trial
+    status: down
     category: core
-    notes: "Simon Willison — LLM / 工具链 / 数据工程"
+    notes: "Simon Willison — LLM / 工具链 / 数据工程; [F49 数据降级 2026-07-16] 07-11起 11 进 1 过准入 / 0 入库 / 0 驻留,恢复需人工改回 trial"
 
   - slug: steipete
     domain: steipete.me
@@ -280,9 +280,9 @@ sources:
     feed_url: https://www.swyx.io/rss.xml
     listing_url: https://www.swyx.io
     rate_limit: 3600
-    status: trial
+    status: down
     category: supplementary
-    notes: "swyx — AI 工程 / 开发者体验"
+    notes: "swyx — AI 工程 / 开发者体验; [F49 数据降级 2026-07-16] 07-11起 40 进 2 过准入 / 0 入库 / 0 驻留,恢复需人工改回 trial"
 
   - slug: andrej-karpathy
     domain: karpathy.ai
@@ -298,9 +298,9 @@ sources:
     feed_url: https://jvns.ca/atom.xml
     listing_url: https://jvns.ca
     rate_limit: 3600
-    status: trial
+    status: down
     category: supplementary
-    notes: "Julia Evans — 系统编程 / 调试 / 工具"
+    notes: "Julia Evans — 系统编程 / 调试 / 工具; [F49 数据降级 2026-07-16] 07-11起 20 进 0 过准入 / 0 入库 / 0 驻留,恢复需人工改回 trial"
 
   - slug: martin-fowler
     domain: martinfowler.com
@@ -334,9 +334,9 @@ sources:
     feed_url: https://blog.cloudflare.com/rss
     listing_url: https://blog.cloudflare.com
     rate_limit: 3600
-    status: trial
+    status: down
     category: supplementary
-    notes: "Cloudflare Blog — 边缘计算 / 网络"
+    notes: "Cloudflare Blog — 边缘计算 / 网络; [F49 数据降级 2026-07-16] 07-11起 22 进 2 过准入 / 0 入库 / 0 驻留,恢复需人工改回 trial"
 
   - slug: smashing-magazine
     domain: smashingmagazine.com
@@ -424,9 +424,9 @@ sources:
     feed_url: https://uxdesign.cc/feed
     listing_url: https://uxdesign.cc
     rate_limit: 3600
-    status: trial
+    status: down
     category: supplementary
-    notes: "UX Collective — UX 设计"
+    notes: "UX Collective — UX 设计; [F49 数据降级 2026-07-16] 07-11起 23 进 2 过准入 / 0 入库 / 0 驻留,恢复需人工改回 trial"
 
   - slug: css-irl
     domain: css-irl.info
@@ -478,9 +478,9 @@ sources:
     feed_url: https://csswizardry.com/feed.xml
     listing_url: https://csswizardry.com
     rate_limit: 3600
-    status: trial
+    status: down
     category: supplementary
-    notes: "Harry Roberts / CSS Wizardry — CSS 性能 / 架构"
+    notes: "Harry Roberts / CSS Wizardry — CSS 性能 / 架构; [F49 数据降级 2026-07-16] 07-11起 68 进 9 过准入 / 0 入库 / 0 驻留,恢复需人工改回 trial"
 
   - slug: sarah-drasner
     domain: sarahdrasnerdesign.com
@@ -635,9 +635,9 @@ sources:
     feed_url: https://planetscale.com/blog/rss.xml
     listing_url: https://planetscale.com/blog
     rate_limit: 3600
-    status: trial
+    status: down
     category: authority
-    notes: "PlanetScale — 数据库工程"
+    notes: "PlanetScale — 数据库工程; [F49 数据降级 2026-07-16] 07-11起 20 进 2 过准入 / 0 入库 / 0 驻留,恢复需人工改回 trial"
 
   - slug: svelte-blog
     domain: svelte.dev
@@ -757,9 +757,9 @@ sources:
     feed_url:
     listing_url: https://openai.com/news/
     rate_limit: 3600
-    status: trial
+    status: down
     category: core
-    notes: "OpenAI 官方 news;feedless SPA,seeds.json 标 recall_critical;与现有 openai-blog(/blog)同域不同栏;awesome-evals seeds.json company-blogs"
+    notes: "OpenAI 官方 news;feedless SPA,seeds.json 标 recall_critical;与现有 openai-blog(/blog)同域不同栏;awesome-evals seeds.json company-blogs; [F49 数据降级 2026-07-16] 07-11起 13 进 0 过准入 / 0 入库 / 0 驻留,恢复需人工改回 trial"
 
   - slug: hf-papers
     domain: huggingface.co
@@ -983,9 +983,9 @@ sources:
     feed_url: https://medium.com/feed/airbnb-engineering
     listing_url: https://medium.com/airbnb-engineering
     rate_limit: 3600
-    status: trial
+    status: down
     category: supplementary
-    notes: "Airbnb 工程 — 数据/ML/后端深文  [数据/ML 工程团队]"
+    notes: "Airbnb 工程 — 数据/ML/后端深文  [数据/ML 工程团队]; [F49 数据降级 2026-07-16] 07-11起 10 进 1 过准入 / 0 入库 / 0 驻留,恢复需人工改回 trial"
 
   - slug: apple-ml-research
     domain: machinelearning.apple.com
@@ -1073,9 +1073,9 @@ sources:
     feed_url: https://martinheinz.dev/rss
     listing_url: https://martinheinz.dev/
     rate_limit: 3600
-    status: trial
+    status: down
     category: supplementary
-    notes: "Martin Heinz — 软件工程/ML/infra 深文  [个人 LLM 工程深文]"
+    notes: "Martin Heinz — 软件工程/ML/infra 深文  [个人 LLM 工程深文]; [F49 数据降级 2026-07-16] 07-11起 29 进 0 过准入 / 0 入库 / 0 驻留,恢复需人工改回 trial"
 
   - slug: modal-blog
     domain: modal.com
@@ -1136,9 +1136,9 @@ sources:
     feed_url: https://stability.ai/news-updates?format=rss
     listing_url: https://stability.ai/news
     rate_limit: 3600
-    status: trial
+    status: down
     category: supplementary
-    notes: "Stability AI — 生成模型工程  [AI/ML 研究实验室]"
+    notes: "Stability AI — 生成模型工程  [AI/ML 研究实验室]; [F49 数据降级 2026-07-16] 07-11起 19 进 0 过准入 / 0 入库 / 0 驻留,恢复需人工改回 trial"
 
   - slug: thoughtworks-insights
     domain: thoughtworks.com
@@ -1163,9 +1163,9 @@ sources:
     feed_url: https://vasilis.nl/rss.xml
     listing_url: https://vasilis.nl/
     rate_limit: 3600
-    status: trial
+    status: down
     category: supplementary
-    notes: "Vasilis — 前端/设计工程深文  [设计工程]"
+    notes: "Vasilis — 前端/设计工程深文  [设计工程]; [F49 数据降级 2026-07-16] 07-11起 14 进 0 过准入 / 0 入库 / 0 驻留,恢复需人工改回 trial"
 
   - slug: vllm-blog
     domain: blog.vllm.ai
@@ -1219,9 +1219,9 @@ sources:
     feed_url: https://distill.pub/rss.xml
     listing_url: https://distill.pub/
     rate_limit: 3600
-    status: trial
+    status: down
     category: supplementary
-    notes: "Distill — ML 机制可视化深文  [LLM/agent 工程个人作者]"
+    notes: "Distill — ML 机制可视化深文  [LLM/agent 工程个人作者]; [F49 数据降级 2026-07-16] 07-11起 22 进 0 过准入 / 0 入库 / 0 驻留,恢复需人工改回 trial"
 
   - slug: dvc-blog
     domain: dvc.org
@@ -1237,18 +1237,18 @@ sources:
     feed_url: https://inferless.com/blog/rss.xml
     listing_url: https://inferless.com/
     rate_limit: 3600
-    status: trial
+    status: down
     category: supplementary
-    notes: "Inferless — GPU 推理 infra 工程  [LLM 推理/训练 infra]"
+    notes: "Inferless — GPU 推理 infra 工程  [LLM 推理/训练 infra]; [F49 数据降级 2026-07-16] 07-11起 10 进 0 过准入 / 0 入库 / 0 驻留,恢复需人工改回 trial"
 
   - slug: kilian-valkhof
     domain: kilianvalkhof.com
     feed_url: https://kilianvalkhof.com/rss.xml
     listing_url: https://kilianvalkhof.com/
     rate_limit: 3600
-    status: trial
+    status: down
     category: supplementary
-    notes: "Kilian Valkhof — 前端/设计工程深文  [设计工程深文]"
+    notes: "Kilian Valkhof — 前端/设计工程深文  [设计工程深文]; [F49 数据降级 2026-07-16] 07-11起 30 进 1 过准入 / 0 入库 / 0 驻留,恢复需人工改回 trial"
 
   - slug: lambda-labs-blog
     domain: lambdalabs.com

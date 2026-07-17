@@ -1,4 +1,4 @@
-"""test_f11c_admission_toc_section_split.py — F11-C admission 误拒 idx0/idx8 修复测试。
+r"""test_f11c_admission_toc_section_split.py — F11-C admission 误拒 idx0/idx8 修复测试。
 
 probe-p9b B 臂 idx0/idx8 admission 误拒 no_mechanism_signal(mechanism_present=True
 矛盾)。根因两处:
@@ -18,7 +18,6 @@ from src.akb2.quality.admission import (
     _build_mechanism_snippet,
     _remove_anchor_toc,
     _split_heading_sections,
-    _section_is_mechanism_candidate,
 )
 
 _WT = Path(__file__).resolve().parents[2]

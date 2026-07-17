@@ -264,7 +264,7 @@ CONTENT-LIFECYCLE §2 早已定义 `needs_repair` 状态("有价值但未达 act
 ### 预算(宪法 P1 有界,具名常量)
 - `NEEDS_REPAIR_MAX_RETAKES = 3` —— 每篇一生最多 3 次重掷(驻留次数上限)。
 - `NEEDS_REPAIR_MIN_INTERVAL_H = 20` —— 两掷间隔 ≥20h,让 grader 骰子跨会话。
-- `NEEDS_REPAIR_PER_CYCLE = 2` —— 每轮主循环空闲期最多掷 2 篇(新文章优先,驻留池吃空闲)。
+- `NEEDS_REPAIR_PER_CYCLE = 4` —— 每轮主循环空闲期最多掷 4 篇(新文章优先,驻留池吃空闲)。F49 提速(2→4):驻留池 ~102 篇(07-16 账本实测),旧 2 篇/cycle 需 51 cycle 轮一遍,按主循环空闲期节奏约 20+ 天;提速 4 → 26 cycle,轮完周期减半。MAX_RETAKES/MIN_INTERVAL_H 不动。
 
 ### 停止条件
 - 收敛 → 走完全链下游(A 层结构校验 → 硬门 → promote 五闸 → finalize,同函数同判定不开旁门),

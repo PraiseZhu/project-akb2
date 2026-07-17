@@ -77,7 +77,7 @@ class TestBudget:
     def test_named_constants(self) -> None:
         assert NEEDS_REPAIR_MAX_RETAKES == 3
         assert NEEDS_REPAIR_MIN_INTERVAL_H == 20
-        assert NEEDS_REPAIR_PER_CYCLE == 2
+        assert NEEDS_REPAIR_PER_CYCLE == 4  # F49 提速 2→4
 
 
 # ---------------------------------------------------------------------------
