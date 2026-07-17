@@ -14,6 +14,7 @@ from __future__ import annotations
 from src.akb2.quality.distill import (
     _build_deterministic_extract_data,
     _build_fallback_quality_basis,
+    _is_garbage_component_name,
     _is_plain_title_component,
     _scan_plain_title_components,
     _scan_real_mechanism_components,
@@ -80,65 +81,73 @@ class TestIsPlainTitleComponent:
         # 注:'maxSteps Budget' 因含 'step' 实体关键词被接受(entity-keyword 路径优先)
 
 
-class TestF49ParseToleranceGarbageTitles:
-    """F49 刀2:concept deterministic fallback 死案归因发现 _scan_real_mechanism_components
-    收了句子型/泛节名/gerund-起首标题当机制组件端点(实测:'Acknowledgements'/'The full picture'
-    /'Limiting file writes'/'Replacing The Vision Encoder'/'Authors'),撑高 component_count 但
-    0 eligible edge → fail-closed。本测试绑定行为:这类畸形标题→解析时被拒(宁缺勿假,不凑数)。"""
+class TestF49ComponentHygieneNoFalseKill:
+    """F49 刀2(reviewer 返工 P2-1/P2-2/P2-3):定位为「防虚高组件计数的质量卫生」,
+    **非 yield 修复**(reviewer 回放证明 0-edge 死案真死因不在垃圾端点,而在无
+    source_causal 边/超时/内容真不行;宽泛 article/gerund 拒判把 maarten 死案从
+    旧 5 组件/0 边变成 0/0,删了真组件却没提升 yield)。
 
-    def test_acknowledgements_authors_rejected(self):
-        """论文/博客泛节名(Acknowledgements/Authors)→ 拒(实测死案端点)。"""
+    P2-1:撤宽泛 article/endswith('ing') 结构拒判(误杀 The Vision Encoder/Sliding
+    Window Attention/Ring Buffer Allocation Strategy/The Residual Stream 等真机制组件)。
+    P2-2:泛节名清单拆出 plain-title 专用集合(_PLAIN_TITLE_EXTRA_GENERIC_NAMES),
+    不进 LLM 主路径(防 'Author' 角色组件被 _filter_llm_component_names 删)。
+    P2-3:测试用 H3(真实死案层级,不被 _is_heading_shaped_component_name 的 H2 同名
+    剔除),断言 _build_fallback_quality_basis 最终可观测结果。本测试在宽泛拒判的
+    旧实现上 FAIL(真组件被杀→0 组件),在收窄实现上 PASS——断言绑定修复行为。
+    """
+
+    def test_p2_1_real_mechanism_titles_not_killed(self):
+        """P2-1:无 entity、article/gerund 起首的真机制标题不许被宽泛结构拒判误杀。
+        reviewer 实锤反例(全部须 True,宽泛实现全 False)。"""
+        for name in ("The Vision Encoder", "The Audio Encoder", "The Residual Stream",
+                     "Sliding Window Attention", "Ring Buffer Allocation Strategy"):
+            assert _is_plain_title_component(name), f"{name!r} 不许误杀(真机制组件)"
+
+    def test_plain_title_generic_section_names_rejected(self):
+        """P2-1/P2-2:泛节名(Acknowledgements/Authors/Biographies)plain-title 扫描拒。"""
         for name in ("Acknowledgements", "Acknowledgement", "Authors", "Author",
                      "About the Authors", "Author Bios", "Biographies", "Biography"):
-            assert not _is_plain_title_component(name), f"{name!r} 应被拒(泛节名)"
+            assert not _is_plain_title_component(name), f"{name!r} 应拒(plain-title 泛节名)"
 
-    def test_article_led_nonentity_sentence_rejected(self):
-        """'The full picture'(article 起首 + >2 词 + 无 entity)→ 拒(句子型标题)。"""
-        assert not _is_plain_title_component("The full picture")
-        assert not _is_plain_title_component("A unified, encoder-free multimodal model!")
+    def test_p2_2_author_role_not_filtered_in_llm_path(self):
+        """P2-2:'Author' 作合法角色组件(Author/Editor/Reviewer 工作流)在 LLM 主路径
+        (_is_garbage_component_name→_filter_llm_component_names)不许被删。泛节名清单已
+        拆出 plain-title 专用集合,不进 LLM 黑名单。"""
+        assert not _is_garbage_component_name("Author"), "'Author' 角色组件不许被 LLM 路径删"
+        assert not _is_garbage_component_name("Authors"), "'Authors' 不许被 LLM 路径删"
 
-    def test_gerund_led_nonentity_sentence_rejected(self):
-        """'Limiting file writes'/'Replacing The Vision Encoder'(gerund 起首 + >2 词 + 无 entity)
-        → 拒(实测死案端点,非机制组件)。注:含 entity 词(如 'setup step')按设计由 entity 路径放行。"""
-        assert not _is_plain_title_component("Limiting file writes")
-        assert not _is_plain_title_component("Replacing The Vision Encoder")
-        assert not _is_plain_title_component("Building the system from scratch")
-
-    def test_real_gerund_entity_components_not_killed(self):
-        """真组件含 entity 词优先放行:'Routing Layer'(layer)/'Encoding Pipeline'(pipeline)
-        → 不误杀(entity-keyword 路径在上行 return True,不进 gerund 拒判)。"""
-        assert _is_plain_title_component("Routing Layer")  # 'layer' entity
-        assert _is_plain_title_component("Encoding Pipeline")  # 'pipeline' entity
-
-    def test_two_word_gerund_noun_kept_conservative(self):
-        """2 词 gerund-noun(如 'Caching Strategy')保守留作命名短语(>2 词守卫不触发)。"""
-        assert _is_plain_title_component("Caching Strategy")
-        assert _is_plain_title_component("Vision Encoder")
-
-    def test_scan_real_mechanism_components_rejects_garbage_titles(self):
-        """集成:含泛节名/句子型 H2 标题的 raw → _scan_real_mechanism_components 不把它们
-        当机制组件(端点不冒充组件,fail-closed 的 component_count 诚实)。"""
+    def test_p2_3_h3_real_components_survive_in_deterministic_fallback(self):
+        """P2-3:H3(真实死案层级)真机制组件不被误杀,泛节名被拒;最终
+        _build_fallback_quality_basis 可观测。镜像 maarten-grootendorst--e9942fdace88
+        死案 raw(07-10,旧实现 5 组件/0 边,宽泛拒判实现 0/0——本测试在宽泛实现上
+        names 不含 'The Vision Encoder' → FAIL,绑定修复)。"""
         raw = (
-            "## §A_INTRO\n"
-            "Some substantive intro about a real mechanism here.\n\n"
-            "## Acknowledgements\n"
-            "Thanks to everyone.\n\n"
-            "## Authors\n"
-            "Xuchao Zhang, Molly Xia.\n\n"
-            "## The full picture\n"
-            "We now need a first-class setup step.\n\n"
-            "## Limiting file writes\n"
-            "Limiting file writes is important.\n\n"
-            "## Routing Layer\n"
-            "The routing layer dispatches.\n"
+            "## 锚点目录\n\n- §A: START\n\n---\n\n"
+            "§A_CONTENT_START\n\n"
+            "### The Vision Encoder\n\nThe vision encoder encodes image tokens.\n\n"
+            "### The Audio Encoder\n\nThe audio encoder processes audio.\n\n"
+            "### Sliding Window Attention\n\n"
+            "Sliding window attention feeds into the audio encoder.\n\n"
+            "### Acknowledgements\n\nThanks to everyone.\n\n"
+            "### Authors\n\nXuchao Zhang, Molly Xia.\n"
         )
         comps = _scan_real_mechanism_components(raw)
         names = [c["name"] for c in comps]
-        # 畸形/泛节名标题不该冒充机制组件
+        # P2-1:真机制组件(H3,无 entity,article/gerund 起首)不许误杀
+        assert "The Vision Encoder" in names, f"真组件被误杀: {names}"
+        assert "The Audio Encoder" in names, f"真组件被误杀: {names}"
+        assert "Sliding Window Attention" in names, f"真组件被误杀: {names}"
+        # P2-2:泛节名拒
         assert "Acknowledgements" not in names
         assert "Authors" not in names
-        assert "The full picture" not in names
-        assert "Limiting file writes" not in names
+        # P2-3:最终可观测结果——basis component_count 反映真组件(非 0,非虚高)
+        data = _build_deterministic_extract_data(raw, content_lane="concept")
+        basis = _build_fallback_quality_basis(data)
+        assert basis["component_count"] >= 3, f"组件数虚低: {basis}"
+        # build_deterministic_extract_result 不崩,携 basis 可观测(成败皆可,关键是真组件在)
+        result = build_deterministic_extract_result(raw, content_lane="concept")
+        assert result.data.get("fallback_quality_basis") is not None or result.success
+
 
 
 class TestScanPlainTitleComponents:

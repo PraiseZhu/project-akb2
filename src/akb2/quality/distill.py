@@ -3151,9 +3151,15 @@ _GENERIC_PLAIN_TITLE_NAMES: frozenset[str] = frozenset({
     "crew attributes", "crew properties", "attributes", "properties",
     "configuration", "config", "settings", "options", "parameters",
     "defaults", "environment variables", "fields", "metadata",
-    # F49 刀2 解析容错短板:论文/博客常见泛节名被 plain-title 扫描当组件(实测死案
-    # "Acknowledgements"/"Authors" 成了机制组件端点,撑高 component_count 但 0 eligible
-    # edge → fail-closed。补泛节名直接拒(宁缺勿假:这些词不是机制组件)。
+})
+# F49 刀2 P2-2:plain-title 扫描专用泛节名清单(只 _is_plain_title_component 用,
+# 不进 _is_garbage_component_name/_filter_llm_component_names 的 LLM 主路径)。
+# reviewer 实锤:共享集合会泄漏进 LLM 主路径,把合法角色组件 "Author"(Author/Editor/
+# Reviewer 工作流)误删,可能跌破组件数门。故拆出专用集合:plain-title 扫描拒
+# acknowledgements/authors 等 H2/H3 节名(它们不是机制组件),但 LLM 主路径仍保留
+# "Author" 作角色组件。定位:防虚高组件计数的质量卫生,非 yield 修复(reviewer 回放
+# 证明 0-edge 死案真死因不在垃圾端点,而在无 source_causal 边/超时/内容真不行)。
+_PLAIN_TITLE_EXTRA_GENERIC_NAMES: frozenset[str] = frozenset({
     "acknowledgements", "acknowledgement", "authors", "author",
     "about the authors", "author bios", "biographies", "biography",
 })
@@ -3232,6 +3238,9 @@ def _is_plain_title_component(title: str) -> bool:
     low = t.lower()
     if low in _GENERIC_PLAIN_TITLE_NAMES:
         return False
+    # F49 刀2 P2-2:plain-title 专用泛节名拒(不进 LLM 主路径,见 _PLAIN_TITLE_EXTRA_GENERIC_NAMES)
+    if low in _PLAIN_TITLE_EXTRA_GENERIC_NAMES:
+        return False
     # F5-C: 祈使句/疑问句首词检查在 entity keyword 之前(防 'Invoke subagents explicitly'
     # 含 'agent' 被 entity 路径先接受)
     words = t.split()
@@ -3239,15 +3248,6 @@ def _is_plain_title_component(title: str) -> bool:
         return False
     if any(kw in low for kw in _MECHANISM_ENTITY_KEYWORDS):
         return True
-    # F49 刀2 解析容错短板:拒 article/gerund 起首的非实体句子型标题(实测死案
-    # "The full picture"/"Limiting file writes"/"Replacing The Vision Encoder" 成了
-    # 机制组件端点)。仅 >2 词且无 entity 词时拒(entity 词如 "Routing Layer" 已在
-    # 上行 return True 放行;2 词 gerund-noun 如 "Caching Strategy" 留作命名短语)。
-    # 只在 fallback plain-title 扫描生效,只拒不造,宁缺勿假。
-    if len(words) > 2 and words[0][:1].isupper():
-        first_low = words[0].lower()
-        if first_low in ("the", "a", "an") or first_low.endswith("ing"):
-            return False
     if len(words) > 6 or len(words) < 1:
         return False
     if not words[0][:1].isupper():
