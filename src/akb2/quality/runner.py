@@ -50,6 +50,13 @@ NEEDS_REPAIR_MIN_INTERVAL_H: int = 20   # 两掷间隔 ≥20h（让 grader 骰�
 # 按主循环空闲期节奏约 20+ 天;提速 4 → 26 cycle,周期数减半。MAX_RETAKES/MIN_INTERVAL_H 不动。
 NEEDS_REPAIR_PER_CYCLE: int = 4          # 每轮主循环空闲期最多掷 4 篇（新文章优先,驻留池吃空闲）
 NEEDS_REPAIR_SUBDIR: str = "needs-repair"  # 驻留 final_text 持久化子目录（相对 staging）
+# F50 止损升级(2026-07-20 账本数据裁决):同文续掷 698 次 0 转正,62%(143/232)跨
+# retake 缺陷数不降;对照全链重掷(重新提炼,F26 语义)33% 转正(F49 刀4 批次 4/12);
+# 残留缺陷 57% 是"概念机制清晰度 H3"=提炼欠抽病,同文补丁修不出原文没抽到的证据。
+# 续掷无进展(缺陷数不降) → 一次性升级为全链重掷;有进展仍走 F46 续掷通路。
+# 判定链零动,只改路由;预算有界(宪法 P1),自动 requeue 手法镜像 F39(一生一次)。
+NEEDS_REPAIR_STALL_REQUEUE_MAX: int = 1  # 每篇一生最多 1 次止损升级(全链重掷)
+_NEEDS_REPAIR_STALL_REASON_PREFIX = "needs_repair_stall_redistill(F50)"
 
 DISTILL_TIMEOUT_S: float = 60.0
 DISTILL_MAX_RETRIES: int = 0
@@ -526,6 +533,97 @@ def _purge_resident(config: RunnerConfig, content_hash: str) -> None:
             pass
 
 
+def _stall_requeue_used(content_hash: str, ledger_path: str) -> bool:
+    """F50: 该 hash 是否已用过止损升级预算(一生一次,镜像 F39 手法)。"""
+    try:
+        with open(ledger_path, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    e = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (
+                    e.get("content_hash") == content_hash
+                    and e.get("event") == "requeue"
+                    and str(e.get("details", {}).get("reason", "")).startswith(
+                        _NEEDS_REPAIR_STALL_REASON_PREFIX
+                    )
+                ):
+                    return True
+    except OSError:
+        return True  # 账本不可读 → 视为已用(fail-closed,不盲目追加)
+    return False
+
+
+def _escalate_stalled_resident(
+    config: RunnerConfig,
+    content_hash: str,
+    *,
+    prior_defect_count: int,
+    new_defect_count: int,
+    retake_count: int,
+    error_class: str,
+    error_detail: str,
+) -> bool:
+    """F50: 续掷无进展 → 止损升级为全链重掷(F26 requeue 语义,重新提炼)。
+
+    预算 NEEDS_REPAIR_STALL_REQUEUE_MAX=1(一生一次);已用过 → 返回 False,
+    调用方回落 F46 正常驻留路由。事件顺序:先 abort(终态,fail-visible 带
+    缺陷数对比)后 requeue(_is_processed 视最后 requeue 为未处理,下轮全链重跑)。
+    """
+    if _stall_requeue_used(content_hash, config.ledger_path):
+        return False
+    _log_event(
+        config, "abort", "repair_loop", content_hash,
+        {
+            "error_class": "needs_repair_stalled",
+            "error": error_detail,
+            "reason": (
+                f"{_NEEDS_REPAIR_STALL_REASON_PREFIX}: 续掷无进展"
+                f"(缺陷 {prior_defect_count}→{new_defect_count}),升级全链重掷"
+            ),
+            "prior_defect_count": prior_defect_count,
+            "new_defect_count": new_defect_count,
+            "retake_count": retake_count,
+            "source_error_class": error_class,
+        },
+    )
+    _log_event(
+        config, "requeue", "requeue", content_hash,
+        {
+            "by": "runner-f50",
+            "reason": (
+                f"{_NEEDS_REPAIR_STALL_REASON_PREFIX}: 同文续掷缺陷数不降"
+                f"({prior_defect_count}→{new_defect_count}),重新提炼全链重考"
+            ),
+        },
+    )
+    _purge_resident(config, content_hash)
+    return True
+
+
+def _expire_capped_resident(
+    config: RunnerConfig, content_hash: str, meta: dict[str, Any]
+) -> None:
+    """F50: 扫描端补记超龄淘汰——修 F46 死锁。
+
+    原设计"预算耗尽由 rethrow 路径记 expired abort"不可达:打满预算的驻留被
+    扫描静默跳过,永不再进 rethrow → 永不 expired 永不清理(账本实锤 197 篇
+    僵尸,违反宪法 P4 fail-visible)。扫描端当场补记 abort + 清理文件。
+    """
+    _log_event(
+        config, "abort", "repair_loop", content_hash,
+        {
+            "error_class": "needs_repair_expired",
+            "reason": "needs_repair_expired(F50 扫描端补记,原 rethrow 端 expire 不可达)",
+            "retake_count": _needs_repair_event_count(content_hash, config.ledger_path),
+            "max_retakes": NEEDS_REPAIR_MAX_RETAKES,
+            "final_defects": meta.get("final_defects_summary", []),
+        },
+    )
+    _purge_resident(config, content_hash)
+
+
 def _scan_residency(config: RunnerConfig) -> list[str]:
     """F46: 扫驻留池,返回可重掷的 content_hash 列表（≤ NEEDS_REPAIR_PER_CYCLE）。
 
@@ -545,7 +643,10 @@ def _scan_residency(config: RunnerConfig) -> list[str]:
         if not ch or not _is_resident(ch, config.ledger_path):
             continue  # 已收敛/超龄/手动 requeue 后不再是驻留
         if _needs_repair_event_count(ch, config.ledger_path) >= NEEDS_REPAIR_MAX_RETAKES:
-            continue  # 预算耗尽（应由 rethrow 路径记 expired abort,此处跳过防重复）
+            # F50: 预算耗尽 → 当场补记 expired abort + 清理(原设想"由 rethrow
+            # 路径记 expired"不可达——被跳过的驻留永不再进 rethrow,死锁成僵尸)
+            _expire_capped_resident(config, ch, meta)
+            continue
         last_ts = _last_needs_repair_ts(ch, config.ledger_path)
         if last_ts:
             try:
@@ -2565,7 +2666,26 @@ def _run_residency_rethrow(config: RunnerConfig, content_hash: str) -> dict[str,
         quality_meta.get("final_defects_summary", []) if quality_meta else []
     )
     if not converged:
-        # 不收敛 → 再次驻留或 expired(同 _route_to_residency,但 final_text 取本次重掷结果)
+        # F50 止损:本次重掷缺陷数未低于驻留时基线 → 同文续掷已证无效
+        # (账本 698 次 0 转正),升级一次全链重掷(重新提炼);
+        # 预算已用/无基线 → 回落 F46 正常路由。
+        prior_n = len(resident.get("final_defects_summary") or [])
+        new_n = len(final_defects_summary)
+        if prior_n > 0 and new_n >= prior_n and _escalate_stalled_resident(
+            config, content_hash,
+            prior_defect_count=prior_n, new_defect_count=new_n,
+            retake_count=_needs_repair_event_count(content_hash, config.ledger_path),
+            error_class=str(error_class), error_detail=str(error_detail),
+        ):
+            return {
+                "converged": False, "rounds": rounds, "promoted": False,
+                "promotion_mode": "none", "final_status": "stall_requeued",
+                "error": f"续掷无进展(缺陷 {prior_n}→{new_n}),已升级全链重掷",
+                "content_lane": content_lane, "failed_node": "repair_loop",
+                "error_class": "needs_repair_stalled",
+                "needs_repair_stall_requeued": True,
+            }
+        # 不收敛(有进展) → 再次驻留或 expired(final_text 取本次重掷结果)
         return _route_to_residency(
             config=config, content_hash=content_hash, raw_path=raw_path,
             candidate_path=candidate_path, content_lane=content_lane, slug=slug,
