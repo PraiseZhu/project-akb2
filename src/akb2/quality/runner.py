@@ -258,6 +258,8 @@ _INFRA_ERROR_MARKERS: tuple[str, ...] = (
     "抽取调用失败",         # extract LLM transport 硬失败(F20 语义)
     "llm_failed",
     "评分器双不可用",       # grader_all_down
+    "调用超时",             # F51: LLM 调用超时 (Ns): <model>
+    "extract_worker_timeout",  # F51: 抽取子进程超总时限
 )
 
 
@@ -402,7 +404,13 @@ def _is_resident(content_hash: str, ledger_path: str) -> bool:
 
 
 def _needs_repair_event_count(content_hash: str, ledger_path: str) -> int:
-    """F46: 该 hash 已记的 needs_repair 事件数（= 已驻留次数,用于预算判定）。"""
+    """F46: 该 hash 本代已记的 needs_repair 事件数（= 已驻留次数,用于预算判定）。
+
+    F51: requeue(F26/F39/F50)意味着全链重掷会产出新提炼文本——新一代文本
+    重新计数(计数在 requeue 处清零),否则重掷后的驻留额度被上一代吃掉
+    (F50 止损重掷者只剩 1/3 retake)。有界性不破:每 hash 的 requeue 来源
+    各有一生一次预算(F39/F50),代数有限。
+    """
     ledger = Path(ledger_path)
     if not ledger.exists():
         return 0
@@ -417,10 +425,12 @@ def _needs_repair_event_count(content_hash: str, ledger_path: str) -> int:
                     entry = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if (
-                    entry.get("content_hash") == content_hash
-                    and entry.get("event") == "needs_repair"
-                ):
+                if entry.get("content_hash") != content_hash:
+                    continue
+                event = entry.get("event")
+                if event == "requeue":
+                    count = 0
+                elif event == "needs_repair":
                     count += 1
     except OSError:
         return 0
@@ -2086,8 +2096,16 @@ def _run_pipeline_segments(
         if distill_meta.get("fallback_quality_basis"):
             details["fallback_quality_basis"] = distill_meta.get("fallback_quality_basis")
         _log_event(config, "abort", failed_node, content_hash, details)
-        # F39: 基础设施性死亡(LLM 宕机/超时)自动重审一次;内容性死因不触发
-        _maybe_auto_infra_requeue(config, content_hash, str(error_detail))
+        # F39: 基础设施性死亡(LLM 宕机/超时)自动重审一次;内容性死因不触发。
+        # F51: maker 超时后确定性兜底 fail-closed 时,error_detail 是"0 组件"
+        # 内容样文本,infra 信号在 maker_primary_error 里——探测必须并入,
+        # 否则超时死永不重审(账本实锤: 84/84 extract_failed 全为超时未触发 F39)。
+        infra_probe = " | ".join(
+            str(x)
+            for x in (error_detail, distill_meta.get("maker_primary_error"))
+            if x
+        )
+        _maybe_auto_infra_requeue(config, content_hash, infra_probe)
         return {
             "converged": False,
             "rounds": rounds,
