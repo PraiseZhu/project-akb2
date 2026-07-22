@@ -112,6 +112,53 @@ class TestFeedParsing:
         assert entries[0]["title"] == "Understanding Context Engineering"
         assert "example.com" in entries[0]["link"]
 
+    def test_parse_atom_with_rss_in_title(self):
+        """Atom feed 标题含 'RSS Feed' 时仍按 Atom 解析（回归：cursor-blog 实况）。
+
+        实况锚点：cursor.com/atom.xml 标题为 "Cursor Blog | RSS Feed"，旧版
+        子串检测把它误判为 RSS → <channel> 缺失 → 静默 0 条。根元素为 <feed>
+        应判 Atom。
+        """
+        atom = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<feed xmlns="http://www.w3.org/2005/Atom">'
+            "<title>Cursor Blog | RSS Feed</title>"
+            '<link href="https://example.com/atom" rel="self"/>'
+            "<entry>"
+            "<title>Agent Loop Patterns</title>"
+            '<link href="https://example.com/blog/agent-loops"/>'
+            "<summary>How agents loop.</summary>"
+            "</entry>"
+            "</feed>"
+        )
+        entries = parse_feed(atom)
+        assert len(entries) == 1
+        assert entries[0]["title"] == "Agent Loop Patterns"
+        assert entries[0]["link"] == "https://example.com/blog/agent-loops"
+
+    def test_parse_atom_with_rss_mime_self_link(self):
+        """Atom 自链接 type='application/rss+xml' 时仍按 Atom 解析（回归：vercel-blog 实况）。
+
+        实况锚点：vercel.com/atom 自链接声明 type="application/rss+xml"，旧版
+        子串检测命中 'rss' → 误判 RSS → 0 条。根元素 <feed> 才是判据。
+        """
+        atom = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<feed xmlns="http://www.w3.org/2005/Atom">'
+            "<title>Vercel Blog</title>"
+            '<link href="https://example.com/atom" rel="self" '
+            'type="application/rss+xml"/>'
+            "<entry>"
+            "<title>Design Engineering at Vercel</title>"
+            '<link href="https://example.com/blog/design-engineering"/>'
+            "<summary>DesignEng.</summary>"
+            "</entry>"
+            "</feed>"
+        )
+        entries = parse_feed(atom)
+        assert len(entries) == 1
+        assert entries[0]["title"] == "Design Engineering at Vercel"
+
     def test_parse_empty_string(self):
         """空字符串返回空列表。"""
         entries = parse_feed("")

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import median
@@ -194,24 +195,29 @@ def _parse_atom_feed(xml_text: str) -> list[dict[str, str]]:
 def parse_feed(xml_text: str) -> list[dict[str, str]]:
     """解析 RSS 或 Atom feed，自动检测格式。
 
-    检测逻辑：根元素包含 "rss" → RSS；包含 "feed" → Atom。
+    检测逻辑：按**根元素名**判定——首个真实 XML 元素为 <rss>/<rdf:RDF> → RSS，
+    <feed> → Atom（去命名空间前缀，大小写不敏感）。
+    不再用「前 2000 字符含 'rss' 子串」检测：Atom feed 的标题（如
+    "Cursor Blog | RSS Feed"）或自链接 type="application/rss+xml" 会误命中，
+    把 Atom 当 RSS 解析 → 找不到 <channel> → 静默返回 0 条（宪法 P12 静默失败）。
     返回条目列表，每项至少含 title/link/description。
     """
     if not xml_text.strip():
         return []
 
-    # auto-detect
-    lower = xml_text[:2000].lower()
-    if "rss" in lower or "<rss" in lower:
+    # 取首个元素标签的本地名：正则跳过 <?xml?> 声明、注释 <!-- -->、DOCTYPE，
+    # 匹配 `<` 后紧跟的（可选命名空间前缀:）本地名。
+    root_match = re.search(r"<(?:[A-Za-z_][\w.\-]*:)?([A-Za-z_][\w.\-]*)", xml_text)
+    root_local = root_match.group(1).lower() if root_match else ""
+    if root_local in ("rss", "rdf"):
         return _parse_rss_feed(xml_text)
-    elif "feed" in lower or "xmlns" in lower:
+    if root_local == "feed":
         return _parse_atom_feed(xml_text)
-    else:
-        # 尝试 RSS 优先
-        result = _parse_rss_feed(xml_text)
-        if result:
-            return result
-        return _parse_atom_feed(xml_text)
+    # 未知/无法识别根元素：先试 RSS，空则试 Atom（非法 XML 在此抛 ParseError）。
+    result = _parse_rss_feed(xml_text)
+    if result:
+        return result
+    return _parse_atom_feed(xml_text)
 
 
 # ---------------------------------------------------------------------------

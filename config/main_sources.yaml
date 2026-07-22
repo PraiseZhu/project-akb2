@@ -174,12 +174,12 @@ sources:
 
   - slug: vercel-blog
     domain: vercel.com
-    feed_url: https://vercel.com/feed
+    feed_url: https://vercel.com/atom
     listing_url: https://vercel.com/blog
     rate_limit: 3600
     status: trial
     category: core
-    notes: "Vercel — 前端基础设施 / Next.js"
+    notes: "Vercel — 前端基础设施 / Next.js / Design Engineering; [2026-07-22 feed 修复] 原 /feed 已 302→登录页失效,改用 /atom(实测 200 有效 Atom feed)"
 
   - slug: ahmad-shadeed
     domain: ishadeed.com
@@ -192,21 +192,30 @@ sources:
 
   - slug: figma-blog
     domain: figma.com
-    feed_url: https://www.figma.com/blog/feed
+    feed_url:
     listing_url: https://www.figma.com/blog
     rate_limit: 3600
     status: trial
     category: core
-    notes: "Figma — 设计工具 / 设计系统"
+    notes: "Figma — 设计工具 / 设计系统 / Design Engineering; [2026-07-22 feed 修复] 原 /blog/feed 404 且无任何可用 RSS(feed.xml/rss.xml 均 404),清空 feed_url 走 listing 抓取(discovery 路径2 scrapling)"
 
   - slug: linear-blog
     domain: linear.app
-    feed_url: https://linear.app/blog/feed
+    feed_url:
     listing_url: https://linear.app/blog
     rate_limit: 3600
     status: trial
     category: core
-    notes: "Linear — 产品设计 / 工程文化"
+    notes: "Linear — 产品设计 / 工程文化 / Design Engineering; [2026-07-22 feed 修复] 原 /blog/feed 404,/rss.xml 与 /atom.xml 返回 200 但为 SPA HTML(非真 feed),清空 feed_url 走 listing 抓取"
+
+  - slug: raycast-blog
+    domain: raycast.com
+    feed_url:
+    listing_url: https://www.raycast.com/blog
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "Raycast — 启动器 / 开发者工具 / Design Engineering; [2026-07-22 新增] 源自 @yanliudreamer 推荐帖(Vercel/Linear/Figma/Cursor/Raycast);无 RSS feed(feed/feed.xml/rss.xml/atom.xml 全 404),走 listing 抓取"
 
   - slug: maggie-appleton
     domain: maggieappleton.com
