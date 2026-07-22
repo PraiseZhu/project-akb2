@@ -42,9 +42,9 @@ sources:
     feed_url: https://cookbook.openai.com/feed.xml
     listing_url: https://cookbook.openai.com
     rate_limit: 3600
-    status: trial
+    status: down
     category: core
-    notes: "OpenAI Cookbook — 实践指南"
+    notes: "OpenAI Cookbook — 实践指南; [2026-07-22 停用] 已迁 developers.openai.com,静态抓仅 docs 页"
 
   - slug: addy-osmani
     domain: addyosmani.com
@@ -132,9 +132,9 @@ sources:
     feed_url: https://rauno.me/feed.xml
     listing_url: https://rauno.me
     rate_limit: 3600
-    status: trial
+    status: down
     category: core
-    notes: "Rauno Freiberg — 设计工程 / UI 设计"
+    notes: "Rauno Freiberg — 设计工程 / UI 设计; [2026-07-22 停用] listing 多为 nav,有效文章不足"
 
   - slug: josh-comeau
     domain: joshwcomeau.com
@@ -147,21 +147,21 @@ sources:
 
   - slug: emil-kowalski
     domain: emilkowal.ski
-    feed_url: https://emilkowal.ski/feed.xml
+    feed_url:
     listing_url: https://emilkowal.ski
     rate_limit: 3600
     status: trial
     category: core
-    notes: "Emil Kowalski — UI 工程 / 动画"
+    notes: "Emil Kowalski — UI 工程 / 动画; [2026-07-22 转 listing] 原 feed 失效/无 RSS,清空 feed_url 走 listing 抓取"
 
   - slug: framer-motion
     domain: framer.com
     feed_url: https://www.framer.com/blog/feed
     listing_url: https://www.framer.com/blog
     rate_limit: 3600
-    status: trial
+    status: down
     category: core
-    notes: "Framer Motion — 动画库 / 交互设计"
+    notes: "Framer Motion — 动画库 / 交互设计; [2026-07-22 停用] JS-SPA 静态抓仅导航页,真文章需浏览器渲染"
 
   - slug: web-dev
     domain: web.dev
@@ -228,12 +228,12 @@ sources:
 
   - slug: game-developer
     domain: gamedeveloper.com
-    feed_url: https://www.gamedeveloper.com/feed
+    feed_url: https://www.gamedeveloper.com/rss.xml
     listing_url: https://www.gamedeveloper.com
     rate_limit: 3600
     status: trial
     category: core
-    notes: "Game Developer — 游戏设计 / 开发"
+    notes: "Game Developer — 游戏设计 / 开发; [2026-07-22 feed 修复] 原 feed 失效,改用有效 rss.xml"
 
   - slug: lost-garden
     domain: lostgarden.com
@@ -259,12 +259,12 @@ sources:
 
   - slug: lee-robinson
     domain: leerob.io
-    feed_url: https://leerob.io/feed.xml
+    feed_url:
     listing_url: https://leerob.io
     rate_limit: 3600
     status: trial
     category: supplementary
-    notes: "Lee Robinson — Next.js / 前端工程"
+    notes: "Lee Robinson — Next.js / 前端工程; [2026-07-22 转 listing] 原 feed 失效/无 RSS,清空 feed_url 走 listing 抓取"
 
   - slug: kent-c-dodds
     domain: kentcdodds.com
@@ -298,9 +298,9 @@ sources:
     feed_url: https://karpathy.ai/feed.xml
     listing_url: https://karpathy.ai
     rate_limit: 3600
-    status: trial
+    status: down
     category: supplementary
-    notes: "Andrej Karpathy — AI / 深度学习"
+    notes: "Andrej Karpathy — AI / 深度学习; [2026-07-22 停用] listing 仅课程/PDF 页,正文在 karpathy.github.io"
 
   - slug: julia-evans
     domain: jvns.ca
@@ -379,27 +379,27 @@ sources:
     feed_url: https://www.ben-evans.com/newsletter/feed
     listing_url: https://www.ben-evans.com/newsletter
     rate_limit: 3600
-    status: trial
+    status: down
     category: supplementary
-    notes: "Benedict Evans — 科技趋势分析"
+    notes: "Benedict Evans — 科技趋势分析; [2026-07-22 停用] 静态抓仅归档/essays 索引页"
 
   - slug: paul-graham
     domain: paulgraham.com
-    feed_url: https://paulgraham.com/feed.xml
+    feed_url:
     listing_url: https://paulgraham.com/articles.html
     rate_limit: 3600
     status: trial
     category: supplementary
-    notes: "Paul Graham — 创业 / 技术思想"
+    notes: "Paul Graham — 创业 / 技术思想; [2026-07-22 转 listing] 原 feed 失效/无 RSS,清空 feed_url 走 listing 抓取"
 
   - slug: gwern
     domain: gwern.net
-    feed_url: https://gwern.net/feed.xml
+    feed_url: https://gwern.net/rss.xml
     listing_url: https://gwern.net
     rate_limit: 3600
     status: trial
     category: supplementary
-    notes: "Gwern — AI / 长篇研究"
+    notes: "Gwern — AI / 长篇研究; [2026-07-22 feed 修复] 原 feed 失效,改用有效 rss.xml"
 
   - slug: tobias-ahlin
     domain: tobiasahlin.com
@@ -421,12 +421,12 @@ sources:
 
   - slug: design-details
     domain: designdetails.fm
-    feed_url: https://designdetails.fm/feed.xml
+    feed_url:
     listing_url: https://designdetails.fm
     rate_limit: 3600
     status: trial
     category: supplementary
-    notes: "Design Details — 设计播客 / 博客"
+    notes: "Design Details — 设计播客 / 博客; [2026-07-22 转 listing] 原 feed 失效/无 RSS,清空 feed_url 走 listing 抓取"
 
   - slug: ux-collective
     domain: uxdesign.cc
@@ -448,12 +448,12 @@ sources:
 
   - slug: jake-archibald
     domain: jakearchibald.com
-    feed_url: https://jakearchibald.com/feed.xml
+    feed_url:
     listing_url: https://jakearchibald.com
     rate_limit: 3600
     status: trial
     category: supplementary
-    notes: "Jake Archibald — 浏览器 / 性能"
+    notes: "Jake Archibald — 浏览器 / 性能; [2026-07-22 转 listing] 原 feed 失效/无 RSS,清空 feed_url 走 listing 抓取"
 
   - slug: solidjs-blog
     domain: solidjs.com
@@ -478,9 +478,9 @@ sources:
     feed_url: https://ericelliottjs.com/feed.xml
     listing_url: https://ericelliottjs.com
     rate_limit: 3600
-    status: trial
+    status: down
     category: supplementary
-    notes: "Eric Elliott — JS 架构 / 函数式编程"
+    notes: "Eric Elliott — JS 架构 / 函数式编程; [2026-07-22 停用] listing 仅 about 页,无文章"
 
   - slug: css-wizardry
     domain: csswizardry.com
@@ -496,9 +496,9 @@ sources:
     feed_url: https://sarahdrasnerdesign.com/feed.xml
     listing_url: https://sarahdrasnerdesign.com
     rate_limit: 3600
-    status: trial
+    status: down
     category: supplementary
-    notes: "Sarah Drasner — SVG / 动画 / 前端"
+    notes: "Sarah Drasner — SVG / 动画 / 前端; [2026-07-22 停用] feed/listing 均 403 反爬,需浏览器"
 
   - slug: una-kravets
     domain: una.im
@@ -518,9 +518,9 @@ sources:
     feed_url: https://ai.googleblog.com/feeds/posts/default
     listing_url: https://ai.googleblog.com
     rate_limit: 3600
-    status: trial
+    status: down
     category: authority
-    notes: "Google AI Blog — AI 研究"
+    notes: "Google AI Blog — AI 研究; [2026-07-22 停用] research.google JS 渲染,静态抓仅年份归档页"
 
   - slug: deepmind-blog
     domain: deepmind.google
@@ -545,72 +545,72 @@ sources:
     feed_url: https://ai.meta.com/feed.xml
     listing_url: https://ai.meta.com/blog
     rate_limit: 3600
-    status: trial
+    status: down
     category: authority
-    notes: "Meta AI Blog"
+    notes: "Meta AI Blog; [2026-07-22 停用] feed HTTP 400,listing 不通"
 
   - slug: mistral-ai-blog
     domain: mistral.ai
     feed_url: https://mistral.ai/feed.xml
     listing_url: https://mistral.ai/news
     rate_limit: 3600
-    status: trial
+    status: down
     category: authority
-    notes: "Mistral AI — 开源模型"
+    notes: "Mistral AI — 开源模型; [2026-07-22 停用] 连接被拒(疑封锁我方 IP/UA)"
 
   - slug: cohere-blog
     domain: cohere.com
-    feed_url: https://cohere.com/blog/feed
+    feed_url:
     listing_url: https://cohere.com/blog
     rate_limit: 3600
     status: trial
     category: authority
-    notes: "Cohere Blog — 企业 AI"
+    notes: "Cohere Blog — 企业 AI; [2026-07-22 转 listing] 原 feed 失效/无 RSS,清空 feed_url 走 listing 抓取"
 
   - slug: replicate-blog
     domain: replicate.com
-    feed_url: https://replicate.com/blog/feed
+    feed_url:
     listing_url: https://replicate.com/blog
     rate_limit: 3600
     status: trial
     category: authority
-    notes: "Replicate — 模型部署 / 推理"
+    notes: "Replicate — 模型部署 / 推理; [2026-07-22 转 listing] 原 feed 失效/无 RSS,清空 feed_url 走 listing 抓取"
 
   - slug: weights-and-biases
     domain: wandb.ai
     feed_url: https://wandb.ai/site/feed.xml
     listing_url: https://wandb.ai/fully-connected
     rate_limit: 3600
-    status: trial
+    status: down
     category: authority
-    notes: "Weights & Biases — ML 实验管理"
+    notes: "Weights & Biases — ML 实验管理; [2026-07-22 停用] listing 抽取 0 篇"
 
   - slug: notion-blog
     domain: notion.so
     feed_url: https://www.notion.so/blog/feed
     listing_url: https://www.notion.so/blog
     rate_limit: 3600
-    status: trial
+    status: down
     category: authority
-    notes: "Notion — 产品设计 / 工程"
+    notes: "Notion — 产品设计 / 工程; [2026-07-22 停用] 静态抓仅 topic 栏目页,无单篇文章"
 
   - slug: tailwind-blog
     domain: tailwindcss.com
-    feed_url: https://tailwindcss.com/feed.xml
+    feed_url:
     listing_url: https://tailwindcss.com/blog
     rate_limit: 3600
     status: trial
     category: authority
-    notes: "Tailwind CSS — 设计系统 / 工具"
+    notes: "Tailwind CSS — 设计系统 / 工具; [2026-07-22 转 listing] 原 feed 失效/无 RSS,清空 feed_url 走 listing 抓取"
 
   - slug: radix-ui
     domain: radix-ui.com
-    feed_url: https://www.radix-ui.com/blog/feed
+    feed_url:
     listing_url: https://www.radix-ui.com/blog
     rate_limit: 3600
     status: trial
     category: authority
-    notes: "Radix UI — 无障碍组件库"
+    notes: "Radix UI — 无障碍组件库; [2026-07-22 转 listing] 原 feed 失效/无 RSS,清空 feed_url 走 listing 抓取"
 
   - slug: shadcn-blog
     domain: ui.shadcn.com
@@ -659,12 +659,12 @@ sources:
 
   - slug: observable-blog
     domain: observablehq.com
-    feed_url: https://observablehq.com/blog/feed
+    feed_url:
     listing_url: https://observablehq.com/blog
     rate_limit: 3600
     status: trial
     category: authority
-    notes: "Observable — 数据可视化 / 计算笔记"
+    notes: "Observable — 数据可视化 / 计算笔记; [2026-07-22 转 listing] 原 feed 失效/无 RSS,清空 feed_url 走 listing 抓取"
 
   - slug: cursor-blog
     domain: cursor.com
@@ -716,9 +716,9 @@ sources:
     feed_url: https://t3.gg/feed.xml
     listing_url: https://t3.gg
     rate_limit: 3600
-    status: trial
+    status: down
     category: authority
-    notes: "Theo / T3 — TS 工具链 / 前端工程"
+    notes: "Theo / T3 — TS 工具链 / 前端工程; [2026-07-22 停用] listing 仅导航,无文章"
 
   # =========================================================================
   # awesome-evals 扩充 (6) — 源自 reference/projects/awesome-evals/.scanner/seeds.json
@@ -836,9 +836,9 @@ sources:
     feed_url: https://www.answer.ai/index.xml
     listing_url: https://www.answer.ai/blog.html
     rate_limit: 3600
-    status: trial
+    status: down
     category: authority
-    notes: "Answer.AI — Jeremy Howard AI 研发实验室;实践型 AI 工程"
+    notes: "Answer.AI — Jeremy Howard AI 研发实验室;实践型 AI 工程; [2026-07-22 停用] 源站 feed XML 非法(line 1680)无法解析"
 
   - slug: sebastian-raschka
     domain: magazine.sebastianraschka.com
@@ -1219,9 +1219,9 @@ sources:
     feed_url: https://www.continue.dev/blog/feed.xml
     listing_url: https://continue.dev/
     rate_limit: 3600
-    status: trial
+    status: down
     category: supplementary
-    notes: "Continue — AI 编码插件工程  [AI coding 工具厂]"
+    notes: "Continue — AI 编码插件工程  [AI coding 工具厂]; [2026-07-22 停用] listing 无有效文章"
 
   - slug: distill
     domain: distill.pub
@@ -1324,12 +1324,12 @@ sources:
 
   - slug: ragas-blog
     domain: docs.ragas.io
-    feed_url: https://blog.ragas.io/feed
+    feed_url:
     listing_url: https://blog.ragas.io/
     rate_limit: 3600
     status: trial
     category: supplementary
-    notes: "Ragas — RAG eval 框架  [RAG/向量/eval 工具]"
+    notes: "Ragas — RAG eval 框架  [RAG/向量/eval 工具]; [2026-07-22 转 listing] 原 feed 失效/无 RSS,清空 feed_url 走 listing 抓取"
 
   - slug: runpod-blog
     domain: runpod.io

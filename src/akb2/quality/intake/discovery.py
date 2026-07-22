@@ -364,6 +364,22 @@ def _fetch_listing_via_scrapling(
             continue
         abs_urls.append(abs_url)
 
+    # 文章链接打分过滤（复用 source_validator 的 listing 评分器，与其可达性探测同源）：
+    # 日期路径(/2026/…)、文章路径特征(/blog//posts//articles/…)加分；导航/资源/skip
+    # 路径(search/tags/login/.css/.js/.png…)判 -1。只保留 score>=0 并按分数降序。
+    # 堵住本函数 docstring 承诺"保留 article/post/年份特征 URL"却从未实现的缺口——
+    # 原实现把 /docs、/product、/enterprise 等导航页也当文章抓（宪法 P6 质量锚定）。
+    from .source_validator import _listing_candidate_score
+
+    scored_urls: list[tuple[int, int, str]] = []
+    for order, candidate in enumerate(abs_urls):
+        score = _listing_candidate_score(candidate, listing_url)
+        if score >= 0:
+            # -order 作次键：同分保持列表页出现顺序（越靠前越新）。
+            scored_urls.append((score, -order, candidate))
+    scored_urls.sort(reverse=True)
+    abs_urls = [candidate for _score, _order, candidate in scored_urls]
+
     # 去重（按 URL 自身去重，再按 content_hash 幂等）
     seen_urls: set[str] = set()
     articles: list[DiscoveredArticle] = []

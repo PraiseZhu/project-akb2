@@ -17,6 +17,7 @@ from pathlib import Path
 
 from src.akb2.quality.intake.discovery import (
     QUARANTINE_MULTIPLIER,
+    _fetch_listing_via_scrapling,
     batch_discover,
     build_daily_counts,
     check_quarantine,
@@ -534,3 +535,90 @@ class TestConstants:
         """QUARANTINE_MULTIPLIER 是具名常量。"""
         assert isinstance(QUARANTINE_MULTIPLIER, float)
         assert QUARANTINE_MULTIPLIER == 3.0
+
+
+# ---------------------------------------------------------------------------
+# listing 抓取：文章链接过滤（F 回归：抽取器须丢弃导航/资源页，只留文章）
+# ---------------------------------------------------------------------------
+
+
+class _FakeListingEl:
+    def __init__(self, href: str) -> None:
+        self.attrib = {"href": href}
+
+
+class _FakeListingPage:
+    def __init__(self, hrefs: list[str]) -> None:
+        self._hrefs = hrefs
+
+    def css(self, _selector: str) -> list[_FakeListingEl]:
+        return [_FakeListingEl(h) for h in self._hrefs]
+
+
+class TestListingArticleFilter:
+    """_fetch_listing_via_scrapling 须过滤导航/产品/文档页，只保留文章链接。"""
+
+    def _install_fake_scrapling(self, monkeypatch, hrefs: list[str]) -> None:
+        import importlib.util
+        import sys
+        import types
+
+        mod = types.ModuleType("scrapling")
+
+        class _FakeFetcher:
+            @classmethod
+            def get(cls, url: str, **_kw: object) -> _FakeListingPage:
+                return _FakeListingPage(hrefs)
+
+        mod.Fetcher = _FakeFetcher  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "scrapling", mod)
+        # 绕过 import gate：确保 find_spec("scrapling") 非 None
+        real_find_spec = importlib.util.find_spec
+
+        def _fake_find_spec(name: str, *a: object, **k: object):
+            if name == "scrapling":
+                return object()
+            return real_find_spec(name, *a, **k)
+
+        monkeypatch.setattr(importlib.util, "find_spec", _fake_find_spec)
+
+    def test_skip_and_offsite_dropped_articles_ranked_first(self, monkeypatch, tmp_path):
+        """skip 段(tags)/跨站硬丢；文章按日期/文章路径特征排到最前。
+
+        边界说明：像 /docs、/product 这类通用导航页得 0 分（与个人博客顶层文章
+        同分，无法靠路径区分），不硬丢，但被排到文章之后——配合 --limit 与每源
+        cap，归档的优先是真文章，导航页沉底。断言锁死"文章在前 + skip/跨站丢弃"。
+        """
+        listing = "https://example.com/blog"
+        hrefs = [
+            "/docs",  # 通用导航（0 分）→ 保留但排后
+            "/product",  # 通用导航（0 分）→ 保留但排后
+            "/blog/tags/css",  # skip 段 tags → 丢
+            "/blog/2026/deep-dive-into-agents",  # 日期路径文章 → 高分排最前
+            "/blog/context-engineering-guide",  # /blog/ 文章 → 次高
+            "https://other.com/blog/x",  # 跨站 → 丢
+        ]
+        self._install_fake_scrapling(monkeypatch, hrefs)
+        ledger = tmp_path / "l.jsonl"
+        arts = _fetch_listing_via_scrapling(listing, "demo", ledger)
+        urls = [a.url for a in arts]
+        # skip 段 / 跨站 硬丢
+        assert not any("tags" in u for u in urls)
+        assert not any("other.com" in u for u in urls)
+        # 两篇文章都在，且排在任何导航页之前
+        art1 = "https://example.com/blog/2026/deep-dive-into-agents"
+        art2 = "https://example.com/blog/context-engineering-guide"
+        assert art1 in urls and art2 in urls
+        assert urls[0] == art1  # 日期路径打分最高
+        assert urls.index(art2) < urls.index("https://example.com/docs")
+
+    def test_empty_when_only_nav_and_skip(self, monkeypatch, tmp_path):
+        """全是 skip/跨站时返回空（不误报文章）。"""
+        self._install_fake_scrapling(
+            monkeypatch,
+            ["/blog/tags/x", "/search", "https://other.com/y", "#frag"],
+        )
+        arts = _fetch_listing_via_scrapling(
+            "https://example.com/blog", "demo", tmp_path / "l.jsonl"
+        )
+        assert arts == []
