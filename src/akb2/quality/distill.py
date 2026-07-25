@@ -5079,8 +5079,50 @@ def _derive_slug(raw_path: str) -> str:
 KEY_FINDINGS_MIN = 3
 
 
+# F52: 降级逐行提取的 raw frontmatter 目标键（与 raw_archiver FRONTMATTER_FIELDS 对齐）
+_RAW_FM_LINE_KEYS: tuple[str, ...] = (
+    "artifact_type",
+    "source_slug",
+    "source_url",
+    "source_title",
+    "source_authors",
+    "source_publisher",
+    "source_published_at",
+    "fetched_at",
+    "fetched_via",
+)
+
+
+def _extract_raw_frontmatter_lines(fm_text: str) -> dict[str, Any]:
+    """F52 降级路径: YAML 不可解析时逐行正则提取 `key: value` 标量。
+
+    覆盖两类实锤坏样本（432/4184 篇存量）:
+        - `source_authors: @nathansobo`（@ 开头值炸 YAML scanner）
+        - 多行作者撑破块结构（非 `key:` 开头的续行直接跳过，取首行）
+    只认 _RAW_FM_LINE_KEYS 白名单键；值剥外层引号。产出语义与
+    yaml.safe_load 的 dict 兼容（值全为 str）。
+    """
+    out: dict[str, Any] = {}
+    for line in fm_text.splitlines():
+        m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$", line)
+        if not m:
+            continue  # 续行（多行作者尾巴等）→ 跳过，保留首行值
+        key, value = m.group(1), m.group(2).strip()
+        if key not in _RAW_FM_LINE_KEYS or key in out:
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        out[key] = value
+    return out
+
+
 def _read_raw_frontmatter(raw_path: str) -> dict[str, Any]:
-    """读取 raw 文件 YAML frontmatter；缺失/不可解析时返回 {}（优雅降级，单测传虚拟路径不崩）。"""
+    """读取 raw 文件 YAML frontmatter；缺失时返回 {}（单测传虚拟路径不崩）。
+
+    F52: YAML 不可解析不再静默返 {}（旧行为让 zed/smashing 两篇以
+    source_url='' 升格 active，元数据丢失完全不可见）→ 降级逐行提取
+    白名单标量键，尽力恢复溯源字段。
+    """
     try:
         with open(raw_path, encoding="utf-8") as fh:
             text = fh.read()
@@ -5095,7 +5137,8 @@ def _read_raw_frontmatter(raw_path: str) -> dict[str, Any]:
         data = yaml.safe_load(m.group(1))
         return data if isinstance(data, dict) else {}
     except Exception:
-        return {}
+        # F52 fail-visible: 降级逐行提取（结果可能部分缺键，但优于全空）
+        return _extract_raw_frontmatter_lines(m.group(1))
 
 
 def _first_author(authors: Any) -> str:

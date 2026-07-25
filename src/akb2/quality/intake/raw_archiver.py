@@ -269,15 +269,26 @@ def _validate_frontmatter(fm: dict[str, str]) -> list[str]:
 
 
 def _format_frontmatter_yaml(fm: dict[str, str]) -> str:
-    """将 frontmatter dict 格式化为 YAML frontmatter 块。"""
+    """将 frontmatter dict 格式化为 YAML frontmatter 块。
+
+    F52: 序列化交给 yaml.safe_dump（逐字段，保持 FRONTMATTER_FIELDS 顺序）。
+    旧手写引号逻辑漏 `@` 开头（zed-blog @nathansobo）与含换行值
+    （smashing-magazine 多行作者）→ 产出不可解析 frontmatter → 下游
+    _read_raw_frontmatter 吞错返 {} → wiki 页 source_url/author 全空。
+    换行统一清洗为单空格（frontmatter 值语义上都是单行标量）。
+    """
+    import yaml
+
     lines = ["---"]
     for key in FRONTMATTER_FIELDS:
         value = fm.get(key, "")
-        # 值含特殊字符时用引号
-        special_chars = (":", "#", "[", "]", "{", "}", "*", "&", "!", "|", ">", "'", '"')
-        if any(c in value for c in special_chars):
-            value = f'"{value}"'
-        lines.append(f"{key}: {value}")
+        # 值内换行清洗为单空格（多行作者等抓取噪声）
+        value = " ".join(str(value).split())
+        # safe_dump 保证任意值可被 safe_load 还原（引号/转义由 PyYAML 决定）
+        dumped = yaml.safe_dump(
+            {key: value}, allow_unicode=True, default_flow_style=False, width=10**6
+        ).strip()
+        lines.append(dumped)
     lines.append("---")
     return "\n".join(lines)
 
