@@ -35,6 +35,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from src.akb2.quality.intake.models import ExtractionContext, compute_article_id
 
 # ---------------------------------------------------------------------------
@@ -277,8 +279,6 @@ def _format_frontmatter_yaml(fm: dict[str, str]) -> str:
     _read_raw_frontmatter 吞错返 {} → wiki 页 source_url/author 全空。
     换行统一清洗为单空格（frontmatter 值语义上都是单行标量）。
     """
-    import yaml
-
     lines = ["---"]
     for key in FRONTMATTER_FIELDS:
         value = fm.get(key, "")

@@ -1406,6 +1406,8 @@ def _run_distill_segment(
             "components_filtered": extract_result.diagnostics.get(
                 "components_filtered", 0
             ),
+            # F53 fail-visible: raw frontmatter 降级提取标记(F52 降级路径生效)
+            "frontmatter_degraded": compose_result.frontmatter_degraded,
         },
     )
 
@@ -2143,7 +2145,10 @@ def _run_pipeline_segments(
                     else {}
                 )})
     _log_event(config, "distill_compose", "distill_compose", content_hash,
-               {"candidate_path": candidate_path})
+               {"candidate_path": candidate_path,
+                # F53 fail-visible: raw frontmatter 降级提取标记(降级率可统计)
+                **({"frontmatter_degraded": True}
+                   if distill_meta.get("frontmatter_degraded") else {})})
 
     # Segment 5-6: 质量评估 + 修复
     # grader 结果落盘路径（按 candidate 命名），收敛时写入供段 7 Gate-5 复核

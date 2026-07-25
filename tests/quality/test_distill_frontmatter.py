@@ -2298,3 +2298,69 @@ class TestReadRawFrontmatterDegraded:
         assert fm["source_url"] == "https://zed.dev/blog/zed-ai"
         assert fm["source_author"] == "@nathansobo"
         assert "Introducing Zed AI" in fm["canonical_title"]
+
+
+class TestFrontmatterDegradedObservability:
+    """F53: 降级提取生效时观测标记穿透到 ComposeResult(账本可统计降级率)。
+
+    F52 遗留 [建议]: 432 篇存量坏 raw 走降级路径时静默成功,账本无信号。
+    标记链: _read_raw_frontmatter(_frontmatter_degraded 私有键) →
+    _build_frontmatter(透传) → compose_candidate(pop 出,不写入候选页) →
+    ComposeResult.frontmatter_degraded → runner distill_compose 事件。
+    """
+
+    _BAD_FM = (
+        "artifact_type: raw\n"
+        "source_slug: zed-blog\n"
+        'source_url: "https://zed.dev/blog/zed-ai"\n'
+        "source_title: Introducing Zed AI\n"
+        "source_authors: @nathansobo\n"
+        "source_publisher: zed.dev\n"
+        "source_published_at: 08/20/2024\n"
+        'fetched_at: "2026-07-21T02:18:11Z"\n'
+        "fetched_via: scrapling"
+    )
+
+    def test_read_degraded_sets_private_marker(self, tmp_path):
+        """降级路径返回 dict 带 _frontmatter_degraded=True。"""
+        from src.akb2.quality.distill import _read_raw_frontmatter
+
+        p = tmp_path / "bad--raw--2026-07-21.md"
+        p.write_text(f"---\n{self._BAD_FM}\n---\n\n# body\n", encoding="utf-8")
+        fm = _read_raw_frontmatter(str(p))
+        assert fm.get("_frontmatter_degraded") is True
+
+    def test_read_healthy_no_marker(self, tmp_path):
+        """健康 YAML 无标记。"""
+        from src.akb2.quality.distill import _read_raw_frontmatter
+
+        p = tmp_path / "ok--raw--2026-01-01.md"
+        p.write_text(
+            "---\nartifact_type: raw\nsource_url: https://ok.dev/a\n---\n\n# b\n",
+            encoding="utf-8",
+        )
+        fm = _read_raw_frontmatter(str(p))
+        assert "_frontmatter_degraded" not in fm
+
+    def test_build_frontmatter_carries_marker_transiently(self, tmp_path):
+        """_build_frontmatter 透传标记(私有键,供 compose pop)。"""
+        from src.akb2.quality.distill import _build_frontmatter
+
+        p = tmp_path / "zed--x--raw--2026-07-21.md"
+        p.write_text(f"---\n{self._BAD_FM}\n---\n\n# body\n", encoding="utf-8")
+        data = {
+            "claims": [{"text": "t", "anchor": "§A", "provenance": "source_grounded"}],
+            "how_steps": [],
+            "params": {},
+            "referenced_concepts": ["a", "b"],
+        }
+        fm = _build_frontmatter(str(p), data)
+        assert fm.get("_frontmatter_degraded") is True
+        # 健康 raw 不带
+        p2 = tmp_path / "ok--x--raw--2026-01-01.md"
+        p2.write_text(
+            "---\nartifact_type: raw\nsource_url: https://ok.dev/a\n---\n\n# b\n",
+            encoding="utf-8",
+        )
+        fm2 = _build_frontmatter(str(p2), data)
+        assert "_frontmatter_degraded" not in fm2

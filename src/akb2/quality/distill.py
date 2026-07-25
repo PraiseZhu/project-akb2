@@ -595,6 +595,9 @@ class ComposeResult:
     candidate_path: str = ""
     frontmatter: dict[str, Any] = field(default_factory=dict)
     error: str = ""
+    # F53: raw frontmatter 走了降级逐行提取(F52)——runner 落 distill_compose
+    # 账本事件时带上,降级率可观测
+    frontmatter_degraded: bool = False
 
 
 def _is_non_retryable_api_error(exc: Exception) -> bool:
@@ -4998,6 +5001,9 @@ def compose_candidate(
         content_lane=content_lane,
     )
 
+    # F53: pop 出降级观测标记——只进 ComposeResult/账本,不写入候选页 frontmatter
+    frontmatter_degraded = bool(frontmatter.pop("_frontmatter_degraded", False))
+
     # 组装完整候选页
     full_page = _assemble_page(frontmatter, body)
 
@@ -5044,6 +5050,7 @@ def compose_candidate(
         success=True,
         candidate_path=candidate_path,
         frontmatter=frontmatter,
+        frontmatter_degraded=frontmatter_degraded,
     )
 
 
@@ -5137,8 +5144,13 @@ def _read_raw_frontmatter(raw_path: str) -> dict[str, Any]:
         data = yaml.safe_load(m.group(1))
         return data if isinstance(data, dict) else {}
     except Exception:
-        # F52 fail-visible: 降级逐行提取（结果可能部分缺键，但优于全空）
-        return _extract_raw_frontmatter_lines(m.group(1))
+        # F52 fail-visible: 降级逐行提取（结果可能部分缺键，但优于全空）。
+        # F53: 附 _frontmatter_degraded 私有标记,经 _build_frontmatter 透传、
+        # compose_candidate pop 出(不写入候选页),最终落 distill_compose 账本
+        # 事件——降级率可从账本统计。
+        degraded = _extract_raw_frontmatter_lines(m.group(1))
+        degraded["_frontmatter_degraded"] = True
+        return degraded
 
 
 def _first_author(authors: Any) -> str:
@@ -5314,6 +5326,11 @@ def _build_frontmatter(
         "artifact_type": "wiki",
         "pipeline_version": "v1",
     }
+
+    # F53: raw frontmatter 走了降级逐行提取 → 透传私有标记(compose 层 pop 出
+    # 落账,不写入候选页 frontmatter)
+    if raw_fm.get("_frontmatter_degraded"):
+        frontmatter["_frontmatter_degraded"] = True
 
     return frontmatter
 
