@@ -11,11 +11,17 @@ AKB2.0 工程根：lint / gate / intake / briefing / video / feishu_sync 等管�
 ## 常用命令
 
 ```bash
+# 环境（2026-07-25 起用项目内 .venv，不再依赖 pyenv global —— 全局环境存在
+# Crawl4AI(lxml~=5.3) 与 scrapling(lxml>=6.1) 的约束互斥，无法从 freeze 还原）
+python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"   # 首次搭建（约 1.6G）
+.venv/bin/pip install -r constraints-akb2-2026-07-25.txt     # 还原到已验证版本组合
+
 # 测试（默认排除 integration 标记的真机测试）
-pytest                          # 全量（-m 'not integration' 已在 pyproject 配置）
-pytest tests/test_gate.py       # 单文件
-pytest tests/test_gate.py::test_name   # 单测试
-pytest -m integration           # 真机集成测试（需 NLM 登录态 + gateway）
+# ⚠ 未挂载 /Volumes/AKB2 时必须给 VAULT_ROOT，否则 44 项测试报「无法解析 AKB2_ROOT」
+VAULT_ROOT="$(mktemp -d)" .venv/bin/python -m pytest -q      # 全量（-m 'not integration' 已配置）
+.venv/bin/python -m pytest tests/test_gate.py                # 单文件
+.venv/bin/python -m pytest tests/test_gate.py::test_name     # 单测试
+.venv/bin/python -m pytest -m integration                    # 真机集成（需 NLM 登录态 + gateway）
 
 # Lint
 ruff check src tests            # line-length=100, py311, select E/F/W/I/B/UP
@@ -33,8 +39,9 @@ python3 -m akb2.quality.calibration \
     --report-out reports/calibration/factory.json
 ```
 
-- Python ≥ 3.11（`scripts/find-python311.sh` 可定位解释器）
+- `requires-python >= 3.11`，但**实际验证过的只有 3.13.12**（`.venv` 与 CI tests job 均用 3.13）；3.11 路径未被执行过
 - `pythonpath = ["src", "src/akb2/toolbox_scan"]` 由 pytest 配置注入，无需安装即可跑测试
+- 依赖约束在 `pyproject.toml`：下界=实测通过版本、上界=下一 major 边界（防新版自动装入）。CI `tests` job 是这条防线的闸门
 
 ## 架构
 
