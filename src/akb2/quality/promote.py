@@ -202,6 +202,28 @@ def _read_grader_result(grader_result_path: Path) -> tuple[bool, str]:
         return False, f"grader: {status} ({len(findings)} findings)"
 
 
+def _check_source_provenance(candidate_path: Path) -> tuple[bool, str]:
+    """F52 Gate-0: 候选页 frontmatter source_url 非空硬校验。
+
+    只做存在性+非空判定（不校验 URL 格式——那是 lint 的事），
+    拦截「元数据在上游丢失后带着空溯源升格」这一类事故。
+    """
+    try:
+        text = candidate_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return False, f"candidate unreadable: {exc}"
+    m = re.match(r"^---\n(.*?)\n---\n", text, re.DOTALL)
+    if not m:
+        return False, "candidate has no frontmatter"
+    url_match = re.search(r"^source_url:\s*(.*)$", m.group(1), re.M)
+    if not url_match:
+        return False, "source_url missing from candidate frontmatter"
+    value = url_match.group(1).strip().strip("'\"")
+    if not value:
+        return False, "source_url is empty in candidate frontmatter"
+    return True, f"source_url={value}"
+
+
 def evaluate_five_gates(
     candidate_path: Path,
     vault_root: Path,
@@ -226,6 +248,14 @@ def evaluate_five_gates(
         (all_passed, failed_gate_name, reason)
         任一闸 fail 返回 (False, 闸名, 原因) 且候选留 staging。
     """
+    # Gate 0 (F52): 溯源硬校验——source_url 空/缺失 → 拒升格。
+    # 实锤事故: raw frontmatter YAML 写坏 → _read_raw_frontmatter 吞错 →
+    # 候选以 source_url='' 一路过五闸写 active(zed/smashing 两篇),
+    # wiki 页无法回链原文。五闸此前无任何一道检查溯源字段。
+    prov_ok, prov_detail = _check_source_provenance(candidate_path)
+    if not prov_ok:
+        return False, "Gate-0 (source provenance)", prov_detail
+
     # Gate 1-3: gate CLI
     gate_ok, gate_detail, gate_parsed = _run_gate_check(candidate_path, vault_root)
     if not gate_ok:

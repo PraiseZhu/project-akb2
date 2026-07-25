@@ -129,6 +129,88 @@ class TestFrontmatter:
         """确认 frontmatter 字段数 = 9。"""
         assert len(FRONTMATTER_FIELDS) == 9
 
+    def test_format_frontmatter_yaml_at_prefix_author_parseable(self):
+        """F52 回归: @ 开头作者（zed-blog @nathansobo 实锤）序列化后必须可被 yaml 解析。
+
+        旧实现只对含 : # [ ] 等字符的值加引号，@ 开头值裸写 → PyYAML
+        ScannerError → 下游 _read_raw_frontmatter 吞错返 {} → wiki 页元数据全空。
+        """
+        import yaml
+
+        fm = {
+            "artifact_type": "raw",
+            "source_slug": "zed-blog",
+            "source_url": "https://zed.dev/blog/zed-ai",
+            "source_title": "Introducing Zed AI - Zed Blog",
+            "source_authors": "@nathansobo",
+            "source_publisher": "zed.dev",
+            "source_published_at": "08/20/2024",
+            "fetched_at": "2026-07-21T02:18:11Z",
+            "fetched_via": "scrapling",
+        }
+        yaml_str = _format_frontmatter_yaml(fm)
+        inner = yaml_str.strip().removeprefix("---").removesuffix("---")
+        parsed = yaml.safe_load(inner)
+        assert parsed["source_authors"] == "@nathansobo"
+        assert parsed["source_url"] == "https://zed.dev/blog/zed-ai"
+
+    def test_format_frontmatter_yaml_multiline_author_parseable(self):
+        """F52 回归: 含换行作者（smashing-magazine 实锤）序列化后必须可解析且值单行化。
+
+        旧实现把 "Durgesh Pawar, More about\nDurgesh ↬" 原样写入 → 撑破
+        frontmatter 块结构 → 整个 frontmatter 不可解析。
+        """
+        import yaml
+
+        fm = {
+            "artifact_type": "raw",
+            "source_slug": "smashing-magazine",
+            "source_url": "https://smashingmagazine.com/x",
+            "source_title": "Weaponizing And Defending The React Flight Protocol",
+            "source_authors": "Durgesh Pawar, More about\nDurgesh ↬",
+            "source_publisher": "smashingmagazine.com",
+            "source_published_at": "2026-07-21 10:00:00 +0000 UTC",
+            "fetched_at": "2026-07-22T14:23:33Z",
+            "fetched_via": "defuddle",
+        }
+        yaml_str = _format_frontmatter_yaml(fm)
+        inner = yaml_str.strip().removeprefix("---").removesuffix("---")
+        parsed = yaml.safe_load(inner)
+        # 换行必须被清洗为单行（frontmatter 块结构不被撑破）
+        assert "\n" not in parsed["source_authors"]
+        assert "Durgesh Pawar" in parsed["source_authors"]
+
+    def test_format_frontmatter_yaml_special_values_roundtrip(self):
+        """F52 回归: YAML 保留字符值全量 roundtrip（%、&、*、? 开头、纯数字日期等）。"""
+        import yaml
+
+        cases = [
+            "*star-author",
+            "&anchor-author",
+            "?question",
+            "%percent",
+            "- dash-lead",
+            "author: with colon",
+            'quoted "inner" text',
+            "08/20/2024",
+        ]
+        for value in cases:
+            fm = {
+                "artifact_type": "raw",
+                "source_slug": "t",
+                "source_url": "https://x.com",
+                "source_title": "T",
+                "source_authors": value,
+                "source_publisher": "P",
+                "source_published_at": "2026-01-01",
+                "fetched_at": "2026-01-01T00:00:00Z",
+                "fetched_via": "defuddle",
+            }
+            yaml_str = _format_frontmatter_yaml(fm)
+            inner = yaml_str.strip().removeprefix("---").removesuffix("---")
+            parsed = yaml.safe_load(inner)
+            assert parsed["source_authors"] == value, f"roundtrip 失败: {value!r}"
+
 
 # ---------------------------------------------------------------------------
 # 锚点注入

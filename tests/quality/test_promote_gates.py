@@ -436,3 +436,101 @@ class TestD8ProposedNodeOnly:
         assert snapshot_id is None, "proposal 模式不写 active（无 snapshot）"
         active = vault / "wiki" / "sources" / "test-gates.md"
         assert not active.exists(), "proposal 模式不写 active"
+
+
+class TestGate0Provenance:
+    """F52: 升格前溯源硬校验——candidate frontmatter source_url 空 → 拒升格。
+
+    实锤事故: zed-blog--ead0a0400895 / smashing-magazine--fa0b3ac1fdf6 以
+    source_url='' 过五闸写 active（全链无任何一道闸检查溯源字段非空），
+    wiki 页无法回链原文。
+    """
+
+    def _make_all_pass_mocks(self, monkeypatch):
+        import src.akb2.quality.promote as promote_mod
+
+        def mock_gate(*args, **kwargs):
+            return True, "mock gate detail", {
+                "proposed_gate_decision": "active",
+                "decision_confidence": "high",
+                "graph_readiness": "real_link",
+                "all_10_pass": True,
+            }
+
+        monkeypatch.setattr(promote_mod, "_run_gate_check", mock_gate)
+        monkeypatch.setattr(
+            promote_mod, "_run_lint_check",
+            lambda *a, **k: (True, "mock lint: 0 findings"),
+        )
+        monkeypatch.setattr(
+            promote_mod, "_read_grader_result",
+            lambda *a, **k: (True, "mock grader: PASS"),
+        )
+
+    def _write_grader_pass(self, vault: Path) -> Path:
+        p = vault / "grader_result.json"
+        p.write_text(json.dumps(
+            {"status": "PASS", "dimensions_checked": 5, "findings": []}
+        ))
+        return p
+
+    def test_empty_source_url_fails_gate0(self, gates_vault_root, monkeypatch):
+        """source_url: '' → Gate-0 拒绝,候选留 staging。"""
+        from src.akb2.quality.promote import evaluate_five_gates
+
+        self._make_all_pass_mocks(monkeypatch)
+        candidate = (
+            gates_vault_root / "staging" / "candidate" / "test-batch" / "test-gates.md"
+        )
+        text = candidate.read_text(encoding="utf-8")
+        candidate.write_text(
+            text.replace(
+                "source_url: https://example.com/gates-test", "source_url: ''"
+            ),
+            encoding="utf-8",
+        )
+        grader_path = self._write_grader_pass(gates_vault_root)
+
+        passed, failed_name, reason = evaluate_five_gates(
+            candidate, gates_vault_root, grader_path
+        )
+        assert passed is False
+        assert failed_name == "Gate-0 (source provenance)"
+        assert "source_url" in reason
+        assert candidate.exists(), "候选必须留 staging"
+
+    def test_missing_source_url_fails_gate0(self, gates_vault_root, monkeypatch):
+        """frontmatter 无 source_url 行 → Gate-0 拒绝。"""
+        from src.akb2.quality.promote import evaluate_five_gates
+
+        self._make_all_pass_mocks(monkeypatch)
+        candidate = (
+            gates_vault_root / "staging" / "candidate" / "test-batch" / "test-gates.md"
+        )
+        text = candidate.read_text(encoding="utf-8")
+        candidate.write_text(
+            text.replace("source_url: https://example.com/gates-test\n", ""),
+            encoding="utf-8",
+        )
+        grader_path = self._write_grader_pass(gates_vault_root)
+
+        passed, failed_name, reason = evaluate_five_gates(
+            candidate, gates_vault_root, grader_path
+        )
+        assert passed is False
+        assert failed_name == "Gate-0 (source provenance)"
+
+    def test_valid_source_url_passes_gate0(self, gates_vault_root, monkeypatch):
+        """source_url 正常 → Gate-0 放行,五闸全过。"""
+        from src.akb2.quality.promote import evaluate_five_gates
+
+        self._make_all_pass_mocks(monkeypatch)
+        candidate = (
+            gates_vault_root / "staging" / "candidate" / "test-batch" / "test-gates.md"
+        )
+        grader_path = self._write_grader_pass(gates_vault_root)
+
+        passed, failed_name, reason = evaluate_five_gates(
+            candidate, gates_vault_root, grader_path
+        )
+        assert passed is True, f"应全过,实际 fail 于 {failed_name}: {reason}"

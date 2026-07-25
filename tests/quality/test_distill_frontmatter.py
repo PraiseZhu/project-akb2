@@ -2169,3 +2169,132 @@ The document asks teams to document assumptions.
             assert "compose_self_gate_failed" in result.error
             assert "SG-how" in result.error
             assert list((Path(tmp_dir) / "candidate").rglob("*.md")) == []
+
+
+# ---------------------------------------------------------------------------
+# F52: _read_raw_frontmatter 坏 YAML 降级逐行提取（不再静默返 {}）
+# ---------------------------------------------------------------------------
+
+
+class TestReadRawFrontmatterDegraded:
+    """F52 回归: raw frontmatter YAML 不可解析时降级逐行提取,元数据不丢。
+
+    实锤事故: 432/4184 篇 raw frontmatter 不可解析(@ 开头作者/多行作者),
+    旧实现 except: return {} → zed-blog--ead0a0400895 与
+    smashing-magazine--fa0b3ac1fdf6 以 source_url='' 升格 active。
+    """
+
+    def _write_raw(self, tmp_path, fm_block: str) -> str:
+        p = tmp_path / "bad--raw--2026-07-21.md"
+        p.write_text(f"---\n{fm_block}\n---\n\n# body\n", encoding="utf-8")
+        return str(p)
+
+    def test_at_prefix_author_degrades_to_line_extraction(self, tmp_path):
+        """zed 实锤: @ 开头作者炸 YAML → 逐行降级仍提取出全部 9 字段。"""
+        from src.akb2.quality.distill import _read_raw_frontmatter
+
+        fm_block = (
+            "artifact_type: raw\n"
+            "source_slug: zed-blog\n"
+            'source_url: "https://zed.dev/blog/zed-ai"\n'
+            "source_title: Introducing Zed AI - Zed Blog\n"
+            "source_authors: @nathansobo\n"
+            "source_publisher: zed.dev\n"
+            "source_published_at: 08/20/2024\n"
+            'fetched_at: "2026-07-21T02:18:11Z"\n'
+            "fetched_via: scrapling"
+        )
+        raw_path = self._write_raw(tmp_path, fm_block)
+        fm = _read_raw_frontmatter(raw_path)
+        assert fm["source_url"] == "https://zed.dev/blog/zed-ai"
+        assert fm["source_authors"] == "@nathansobo"
+        assert fm["source_title"] == "Introducing Zed AI - Zed Blog"
+        assert fm["source_published_at"] == "08/20/2024"
+
+    def test_multiline_author_degrades_keeps_other_fields(self, tmp_path):
+        """smashing 实锤: 多行作者撑破块 → 其余单行字段仍逐行提取成功。"""
+        from src.akb2.quality.distill import _read_raw_frontmatter
+
+        fm_block = (
+            "artifact_type: raw\n"
+            "source_slug: smashing-magazine\n"
+            'source_url: "https://smashingmagazine.com/2026/07/x/"\n'
+            'source_title: "Weaponizing And Defending The React Flight Protocol"\n'
+            "source_authors: Durgesh Pawar, More about\n"
+            "Durgesh ↬\n"
+            "source_publisher: smashingmagazine.com\n"
+            'source_published_at: "2026-07-21 10:00:00 +0000 UTC"\n'
+            'fetched_at: "2026-07-22T14:23:33Z"\n'
+            "fetched_via: defuddle"
+        )
+        raw_path = self._write_raw(tmp_path, fm_block)
+        fm = _read_raw_frontmatter(raw_path)
+        assert fm["source_url"] == "https://smashingmagazine.com/2026/07/x/"
+        assert "Weaponizing" in fm["source_title"]
+        assert fm["source_publisher"] == "smashingmagazine.com"
+        # 被撑破的作者行:降级提取拿到首行即可(比空强)
+        assert "Durgesh Pawar" in fm.get("source_authors", "")
+
+    def test_healthy_yaml_unchanged(self, tmp_path):
+        """健康 frontmatter 走正常 yaml 解析路径,行为不变。"""
+        from src.akb2.quality.distill import _read_raw_frontmatter
+
+        fm_block = (
+            "artifact_type: raw\n"
+            "source_slug: ok-blog\n"
+            "source_url: https://ok.dev/a\n"
+            "source_title: T\n"
+            'source_authors: ["A", "B"]\n'
+            "source_publisher: ok.dev\n"
+            "source_published_at: '2026-01-01'\n"
+            "fetched_at: '2026-01-01T00:00:00Z'\n"
+            "fetched_via: defuddle"
+        )
+        raw_path = self._write_raw(tmp_path, fm_block)
+        fm = _read_raw_frontmatter(raw_path)
+        assert fm["source_authors"] == ["A", "B"]  # list 语义保留(非降级路径)
+        assert fm["source_url"] == "https://ok.dev/a"
+
+    def test_missing_file_still_empty(self):
+        """文件不存在仍返 {}(单测虚拟路径不崩,原契约保留)。"""
+        from src.akb2.quality.distill import _read_raw_frontmatter
+
+        assert _read_raw_frontmatter("/nonexistent/x.md") == {}
+
+    def test_no_frontmatter_still_empty(self, tmp_path):
+        """无 frontmatter 块仍返 {}(原契约保留)。"""
+        from src.akb2.quality.distill import _read_raw_frontmatter
+
+        p = tmp_path / "nofm.md"
+        p.write_text("# just body\n", encoding="utf-8")
+        assert _read_raw_frontmatter(str(p)) == {}
+
+    def test_degraded_build_frontmatter_fills_source_url(self, tmp_path):
+        """端到端: 坏 YAML raw 经 _build_frontmatter 后 source_url 不再为空。"""
+        from src.akb2.quality.distill import _build_frontmatter
+
+        fm_block = (
+            "artifact_type: raw\n"
+            "source_slug: zed-blog\n"
+            'source_url: "https://zed.dev/blog/zed-ai"\n'
+            "source_title: Introducing Zed AI\n"
+            "source_authors: @nathansobo\n"
+            "source_publisher: zed.dev\n"
+            "source_published_at: 08/20/2024\n"
+            'fetched_at: "2026-07-21T02:18:11Z"\n'
+            "fetched_via: scrapling"
+        )
+        p = tmp_path / "zed-blog--x--raw--2026-07-21.md"
+        p.write_text(f"---\n{fm_block}\n---\n\n# body\n", encoding="utf-8")
+        data = {
+            "claims": [
+                {"text": "t", "anchor": "§A", "provenance": "source_grounded"}
+            ],
+            "how_steps": [],
+            "params": {},
+            "referenced_concepts": ["a", "b"],
+        }
+        fm = _build_frontmatter(str(p), data)
+        assert fm["source_url"] == "https://zed.dev/blog/zed-ai"
+        assert fm["source_author"] == "@nathansobo"
+        assert "Introducing Zed AI" in fm["canonical_title"]
