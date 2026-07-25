@@ -3,26 +3,35 @@ name = "akb2"
 version = "0.3.3"
 description = "AKB2.0 工程根：lint/gate/intake CLI + MCP wrapper + tests + eval harness + engineering docs（不含知识库本体）"
 requires-python = ">=3.11"
+# 下界 = 2026-07-25 实测通过 2494 项测试的版本；上界 = 下一个 major/minor 边界。
+# 原下界(jsonschema>=4.0 / langgraph>=0.2 / openai>=1.0 / docling>=2.0)远低于实装版本,
+# 作为兼容契约已失效:干净安装可能装到从未跑过测试的版本组合。
+# 上界不是保守,是防止下一个 major 发布当天自动装进来 —— CI 当前测不出这类破坏。
 dependencies = [
-    "jsonschema>=4.0",
-    "pyyaml>=6.0",
-    "httpx>=0.24",
-    "langgraph>=0.2",
-    "openai>=1.0",
+    "jsonschema>=4.26,<5",
+    "pyyaml>=6.0.3,<7",
+    # httpx 仍是 0.x,minor 即可能破 API,故按 minor 封顶。
+    "httpx>=0.28,<0.29",
+    "langgraph>=1.2.6,<2",
+    "openai>=2.28,<3",
     # scrapling 的 Fetcher/StealthyFetcher(quality/intake/{discovery,extract}.py)需要
     # [fetchers] extra,它带入 curl_cffi、playwright 等。裸 scrapling 不含这些,
     # 干净环境安装会缺 curl_cffi → 运行/测试报 ModuleNotFoundError。
-    "scrapling[fetchers]>=0.4.8",
-    "docling>=2.0.0",
+    # 0.4.8 是 plans/gd/2026-06-26-.../step-2 实测钉死的版本,按 minor 封顶不放宽。
+    "scrapling[fetchers]>=0.4.8,<0.5",
+    "docling>=2.94,<3",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0",
-    "ruff>=0.1.0",
+    # 封顶 <9:pytest 9.x 从未在本仓跑过。注意 PYSEC-2026-1845(/tmp/pytest-of-{user}
+    # 本地 DoS)的唯一修复版本是 9.0.3,即"修这个洞"与"不跨 major"冲突。
+    # 当前取后者:该漏洞只影响开发机本地,且需同机其他用户配合。
+    "pytest>=8.3.4,<9",
+    "ruff>=0.15.10,<1",
     # 仅测试用:tests/quality/test_intake_orchestrator.py 用 feedparser 校验 feed 解析
     # 正常路径(生产代码用 xml.etree 自解析,不依赖 feedparser)。
-    "feedparser>=6.0",
+    "feedparser>=6.0.12,<7",
 ]
 
 [build-system]
