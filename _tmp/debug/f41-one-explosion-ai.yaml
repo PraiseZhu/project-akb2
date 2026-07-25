@@ -1,0 +1,9 @@
+sources:
+- slug: explosion-ai
+  domain: explosion.ai
+  feed_url: https://explosion.ai/feed
+  listing_url: https://explosion.ai/blog
+  rate_limit: 3600
+  status: trial
+  category: supplementary
+  notes: Explosion — NLP 工程/spaCy 团队(工业级管线设计)

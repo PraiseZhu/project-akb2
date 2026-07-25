@@ -1,0 +1,9 @@
+sources:
+- slug: sebastian-raschka
+  domain: magazine.sebastianraschka.com
+  feed_url: https://magazine.sebastianraschka.com/feed
+  listing_url: https://magazine.sebastianraschka.com
+  rate_limit: 3600
+  status: trial
+  category: supplementary
+  notes: Sebastian Raschka — LLM 机制讲解长文(架构/训练/推理)

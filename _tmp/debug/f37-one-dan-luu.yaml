@@ -1,0 +1,9 @@
+sources:
+- slug: dan-luu
+  domain: danluu.com
+  feed_url: https://danluu.com/atom.xml
+  listing_url: https://danluu.com
+  rate_limit: 3600
+  status: trial
+  category: supplementary
+  notes: Dan Luu — 系统深度分析长文;机制密度极高

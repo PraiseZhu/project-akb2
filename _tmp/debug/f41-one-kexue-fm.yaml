@@ -1,0 +1,9 @@
+sources:
+- slug: kexue-fm
+  domain: kexue.fm
+  feed_url: https://kexue.fm/feed
+  listing_url: https://kexue.fm
+  rate_limit: 3600
+  status: trial
+  category: supplementary
+  notes: 苏剑林(科学空间)— LLM 架构/注意力/位置编码数理机制深文

@@ -1,0 +1,9 @@
+sources:
+- slug: cameron-wolfe
+  domain: cameronrwolfe.substack.com
+  feed_url: https://cameronrwolfe.substack.com/feed
+  listing_url: https://cameronrwolfe.substack.com
+  rate_limit: 3600
+  status: trial
+  category: supplementary
+  notes: Cameron Wolfe — LLM 机制原理长文(架构/训练/推理拆解)

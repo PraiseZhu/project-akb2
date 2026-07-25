@@ -1,0 +1,9 @@
+sources:
+- slug: maarten-grootendorst
+  domain: newsletter.maartengrootendorst.com
+  feed_url: https://newsletter.maartengrootendorst.com/feed
+  listing_url: https://newsletter.maartengrootendorst.com
+  rate_limit: 3600
+  status: trial
+  category: supplementary
+  notes: Maarten Grootendorst — LLM 机制可视化长文(BERTopic 作者)

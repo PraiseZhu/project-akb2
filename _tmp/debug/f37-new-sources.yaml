@@ -1,0 +1,65 @@
+sources:
+- slug: dan-luu
+  domain: danluu.com
+  feed_url: https://danluu.com/atom.xml
+  listing_url: https://danluu.com
+  rate_limit: 3600
+  status: trial
+  category: supplementary
+  notes: Dan Luu — 系统深度分析长文;机制密度极高
+- slug: brandur
+  domain: brandur.org
+  feed_url: https://brandur.org/articles.atom
+  listing_url: https://brandur.org/articles
+  rate_limit: 3600
+  status: trial
+  category: supplementary
+  notes: Brandur Leach — 基础设施/架构深文(Stripe/Crunchy)
+- slug: fly-io-blog
+  domain: fly.io
+  feed_url: https://fly.io/blog/feed.xml
+  listing_url: https://fly.io/blog
+  rate_limit: 3600
+  status: trial
+  category: authority
+  notes: Fly.io — 基础设施机制深文(编排/网络/虚拟化)
+- slug: tailscale-blog
+  domain: tailscale.com
+  feed_url: https://tailscale.com/blog/index.xml
+  listing_url: https://tailscale.com/blog
+  rate_limit: 3600
+  status: trial
+  category: authority
+  notes: Tailscale — 网络机制深文(NAT 穿透/WireGuard)
+- slug: mitchell-hashimoto
+  domain: mitchellh.com
+  feed_url: https://mitchellh.com/feed.xml
+  listing_url: https://mitchellh.com/writing
+  rate_limit: 3600
+  status: trial
+  category: supplementary
+  notes: Mitchell Hashimoto — 系统/工具链深文(Terraform/Ghostty 作者)
+- slug: answer-ai
+  domain: answer.ai
+  feed_url: https://www.answer.ai/index.xml
+  listing_url: https://www.answer.ai/blog.html
+  rate_limit: 3600
+  status: trial
+  category: authority
+  notes: Answer.AI — Jeremy Howard AI 研发实验室;实践型 AI 工程
+- slug: sebastian-raschka
+  domain: magazine.sebastianraschka.com
+  feed_url: https://magazine.sebastianraschka.com/feed
+  listing_url: https://magazine.sebastianraschka.com
+  rate_limit: 3600
+  status: trial
+  category: supplementary
+  notes: Sebastian Raschka — LLM 机制讲解长文(架构/训练/推理)
+- slug: sshh-blog
+  domain: blog.sshh.io
+  feed_url: https://blog.sshh.io/feed
+  listing_url: https://blog.sshh.io
+  rate_limit: 3600
+  status: trial
+  category: supplementary
+  notes: Shrivu Shankar — LLM/Agent 工程实践深文

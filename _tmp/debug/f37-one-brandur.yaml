@@ -1,0 +1,9 @@
+sources:
+- slug: brandur
+  domain: brandur.org
+  feed_url: https://brandur.org/articles.atom
+  listing_url: https://brandur.org/articles
+  rate_limit: 3600
+  status: trial
+  category: supplementary
+  notes: Brandur Leach — 基础设施/架构深文(Stripe/Crunchy)

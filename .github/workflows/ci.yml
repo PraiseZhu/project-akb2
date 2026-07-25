@@ -21,3 +21,20 @@ jobs:
           python-version: "3.11"
       - run: pip install ruff
       - run: ruff check src tests
+
+  # 依赖闸门:CI 此前只跑非阻断 lint、完全不装依赖,任何依赖漂移/破坏都测不出来。
+  # 本 job 是阻断的 —— 它的作用就是让"某个依赖发了新版把仓库搞坏"在 PR 上变红。
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          # 跟实际运行时对齐(本地 pyenv 3.13.12)。requires-python 声明 >=3.11,
+          # 但 3.11 路径从未被真实执行过 —— 若要兑现该承诺,这里加 matrix 补 3.11。
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      # 无 VAULT_ROOT 时 44 项测试会因 /Volumes/AKB2 未挂载而报
+      # "无法解析 AKB2_ROOT" 直接失败;CI 里没有该卷,必须指向临时目录。
+      - run: VAULT_ROOT="$(mktemp -d)" pytest -q

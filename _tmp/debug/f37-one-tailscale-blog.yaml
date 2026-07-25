@@ -1,0 +1,9 @@
+sources:
+- slug: tailscale-blog
+  domain: tailscale.com
+  feed_url: https://tailscale.com/blog/index.xml
+  listing_url: https://tailscale.com/blog
+  rate_limit: 3600
+  status: trial
+  category: authority
+  notes: Tailscale — 网络机制深文(NAT 穿透/WireGuard)

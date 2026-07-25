@@ -1,0 +1,9 @@
+sources:
+- slug: answer-ai
+  domain: answer.ai
+  feed_url: https://www.answer.ai/index.xml
+  listing_url: https://www.answer.ai/blog.html
+  rate_limit: 3600
+  status: trial
+  category: authority
+  notes: Answer.AI — Jeremy Howard AI 研发实验室;实践型 AI 工程

@@ -1,0 +1,9 @@
+sources:
+- slug: fly-io-blog
+  domain: fly.io
+  feed_url: https://fly.io/blog/feed.xml
+  listing_url: https://fly.io/blog
+  rate_limit: 3600
+  status: trial
+  category: authority
+  notes: Fly.io — 基础设施机制深文(编排/网络/虚拟化)

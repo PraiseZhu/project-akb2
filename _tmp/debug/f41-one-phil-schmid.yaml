@@ -1,0 +1,9 @@
+sources:
+- slug: phil-schmid
+  domain: philschmid.de
+  feed_url: https://www.philschmid.de/rss
+  listing_url: https://www.philschmid.de
+  rate_limit: 3600
+  status: trial
+  category: supplementary
+  notes: Phil Schmid — LLM 部署/微调/推理工程实操(Google DeepMind)

@@ -1,0 +1,9 @@
+sources:
+- slug: oxen-ai
+  domain: ghost.oxen.ai
+  feed_url: https://ghost.oxen.ai/rss/
+  listing_url: https://ghost.oxen.ai
+  rate_limit: 3600
+  status: trial
+  category: supplementary
+  notes: Oxen AI — arXiv Dives 论文机制逐段拆解系列
