@@ -112,20 +112,37 @@
           },
           "summary": {
             "type": "string",
-            "minLength": 50,
+            "minLength": 20,
             "maxLength": 500,
-            "description": "项目做什么 — 200 字以内中文，客观陈述功能/技术栈/解决的问题，由 DeepSeek V4 Pro 生成"
+            "pattern": "[\\u4e00-\\u9fff]",
+            "description": "项目做什么 — 中文，客观陈述功能/技术栈/解决的问题，由 DeepSeek V4 Pro 生成。minLength 从 50 降到 20：中文字符的信息密度约为英文的 2-3 倍，50 字符门槛曾误杀合格中文摘要（实测 SKIPPED: \"'抖音批量下载工具，支持去除水印…' is too short\" 整份被丢）。pattern 要求至少一个 CJK 字符 —— 英文 mock/占位文本（如 \"mock summary text \"×5）不再能过闸"
           },
           "use_case": {
             "type": "string",
-            "minLength": 30,
+            "minLength": 20,
             "maxLength": 300,
+            "pattern": "[\\u4e00-\\u9fff]",
             "description": "什么情况下该装 + 什么情况下别装 — 中文，含 1-2 条正向场景 + 1 条反向场景，由 DeepSeek V4 Pro 生成"
           },
           "engagement_raw": {
             "type": "integer",
             "minimum": 0,
             "description": "该 repo 最热单条提及的加权推文热度；layer2/3 或无 metrics = 0"
+          },
+          "repo_full_name": {
+            "type": ["string", "null"],
+            "pattern": "^[\\w.-]+/[\\w.-]+$",
+            "description": "GitHub API full_name（权威大小写，301 重定向后为新名）；渲染标题用，去重键仍是小写的 repo_url"
+          },
+          "grounding_source": {
+            "enum": ["description", "readme", "description+readme"],
+            "description": "summary 所依据的原文来源；空 grounding 的条目在 pipeline 阶段已被剔除，不会出现在本文件"
+          },
+          "grounding_excerpt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400,
+            "description": "喂给 LLM 的原文摘要（description + readme 截断），供事后审计幻觉率——此前产出不留原文，无法核对模型是否在编"
           }
         }
       }

@@ -264,7 +264,8 @@ class TestTwitterCollector:
         now = datetime(2026, 6, 4, 12, 0, 0, tzinfo=UTC)
         recent_tweets = [{
             "id": "1", "isRetweet": False, "created_at": "2026-06-04T10:00:00Z",
-            "full_text": "https://github.com/new/repo",
+            # owner 不能用 "new"：GitHub 保留顶层路径，url_normalizer 会直接拒收
+            "full_text": "https://github.com/newowner/repo",
         }]
         pool_yaml = tmp_path / "pool.yaml"
         pool_yaml.write_text('pool:\n  - handle: "@solo"\n    topics: [AI]\n')
@@ -387,8 +388,9 @@ class TestTwitterCollector:
             {"id": "1", "isRetweet": False, "created_at": "2026-05-25T10:00:00Z",
              "full_text": "https://github.com/old/repo1 https://github.com/old/repo2"},
             # Recent tweet → kept
+            # owner 不能用 "new"：GitHub 保留顶层路径，url_normalizer 会直接拒收
             {"id": "2", "isRetweet": False, "created_at": "2026-06-03T10:00:00Z",
-             "full_text": "https://github.com/new/repo"},
+             "full_text": "https://github.com/newowner/repo"},
             # Missing timestamp → kept
             {"id": "3", "isRetweet": False,
              "full_text": "https://github.com/missing/repo"},

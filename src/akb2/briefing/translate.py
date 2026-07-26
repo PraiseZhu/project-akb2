@@ -59,7 +59,8 @@ _ORPHAN_TOP_K = int(__import__("os").environ.get("AKB2_ORPHAN_TOP_K", "5"))
 # 会引入"文件读不到/解析失败时怎么办"的降级分支，与 fail-closed 冲突；而术语表的
 # 变更频率与代码同级（每次都要同步改校验用例），放代码里改一处即两端生效。
 #
-# 每条：term（英文源词） → {"zh": 唯一指定译法 | KEEP_EN(保留英文), "forbidden": 已实证的错译/分裂译法}
+# 每条：term（英文源词） → {"zh": 唯一指定译法 | KEEP_EN(保留英文),
+#                          "forbidden": 已实证的错译/分裂译法}
 # 收录门槛：**同一管线内已实证出现译名分裂或错译**的词，不做预防性扩表。
 # ---------------------------------------------------------------------------
 
@@ -162,7 +163,82 @@ def _display_tweet_indices(synth: dict, orphan_top_k: int = _ORPHAN_TOP_K) -> se
     return referenced_idx | orphan_idx
 
 
->
+# 单条推文 prompt 里的 idx 绑定标记（同时用于日志/测试定位请求的是哪一条）
+_ITEM_IDX_MARKER = "TRANSLATE_ITEM_IDX"
+
+
+def _build_analysis_prompt(synth: dict) -> str:
+    """构建分析字段（executive_summary + focus_discussions）翻译 prompt。
+
+    分析字段本身就是跨推文综述，全局视野是它的语义要求，故保留单次批量调用；
+    条目级事实（推文正文/点题）改走 _build_tweet_prompt 逐条隔离。
+    """
+    payload = {
+        "executive_summary": synth.get("executive_summary", ""),
+        "focus_discussions": [
+            {
+                "idx": i,
+                "topic": fd.get("topic", ""),
+                "summary": fd.get("summary", ""),
+            }
+            for i, fd in enumerate(synth.get("focus_discussions", []))
+        ],
+    }
+
+    return (
+        "请将以下 AI 趋势简报的分析字段翻译为简体中文。\n\n"
+        "输入 JSON：\n"
+        f"```json\n{json.dumps(payload, ensure_ascii=False, indent=2)}\n```\n\n"
+        "输出要求：返回 JSON，结构如下：\n"
+        "```json\n"
+        "{\n"
+        '  "executive_summary": "<译文>",\n'
+        '  "focus_discussions": [{"idx": 0, "topic": "<译文>", "summary": "<译文>"}]\n'
+        "}\n"
+        "```\n\n"
+        "重要约束：\n"
+        "- focus_discussions 的 idx 必须与输入 idx 一一对应，不可丢失或改变\n"
+        "- 只翻译输入里出现的内容，禁止引入输入之外的概念、数字或论断\n"
+        "- 专业名词/@id/数字/URL 保持原样"
+    )
+
+
+def _build_tweet_prompt(idx: int, tweet: dict) -> str:
+    """构建**单条**推文的翻译 prompt（条目级隔离，切断跨条目串味）。"""
+    text = tweet.get("text", "")
+    payload = {
+        "idx": idx,
+        "text": text,
+        "is_long": len(text) > LONG_TWEET_THRESHOLD,
+        # 若已有通过校验的核心英文段，请求模型直接翻译该段
+        **({"core_excerpt_en": tweet.get("core_excerpt", "")}
+           if tweet.get("core_excerpt") else {}),
+    }
+
+    return (
+        f"{_ITEM_IDX_MARKER}: {idx}\n"
+        "请翻译下面这**一条**推文。它是独立条目：输入之外的任何推文、话题、概念都与它无关。\n\n"
+        "输入 JSON：\n"
+        f"```json\n{json.dumps(payload, ensure_ascii=False, indent=2)}\n```\n\n"
+        "输出要求：返回 JSON，结构如下：\n"
+        "```json\n"
+        "{\n"
+        f'  "idx": {idx},\n'
+        '  "text_zh": "<译文>",\n'
+        '  "zh_point": "<一句中文点题（≤30字）：点出这条推文的核心看点或为什么值得关注>",\n'
+        '  "core_excerpt_en": "<仅对 is_long=true 且无 core_excerpt_en 输入：'
+        '从英文原文中逐字摘出最核心1段，≤400字，必须是原文子串>",\n'
+        '  "core_excerpt_zh": "<仅当输入中有 core_excerpt_en：将该英文核心段译为中文>"\n'
+        "}\n"
+        "```\n\n"
+        "重要约束：\n"
+        f"- idx 必须原样返回 {idx}，不可改变\n"
+        "- 只依据本条 text 翻译与点题，禁止引入本条之外的概念、数字或论断\n"
+        "- zh_point：1 句中文，点出核心看点，不要复述全文\n"
+        "- core_excerpt_en：必须是本条 text 的逐字子串，禁止改写或概括\n"
+        "- is_long=false 时无需输出 core_excerpt_en\n"
+        "- 专业名词/@id/数字/URL 保持原样"
+    )
 
 
 def _han_count(text: str) -> int:
@@ -206,77 +282,199 @@ _DEFAULT_TRANSLATE_TIMEOUT = int(os.environ.get("AKB2_TRANSLATE_TIMEOUT", "300")
 # 秒；plist/env 可覆盖（默认 300，给瞬时变慢留余量）
 
 
+def _model_chain(model: str | None = None) -> list[str]:
+    """构建模型链（主力 + 备用），去重保序。"""
+    chain: list[str] = []
+    for m in [model or _TRANSLATE_MODEL, *_TRANSLATE_FALLBACK_MODELS]:
+        if m and m not in chain:
+            chain.append(m)
+    return chain
+
+
+def _call_json_with_chain(
+    prompt: str,
+    chain: list[str],
+    *,
+    timeout: int,
+    label: str,
+) -> tuple[dict | None, list[str]]:
+    """按模型链顺序请求 JSON，返回 (解析结果|None, 重排后的链)。
+
+    重排：某个模型成功后把它提到链首——条目级隔离后单次运行有 1+N 次调用，
+    每次都从已知不可用的主力重试会白付 N 倍失败开销。
+    """
+    from akb2.briefing.synthesis import _call_llm
+
+    for i, used_model in enumerate(chain):
+        # 主力模型走默认网关，fallback 模型走跨网关备用 URL（防单网关故障）。
+        # 按模型身份而非链内位置判定：链会因"成功者提到链首"重排，用位置会让
+        # 备用模型在重排后被错误地打回主网关。
+        fb_base_url = (
+            _TRANSLATE_FALLBACK_BASE_URL
+            if used_model in _TRANSLATE_FALLBACK_MODELS
+            else None
+        )
+        try:
+            raw = _call_llm(
+                [
+                    {"role": "system", "content": _TRANSLATE_SYSTEM},
+                    {"role": "user", "content": prompt},
+                ],
+                model=used_model,
+                json_mode=True,
+                timeout=timeout,
+                base_url=fb_base_url,
+            )
+            parsed = json.loads(raw)
+            if not isinstance(parsed, dict):
+                raise ValueError(f"expected JSON object, got {type(parsed).__name__}")
+            reordered = [used_model, *[m for m in chain if m != used_model]]
+            return parsed, reordered
+        except Exception as e:
+            remaining = chain[i + 1:]
+            if remaining:
+                sys.stderr.write(
+                    f"WARNING [translate]: {used_model} failed on {label} ({e}), "
+                    f"retrying with {remaining[0]}\n"
+                )
+            else:
+                sys.stderr.write(
+                    f"WARNING [translate]: all translate models failed on {label} "
+                    f"(last {used_model}: {e}).\n"
+                )
+    return None, chain
+
+
+def _extract_tweet_item(payload: dict, idx: int) -> dict | None:
+    """从单条推文的模型响应里取出该条译文，并做 idx 绑定校验。
+
+    接受两种形状：顶层字段，或被包进 {"tweets": [...]} 的单元素列表。
+    idx 与请求不符（模型答错条目）→ 拒收，返回 None，由调用方标记失败。
+    """
+    item: dict | None = None
+    wrapped = payload.get("tweets")
+    if isinstance(wrapped, list):
+        for cand in wrapped:
+            if isinstance(cand, dict) and cand.get("idx") == idx:
+                item = cand
+                break
+        if item is None:
+            sys.stderr.write(
+                f"WARNING [translate]: tweets[{idx}] response has no matching idx "
+                f"(got {[c.get('idx') for c in wrapped if isinstance(c, dict)]}), rejected.\n"
+            )
+            return None
+    elif "text_zh" in payload or "zh_point" in payload:
+        returned_idx = payload.get("idx")
+        if returned_idx is not None and returned_idx != idx:
+            sys.stderr.write(
+                f"WARNING [translate]: tweets[{idx}] response bound to idx="
+                f"{returned_idx!r}, rejected (cross-item binding violation).\n"
+            )
+            return None
+        item = payload
+    if item is None:
+        sys.stderr.write(
+            f"WARNING [translate]: tweets[{idx}] response missing text_zh/zh_point, rejected.\n"
+        )
+        return None
+    return {**item, "idx": idx}
+
+
+# 单条推文调用的超时上限（秒）：单条内容远小于整批，300s 只会把串行总时长放大到不可接受
+_TWEET_TIMEOUT_CAP = 120
+
+
 def translate_briefing(
     synth: dict,
     *,
     model: str | None = None,
     timeout: int = _DEFAULT_TRANSLATE_TIMEOUT,
 ) -> dict:
-    """将 synth payload 翻译为中文，返回新 dict；失败时保留原值并 stderr 告警。
+    """将 synth payload 翻译为中文，返回新 dict；失败时保留原值并 stderr 告警 + 打标记。
 
-    模型链：主力 + 备用链按序尝试，任一成功即用其结果；全部失败则返回原 synth。
+    调用结构（条目级隔离，见模块 docstring）：
+      1 次分析字段调用 + 每条展示推文各 1 次调用；每次都走完整模型链。
+
+    模型链：主力 + 备用链按序尝试，任一成功即用其结果并提到链首。
 
     新增字段（可选）：
       tweets[i].text       → 中文译文（原 text 移到 text_original）
       tweets[i].text_original → 英文原文备查
       tweets[i].core_excerpt  → 长推中文核心段
-      key_quotes[i].context   → 中文引述点题
+
+    失败标记（供 pipeline 落盘/降级）：
+      translate_failed / translate_degraded / translate_failed_fields
     """
-    from akb2.briefing.synthesis import _call_llm
+    chain = _model_chain(model)
 
-    # 构建模型链（主力 + 备用），去重保序
-    chain: list[str] = []
-    for m in [model or _TRANSLATE_MODEL, *_TRANSLATE_FALLBACK_MODELS]:
-        if m and m not in chain:
-            chain.append(m)
-
-    prompt = _build_translate_prompt(synth)
-    messages = [
-        {"role": "system", "content": _TRANSLATE_SYSTEM},
-        {"role": "user", "content": prompt},
-    ]
-
-    trans = None
-    for i, used_model in enumerate(chain):
-        # 主力模型走默认网关，fallback 模型走跨网关备用 URL（防单网关故障）
-        fb_base_url = _TRANSLATE_FALLBACK_BASE_URL if i > 0 else None
-        try:
-            raw = _call_llm(messages, model=used_model, json_mode=True, timeout=timeout,
-                            base_url=fb_base_url)
-            trans = json.loads(raw)
-            break
-        except Exception as e:
-            remaining = chain[i + 1:]
-            if remaining:
-                sys.stderr.write(
-                    f"WARNING [translate]: {used_model} failed ({e}), "
-                    f"retrying with {remaining[0]}\n"
-                )
-            else:
-                sys.stderr.write(
-                    f"WARNING [translate]: all translate models failed "
-                    f"(last {used_model}: {e}). Returning original synth without translation.\n"
-                )
-
+    trans, chain = _call_json_with_chain(
+        _build_analysis_prompt(synth), chain, timeout=timeout, label="analysis"
+    )
     if trans is None:
-        return synth
+        sys.stderr.write(
+            "WARNING [translate]: analysis translation failed on all models; "
+            "returning original synth WITHOUT translation (translate_failed=True).\n"
+        )
+        failed = dict(synth)
+        failed["translate_failed"] = True
+        failed["translate_degraded"] = True
+        failed["translate_failed_fields"] = ["analysis"]
+        return failed
 
-    return _apply_translation(synth, trans)
+    tweets = synth.get("tweets", [])
+    tweet_timeout = min(timeout, _TWEET_TIMEOUT_CAP)
+    tweet_items: list[dict] = []
+    failed_fields: list[str] = []
+    for idx in sorted(_display_tweet_indices(synth)):
+        if idx >= len(tweets):
+            continue
+        payload, chain = _call_json_with_chain(
+            _build_tweet_prompt(idx, tweets[idx]),
+            chain,
+            timeout=tweet_timeout,
+            label=f"tweets[{idx}]",
+        )
+        item = _extract_tweet_item(payload, idx) if payload is not None else None
+        if item is None:
+            failed_fields.append(f"tweets[{idx}]")
+            continue
+        tweet_items.append(item)
+
+    trans["tweets"] = tweet_items
+
+    result = _apply_translation(synth, trans, model=model)
+    if failed_fields:
+        result["translate_degraded"] = True
+        result["translate_failed_fields"] = (
+            list(result.get("translate_failed_fields") or []) + failed_fields
+        )
+        sys.stderr.write(
+            f"WARNING [translate]: {len(failed_fields)} item(s) left untranslated: "
+            f"{failed_fields} (translate_degraded=True).\n"
+        )
+    return result
 
 
-def _apply_translation(synth: dict, trans: dict) -> dict:
-    """将翻译结果合并回 synth，逐字段回退，不抛异常。"""
+def _apply_translation(synth: dict, trans: dict, *, model: str | None = None) -> dict:
+    """将翻译结果合并回 synth，逐字段回退，不抛异常；合并失败时打标记（失败可见）。"""
     import copy
     result = copy.deepcopy(synth)
 
     try:
-        return _apply_translation_inner(result, trans)
+        return _apply_translation_inner(result, trans, model=model)
     except Exception as e:
         sys.stderr.write(
             f"WARNING [translate]: _apply_translation failed ({e}), "
-            "returning original synth.\n"
+            "returning original synth (translate_failed=True).\n"
         )
-        return synth
+        failed = dict(synth)
+        failed["translate_failed"] = True
+        failed["translate_degraded"] = True
+        failed["translate_failed_fields"] = (
+            list(synth.get("translate_failed_fields") or []) + ["_apply_translation"]
+        )
+        return failed
 
 
 def _safe_idx_map(items: list | None) -> dict:
@@ -292,7 +490,16 @@ def _safe_idx_map(items: list | None) -> dict:
     return result
 
 
-def _apply_translation_inner(result: dict, trans: dict) -> dict:
+def _mark_degraded(result: dict, field: str) -> None:
+    """记录一处降级/失败字段（失败可见：状态随返回值上浮到 pipeline）。"""
+    result["translate_degraded"] = True
+    fields = list(result.get("translate_failed_fields") or [])
+    if field not in fields:
+        fields.append(field)
+    result["translate_failed_fields"] = fields
+
+
+def _apply_translation_inner(result: dict, trans: dict, *, model: str | None = None) -> dict:
     """实际合并逻辑，由 _apply_translation 包裹捕获。"""
     # executive_summary
     zh_summary = (trans.get("executive_summary") or "").strip()
@@ -312,8 +519,12 @@ def _apply_translation_inner(result: dict, trans: dict) -> dict:
                     f"WARNING [translate]: focus_discussions[{i}].topic "
                     f"未翻译（纯英文）{topic_zh!r}，尝试补译\n"
                 )
-                retranslated = _translate_snippet(topic_zh)
-                fd["topic"] = retranslated if retranslated else topic_zh
+                retranslated = _translate_snippet(topic_zh, model=model)
+                if retranslated:
+                    fd["topic"] = retranslated
+                else:
+                    fd["topic"] = topic_zh
+                    _mark_degraded(result, f"focus_discussions[{i}].topic")
             else:
                 fd["topic"] = topic_zh
         if t.get("summary", "").strip():
@@ -349,12 +560,13 @@ def _apply_translation_inner(result: dict, trans: dict) -> dict:
                     tw["core_excerpt"] = core_zh_direct
                 else:
                     # 无直接译文：单独翻译 core_en
-                    snippet_zh = _translate_snippet(core_en)
+                    snippet_zh = _translate_snippet(core_en, model=model)
                     if snippet_zh:
                         tw["core_excerpt"] = snippet_zh
                     else:
                         # snippet 翻译失败 → 用中文译文第一段（不回退英文原段）
                         tw["core_excerpt"] = _first_segment(text_zh) if text_zh else ""
+                        _mark_degraded(result, f"tweets[{i}].core_excerpt")
             else:
                 if core_en:
                     sys.stderr.write(
@@ -368,30 +580,58 @@ def _apply_translation_inner(result: dict, trans: dict) -> dict:
     return result
 
 
-def _translate_snippet(text_en: str, timeout: int = 60) -> str:
-    """单独翻译一段英文（用于 core_excerpt_en 无对应 core_excerpt_zh 时）。
-    失败时返回空字符串，由调用方回退到英文原段。
+def _translate_snippet(
+    text_en: str,
+    timeout: int = 60,
+    *,
+    model: str | None = None,
+) -> str:
+    """单独翻译一段英文（补译：残英 topic / core_excerpt_en 无对应 core_excerpt_zh）。
+
+    与批量翻译共用 _TRANSLATE_SYSTEM（同一套数字/URL/术语表/禁改写事实约束），并走
+    完整模型链——补译此前用的是更弱的 prompt 且只打主力模型，主力挂掉即静默返回空串。
+    全链失败时返回空字符串并 stderr 告警，由调用方回退并打降级标记。
     """
     from akb2.briefing.synthesis import _call_llm
 
     if not text_en or not text_en.strip():
         return ""
-    try:
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "将以下英文 AI 趋势内容翻译为简体中文，保留专业名词/"
-                    "@id/数字，只返回译文，不加解释。"
-                ),
-            },
-            {"role": "user", "content": text_en.strip()},
-        ]
-        return _call_llm(
-            messages,
-            model=_TRANSLATE_MODEL,
-            json_mode=False,
-            timeout=timeout,
-        ).strip()
-    except Exception:
-        return ""
+
+    chain = _model_chain(model)
+    for i, used_model in enumerate(chain):
+        fb_base_url = (
+            _TRANSLATE_FALLBACK_BASE_URL
+            if used_model in _TRANSLATE_FALLBACK_MODELS
+            else None
+        )
+        try:
+            messages = [
+                {"role": "system", "content": _TRANSLATE_SYSTEM},
+                {
+                    "role": "user",
+                    "content": (
+                        "把下面这段英文译为简体中文，只返回译文正文，不加解释、不加引号、"
+                        "不要 JSON 包装。\n\n" + text_en.strip()
+                    ),
+                },
+            ]
+            return _call_llm(
+                messages,
+                model=used_model,
+                json_mode=False,
+                timeout=timeout,
+                base_url=fb_base_url,
+            ).strip()
+        except Exception as e:
+            remaining = chain[i + 1:]
+            if remaining:
+                sys.stderr.write(
+                    f"WARNING [translate]: snippet translate via {used_model} failed ({e}), "
+                    f"retrying with {remaining[0]}\n"
+                )
+            else:
+                sys.stderr.write(
+                    f"WARNING [translate]: snippet translate failed on all models "
+                    f"(last {used_model}: {e}); returning empty (caller must degrade).\n"
+                )
+    return ""

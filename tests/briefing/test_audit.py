@@ -160,8 +160,12 @@ def test_enforce_standard_fail_verdict_fail():
     assert result["verdict"] == "fail"
 
 
-def test_enforce_llm_fail_verdict_warn():
-    """standard=pass + llm_audit=fail → verdict=warn。"""
+def test_enforce_llm_fail_verdict_fail():
+    """standard=pass + llm_audit=fail → verdict=fail（LLM 判 fail 有阻断权）。
+
+    取代旧 test_enforce_llm_fail_verdict_warn：把"LLM 判严重漂移只降级成 warn"
+    锁成期望行为，等于让 fail 裁决照样发布，与 fail-closed 门控（constitution 原则 3）冲突。
+    """
     from akb2.briefing.audit import audit_briefing
 
     def mock_fail(messages, model, **kwargs):
@@ -172,7 +176,348 @@ def test_enforce_llm_fail_verdict_warn():
 
     assert result["standard"] == "pass"
     assert result["llm_audit"] == "fail"
-    assert result["verdict"] == "warn"
+    assert result["verdict"] == "fail", "LLM 判 fail 必须阻断发布，不得降级为 warn"
+    assert result["audit_degraded"] is False, "LLM 跑成了，不算降级"
+
+
+def test_llm_skipped_verdict_warn_and_degraded():
+    """llm_audit=skipped → verdict=warn + audit_degraded=True（不得当 pass 放行）。"""
+    from akb2.briefing.audit import audit_briefing
+
+    def raise_error(messages, model, **kwargs):
+        raise ConnectionError("no network")
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=raise_error):
+        result = audit_briefing(SYNTH_ZH_GOOD, SYNTH_EN)
+
+    assert result["llm_audit"] == "skipped"
+    assert result["verdict"] == "warn", "LLM 审计没跑成不得直接判 pass"
+    assert result["audit_degraded"] is True
+
+
+def test_audit_result_exposes_contract_keys():
+    """audit 返回值必须含 pipeline 消费契约的 4 个键（verdict/standard/llm_audit/audit_degraded）。"""
+    from akb2.briefing.audit import audit_briefing
+
+    def mock_pass(messages, model, **kwargs):
+        return json.dumps({"drift_score": 0.0, "accuracy_issues": [], "llm_verdict": "pass"})
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=mock_pass):
+        result = audit_briefing(SYNTH_ZH_GOOD, SYNTH_EN)
+
+    for key in ("verdict", "standard", "llm_audit", "audit_degraded"):
+        assert key in result, f"缺少契约键 {key}"
+    assert result["verdict"] in ("pass", "warn", "fail")
+    assert result["llm_audit"] in ("pass", "warn", "fail", "skipped")
+    assert isinstance(result["audit_degraded"], bool)
+
+
+def test_audit_log_write_failure_is_visible(tmp_path, monkeypatch, capsys):
+    """审计日志写盘失败 → audit_log_failed=True + stderr 告警（不得静默丢裁决记录）。"""
+    from akb2.briefing.audit import audit_briefing
+
+    blocker = tmp_path / "blocked"
+    blocker.write_text("not a directory")  # mkdir 必然失败
+    monkeypatch.setenv("AKB2_LOG_DIR", str(blocker))
+
+    def mock_pass(messages, model, **kwargs):
+        return json.dumps({"drift_score": 0.0, "accuracy_issues": [], "llm_verdict": "pass"})
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=mock_pass):
+        result = audit_briefing(SYNTH_ZH_GOOD, SYNTH_EN)
+
+    assert result.get("audit_log_failed") is True, "写盘失败必须回传标记"
+    assert "failed to persist audit verdict" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# #13 确定性译后校验（不调 LLM）
+# ---------------------------------------------------------------------------
+
+def _fidelity_pair(en_text: str, zh_text: str):
+    """构造只在 tweets[0].text 上做对照的 (synth_zh, synth_en)，其余字段均已合规。"""
+    import copy
+
+    synth_zh = copy.deepcopy(SYNTH_ZH_GOOD)
+    synth_zh["tweets"][0]["text"] = zh_text
+    synth_en = {
+        "executive_summary": "AI agents showed growth with new memory tools.",
+        "focus_discussions": [
+            {"topic": "Agent Memory", "summary": "Tools for persistent memory.",
+             "supporting_tweet_ids": ["1", "2"]},
+        ],
+        "tweets": [
+            {"id": "1", "text": en_text, "score": 0.9},
+            {"id": "2", "text": "Another memory tweet.", "score": 0.8},
+        ],
+    }
+    return synth_zh, synth_en
+
+
+def _kinds_for(en_text: str, zh_text: str) -> list[dict]:
+    from akb2.briefing.audit import _check_standard_structured
+
+    synth_zh, synth_en = _fidelity_pair(en_text, zh_text)
+    return _check_standard_structured(synth_zh, synth_en)
+
+
+def test_param_scale_must_not_be_localized():
+    """405B/8B 被换算成「4050 亿/80 亿参数」→ number_mismatch(fail)。
+
+    这是 06-27 实际发生的事实损坏：型号标识被当量词本地化，数值虽相等但型号名没了。
+    """
+    items = _kinds_for(
+        "Llama 405B and the 8B variant were released today.",
+        "今天发布了 4050 亿参数的 Llama 以及 80 亿参数版本。",
+    )
+    nums = [it for it in items if it["kind"] == "number_mismatch"]
+    assert nums, f"应检出 405B/8B 被换算，items={items}"
+    assert all(it["severity"] == "fail" for it in nums), "事实损坏必须是 fail 级"
+    msg = " ".join(it["msg"] for it in nums)
+    assert "405B" in msg and "8B" in msg, msg
+
+
+def test_param_scale_verbatim_passes():
+    """405B/8B 逐字保留 → 不报数字问题。"""
+    items = _kinds_for(
+        "Llama 405B and the 8B variant were released today.",
+        "今天发布了 Llama 405B 以及 8B 版本。",
+    )
+    assert not [it for it in items if it["kind"] == "number_mismatch"], items
+
+
+def test_legit_unit_localization_not_flagged():
+    """合法本地化（50k→5万、2M→200万、18,432→18432）不误报。"""
+    items = _kinds_for(
+        "The repo hit 50k stars, a 2M token context window, and 18,432 downloads.",
+        "该仓库达到 5万 星标，上下文窗口 200万 token，下载 18432 次。",
+    )
+    assert not [it for it in items if it["kind"] == "number_mismatch"], items
+
+
+def test_money_scale_localization_not_flagged():
+    """货币语境的 $1B 允许本地化为 10亿美元（不是型号标识）。"""
+    items = _kinds_for(
+        "They raised $1B in funding this week.",
+        "他们本周完成 10亿美元融资。",
+    )
+    assert not [it for it in items if it["kind"] == "number_mismatch"], items
+
+
+def test_percent_loss_flagged():
+    """百分比在译文里消失 → number_mismatch(fail)。"""
+    items = _kinds_for(
+        "The agent resolved 72% of real GitHub issues autonomously.",
+        "该智能体自主解决了大部分真实 GitHub issue。",
+    )
+    assert [it for it in items if it["kind"] == "number_mismatch"], items
+
+
+def test_version_number_must_be_verbatim():
+    """版本号被改写 → number_mismatch(fail)。"""
+    items = _kinds_for(
+        "vLLM v0.22.0 ships continuous batching.",
+        "vLLM 0.22 版本带来了连续批处理。",
+    )
+    assert [it for it in items if it["kind"] == "number_mismatch"], items
+
+
+def test_url_must_be_verbatim():
+    """原文 URL 未逐字出现在译文 → url_missing(fail)。"""
+    items = _kinds_for(
+        "Full write-up at https://example.com/agents/deep-dive?ref=x for details.",
+        "详细说明见 https://example.com/agents/deep-dive 。",
+    )
+    urls = [it for it in items if it["kind"] == "url_missing"]
+    assert urls, items
+    assert urls[0]["severity"] == "fail"
+
+
+def test_handle_must_be_verbatim():
+    """原文 @handle 未逐字出现在译文 → handle_missing(fail)。"""
+    items = _kinds_for(
+        "Great thread by @paulfchristiano on alignment.",
+        "关于对齐的精彩长文，作者是保罗·克里斯蒂亚诺。",
+    )
+    handles = [it for it in items if it["kind"] == "handle_missing"]
+    assert handles, items
+    assert handles[0]["severity"] == "fail"
+
+
+def test_metric_type_fabrication_flagged():
+    """原文只说 72% on SWE-bench，译文写成「72% 准确率」→ metric_fabricated(fail)。
+
+    SWE-bench 报的是 resolve rate，「准确率」是译文凭空指定的指标类型（事实错误）。
+    """
+    items = _kinds_for(
+        "Claude 4 Opus now achieves 72% on SWE-bench verified.",
+        "Claude 4 Opus 在 SWE-bench verified 上达到 72% 准确率。",
+    )
+    fab = [it for it in items if it["kind"] == "metric_fabricated"]
+    assert fab, items
+    assert fab[0]["severity"] == "fail"
+
+
+def test_metric_with_evidence_not_flagged():
+    """原文自带 accuracy 词根时，译文用「准确率」不报。"""
+    items = _kinds_for(
+        "The model reached 91% accuracy on MATH-500.",
+        "该模型在 MATH-500 上达到 91% 准确率。",
+    )
+    assert not [it for it in items if it["kind"] == "metric_fabricated"], items
+
+
+def test_rate_family_metric_accepts_percent_evidence():
+    """速率类中文名（成功率/通过率/解决率）在原文有速率/百分比概念时不报。
+
+    实测 28/59 份日报含中文指标名；速率类名之间语义邻接，一律严格判会把正常日报打成 fail。
+    「准确率」仍严格（见 test_metric_type_fabrication_flagged）。
+    """
+    items = _kinds_for(
+        "Autonomous fix rate is now above 60% on real GitHub issues.",
+        "在真实 GitHub issue 上的自主成功率已超过 60%。",
+    )
+    assert not [it for it in items if it["kind"] == "metric_fabricated"], items
+
+
+def test_fidelity_fail_blocks_publication_end_to_end():
+    """确定性 fail 级问题 → standard=fail → verdict=fail（即便 LLM 判 pass）。"""
+    from akb2.briefing.audit import audit_briefing
+
+    synth_zh, synth_en = _fidelity_pair(
+        "Llama 405B beats the 8B model on https://swebench.com/leaderboard",
+        "4050 亿参数的 Llama 击败了 80 亿参数模型。",
+    )
+
+    def mock_pass(messages, model, **kwargs):
+        return json.dumps({"drift_score": 0.0, "accuracy_issues": [], "llm_verdict": "pass"})
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=mock_pass):
+        result = audit_briefing(synth_zh, synth_en)
+
+    assert result["standard"] == "fail"
+    assert result["verdict"] == "fail", "译后确定性校验必须有阻断权"
+
+
+def test_fidelity_checks_skipped_without_english():
+    """未传 synth_en 时跳过跨语言校验（向后兼容单参调用），不误报。"""
+    from akb2.briefing.audit import _check_standard
+
+    issues = _check_standard(SYNTH_ZH_GOOD)
+    assert issues == [], issues
+
+
+# ---------------------------------------------------------------------------
+# #14 术语表锁定
+# ---------------------------------------------------------------------------
+
+def test_glossary_forbidden_variant_is_warn():
+    """禁用译法（上下文腐烂）→ glossary_violation(warn)，verdict 降 warn 但不阻断。"""
+    from akb2.briefing.audit import audit_briefing
+
+    synth_zh, synth_en = _fidelity_pair(
+        "Context Rot is the real bottleneck for long sessions.",
+        "上下文腐烂是长会话的真正瓶颈。",
+    )
+
+    def mock_pass(messages, model, **kwargs):
+        return json.dumps({"drift_score": 0.0, "accuracy_issues": [], "llm_verdict": "pass"})
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=mock_pass):
+        result = audit_briefing(synth_zh, synth_en)
+
+    kinds = [it for it in result["standard_issues_structured"]
+             if it["kind"] == "glossary_violation"]
+    assert kinds, result["standard_issues"]
+    assert all(it["severity"] == "warn" for it in kinds)
+    assert result["standard"] == "pass", "术语分裂不阻断入库"
+    assert result["verdict"] == "warn", "但必须把 verdict 压到 warn"
+    assert any("上下文腐烂" in m for m in result["standard_warn_issues"])
+
+
+def test_glossary_canonical_translation_passes():
+    """使用唯一指定译法（上下文衰减）→ 不报。"""
+    items = _kinds_for(
+        "Context Rot is the real bottleneck for long sessions.",
+        "上下文衰减是长会话的真正瓶颈。",
+    )
+    assert not [it for it in items if it["kind"] == "glossary_violation"], items
+
+
+def test_glossary_keep_en_person_name():
+    """人名指定保留英文；译作「安德烈·卡帕斯」→ glossary_violation。"""
+    items = _kinds_for(
+        "Andrej Karpathy on LLM operating systems.",
+        "安德烈·卡帕斯谈 LLM 操作系统。",
+    )
+    viol = [it for it in items if it["kind"] == "glossary_violation"]
+    assert viol, items
+    assert "Andrej Karpathy" in viol[0]["msg"]
+
+
+def test_glossary_product_name_not_rewritten():
+    """产品名 Copilot 被改写成 Co-pilot → glossary_violation。"""
+    items = _kinds_for(
+        "Copilot now supports custom agents.",
+        "Co-pilot 现在支持自定义智能体。",
+    )
+    assert [it for it in items if it["kind"] == "glossary_violation"], items
+
+
+def test_glossary_is_shared_with_translate_prompt():
+    """术语表被注入翻译 prompt（翻译端与审计端同源，不是两份表）。"""
+    from akb2.briefing.translate import _TRANSLATE_SYSTEM, TRANSLATION_GLOSSARY
+
+    for term in TRANSLATION_GLOSSARY:
+        assert term in _TRANSLATE_SYSTEM, f"术语 {term} 未注入翻译 prompt"
+    assert "上下文衰减" in _TRANSLATE_SYSTEM
+    assert "上下文腐烂" in _TRANSLATE_SYSTEM, "禁用译法也要写进 prompt"
+
+
+# ---------------------------------------------------------------------------
+# #13 语言纯度（假阳性是主要风险，用实测样本锁死）
+# ---------------------------------------------------------------------------
+
+def test_language_purity_allows_tech_stack_and_original_titles():
+    """技术栈堆叠 / 保留的项目原名 / 版本号密集短语都是合法的，不得报错。
+
+    实测：粗暴的「≥6 个英文长词」启发式在 71 条命中里 70 条是假阳性（98.6%）。
+    """
+    from akb2.briefing.audit import _check_language_purity
+
+    legit = [
+        "Remix / React / TypeScript / Prisma / SQLite / Tailwind 全栈组合，一天上线",
+        "项目原名保留：Machine Learning for Algorithmic Trading，第 2 版已更新",
+        "vLLM v0.22.0 发布与推理优化，吞吐提升 30%",
+        "NVFP4 评估：MMLU Pro 86.3，GPQA Diamond 85.5",
+        "5 个努力级别（Light、Medium、High、Extra High、Ultra）",
+    ]
+    for text in legit:
+        assert _check_language_purity(text, prose=False) == [], text
+
+
+def test_language_purity_flags_english_prose_leak():
+    """整句英文散文混在中文里（虚词成串 + 英文占比高）→ language_mixed(warn)。"""
+    from akb2.briefing.audit import _check_language_purity
+
+    leaked = (
+        "今日焦点是智能体记忆。The alignment tax is gone and the top models "
+        "now outperform base models on reasoning benchmarks."
+    )
+    problems = _check_language_purity(leaked, prose=True)
+    assert problems, "英文散文泄漏应被检出"
+    assert any("虚词" in p for p in problems), problems
+
+
+def test_language_mixed_is_warn_not_fail():
+    """language_mixed 是 warn 级：不阻断入库，但把 verdict 压到 warn。"""
+    items = _kinds_for(
+        "The alignment tax is gone and the top models now outperform base models.",
+        "对齐税消失了。The alignment tax is gone and the top models now outperform.",
+    )
+    mixed = [it for it in items if it["kind"] == "language_mixed"]
+    assert mixed, items
+    assert all(it["severity"] == "warn" for it in mixed)
 
 
 def test_llm_audit_unknown_verdict_not_pass():

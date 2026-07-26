@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from unittest.mock import patch
 
 import pytest
@@ -73,9 +74,31 @@ MOCK_TRANSLATE_RESPONSE = {
 }
 
 
+_ITEM_IDX_RE = re.compile(r"TRANSLATE_ITEM_IDX: (\d+)")
+
+
+def _requested_tweet_idx(messages) -> int | None:
+    """从 prompt 里读出本次调用请求的推文 idx（None = 分析字段调用）。"""
+    m = _ITEM_IDX_RE.search(messages[-1]["content"])
+    return int(m.group(1)) if m else None
+
+
 def _make_mock_call_llm(response: dict):
+    """按条目级隔离后的调用结构派发预置响应。
+
+    translate_briefing 现在发 1 次分析字段调用 + 每条展示推文各 1 次调用，
+    因此 mock 必须按 prompt 里的 TRANSLATE_ITEM_IDX 返回对应条目；
+    未预置的 idx 返回空对象（= 该条被拒收，走降级路径）。
+    """
     def mock_call_llm(messages, model, **kwargs):
-        return json.dumps(response, ensure_ascii=False)
+        idx = _requested_tweet_idx(messages)
+        if idx is None:
+            analysis = {k: v for k, v in response.items() if k != "tweets"}
+            return json.dumps(analysis, ensure_ascii=False)
+        item = next(
+            (t for t in response.get("tweets", []) if t.get("idx") == idx), None
+        )
+        return json.dumps(item or {}, ensure_ascii=False)
     return mock_call_llm
 
 
@@ -276,15 +299,14 @@ def test_missing_core_excerpt_zh_triggers_snippet_translate():
     }
 
     snippet_calls = []
+    batch_mock = _make_mock_call_llm(response_no_core_zh)
 
     def mock_call_llm(messages, model, **kwargs):
-        # 第一次调用是批量翻译，后续调用是 _translate_snippet
-        if len(snippet_calls) == 0:
-            snippet_calls.append("batch")
-            return json.dumps(response_no_core_zh, ensure_ascii=False)
-        else:
-            snippet_calls.append("snippet")
-            return "这是关于 AI 智能体和记忆系统的核心洞察。"  # snippet 翻译结果
+        # 分析调用 + 逐条推文调用走 batch_mock；_translate_snippet 是 json_mode=False
+        if kwargs.get("json_mode", True):
+            return batch_mock(messages, model, **kwargs)
+        snippet_calls.append("snippet")
+        return "这是关于 AI 智能体和记忆系统的核心洞察。"  # snippet 翻译结果
 
     with patch("akb2.briefing.synthesis._call_llm", side_effect=mock_call_llm):
         result = translate_briefing(synth)
@@ -319,17 +341,22 @@ def test_snippet_translate_failure_no_english_core_excerpt():
         ],
     }
 
-    call_count = [0]
+    batch_mock = _make_mock_call_llm(response_no_core_zh)
 
     def mock_call_llm(messages, model, **kwargs):
-        call_count[0] += 1
-        if call_count[0] == 1:
-            return json.dumps(response_no_core_zh, ensure_ascii=False)
-        # _translate_snippet 模拟失败
+        if kwargs.get("json_mode", True):
+            return batch_mock(messages, model, **kwargs)
+        # _translate_snippet 模拟失败（全模型链）
         raise ConnectionError("snippet translate failed")
 
     with patch("akb2.briefing.synthesis._call_llm", side_effect=mock_call_llm):
         result = translate_briefing(synth)
+
+    # 补译全链失败必须回传降级标记（失败可见），不得静默吞掉
+    assert result.get("translate_degraded") is True, "snippet 全链失败应标 translate_degraded"
+    assert any(
+        "core_excerpt" in f for f in result.get("translate_failed_fields", [])
+    ), f"应记录失败字段，实际: {result.get('translate_failed_fields')}"
 
     long_tw = result["tweets"][1]
     core = long_tw.get("core_excerpt", "")
@@ -464,7 +491,11 @@ def test_translate_model_chain_and_timeout():
 
 
 def test_translate_falls_through_chain_to_second_fallback():
-    """主(deepseek)+备1(glm) 都失败 → 用备2(claude)；按链顺序尝试，最终翻译生效。"""
+    """主(deepseek)+备1(glm) 都失败 → 用备2(claude)；成功的模型被提到链首复用。
+
+    条目级隔离后单次运行有 1+N 次调用，若每次都从已知不可用的主力重试，
+    失败开销会被放大 N 倍；故断言：首次按链序尝试，后续调用直接打已成功模型。
+    """
     from akb2.briefing.translate import translate_briefing
 
     synth = {
@@ -473,24 +504,58 @@ def test_translate_falls_through_chain_to_second_fallback():
         "tweets": [{"id": "1", "author": "@x", "text": "short tweet", "score": 0.9, "url": "u"}],
     }
     calls: list[str] = []
-    good = json.dumps({
+    payload = {
         "executive_summary": "今日摘要。",
         "focus_discussions": [{"idx": 0, "topic": "智能体话题", "summary": "中文总结。"}],
         "tweets": [{"idx": 0, "text_zh": "短推文中文。", "zh_point": "要点。"}],
-    })
+    }
+    mock = _make_mock_call_llm(payload)
 
     def fake(messages, model, **kw):
         calls.append(model)
         if model in ("deepseek/deepseek-v4-pro", "z-ai/glm-5.1"):
             raise TimeoutError("read timed out")
-        return good
+        return mock(messages, model, **kw)
 
     with patch("akb2.briefing.synthesis._call_llm", side_effect=fake):
         result = translate_briefing(synth)
 
-    assert calls == ["deepseek/deepseek-v4-pro", "z-ai/glm-5.1", "anthropic/claude-sonnet-4-6"], \
-        f"应按 [deepseek, glm, claude] 顺序尝试，实际: {calls}"
+    assert calls[:3] == [
+        "deepseek/deepseek-v4-pro", "z-ai/glm-5.1", "anthropic/claude-sonnet-4-6"
+    ], f"首次应按 [deepseek, glm, claude] 顺序尝试，实际: {calls}"
+    assert calls[3:] == ["anthropic/claude-sonnet-4-6"], \
+        f"后续条目调用应直接复用已成功模型，实际: {calls}"
     assert result["focus_discussions"][0]["topic"] == "智能体话题", "备2 成功后翻译应生效"
+    assert result["tweets"][0]["text"] == "短推文中文。", "推文条目调用也应生效"
+
+
+def test_fallback_gateway_follows_model_identity(monkeypatch):
+    """备用模型即便被提到链首复用，仍必须走备用网关（按模型身份判，不按链内位置）。"""
+    from akb2.briefing import translate as tr
+
+    monkeypatch.setattr(tr, "_TRANSLATE_FALLBACK_BASE_URL", "https://backup.example/v1")
+    seen: list[tuple[str, object]] = []
+    mock = _make_mock_call_llm({
+        "executive_summary": "今日有两条独立讨论。",
+        "focus_discussions": [{"idx": 0, "topic": "对齐", "summary": "两种观点。"}],
+        "tweets": [
+            {"idx": 0, "text_zh": "译文0。", "zh_point": "点题0。"},
+            {"idx": 1, "text_zh": "译文1。", "zh_point": "点题1。"},
+        ],
+    })
+
+    def fake(messages, model, **kw):
+        seen.append((model, kw.get("base_url")))
+        if model == tr._TRANSLATE_MODEL:
+            raise TimeoutError("primary down")
+        return mock(messages, model, **kw)
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=fake):
+        tr.translate_briefing(CONTAMINATION_SYNTH)
+
+    fallback_calls = [(m, u) for m, u in seen if m == "z-ai/glm-5.1"]
+    assert len(fallback_calls) >= 3, f"分析 + 2 条推文都应打到备用模型，实际 {seen}"
+    assert all(u == "https://backup.example/v1" for _, u in fallback_calls), seen
 
 
 def test_translate_all_models_fail_returns_original():
@@ -585,7 +650,7 @@ def test_translate_topic_retranslated_if_english():
 
     snippets_called: list[str] = []
 
-    def fake_snippet(text_en: str, timeout: int = 60) -> str:
+    def fake_snippet(text_en: str, timeout: int = 60, **kwargs) -> str:
         snippets_called.append(text_en)
         return "智能体记忆基础设施"
 
@@ -685,6 +750,220 @@ def test_lang_zh_tweet_skips_text_translation():
         f"lang=zh 的 text 不应被翻译覆盖，实际: {zh_tweet['text']!r}"
     assert "text_original" not in zh_tweet, "lang=zh 不应设置 text_original"
     assert zh_tweet.get("zh_point") == "中文推文要点。", "lang=zh 仍应写入 zh_point"
+
+
+# ---------------------------------------------------------------------------
+# #15 拆掉批量翻译的串味通道（条目级隔离）
+# ---------------------------------------------------------------------------
+
+CONTAMINATION_SYNTH = {
+    "executive_summary": "Two separate threads today.",
+    "focus_discussions": [
+        {"topic": "Alignment", "summary": "Two takes.", "supporting_tweet_ids": ["1", "2"]},
+    ],
+    "tweets": [
+        {"id": "1", "author": "@AnthropicAI", "score": 0.9, "url": "u1",
+         "text": "New paper: steering large models toward helpful behavior with synthetic self-critique."},
+        {"id": "2", "author": "@paulfchristiano", "score": 0.8, "url": "u2",
+         "text": "Hot take: the 'alignment tax' is gone."},
+    ],
+}
+
+
+def test_each_tweet_translated_in_isolated_call():
+    """每条推文单独一次调用，且该次调用的输入里不含其它推文正文。
+
+    这是串味通道被切断的可观测判据：实测事故是 @AnthropicAI 的译文里被塞进同批次
+    @paulfchristiano 推文的「消除对齐税」——只要两条正文不再同时进入一次调用，
+    这条污染路径就不存在了。
+    """
+    from akb2.briefing.translate import translate_briefing
+
+    prompts: list[str] = []
+    payload = {
+        "executive_summary": "今日有两条独立讨论。",
+        "focus_discussions": [{"idx": 0, "topic": "对齐", "summary": "两种观点。"}],
+        "tweets": [
+            {"idx": 0, "text_zh": "新论文：用合成自我批评引导大模型行为。", "zh_point": "论文要点。"},
+            {"idx": 1, "text_zh": "观点：对齐税已经消失。", "zh_point": "对齐税消失。"},
+        ],
+    }
+    mock = _make_mock_call_llm(payload)
+
+    def spy(messages, model, **kwargs):
+        prompts.append(messages[-1]["content"])
+        return mock(messages, model, **kwargs)
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=spy):
+        result = translate_briefing(CONTAMINATION_SYNTH)
+
+    tweet_prompts = [p for p in prompts if "TRANSLATE_ITEM_IDX" in p]
+    assert len(tweet_prompts) == 2, f"两条推文应各发一次调用，实际 {len(tweet_prompts)}"
+
+    p0 = next(p for p in tweet_prompts if "TRANSLATE_ITEM_IDX: 0" in p)
+    p1 = next(p for p in tweet_prompts if "TRANSLATE_ITEM_IDX: 1" in p)
+    assert "alignment tax" not in p0, "翻译 tweet0 的调用不得看到 tweet1 的内容"
+    assert "synthetic self-critique" not in p1, "翻译 tweet1 的调用不得看到 tweet0 的内容"
+
+    assert result["tweets"][0]["text"] == "新论文：用合成自我批评引导大模型行为。"
+    assert result["tweets"][1]["text"] == "观点：对齐税已经消失。"
+
+
+def test_analysis_call_carries_no_tweet_bodies():
+    """分析字段调用只带 executive_summary/focus_discussions，不再夹带全部推文正文。"""
+    from akb2.briefing.translate import translate_briefing
+
+    prompts: list[str] = []
+    mock = _make_mock_call_llm({
+        "executive_summary": "今日有两条独立讨论。",
+        "focus_discussions": [{"idx": 0, "topic": "对齐", "summary": "两种观点。"}],
+        "tweets": [
+            {"idx": 0, "text_zh": "译文0。", "zh_point": "点题0。"},
+            {"idx": 1, "text_zh": "译文1。", "zh_point": "点题1。"},
+        ],
+    })
+
+    def spy(messages, model, **kwargs):
+        prompts.append(messages[-1]["content"])
+        return mock(messages, model, **kwargs)
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=spy):
+        translate_briefing(CONTAMINATION_SYNTH)
+
+    analysis_prompt = next(p for p in prompts if "TRANSLATE_ITEM_IDX" not in p)
+    assert "alignment tax" not in analysis_prompt
+    assert "synthetic self-critique" not in analysis_prompt
+
+
+def test_tweet_response_with_wrong_idx_is_rejected():
+    """模型把 A 条的译文绑到 B 条 idx 上 → 拒收该条，不落盘，并标记降级。"""
+    from akb2.briefing.translate import translate_briefing
+
+    def wrong_idx(messages, model, **kwargs):
+        idx = _requested_tweet_idx(messages)
+        if idx is None:
+            return json.dumps({
+                "executive_summary": "今日有两条独立讨论。",
+                "focus_discussions": [{"idx": 0, "topic": "对齐", "summary": "两种观点。"}],
+            }, ensure_ascii=False)
+        # 永远回一个错的 idx（模拟条目错绑）
+        return json.dumps(
+            {"idx": idx + 99, "text_zh": "串味译文。", "zh_point": "串味点题。"},
+            ensure_ascii=False,
+        )
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=wrong_idx):
+        result = translate_briefing(CONTAMINATION_SYNTH)
+
+    for i, tw in enumerate(result["tweets"]):
+        assert tw["text"] == CONTAMINATION_SYNTH["tweets"][i]["text"], \
+            "idx 不匹配的译文必须被拒收，不得写入"
+        assert "zh_point" not in tw, "被拒收的条目不得落 zh_point"
+    assert result["translate_degraded"] is True
+    assert result["translate_failed_fields"] == ["tweets[0]", "tweets[1]"], \
+        result["translate_failed_fields"]
+
+
+def test_single_tweet_failure_does_not_lose_other_tweets():
+    """一条推文调用失败 → 只该条降级，其余译文照常落盘（部分失败必须可见且局部化）。"""
+    from akb2.briefing.translate import translate_briefing
+
+    payload = {
+        "executive_summary": "今日有两条独立讨论。",
+        "focus_discussions": [{"idx": 0, "topic": "对齐", "summary": "两种观点。"}],
+        "tweets": [
+            {"idx": 0, "text_zh": "新论文译文。", "zh_point": "论文要点。"},
+            {"idx": 1, "text_zh": "对齐税译文。", "zh_point": "对齐税消失。"},
+        ],
+    }
+    mock = _make_mock_call_llm(payload)
+
+    def fail_idx1(messages, model, **kwargs):
+        if _requested_tweet_idx(messages) == 1:
+            raise ConnectionError("down")
+        return mock(messages, model, **kwargs)
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=fail_idx1):
+        result = translate_briefing(CONTAMINATION_SYNTH)
+
+    assert result["tweets"][0]["text"] == "新论文译文。", "未失败的条目应正常翻译"
+    assert result["tweets"][1]["text"] == CONTAMINATION_SYNTH["tweets"][1]["text"], \
+        "失败条目保留英文原文"
+    assert result["translate_degraded"] is True
+    assert result["translate_failed_fields"] == ["tweets[1]"]
+
+
+def test_all_models_fail_marks_translate_failed():
+    """模型链全灭 → 返回值带 translate_failed/translate_degraded（不再是零标记的英文产出）。"""
+    from akb2.briefing.translate import translate_briefing
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=ConnectionError("down")):
+        result = translate_briefing(CONTAMINATION_SYNTH)
+
+    assert result["translate_failed"] is True
+    assert result["translate_degraded"] is True
+    assert result["translate_failed_fields"] == ["analysis"]
+    assert result["executive_summary"] == CONTAMINATION_SYNTH["executive_summary"]
+
+
+def test_apply_translation_crash_marks_failed():
+    """合并阶段异常 → 返回原 synth 但带 translate_failed 标记（不静默返回原文）。"""
+    from akb2.briefing import translate as tr
+
+    with patch.object(tr, "_apply_translation_inner", side_effect=RuntimeError("boom")):
+        result = tr._apply_translation({"executive_summary": "EN"}, {"executive_summary": "中文"})
+
+    assert result["translate_failed"] is True
+    assert "_apply_translation" in result["translate_failed_fields"]
+
+
+# ---------------------------------------------------------------------------
+# 补译 prompt 统一：共用 _TRANSLATE_SYSTEM + 走 fallback 链
+# ---------------------------------------------------------------------------
+
+def test_snippet_uses_shared_system_prompt():
+    """_translate_snippet 必须用与批量翻译同一套 system prompt（含 URL/术语表/禁改写约束）。"""
+    from akb2.briefing.translate import _TRANSLATE_SYSTEM, _translate_snippet
+
+    seen: list[str] = []
+
+    def spy(messages, model, **kwargs):
+        seen.append(messages[0]["content"])
+        return "译文。"
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=spy):
+        assert _translate_snippet("Some English core segment.") == "译文。"
+
+    assert seen and seen[0] == _TRANSLATE_SYSTEM, "补译不得再用另一套更弱的 prompt"
+
+
+def test_snippet_walks_fallback_chain():
+    """_translate_snippet 主力失败时必须继续走备用链（此前只打主力，主力挂就返回空）。"""
+    from akb2.briefing.translate import _translate_snippet
+
+    calls: list[str] = []
+
+    def fake(messages, model, **kwargs):
+        calls.append(model)
+        if model == "deepseek/deepseek-v4-pro":
+            raise TimeoutError("read timed out")
+        return "核心段译文。"
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=fake):
+        out = _translate_snippet("Some English core segment.")
+
+    assert out == "核心段译文。"
+    assert calls == ["deepseek/deepseek-v4-pro", "z-ai/glm-5.1"], calls
+
+
+def test_snippet_all_models_fail_warns(capsys):
+    """补译全链失败 → 返回空串 + stderr 告警（不再是静默 except: return ""）。"""
+    from akb2.briefing.translate import _translate_snippet
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=ConnectionError("down")):
+        assert _translate_snippet("Some English core segment.") == ""
+
+    assert "snippet translate failed on all models" in capsys.readouterr().err
 
 
 def test_lang_en_tweet_translated_normally():

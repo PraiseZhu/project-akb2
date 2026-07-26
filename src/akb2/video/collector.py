@@ -38,7 +38,7 @@ from src.akb2.video.constants import (
     VIDEO_MIN_DURATION_MIN,
     VIDEO_NLM_DAILY_QUOTA,
 )
-from src.akb2.video.dedup_store import VideoDedupStore
+from src.akb2.video.dedup_store import VideoDedupStore, video_identity
 from src.akb2.video.llm_adapter import LLMAdapter, extract_json_from_llm_response
 
 logger = logging.getLogger("akb2.video.collector")
@@ -57,8 +57,9 @@ class VideoCollector:
         # db 不传就自己建：生产入口从不传 db 正是 L1/L7 空转的根因（缺陷 #2）。
         self.db = db if db is not None else VideoDedupStore(self.config.dedup_db_path)
         self._llm_adapter = llm_adapter
-        # 单轮发布日期补取预算（有界，宪法 P1）
+        # 单轮发布日期补取预算（有界，宪法 P1）与因日期未知被拒收的计数
         self._date_backfill_used = 0
+        self._date_unknown_rejected = 0
 
         # 加载视频源配置
         self._video_config = self._load_video_config()
@@ -107,6 +108,7 @@ class VideoCollector:
         """主流程：检测 → 8 层过滤 → 处理。受 VIDEO_BUDGET_SECONDS 总预算控制。"""
         budget_start = time.time()
         self._date_backfill_used = 0
+        self._date_unknown_rejected = 0
         results: list[dict] = []
         is_coldstart = self._settings.get("coldstart", False)
 
@@ -151,6 +153,10 @@ class VideoCollector:
         # 3. L5: LLM 话题聚类去重
         if self._settings.get("dedup_strategy") == "llm_cluster" and len(all_candidates) > 1:
             all_candidates = self._dedup_by_topic(all_candidates)
+
+        # 3.5 同轮内身份去重：同一视频可能以不同 URL 形态（youtu.be / watch?v=&t=）
+        # 出现在多个 creator 列表里；账本此刻还没有它们，L1/L7 都拦不住。
+        all_candidates = self._dedup_by_identity(all_candidates)
 
         # 4. NLM 配额回填（日常模式下）
         if not is_coldstart and len(all_candidates) < quota_remaining:
@@ -200,6 +206,14 @@ class VideoCollector:
 
         elapsed = int(time.time() - budget_start)
         logger.info(f"视频采集完成: {len(results)} 个视频, {elapsed}s / {VIDEO_BUDGET_SECONDS}s")
+        # "0 个新视频" 与 "全被时间闸拒收（cookies 失效 / yt-dlp 取不到日期）"必须可区分
+        # （宪法 P4）：否则采集能力整体失效会长期伪装成"今天没有新视频"。
+        if self._date_unknown_rejected:
+            logger.warning(
+                "[时间闸] 本轮 %d 个候选因无法确定发布日期被拒收（产出 %d 个）——"
+                "若持续为 0 产出，请检查 yt-dlp cookies 与日期补取是否可用",
+                self._date_unknown_rejected, len(results),
+            )
         return results
 
     # ------------------------------------------------------------------
@@ -247,6 +261,7 @@ class VideoCollector:
                 self._fill_upload_date(v)
             upload_dt = self._parse_upload_date(v.get("upload_date", ""))
             if upload_dt is None:
+                self._date_unknown_rejected += 1
                 logger.warning(
                     "[时间闸] 拒收（无法确定发布日期，fail-closed）: [%s] %s — %s",
                     v.get("platform", "?"), v.get("title", "?"), v.get("url", "?"),
@@ -624,6 +639,30 @@ class VideoCollector:
         )
 
     # ------------------------------------------------------------------
+    # 同轮内身份去重
+    # ------------------------------------------------------------------
+
+    def _dedup_by_identity(self, candidates: list[dict]) -> list[dict]:
+        """同一轮内按稳定身份去重（保留首次出现，丢弃项显式记日志）。"""
+        seen: set[str] = set()
+        kept: list[dict] = []
+        for c in candidates:
+            url = c["video"].get("url", "")
+            if not url:
+                kept.append(c)
+                continue
+            identity = video_identity(url)
+            if identity in seen:
+                logger.info(
+                    "[同轮去重] 同一视频重复出现(%s)，丢弃: %s",
+                    identity, c["video"].get("title", url),
+                )
+                continue
+            seen.add(identity)
+            kept.append(c)
+        return kept
+
+    # ------------------------------------------------------------------
     # L5: LLM 话题聚类去重
     # ------------------------------------------------------------------
 
@@ -661,26 +700,51 @@ class VideoCollector:
             )
             data = extract_json_from_llm_response(resp)
             if not data or "groups" not in data:
-                logger.warning("话题去重: 无法解析 LLM 响应，跳过去重")
+                logger.warning(
+                    "[话题去重] LLM 响应不含 groups → 本轮不做同话题去重，"
+                    "%d 个候选按原样进入研究（受日配额硬上限约束）",
+                    len(candidates),
+                )
                 return candidates
             groups = data["groups"]
         except Exception as e:
-            logger.warning(f"话题去重失败: {e}，跳过去重")
+            logger.warning(
+                "[话题去重] 分类调用失败(%s) → 本轮不做同话题去重，"
+                "%d 个候选按原样进入研究（受日配额硬上限约束）",
+                e, len(candidates),
+            )
             return candidates
 
-        kept: list[dict] = []
+        kept_indices: list[int] = []
         deduped_count = 0
+        covered: set[int] = set()
         for group in groups:
-            valid = [i for i in group if 0 <= i < len(candidates)]
+            valid = [i for i in group if isinstance(i, int) and 0 <= i < len(candidates)]
             if not valid:
                 continue
+            covered.update(valid)
             best = max(valid, key=lambda i: candidates[i]["video"].get("duration_minutes", 0))
-            kept.append(candidates[best])
+            kept_indices.append(best)
             if len(valid) > 1:
                 skipped = [candidates[i]["video"]["title"] for i in valid if i != best]
                 deduped_count += len(skipped)
                 logger.info(f"话题去重: 保留 「{candidates[best]['video']['title']}」, "
                             f"跳过 {skipped}")
+
+        # LLM 未提到的索引必须保留（宪法 P4）：原实现只遍历 groups，漏掉的候选
+        # 被静默丢弃——分类模型少写一个下标就等于一个视频永久消失。
+        missing = [i for i in range(len(candidates)) if i not in covered]
+        if missing:
+            logger.warning(
+                "[话题去重] LLM 分组未覆盖 %d 个候选(索引 %s)，按未去重全部保留: %s",
+                len(missing), missing,
+                [candidates[i]["video"].get("title", "?") for i in missing],
+            )
+            kept_indices.extend(missing)
+
+        # 去掉重复下标（LLM 可能把同一下标写进多组），按原顺序输出
+        ordered = sorted(set(kept_indices))
+        kept = [candidates[i] for i in ordered]
 
         if deduped_count:
             logger.info(f"话题去重: {len(candidates)} → {len(kept)} (去除 {deduped_count} 个重复)")

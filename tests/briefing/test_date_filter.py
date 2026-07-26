@@ -25,8 +25,8 @@ def test_filter_recent_drops_old():
     assert "4" not in ids, "4月推文应丢弃"
 
 
-def test_filter_recent_keeps_missing_date(capsys):
-    """缺 created_at 的推文保守保留，同时打 WARNING。"""
+def test_filter_recent_drops_missing_date(capsys):
+    """缺 created_at 的推文被丢弃并 WARNING（原"保守保留"让 N 天窗口失效，缺陷 #6 附带）。"""
     from akb2.briefing.pipeline import _filter_recent
 
     tweets = [
@@ -36,18 +36,19 @@ def test_filter_recent_keeps_missing_date(capsys):
     ]
     kept = _filter_recent(tweets, "2026-05-30", days=2)
     ids = [t["id"] for t in kept]
-    assert "1" in ids, "空 created_at 应保守保留"
-    assert "2" in ids, "缺 created_at key 应保守保留"
-    assert "3" in ids, "正常推文应保留"
+    assert ids == ["3"], f"无时间戳的推文无法判新鲜度，必须丢弃；实际保留 {ids}"
+    err = capsys.readouterr().err
+    assert "missing created_at" in err, "丢弃必须可见"
 
 
-def test_filter_recent_keeps_bad_format(capsys):
-    """created_at 格式非法时保守保留。"""
+def test_filter_recent_drops_bad_format(capsys):
+    """created_at 格式非法时丢弃（无法判定是否在窗口内，保留等于让旧推文可再入简报）。"""
     from akb2.briefing.pipeline import _filter_recent
 
     tweets = [{"id": "1", "created_at": "not-a-date"}]
     kept = _filter_recent(tweets, "2026-05-30", days=2)
-    assert len(kept) == 1
+    assert kept == []
+    assert "bad created_at" in capsys.readouterr().err
 
 
 def test_filter_recent_invalid_date_skips_filter():
@@ -191,17 +192,17 @@ def test_filter_recent_partial_drop_works_normally():
 
 
 # ---------------------------------------------------------------------------
-# F2 fix: _collect_display_tweets 同一推文可出现在多主题
+# 缺陷 #5：同一推文被多主题引用时只渲染一次（原 "F2 fix" 把重复锁成了期望行为）
 # ---------------------------------------------------------------------------
 
-def test_collect_display_tweets_same_tweet_in_multiple_topics():
-    """同一推文支撑多个主题时，每个主题下都应渲染该推文。"""
+def test_collect_display_tweets_same_tweet_rendered_once_across_topics():
+    """同一推文支撑多个主题时，只在首个主题渲染一次（渲染幂等）。"""
     from akb2.briefing.pipeline import _collect_display_tweets
 
     synth = {
         "focus_discussions": [
             {"supporting_tweet_ids": ["1"]},
-            {"supporting_tweet_ids": ["1", "2"]},  # id=1 重复出现
+            {"supporting_tweet_ids": ["1", "2"]},  # id=1 已渲染 → 本小节只剩 id=2
         ],
         "tweets": [
             {"id": "1", "score": 0.9, "author": "@x"},
@@ -209,8 +210,8 @@ def test_collect_display_tweets_same_tweet_in_multiple_topics():
         ],
     }
     per_topic, orphans = _collect_display_tweets(synth, orphan_top_k=5)
-    assert len(per_topic[0]) == 1, "主题0 应有1条推文"
-    assert len(per_topic[1]) == 2, "主题1 应有2条推文（含重复 id=1）"
+    assert [t["id"] for t in per_topic[0]] == ["1"], "主题0 渲染 id=1"
+    assert [t["id"] for t in per_topic[1]] == ["2"], "主题1 不得重复渲染 id=1"
     assert len(orphans) == 0, "所有推文都被引用，孤儿应为空"
 
 

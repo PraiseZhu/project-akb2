@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "github_synthesis_item_v1",
+  "title": "github_synthesis_item_v1",
+  "description": "DeepSeek 批量摘要返回数组的单项结构 — 兑现 docs/github-deepseek-prompt-v1.md「返回后立即用 jsonschema 校验数组每项，少字段或多字段直接 abort」",
+  "type": "object",
+  "required": ["repo_url", "summary", "use_case"],
+  "additionalProperties": false,
+  "properties": {
+    "repo_url": {
+      "type": "string",
+      "pattern": "^https://github\\.com/[\\w.-]+/[\\w.-]+$"
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "use_case": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

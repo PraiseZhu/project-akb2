@@ -13,6 +13,7 @@ import time
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+from ...common.state_paths import resolve_state_file
 from .dedup_sqlite import DedupStore
 from .enricher import enrich
 from .intake.fallback_judge import decide
@@ -38,6 +39,9 @@ _SCHEMA_REPO_FIELDS = {
     "repo_url", "stars", "language", "topic_tags", "mention_count",
     "mentioners", "first_mention_at", "score", "summary", "use_case",
     "engagement_raw",
+    # 显示名（301 后的权威大小写）+ grounding 审计字段：产出必须留下 LLM 依据的原文，
+    # 否则事后无法核对幻觉率（旧 _clean_repo 把 readme_excerpt 整个剥掉）。
+    "repo_full_name", "grounding_source", "grounding_excerpt",
 }
 
 # Minimum repos required to produce a briefing (SC-3: partial output allowed above this floor)
@@ -79,6 +83,43 @@ def _clean_repo(repo: dict) -> dict:
     return {k: v for k, v in repo.items() if k in _SCHEMA_REPO_FIELDS}
 
 
+def _resolve_star_db(mock: bool) -> Path:
+    """star_history db 路径：显式覆盖 > mock 一次性临时 db > 机器本地状态根。
+
+    实证（缺陷 #11）：`data/star_history.sqlite` 落在 Syncthing 同步范围内，两台机器
+    各自 read-modify-write → live 库丢了 690 行写入，冲突副本另有 1378 条独有记录。
+    """
+    override = os.environ.get("AKB2_STAR_HISTORY_DB")
+    if override:
+        return Path(override)
+    if mock:
+        import tempfile
+        return Path(tempfile.mkdtemp(prefix="akb2-star-")) / "star_history.sqlite"
+    return resolve_state_file(
+        "star_history.sqlite",
+        legacy_path=_PROJECT_ROOT / "data" / "star_history.sqlite",
+    )
+
+
+def _merge_canonical(existing: dict, incoming: dict) -> None:
+    """两个输入 URL 归一到同一 canonical repo（301 改名）时合并提及信号。
+
+    直接丢弃后来者会丢 mention 与 engagement 证据，故合并而非覆盖；聚合语义与
+    `_aggregate` 保持一致（mention 累加、mentioner 去重、first_mention 取最早、
+    engagement 取 MAX）。
+    """
+    existing["mention_count"] = existing.get("mention_count", 0) + incoming.get("mention_count", 0)
+    for m in incoming.get("mentioners", []):
+        if m not in existing["mentioners"]:
+            existing["mentioners"].append(m)
+    inc_first = incoming.get("first_mention_at")
+    cur_first = existing.get("first_mention_at")
+    if inc_first and (not cur_first or inc_first < cur_first):
+        existing["first_mention_at"] = inc_first
+    if engagement_raw(incoming.get("engagement")) > engagement_raw(existing.get("engagement")):
+        existing["engagement"] = incoming.get("engagement")
+
+
 def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
     """Run the full GitHub briefing pipeline.
 
@@ -117,10 +158,12 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
     with _StageTimer("aggregate"):
         aggregated = _aggregate(candidates)
 
-    # 跨天 novelty 去重：过滤最近 3 天已推过的 repo（避免重复推荐）。这是真正该做
+    # 跨天 novelty 去重：过滤去重窗口内已推过的 repo（窗口 ≥ 采集窗口，见
+    # dedup_sqlite 不变式 1；同一 first_mention_at 不复推，见不变式 2）。这是真正该做
     # 去重的地方——在聚合算完热度之后，而非抓取时（抓取去重会抹掉 mention 信号）。
     # novelty db 路径：AKB2_NOVELTY_DB 显式覆盖（测试/特殊部署用）> mock 一次性临时 db
-    # （hermetic/可重复）> 真实模式持久 db。
+    # （hermetic/可重复）> 机器本地状态根（state_paths：状态文件不能待在 Syncthing
+    # 同步范围内，data/star_history.sqlite 已实证跨机分叉丢 690 行写入）。
     _novelty_override = os.environ.get("AKB2_NOVELTY_DB")
     if _novelty_override:
         _novelty_db = Path(_novelty_override)
@@ -129,12 +172,18 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
         import tempfile
         _novelty_db = Path(tempfile.mkdtemp(prefix="akb2-novelty-")) / "novelty.sqlite"
     else:
-        _novelty_db = _PROJECT_ROOT / "data" / "github_recommended.sqlite"
+        _novelty_db = resolve_state_file(
+            "github_recommended.sqlite",
+            legacy_path=_PROJECT_ROOT / "data" / "github_recommended.sqlite",
+        )
         _novelty_db.parent.mkdir(parents=True, exist_ok=True)
     pre_novelty_count = len(aggregated)  # SC-6: capture before dedup for diagnostics
     _novelty = DedupStore(_novelty_db)
     try:
-        aggregated = {u: d for u, d in aggregated.items() if not _novelty.is_duplicate(u)}
+        aggregated = {
+            u: d for u, d in aggregated.items()
+            if not _novelty.is_duplicate(u, d.get("first_mention_at"))
+        }
         # SC-1 fix: post-novelty L2 supplement for layer1 dead-zone.
         # Pre-novelty ≥10 but novelty dedup may reduce below 10; try layer2 before giving up.
         if len(aggregated) < _IDEAL_REPOS_FOR_BRIEFING and fallback_layer == "layer1":
@@ -147,7 +196,8 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
                 l2_agg = _aggregate(l2_cands)
                 l2_new = {
                     url: data for url, data in l2_agg.items()
-                    if url not in aggregated and not _novelty.is_duplicate(url)
+                    if url not in aggregated
+                    and not _novelty.is_duplicate(url, data.get("first_mention_at"))
                 }
                 if l2_new:
                     aggregated.update(l2_new)
@@ -166,13 +216,11 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
     # Build tier_map from pool config
     tier_map = _load_tier_map()
 
-    # Initialize star_history (ephemeral per-run; day 1 velocity will be None)
-    star_db = _PROJECT_ROOT / "data" / "star_history.sqlite"
-    star_db.parent.mkdir(parents=True, exist_ok=True)
-    star_history = StarHistory(star_db)
-
     # Step 4: Enrich via GitHub API
-    enriched = []
+    # enrich 失败（含 404 营销页、空 grounding）的条目**逐条剔除**，不再只看批量比例：
+    # 旧实现仅 >50% 失败才 skip 整批，个别 404 照常进 LLM（实测 6 条 stars=0 落库，
+    # 其中 features/ai、features/copilot 是 GitHub 营销页）。
+    enriched_by_url: dict[str, dict] = {}
     enrich_attempted = 0
     enrich_failed = 0
     with _StageTimer("enrich"):
@@ -185,22 +233,35 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
             # 避免未来新增 enrich 变体忘记打标记时静默绕过 enrich_degraded 门控。
             if not data.get("enrich_ok", False):
                 enrich_failed += 1
+                sys.stderr.write(
+                    f"WARNING [github-pipeline]: enrich 失败，剔除该条 {repo_url} "
+                    "(API 失败/404/无 grounding) — 不进 LLM\n"
+                )
+                continue
+
             # Merge aggregate data into enriched
             agg = aggregated[repo_url]
+            # 301 回填后的规范身份（enricher 已把 repo_url 换成 full_name 派生的去重键）。
+            # 旧名与新名必须收敛到同一条目，否则同仓双份入库、去重键分裂。
+            canonical_url = data.get("repo_url") or repo_url
+            data["repo_url"] = canonical_url
             data["mention_count"] = agg["mention_count"]
-            data["mentioners"] = agg["mentioners"]
+            data["mentioners"] = list(agg["mentioners"])
             data["first_mention_at"] = agg["first_mention_at"]
             data["engagement"] = agg.get("engagement")  # MAX tweet metrics（engagement 打分维）
 
-            # Record star snapshot (for future velocity computation)
-            if data.get("stars", 0) > 0:
-                star_history.record(repo_url, data["stars"])
-            # Inject velocity_7d (None until ≥7d of snapshots accumulate)
-            data["velocity_7d"] = star_history.velocity_7d(repo_url)
+            existing = enriched_by_url.get(canonical_url)
+            if existing is not None:
+                _merge_canonical(existing, data)
+                sys.stderr.write(
+                    f"WARNING [github-pipeline]: {repo_url} 与 "
+                    f"{existing.get('requested_repo_url', canonical_url)} 归一到同一仓 "
+                    f"{canonical_url}（301 改名）— 已合并提及，不双份入库\n"
+                )
+                continue
+            enriched_by_url[canonical_url] = data
 
-            enriched.append(data)
-
-    star_history.close()
+    enriched = list(enriched_by_url.values())
 
     # Enrich 降级红线：过半 enrich 失败（API 失败/限流）→ 可见 skip，不静默产全 0 简报。
     # GitHub API 限流或网络故障会让 enrich 返回 stars=0/lang=None，若放行会产出
@@ -213,6 +274,39 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
             enrich_attempted, fallback_layer,
         )
         return 1
+
+    # 回填后的身份必须重新过 novelty：301 改名（codedrobe/codex-skill →
+    # CodeDrobe/skills）时旧名不在账本里、新名可能已推过，只查旧名等于漏判。
+    if enriched:
+        _novelty = DedupStore(_novelty_db)
+        try:
+            kept = []
+            for data in enriched:
+                if _novelty.is_duplicate(data["repo_url"], data.get("first_mention_at")):
+                    sys.stderr.write(
+                        f"WARNING [github-pipeline]: 回填后身份 {data['repo_url']} "
+                        f"已推过（原始 {data.get('requested_repo_url')}）— 剔除\n"
+                    )
+                    continue
+                kept.append(data)
+            enriched = kept
+        finally:
+            _novelty.close()
+
+    # star_history 快照（ephemeral per-run；day 1 velocity 为 None）。
+    # 路径同 novelty：AKB2_STAR_HISTORY_DB 覆盖 > mock 临时 db > 机器本地状态根。
+    star_db = _resolve_star_db(mock)
+    star_db.parent.mkdir(parents=True, exist_ok=True)
+    star_history = StarHistory(star_db)
+    try:
+        for data in enriched:
+            # Record star snapshot (for future velocity computation)
+            if data.get("stars", 0) > 0:
+                star_history.record(data["repo_url"], data["stars"])
+            # Inject velocity_7d (None until ≥7d of snapshots accumulate)
+            data["velocity_7d"] = star_history.velocity_7d(data["repo_url"])
+    finally:
+        star_history.close()
 
     # Step 5: Filter by mention threshold.
     # mention 共识过滤只对 twitter 源(layer1)有意义；layer2(trending)/layer3(manual)
@@ -256,7 +350,10 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
     # Step 7: Synthesize
     try:
         with _StageTimer("synthesize"):
-            synthesis_result = synthesize(top10)
+            # mock=mock：synthesis 的占位产出是显式 opt-in（见 synthesize docstring）。
+            # 不透传时 `--mock` 自检链路在无 API key 环境下必然 fail-closed，
+            # 整条 mock E2E 死掉。
+            synthesis_result = synthesize(top10, mock=mock)
             top10_with_summaries = synthesis_result["top_repos"]
     except Exception as e:
         _emit_sc7_metrics(_sc7_metrics)

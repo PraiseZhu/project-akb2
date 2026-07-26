@@ -22,6 +22,7 @@ from src.akb2.video.assembler import (
 )
 from src.akb2.video.collector import VideoCollector
 from src.akb2.video.config import VideoConfig
+from src.akb2.video.dedup_store import VideoDedupStore
 from src.akb2.video.extractor import Extractor
 from src.akb2.video.llm_adapter import DeepSeekAdapter
 from src.akb2.video.reasoner import ConceptStore, Reasoner
@@ -156,7 +157,12 @@ def _run_full(config: VideoConfig, dry_run: bool) -> int:
     """运行完整链路。"""
     try:
         llm_adapter = _build_llm_adapter(config)
-        collector = VideoCollector(config, llm_adapter=llm_adapter)
+        # 缺陷 #2：生产入口过去从不传 db → L1/L7 去重整条空转（79% 重复产出）。
+        # 现在显式注入去重账本，并一次性回填历史产出身份，避免已发布视频再跑一遍。
+        dedup_store = VideoDedupStore(config.dedup_db_path)
+        logger.info("去重账本: %s", config.dedup_db_path)
+        dedup_store.seed_from_published(config.promotion_target_path)
+        collector = VideoCollector(config, db=dedup_store, llm_adapter=llm_adapter)
         researcher = VideoResearcher(config, llm_adapter=llm_adapter)
         extractor = Extractor(llm_adapter=llm_adapter)
         reasoner = Reasoner(ConceptStore(), llm_adapter=llm_adapter)
@@ -333,8 +339,18 @@ def _report_results(results: list[dict]) -> int:
                 title = r.get("video", {}).get("title", "?")
                 logger.error("  失败: %s — %s", title, r.get("error", "?"))
 
-    # exit 1 = 有失败或待修复（即使部分成功）；exit 0 = 全成功
-    if failed > 0 or needs_repair > 0:
+    # 已发布但去重账本未登记 → 明天会重跑并重复烧额度，必须显式暴露（宪法 P4）
+    unmarked = [r for r in results if r.get("dedup_marked") is False]
+    if unmarked:
+        logger.error(
+            "去重账本未登记 %d 个已发布视频（下轮会重复研究，请检查去重库可写性）:",
+            len(unmarked),
+        )
+        for r in unmarked:
+            logger.error("  未登记: %s", r.get("video", {}).get("title", "?"))
+
+    # exit 1 = 有失败 / 待修复 / 账本未登记（即使部分成功）；exit 0 = 全成功
+    if failed > 0 or needs_repair > 0 or unmarked:
         return 1
     return 0
 

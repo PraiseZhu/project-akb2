@@ -402,6 +402,19 @@ def test_cross_day_dedup_drops_previously_published_tweet(tmp_path, monkeypatch)
     assert "AAA" not in sent_ids, "去重必须发生在翻译之前（省 token 且防重复译）"
 
 
+def test_dedup_ledger_unavailable_blocks_publish(tmp_path, monkeypatch):
+    """账本落在跨机同步范围（state_paths fail-closed 拒绝）→ 不发布，且原因可见。"""
+    _vault(tmp_path)
+    # AI-Agent 目录是已知 Syncthing 同步范围，state_paths 会拒绝把账本放在这里
+    monkeypatch.setenv("AKB2_STATE_ROOT", str(Path.home() / "AI-Agent" / "not-a-real-state-root"))
+
+    with pytest.raises(SystemExit) as exc:
+        _run_pipeline(tmp_path)
+
+    assert exc.value.code == 5
+    assert not _social(tmp_path).exists(), "账本不可用时不得发布"
+
+
 def test_cross_day_dedup_not_marked_when_not_published(tmp_path):
     """audit=fail 未发布 → 账本不记账，次日同批推文仍可入选（不静默烧素材）。"""
     _vault(tmp_path)

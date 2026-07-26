@@ -111,7 +111,8 @@ def _assert_no_preview_translate_models() -> None:
 def _filter_recent(tweets: list, date: str, days: int = _INTAKE_WINDOW_DAYS_DEFAULT) -> list:
     """保留 created_at 在 [date-(days-1), date] 范围内的推文（时区 Asia/Shanghai）。
 
-    - 缺 created_at 或格式异常 → 保守保留，stderr 告警
+    - 缺 created_at 或格式异常 → **丢弃**并 stderr 告警（fail-closed）：无时间戳的推文
+      无法判定新鲜度，保守保留会让 N 天窗口失效、旧推文反复再入简报（缺陷 #6 附带）
     - days=3 表示今天+昨天+前天（近3天）
     """
     try:
@@ -134,9 +135,9 @@ def _filter_recent(tweets: list, date: str, days: int = _INTAKE_WINDOW_DAYS_DEFA
         raw_ts = t.get("created_at", "")
         if not raw_ts:
             sys.stderr.write(
-                f"WARNING [filter_recent]: tweet {t.get('id','?')} missing created_at, keeping\n"
+                f"WARNING [filter_recent]: tweet {t.get('id','?')} missing created_at, "
+                "dropping (无时间戳无法判新鲜度，保留会让时间窗失效)\n"
             )
-            kept.append(t)
             continue
         try:
             dt = datetime.datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
@@ -146,9 +147,8 @@ def _filter_recent(tweets: list, date: str, days: int = _INTAKE_WINDOW_DAYS_DEFA
         except (ValueError, TypeError):
             sys.stderr.write(
                 f"WARNING [filter_recent]: tweet {t.get('id','?')} "
-                f"bad created_at '{raw_ts}', keeping\n"
+                f"bad created_at '{raw_ts}', dropping\n"
             )
-            kept.append(t)
 
     if len(kept) < len(tweets):
         sys.stderr.write(
@@ -201,9 +201,14 @@ def run_intake(
         ":" + env["PYTHONPATH"] if "PYTHONPATH" in env else ""
     )
     result = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=str(REPO_ROOT))
+    # 缺陷 #1 根因之一：collector 降级到 fixture 后仍 exit 0，原实现只在 returncode!=0
+    # 时打印 stderr，于是 "fallback to fixture" 这类 WARNING 被完全吞掉、日志无从追查。
+    # 宪法原则 4（失败可见）：子进程 stderr 无条件转发。
+    if result.stderr:
+        sys.stderr.write(result.stderr)
+        sys.stderr.flush()
     if result.returncode != 0:
         sys.stderr.write(f"ERROR: intake failed (exit {result.returncode}):\n")
-        sys.stderr.write(result.stderr)
         sys.exit(1)
 
     with open(output_path) as f:
@@ -211,17 +216,178 @@ def run_intake(
 
 
 # ---------------------------------------------------------------------------
+# 降级诊断落盘 + fixture 假数据识别（缺陷 #1）
+# ---------------------------------------------------------------------------
+
+def _diag_dir() -> Path:
+    """social 链路诊断 JSON 的落盘目录。
+
+    默认 `<repo>/logs/`：与 briefing-stderr.log 同处（运维第一眼看的地方）且已在
+    .gitignore 内。github 链路把同类文件放在工程根，那两个名字是逐个登记进
+    .gitignore 的，社媒不复制这个需要改 .gitignore 的做法。
+    """
+    return Path(os.environ.get("AKB2_BRIEFING_DIAG_DIR") or (REPO_ROOT / "logs"))
+
+
+def _write_social_diag(status: str, reason: str, date: str, extra: dict | None = None) -> Path:
+    """写 social 简报诊断 JSON（形态对齐 github 链路的 briefing-skipped/failed.json）。
+
+    github 链路的两个文件是它自己的产物，社媒用独立文件名 `briefing-social-<status>.json`，
+    避免两条链路互相覆盖诊断。
+    """
+    payload = {
+        "status": status,
+        "reason": reason,
+        "date": date,
+        "generated_at": datetime.datetime.now(datetime.UTC).isoformat(),
+    }
+    if extra:
+        payload.update(extra)
+    out = _diag_dir() / f"briefing-social-{status}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return out
+
+
+def _fixture_tweet_ids() -> set[str]:
+    """测试 fixture 里的 tweet id 集合（用于识别"冒充真实抓取"的假数据）。"""
+    try:
+        from akb2.briefing.intake.l0_collector import FIXTURE_PATH  # noqa: PLC0415
+
+        data = json.loads(Path(FIXTURE_PATH).read_text())
+    except (OSError, ValueError, ImportError) as exc:
+        sys.stderr.write(f"WARNING [intake_guard]: 无法读取 fixture 用于比对: {exc}\n")
+        return set()
+    return {str(t.get("id", "")) for t in data.get("tweets", []) if t.get("id")}
+
+
+def _intake_is_fixture_content(tweets: list[dict]) -> bool:
+    """所有推文 id 都来自测试 fixture → 判定为 fixture 假数据。
+
+    `_fallback_used` 标记是第一道防线，但它由 collector 自报；实证的 12+ 天假数据
+    说明这条链路一旦标记丢失就完全不可见，故按内容再判一次（防御深度）。
+    """
+    ids = {str(t.get("id", "")) for t in tweets if t.get("id")}
+    if not ids:
+        return False
+    fixture_ids = _fixture_tweet_ids()
+    if not fixture_ids:
+        return False
+    return ids.issubset(fixture_ids)
+
+
+# ---------------------------------------------------------------------------
 # Stage 2: Scoring
 # ---------------------------------------------------------------------------
 
 def run_scoring(intake_data: dict) -> dict:
-    """Call ScoreEngine directly, return scored data dict."""
+    """Call ScoreEngine directly, return scored data dict.
+
+    返回值带 `novelty_mode` / `embed_degraded`：判重模式必须能被产出层落盘，
+    否则语义去重降级为 sha1 精确去重（近重复漏检）在成品里零痕迹（缺陷 #6 附带）。
+    """
     from akb2.briefing.scoring import ScoreEngine  # noqa: PLC0415
 
     engine = ScoreEngine()
     tweets = intake_data.get("tweets", [])
     scored_tweets = [engine.score_tweet(t) for t in tweets]
-    return {"tweets": scored_tweets}
+    if engine.novelty_mode != "semantic":
+        sys.stderr.write(
+            "WARNING [scoring]: novelty 判重为 exact_sha1（无嵌入客户端）——"
+            "改写/转发型近重复不会被剔除\n"
+        )
+    return {
+        "tweets": scored_tweets,
+        "novelty_mode": engine.novelty_mode,
+        "embed_degraded": engine.embed_degraded,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Stage 2b: 跨日去重账本（缺陷 #6）
+# ---------------------------------------------------------------------------
+
+# 账本文件名（机器本地状态根下的 ledgers/，避开 Syncthing 同步范围）
+_SOCIAL_DEDUP_DB_NAME = "social-tweet-dedup.sqlite"
+
+
+def _social_dedup_window_days(intake_window_days: int) -> int:
+    """去重窗口不得小于采集窗口，否则窗口内相邻日必然重复（实证 143 个 URL 各出现 2 天）。"""
+    override = int(os.environ.get("AKB2_SOCIAL_DEDUP_WINDOW_DAYS", "0") or 0)
+    return max(intake_window_days, override)
+
+
+def _open_social_dedup_store(window_days: int):
+    """打开跨日去重账本（复用 github 链路的 DedupStore，键用 tweet id）。
+
+    账本不可用 → fail-closed（宪法原则 3）：没有账本就无法保证不重复，
+    宁可不发也不发一份可能重复的简报。
+    """
+    import sqlite3  # noqa: PLC0415
+
+    from akb2.briefing.github.dedup_sqlite import DedupStore  # noqa: PLC0415
+    from akb2.common.state_paths import LEDGER_SUBDIR, state_file_path  # noqa: PLC0415
+
+    try:
+        db_path = state_file_path(_SOCIAL_DEDUP_DB_NAME, subdir=LEDGER_SUBDIR)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        return DedupStore(db_path, window_days=window_days)
+    except (RuntimeError, OSError, sqlite3.Error) as exc:
+        sys.stderr.write(
+            f"ERROR [social_dedup]: 跨日去重账本不可用（{type(exc).__name__}: {exc}）——"
+            "无账本无法保证不重复，拒绝发布（fail-closed）\n"
+        )
+        sys.exit(5)
+
+
+def apply_cross_day_dedup(tweets: list[dict], *, window_days: int) -> tuple[list[dict], list[str]]:
+    """按 tweet id 剔除窗口内已发布过的推文。
+
+    Returns:
+        (保留的推文, 待记账的 tweet id 列表) —— 记账**推迟到实际发布成功之后**
+        （见 `mark_social_dedup_seen`），否则一次未发布的运行会白吃掉当天素材。
+    """
+    store = _open_social_dedup_store(window_days)
+    try:
+        store.prune()
+        kept: list[dict] = []
+        keys: list[str] = []
+        dropped = 0
+        for t in tweets:
+            tid = str(t.get("id", "")).strip()
+            if not tid:
+                sys.stderr.write(
+                    "WARNING [social_dedup]: 推文缺 id，无法跨日去重，保留\n"
+                )
+                kept.append(t)
+                continue
+            if store.is_duplicate(tid):
+                dropped += 1
+                continue
+            kept.append(t)
+            if tid not in keys:
+                keys.append(tid)
+        if dropped:
+            sys.stderr.write(
+                f"INFO [social_dedup]: 跨日去重丢弃 {dropped} 条"
+                f"（{window_days} 天窗口内已入过简报），保留 {len(kept)}\n"
+            )
+        return kept, keys
+    finally:
+        store.close()
+
+
+def mark_social_dedup_seen(keys: list[str], *, window_days: int) -> None:
+    """发布成功后把本期推文 id 记入账本。"""
+    if not keys:
+        return
+    store = _open_social_dedup_store(window_days)
+    try:
+        for k in keys:
+            store.mark_seen(k)
+    finally:
+        store.close()
+    sys.stderr.write(f"INFO [social_dedup]: 已记账 {len(keys)} 条 tweet id\n")
 
 
 # ---------------------------------------------------------------------------
@@ -299,9 +465,14 @@ def _apply_display_filters(
     *,
     min_score: float = _MIN_DISPLAY_SCORE,
     per_author_cap: int = _PER_AUTHOR_CAP,
+    rendered_ids: set[str] | None = None,
 ) -> list[dict]:
     """简报展示过滤（保持入参顺序）：
 
+    0. 渲染幂等：已在别处渲染过的 id 直接跳过（`rendered_ids` 为跨调用共享集合）——
+       修复"同一 tweet 被 LLM 分配给多个 focus_discussions 时每个小节各渲染一次"
+       （缺陷 #5：20/40 天有同日重复，33 份多余副本，全部跨小节）。novelty 是内容
+       相似度维度、同一对象恒为 1.0，管不了渲染重复。
     1. 剔除近重复：`dimensions.novelty == 0`（语义/精确去重已判定为重复的后出现者）——
        修复"novelty 软扣分 0.05 不足以剔重，重复内容仍进简报"（试跑发现 @lmsysorg 两条
        cosine=0.8776>0.85 公告都入选）。
@@ -311,6 +482,10 @@ def _apply_display_filters(
     out: list[dict] = []
     author_count: dict[str, int] = {}
     for t in tweets:
+        # 0) 渲染幂等（跨小节）
+        tid = str(t.get("id", ""))
+        if rendered_ids is not None and tid and tid in rendered_ids:
+            continue
         dims = t.get("dimensions") or {}
         # 1) 剔重：novelty==0 表示已有近重复在前
         if "novelty" in dims and dims.get("novelty") == 0:
@@ -323,6 +498,8 @@ def _apply_display_filters(
         if author and author_count.get(author, 0) >= per_author_cap:
             continue
         author_count[author] = author_count.get(author, 0) + 1
+        if rendered_ids is not None and tid:
+            rendered_ids.add(tid)
         out.append(t)
     return out
 
@@ -334,13 +511,17 @@ def _collect_display_tweets(
     """将推文按主题分组，返回 (per_topic_tweets, orphan_tweets)。
 
     per_topic_tweets[i] = focus_discussions[i] 对应的支撑推文列表
-    （应用展示过滤：剔重/最低分/per-author）
+    （应用展示过滤：跨小节渲染幂等/剔重/最低分/per-author）
     orphan_tweets = 未被任何主题引用的高分推文，按 score 倒序取 top-k（同样过滤）
+
+    缺陷 #5：`rendered_ids` 在所有小节 + 孤儿区之间共享，同一 tweet 只渲染一次
+    （首次出现的小节）。
     """
     tweets = synth.get("tweets", [])
     id_to_tweet: dict[str, dict] = {str(t.get("id", "")): t for t in tweets}
 
-    # 收集所有主题引用的推文 id（用于孤儿判定）；per-topic 各自应用过滤（per-author 上限按主题独立）
+    # 跨小节共享的"已渲染 id"集合（渲染幂等，不是内容相似度）
+    rendered_ids: set[str] = set()
     all_referenced: set[str] = set()
     per_topic: list[list[dict]] = []
     for fd in synth.get("focus_discussions", []):
@@ -350,7 +531,7 @@ def _collect_display_tweets(
             if sid in id_to_tweet:
                 topic_tweets.append(id_to_tweet[sid])
                 all_referenced.add(sid)
-        per_topic.append(_apply_display_filters(topic_tweets))
+        per_topic.append(_apply_display_filters(topic_tweets, rendered_ids=rendered_ids))
 
     # 孤儿高分：未被任何主题引用，按 score 倒序，过滤后取 top-k
     orphans_sorted = sorted(
@@ -358,7 +539,7 @@ def _collect_display_tweets(
         key=lambda t: t.get("score", 0),
         reverse=True,
     )
-    orphans = _apply_display_filters(orphans_sorted)[:orphan_top_k]
+    orphans = _apply_display_filters(orphans_sorted, rendered_ids=rendered_ids)[:orphan_top_k]
 
     return per_topic, orphans
 
@@ -412,17 +593,66 @@ def _render_tweet(t: dict) -> list[str]:
     return parts
 
 
+def _degradation_frontmatter_lines(degradation: dict | None) -> list[str]:
+    """把降级状态渲染成 frontmatter 行（缺陷 #9）。
+
+    结论要求：任何人打开产出文件都能判断本期是否降级过。因此 intake / synthesis /
+    translate / novelty 四个来源状态一律显式落盘，并汇总 `degraded` + 原因列表。
+    `None` 表示调用方未提供（老单测路径），此时不写这些行。
+    """
+    if degradation is None:
+        return []
+    reasons = [str(r) for r in (degradation.get("reasons") or [])]
+    lines = [
+        f"intake_source: {degradation.get('intake_source', 'unknown')}",
+        f"synthesis_source: {degradation.get('synthesis_source', 'unknown')}",
+        f"translate_status: {degradation.get('translate_status', 'unknown')}",
+        f"novelty_mode: {degradation.get('novelty_mode', 'unknown')}",
+        f"degraded: {'true' if reasons else 'false'}",
+    ]
+    failed_fields = [str(f) for f in (degradation.get("translate_failed_fields") or [])]
+    if failed_fields:
+        lines.append("translate_failed_fields:")
+        lines += [f"  - {f}" for f in failed_fields]
+    if reasons:
+        lines.append("degradation_reasons:")
+        lines += [f"  - {r}" for r in reasons]
+    return lines
+
+
+def _audit_frontmatter_lines(
+    audit_verdict: str | None,
+    audit_degraded: bool,
+    fix_loop_reason: str | None,
+) -> list[str]:
+    """审计裁决 frontmatter 行（缺陷 #4：warn 必须自带 audit_degraded 标记）。"""
+    if audit_verdict is None:
+        return []
+    lines = [f"audit_verdict: {audit_verdict}"]
+    if audit_degraded:
+        lines.append("audit_degraded: true")
+    if fix_loop_reason == "max_rounds_reached":
+        lines.append("fix_loop: max_rounds_reached")
+    return lines
+
+
 def build_briefing_markdown(
     synth: dict,
     gate_decision: str,
     date: str,
     collector_name: str = "account_collector",
+    *,
+    audit_verdict: str | None = None,
+    audit_degraded: bool = False,
+    fix_loop_reason: str | None = None,
+    degradation: dict | None = None,
 ) -> str:
     """Build the final markdown briefing content with YAML frontmatter.
 
     The frontmatter includes all AKB gate-compatible fields so that a re-run of
     the gate CLI on this file produces the same proposed_gate_decision.
     collector_name: 实际 collector 名（SC-P3b-1）；dry-run 时传 "dry_run"。
+    audit_* / degradation: 审计裁决与降级状态，直接进 frontmatter（不再靠字符串替换）。
     """
     now_iso = datetime.datetime.now(datetime.UTC).isoformat()
     tweets = synth.get("tweets", [])
@@ -432,7 +662,9 @@ def build_briefing_markdown(
         "---",
         f"date: {date}",
         f"proposed_gate_decision: {gate_decision}",
+        *_audit_frontmatter_lines(audit_verdict, audit_degraded, fix_loop_reason),
         "source: social_trends_v1_1",
+        *_degradation_frontmatter_lines(degradation),
         f"generated_at: {now_iso}",
         "page_status: candidate",
         "source_type: news",
@@ -484,12 +716,13 @@ def build_briefing_markdown(
 
     scoring_summary = synth.get("scoring_summary", {})
     total = scoring_summary.get("total_tweets", len(tweets))
-    scored = scoring_summary.get("scored_tweets", len(tweets))
+    # 缺陷 #5：精选数必须等于正文实渲染条数（历史上写 12 而实渲染 16 条）
+    rendered = sum(len(group) for group in per_topic) + len(orphans)
     body_parts += [
         "## 数据摘要",
         "",
         f"- 总推文数：{total}",
-        f"- 精选推文：{scored}",
+        f"- 精选推文：{rendered}",
         f"- 生成时间：{now_iso}",
         "- 数据源：social_trends_v1_1",
         "",
@@ -503,6 +736,8 @@ def build_temp_briefing_markdown(
     synth: dict,
     date: str,
     collector_name: str = "account_collector",
+    *,
+    degradation: dict | None = None,
 ) -> str:
     """Build briefing markdown WITHOUT gate decision in frontmatter (for initial gate check).
     collector_name: 实际 collector 名（SC-P3b-1）；dry-run 时传 "dry_run"。
@@ -517,6 +752,7 @@ def build_temp_briefing_markdown(
         "source_type: news",
         "template_type: synthesis",
         "source: social_trends_v1_1",
+        *_degradation_frontmatter_lines(degradation),
         f"generated_at: {now_iso}",
         "evidence_paths:",
         f"  - social/{collector_name}",
@@ -563,12 +799,12 @@ def build_temp_briefing_markdown(
 
     scoring_summary = synth.get("scoring_summary", {})
     total = scoring_summary.get("total_tweets", len(tweets))
-    scored = scoring_summary.get("scored_tweets", len(tweets))
+    rendered = sum(len(group) for group in per_topic) + len(orphans)
     body_parts += [
         "## 数据摘要",
         "",
         f"- 总推文数：{total}",
-        f"- 精选推文：{scored}",
+        f"- 精选推文：{rendered}",
         f"- 生成时间：{now_iso}",
         "",
     ]
@@ -630,19 +866,67 @@ def main(argv: list[str] | None = None) -> int:
         intake_tmp.unlink(missing_ok=True)
     _stage_log("intake", "end", time.monotonic() - stage_start)
 
+    # 缺陷 #1：intake 降级到测试 fixture 时**硬阻断**，绝不写入 Social。
+    # 实证 40 天里 12+ 天整篇内容来自 tests/fixtures（status id 19250010000000000XX），
+    # frontmatter 却写 proposed_gate_decision: active / audit_verdict: pass，
+    # 冒充真实抓取且无任何降级标记。阻断放在 scoring/synthesis 之前（不烧 LLM 额度）。
+    intake_tweets = intake_data.get("tweets", [])
+    intake_is_fallback = bool(intake_data.get("_fallback_used", False))
+    if not dry_run_intake:
+        block_reason = None
+        if intake_is_fallback:
+            block_reason = "intake_fixture_fallback"
+        elif _intake_is_fixture_content(intake_tweets):
+            block_reason = "intake_fixture_content"
+        if block_reason:
+            diag_path = _write_social_diag(
+                "blocked",
+                block_reason,
+                date,
+                {
+                    "tweets_count": len(intake_tweets),
+                    "fallback_used_flag": intake_is_fallback,
+                    "detail": (
+                        "collector 降级到测试 fixture（或产出内容与 fixture 完全一致）；"
+                        "此类数据不得冒充真实抓取写入 Social"
+                    ),
+                },
+            )
+            _stage_log("intake", "blocked")
+            sys.stderr.write(
+                f"ERROR: intake 降级到 fixture（{block_reason}）——硬阻断，"
+                f"不写入 Social。诊断: {diag_path}\n"
+            )
+            print(f"briefing: BLOCKED ({block_reason})")
+            sys.exit(3)
+
     # Stage 2: Scoring
     stage_start = time.monotonic()
     _stage_log("scoring", "start")
     scored_data = run_scoring(intake_data)
     _stage_log("scoring", "end", time.monotonic() - stage_start)
+    novelty_mode = scored_data.get("novelty_mode") or "unknown"
+    embed_degraded = bool(scored_data.get("embed_degraded"))
 
     # 产出层日期兜底（SC-7）：去掉超出时间窗的旧推文
-    # 跳过条件：dry-run 模式（fixture 日期与今日不同）或 intake 标记了 fallback（降级到旧 fixture）
-    intake_is_fallback = bool(intake_data.get("_fallback_used", False))
-    if not dry_run_intake and not intake_is_fallback:
+    # 跳过条件：dry-run 模式（fixture 日期与今日不同）；真实运行降级到 fixture 已在上面阻断
+    if not dry_run_intake:
         scored_data["tweets"] = _filter_recent(
             scored_data.get("tweets", []), date, days=window_days
         )
+
+    # Stage 2b: 跨日去重（缺陷 #6）——必须在 synthesis / translate 之前，
+    # 否则重复内容照样进 LLM（烧 token）并可能被重新分配到新主题。
+    dedup_keys: list[str] = []
+    dedup_window = _social_dedup_window_days(window_days)
+    if not dry_run_intake:
+        stage_start = time.monotonic()
+        _stage_log("cross_day_dedup", "start")
+        deduped, dedup_keys = apply_cross_day_dedup(
+            scored_data.get("tweets", []), window_days=dedup_window
+        )
+        scored_data["tweets"] = deduped
+        _stage_log("cross_day_dedup", "end", time.monotonic() - stage_start)
 
     # Stage 3: Synthesis（产出英文结构化分析，语言交翻译阶段负责）
     stage_start = time.monotonic()
@@ -660,18 +944,41 @@ def main(argv: list[str] | None = None) -> int:
     real_briefing_path = staging_candidate_dir / briefing_filename
     final_briefing_path = social_dir / briefing_filename
 
-    # SC-P3b-1: collector_name 从实际模式推导，干 run 标 dry_run
+    # SC-P3b-1: collector_name 从实际模式推导；缺陷 #1：降级时不得报 account_collector
     collector_mode = os.environ.get("AKB2_INTAKE_COLLECTOR", "account")
-    effective_collector = (
-        "dry_run"
-        if dry_run_intake
-        else ("l0_collector" if collector_mode == "keyword" else "account_collector")
-    )
+    if dry_run_intake:
+        effective_collector = "dry_run"
+    elif intake_is_fallback:
+        # 真实运行降级到 fixture 已在上游阻断；保留此分支以防将来新增放行路径时再度误导
+        effective_collector = "fixture_fallback"
+    else:
+        effective_collector = (
+            "l0_collector" if collector_mode == "keyword" else "account_collector"
+        )
+
+    # 缺陷 #9：intake / synthesis / novelty 三类降级状态汇总（translate 在其阶段后补齐）
+    degradation: dict = {
+        "intake_source": effective_collector,
+        "synthesis_source": (synth_en.get("source") or {}).get("name") or "unknown",
+        "translate_status": "not_run",
+        "novelty_mode": novelty_mode,
+        "reasons": [],
+    }
+    if dry_run_intake:
+        degradation["reasons"].append("intake_dry_run")
+    if intake_is_fallback and not dry_run_intake:
+        degradation["reasons"].append("intake_fixture_fallback")
+    if degradation["synthesis_source"] == "synthesis_fallback":
+        degradation["reasons"].append("synthesis_fallback")
+    if embed_degraded:
+        degradation["reasons"].append("embeddings_unavailable")
 
     # Stage 4a: Write temp briefing → gate（自检①：schema/结构，语言无关）
     stage_start = time.monotonic()
     _stage_log("gate", "start")
-    temp_content = build_temp_briefing_markdown(synth_en, date, collector_name=effective_collector)
+    temp_content = build_temp_briefing_markdown(
+        synth_en, date, collector_name=effective_collector, degradation=degradation
+    )
     real_briefing_path.write_text(temp_content, encoding="utf-8")
 
     gate_decision = run_gate(akb_root=akb2_root, input_file=real_briefing_path, date=date)
@@ -687,42 +994,120 @@ def main(argv: list[str] | None = None) -> int:
     _stage_log("translate", "start")
     synth_zh = translate_briefing(synth_en)
     _stage_log("translate", "end", time.monotonic() - stage_start)
+
+    # 缺陷 #9：翻译降级必须落盘。
+    # 现网失败签名是 translate_briefing 原样返回入参对象（`return synth`），
+    # 另外消费翻译模块通过返回值暴露的 translate_failed / translate_degraded 标志。
+    translate_failed = bool(synth_zh is synth_en) or bool(synth_zh.get("translate_failed"))
+    translate_degraded = bool(synth_zh.get("translate_degraded"))
+    degradation["translate_failed_fields"] = list(synth_zh.get("translate_failed_fields") or [])
+    if translate_failed:
+        degradation["translate_status"] = "failed"
+        degradation["reasons"].append("translate_failed")
+        sys.stderr.write(
+            "WARNING [pipeline]: translate 未产出译文（原样返回英文 synth）——"
+            "产出将标 translate_status: failed\n"
+        )
+    elif translate_degraded:
+        degradation["translate_status"] = "degraded"
+        degradation["reasons"].append("translate_degraded")
+    else:
+        degradation["translate_status"] = "ok"
+
     stage_start = time.monotonic()
     _stage_log("audit_fix", "start")
     synth_zh, verdict = run_audit_fix_loop(synth_zh, synth_en)
     _stage_log("audit_fix", "end", time.monotonic() - stage_start)
     audit_verdict = verdict["verdict"]  # pass | warn | fail
     fix_loop_reason = verdict.get("fix_loop_reason")
+    # 缺陷 #4：warn 一律视为降级（llm_audit=skipped / 判 fail 后仅部分收敛），
+    # 必须自带 audit_degraded 标记，不能只留一个含糊的 warn。
+    audit_degraded = bool(verdict.get("audit_degraded")) or audit_verdict == "warn"
+    if audit_degraded:
+        degradation["reasons"].append("audit_degraded")
 
-    # Stage 5: 写最终内容（含 gate_decision + audit_verdict）
-    final_content = build_briefing_markdown(synth_zh, gate_decision, date,
-                                            collector_name=effective_collector)
-    # 将 audit_verdict 写入 frontmatter（在 proposed_gate_decision 行后追加）
-    final_content = final_content.replace(
-        f"proposed_gate_decision: {gate_decision}",
-        f"proposed_gate_decision: {gate_decision}\naudit_verdict: {audit_verdict}",
-        1,
-    )
-    if fix_loop_reason == "max_rounds_reached":
-        final_content = final_content.replace(
-            f"audit_verdict: {audit_verdict}",
-            f"audit_verdict: {audit_verdict}\nfix_loop: max_rounds_reached",
-            1,
+    def _compose_final(decision: str) -> str:
+        return build_briefing_markdown(
+            synth_zh,
+            decision,
+            date,
+            collector_name=effective_collector,
+            audit_verdict=audit_verdict,
+            audit_degraded=audit_degraded,
+            fix_loop_reason=fix_loop_reason,
+            degradation=degradation,
         )
-    real_briefing_path.write_text(final_content, encoding="utf-8")
+
+    # Stage 5: 写最终内容（含 gate_decision + audit_verdict + 降级标记）
+    real_briefing_path.write_text(_compose_final(gate_decision), encoding="utf-8")
 
     # Provisional enforcement matrix:
     #   fail  → 不入库（文件留 staging，不 copy 到 Social）
-    #   warn  → 入库但 frontmatter 已标 audit_verdict: warn
+    #   warn  → 入库但 frontmatter 已标 audit_verdict: warn + audit_degraded: true
     #   pass  → 正常入库
     if audit_verdict == "fail":
         sys.stderr.write(
             f"audit verdict: fail — briefing留在 staging/candidate，不写入 Social。\n"
             f"standard_issues: {verdict.get('standard_issues')}\n"
         )
+        _write_social_diag(
+            "rejected",
+            "audit_verdict_fail",
+            date,
+            {
+                "standard": verdict.get("standard"),
+                "llm_audit": verdict.get("llm_audit"),
+                "standard_issues": verdict.get("standard_issues"),
+                "staging_path": str(real_briefing_path),
+            },
+        )
         print(f"proposed_gate_decision: {gate_decision}")
         print(f"audit_verdict: {audit_verdict}")
         sys.exit(2)  # 2 = audit fail，不入库；调度器可据此区分成功(0)与审计拒绝(2)
+
+    # Stage 5b（缺陷 #16）：gate 在**最终写入的那份文件**上复跑。
+    # 原实现只在译前的英文临时文件上跑过 gate，模块 docstring 声称的三重断言
+    # （stdout == frontmatter == gate CLI 对最终文件的判定）在代码里并不成立。
+    stage_start = time.monotonic()
+    _stage_log("gate_final", "start")
+    final_gate_decision = run_gate(akb_root=akb2_root, input_file=real_briefing_path, date=date)
+    if final_gate_decision != gate_decision:
+        sys.stderr.write(
+            f"WARNING [gate]: 最终文件判定 {final_gate_decision} != 译前判定 "
+            f"{gate_decision}——以最终文件判定为准，重写 frontmatter 后复核一次\n"
+        )
+        gate_decision = final_gate_decision
+        real_briefing_path.write_text(_compose_final(gate_decision), encoding="utf-8")
+        confirm_decision = run_gate(
+            akb_root=akb2_root, input_file=real_briefing_path, date=date
+        )
+        if confirm_decision != gate_decision:
+            # 有界重试（1 次）后仍不收敛 → fail-closed，不发布一份自相矛盾的简报
+            sys.stderr.write(
+                f"ERROR [gate]: 判定在最终文件上不收敛（{gate_decision} → "
+                f"{confirm_decision}）——不写入 Social\n"
+            )
+            _write_social_diag(
+                "failed",
+                "gate_decision_not_converged",
+                date,
+                {"first": gate_decision, "second": confirm_decision,
+                 "staging_path": str(real_briefing_path)},
+            )
+            print(f"proposed_gate_decision: {confirm_decision}")
+            sys.exit(4)
+    _stage_log("gate_final", "end", time.monotonic() - stage_start)
+
+    if gate_decision == "reject":
+        sys.stderr.write(
+            "gate decision on final file: reject — 不写入 Social（文件留 staging）\n"
+        )
+        _write_social_diag(
+            "rejected", "gate_reject_on_final_file", date,
+            {"staging_path": str(real_briefing_path)},
+        )
+        print(f"proposed_gate_decision: {gate_decision}")
+        sys.exit(1)
 
     # Copy to Social
     stage_start = time.monotonic()
@@ -733,6 +1118,10 @@ def main(argv: list[str] | None = None) -> int:
     real_briefing_path.unlink(missing_ok=True)
     sys.stderr.write("staging 中转已清除\n")
     _stage_log("write_social", "end", time.monotonic() - stage_start)
+
+    # 缺陷 #6：只有真正发布之后才记账，避免未发布的运行白吃掉当天素材
+    if dedup_keys:
+        mark_social_dedup_seen(dedup_keys, window_days=dedup_window)
 
     print(f"proposed_gate_decision: {gate_decision}")
     return 0
