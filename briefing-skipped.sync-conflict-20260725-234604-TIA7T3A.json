@@ -1,0 +1,12 @@
+{
+  "status": "skipped",
+  "reason": "too_few_aggregated_repos",
+  "candidates_count": 3,
+  "fallback_layer_used": "layer2",
+  "generated_at": "2026-07-21T09:41:49.981182+00:00",
+  "diag": {
+    "before_novelty": 3,
+    "novelty_dropped": 0,
+    "after_novelty": 3
+  }
+}

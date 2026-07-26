@@ -1,0 +1,6 @@
+{
+  "status": "failed",
+  "reason": "synthesis_failed: Unterminated string starting at: line 45 column 17 (char 3453)",
+  "fallback_layer_used": "layer1",
+  "generated_at": "2026-07-24T22:01:12.314672+00:00"
+}
