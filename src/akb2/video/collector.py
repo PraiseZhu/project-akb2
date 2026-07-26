@@ -575,48 +575,73 @@ class VideoCollector:
     # ------------------------------------------------------------------
 
     def _is_video_ingested(self, url: str) -> bool:
-        """检查该视频 URL 是否已在 catalog.db 中。"""
-        if not self.db:
+        """L1: 该视频身份是否已在去重库中（在花任何 LLM/NLM 额度之前）。
+
+        fail-closed：去重库缺失或不可用时 **抛异常**，不再 `return False`
+        —— 原来的静默放行正是 79% 重复产出（≈1766 次 LLM 调用）的直接出口。
+        """
+        if self.db is None:
+            raise RuntimeError(
+                "去重库未注入（config.dedup_db_path 未解析）：拒绝在无去重保护下采集"
+            )
+        if not url:
+            logger.warning("[L1] 候选缺 url，无法判定是否已入库，按未入库继续")
             return False
-        try:
-            with self.db.connect() as conn:
-                row = conn.execute(
-                    "SELECT 1 FROM items WHERE url = ?", (url,)
-                ).fetchone()
-                return row is not None
-        except sqlite3.OperationalError:
-            return False
+        return self.db.is_ingested(url)
 
     def _l7_catalog_dedup(self, results: list[dict]) -> tuple[list[dict], int]:
-        """L7: catalog.db URL 去重（过滤已入库视频）。"""
-        if not self.db:
-            return results, 0
+        """L7: 去重库 URL 去重（L1 之后的兜底，过滤本轮内已入库视频）。"""
         deduped: list[dict] = []
         skipped_count = 0
-        try:
-            with self.db.connect() as conn:
-                for r in results:
-                    url = r["video"].get("url", "")
-                    if url and conn.execute(
-                        "SELECT 1 FROM items WHERE url = ?", (url,)
-                    ).fetchone():
-                        logger.info(f"[L7] 已入库，跳过: {r['video'].get('title', url)}")
-                        skipped_count += 1
-                    else:
-                        deduped.append(r)
-        except sqlite3.OperationalError as e:
-            logger.warning(f"L7 去重跳过 (DB 不可用): {e}")
-            return results, 0
+        for r in results:
+            url = r["video"].get("url", "")
+            if url and self._is_video_ingested(url):
+                logger.info(f"[L7] 已入库，跳过: {r['video'].get('title', url)}")
+                skipped_count += 1
+            else:
+                deduped.append(r)
         return deduped, skipped_count
+
+    def mark_ingested(self, video: dict, output_path: Path | str | None = None) -> bool:
+        """写端：产出已落地后登记视频身份（缺陷 #2 的"读端有、写端无"修复）。
+
+        由 `assembler.run_pipeline` 在报告成功发布之后调用，绝不提前调用
+        （提前 = 崩溃窗口里内容永久丢失；滞后 = 最多重跑一次）。
+
+        Returns:
+            True 新登记，False 之前已登记过。
+        """
+        if self.db is None:
+            raise RuntimeError("去重库未注入：无法登记已处理视频")
+        url = video.get("url", "")
+        if not url:
+            raise ValueError("mark_ingested: video 缺 url，无法登记稳定身份")
+        return self.db.mark_ingested(
+            url,
+            platform=video.get("platform", ""),
+            title=video.get("title", ""),
+            output_path=output_path,
+        )
 
     # ------------------------------------------------------------------
     # L5: LLM 话题聚类去重
     # ------------------------------------------------------------------
 
     def _dedup_by_topic(self, candidates: list[dict]) -> list[dict]:
-        """调用 LLM 对视频标题做话题聚类，同话题保留最长视频。"""
+        """调用 LLM 对视频标题做话题聚类，同话题保留最长视频。
+
+        降级策略（缺陷 #12 附带项的裁决）：本层是**省钱的优化**，不是安全闸。
+        adapter 缺失或响应不可解析时保持"不去重"降级而不 fail-closed —— 让全天
+        的运行因为一次分类调用失败而中断，代价高于多研究一两个同话题视频；且超额
+        风险已被 `_remaining_daily_quota` 的日硬上限接住（缺陷 #12 主项）。
+        但降级必须**说清后果**（宪法 P4），不能只留一行"跳过去重"。
+        """
         if not self._llm_adapter:
-            logger.warning("话题去重: LLM adapter 未初始化，跳过去重")
+            logger.warning(
+                "[话题去重] LLM adapter 未初始化 → 本轮不做同话题去重，"
+                "%d 个候选按原样进入研究（同话题可能被重复研究；总量仍受日配额硬上限约束）",
+                len(candidates),
+            )
             return candidates
 
         titles = [f"{i}: {c['video']['title']}" for i, c in enumerate(candidates)]

@@ -162,58 +162,7 @@ def _display_tweet_indices(synth: dict, orphan_top_k: int = _ORPHAN_TOP_K) -> se
     return referenced_idx | orphan_idx
 
 
-def _build_translate_prompt(synth: dict) -> str:
-    """构建批量翻译 prompt，仅翻译展示集合（被引用 ∪ 孤儿高分）。"""
-    display_indices = _display_tweet_indices(synth)
-    tweets = synth.get("tweets", [])
-
-    payload = {
-        "executive_summary": synth.get("executive_summary", ""),
-        "focus_discussions": [
-            {
-                "idx": i,
-                "topic": fd.get("topic", ""),
-                "summary": fd.get("summary", ""),
-            }
-            for i, fd in enumerate(synth.get("focus_discussions", []))
-        ],
-        "tweets": [
-            {
-                "idx": i,
-                "text": t.get("text", ""),
-                "is_long": len(t.get("text", "")) > LONG_TWEET_THRESHOLD,
-                # 若已有通过校验的核心英文段，请求模型直接翻译该段
-                **({"core_excerpt_en": t.get("core_excerpt", "")}
-                   if t.get("core_excerpt") else {}),
-            }
-            for i, t in enumerate(tweets)
-            if i in display_indices
-        ],
-    }
-
-    return (
-        "请将以下 AI 趋势简报内容翻译为简体中文。\n\n"
-        "输入 JSON：\n"
-        f"```json\n{json.dumps(payload, ensure_ascii=False, indent=2)}\n```\n\n"
-        "输出要求：返回 JSON，结构如下：\n"
-        "```json\n"
-        "{\n"
-        '  "executive_summary": "<译文>",\n'
-        '  "focus_discussions": [{"idx": 0, "topic": "<译文>", "summary": "<译文>"}],\n'
-        '  "tweets": [{"idx": <原输入 idx 值，不可改变>, "text_zh": "<译文>", '
-        '"zh_point": "<一句中文点题（≤30字）：点出这条推文的核心看点或为什么值得关注>", '
-        '"core_excerpt_en": "<仅对 is_long=true 且无 core_excerpt_en 输入：'
-        '从英文原文中逐字摘出最核心1段，≤400字，必须是原文子串>", '
-        '"core_excerpt_zh": "<仅当输入中有 core_excerpt_en：将该英文核心段译为中文>"}]\n'
-        "}\n"
-        "```\n\n"
-        "重要约束：\n"
-        "- tweets 的 idx 必须与输入 idx 一一对应，不可丢失或改变\n"
-        "- tweets 的 zh_point：每条都要，1句中文，点出核心看点，不要复述全文\n"
-        "- tweets 的 core_excerpt_en：必须是原文 text 的逐字子串，禁止改写或概括\n"
-        "- is_long=false 的 tweet 无需输出 core_excerpt_en\n"
-        "- 专业名词/@id/数字/URL 保持原样"
-    )
+>
 
 
 def _han_count(text: str) -> int:
