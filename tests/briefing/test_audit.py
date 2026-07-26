@@ -261,20 +261,39 @@ def _kinds_for(en_text: str, zh_text: str) -> list[dict]:
     return _check_standard_structured(synth_zh, synth_en)
 
 
-def test_param_scale_must_not_be_localized():
-    """405B/8B 被换算成「4050 亿/80 亿参数」→ number_mismatch(fail)。
+def test_param_scale_localization_is_warn_after_calibration():
+    """405B/8B 被换算成「4050 亿/80 亿参数」→ number_localized(**warn**)，不再 fail。
 
-    这是 06-27 实际发生的事实损坏：型号标识被当量词本地化，数值虽相等但型号名没了。
+    严重度下调的依据（2026-07-26 回放 60 篇已发布简报，见
+    test_audit_fidelity_calibration.py 头部）：**9/60 篇（15%）**的真实译文就是这么写的
+    （「4000 亿参数的 MoE 模型 Llama 4」「9750 亿参数（激活 410 亿）」），且换算后
+    **数值等价**。判 fail 意味着约 15% 的天数直接不发布日报，而产出并无事实错误——
+    这是可用性单点，不是质量收益。数值**不**等价的换算（405B → 40 亿）仍是 fail，
+    见 test_param_scale_value_corruption_still_fails。
     """
     items = _kinds_for(
         "Llama 405B and the 8B variant were released today.",
         "今天发布了 4050 亿参数的 Llama 以及 80 亿参数版本。",
     )
-    nums = [it for it in items if it["kind"] == "number_mismatch"]
-    assert nums, f"应检出 405B/8B 被换算，items={items}"
-    assert all(it["severity"] == "fail" for it in nums), "事实损坏必须是 fail 级"
-    msg = " ".join(it["msg"] for it in nums)
+    assert not [it for it in items if it["kind"] == "number_mismatch"], (
+        f"等值本地化不得判 fail（15% 天数会因此停发），items={items}"
+    )
+    localized = [it for it in items if it["kind"] == "number_localized"]
+    assert localized, f"应留 warn 级记录（可判读但不阻断），items={items}"
+    assert all(it["severity"] == "warn" for it in localized)
+    msg = " ".join(it["msg"] for it in localized)
     assert "405B" in msg and "8B" in msg, msg
+
+
+def test_param_scale_value_corruption_still_fails():
+    """数值不等价的换算（405B → 40 亿参数）是真实事实损坏，仍必须 fail。"""
+    items = _kinds_for(
+        "Llama 405B was released today.",
+        "今天发布了 40 亿参数的 Llama。",
+    )
+    nums = [it for it in items if it["kind"] == "number_mismatch"]
+    assert nums, f"数值损坏被放过了，items={items}"
+    assert all(it["severity"] == "fail" for it in nums)
 
 
 def test_param_scale_verbatim_passes():
@@ -322,15 +341,41 @@ def test_version_number_must_be_verbatim():
     assert [it for it in items if it["kind"] == "number_mismatch"], items
 
 
-def test_url_must_be_verbatim():
-    """原文 URL 未逐字出现在译文 → url_missing(fail)。"""
+def test_url_must_be_verbatim_in_tweet_body_is_warn():
+    """推文正文 URL 未逐字保留 → url_missing(**warn**)。
+
+    严重度下调依据：推文正文的 URL 在渲染时被 `pipeline._strip_inline_links` 主动删除
+    （用户决策：每条推文只留底部唯一 [原文] 链接），所以译文丢 URL 对已发布产出
+    **没有任何影响**。用 fail 级去守一个下游必然丢弃的属性，只会白白停发日报。
+    分析字段不经该剥离，仍 fail —— 见 test_url_missing_in_analysis_field_is_fail。
+    """
     items = _kinds_for(
         "Full write-up at https://example.com/agents/deep-dive?ref=x for details.",
         "详细说明见 https://example.com/agents/deep-dive 。",
     )
     urls = [it for it in items if it["kind"] == "url_missing"]
     assert urls, items
-    assert urls[0]["severity"] == "fail"
+    assert all(it["field"].startswith("tweets[") for it in urls), urls
+    assert all(it["severity"] == "warn" for it in urls), urls
+
+
+def test_url_missing_in_analysis_field_is_fail():
+    """executive_summary 的 URL 会逐字进产出（不被剥离）→ 丢失仍是 fail。"""
+    import copy
+
+    from akb2.briefing.audit import _check_standard_structured
+
+    synth_zh, synth_en = _fidelity_pair("Another memory tweet.", "另一条记忆推文。")
+    synth_zh = copy.deepcopy(synth_zh)
+    synth_zh["executive_summary"] = "今日综述，链接丢了。"
+    synth_en["executive_summary"] = "Summary, see https://example.com/agents/deep-dive"
+
+    urls = [
+        it for it in _check_standard_structured(synth_zh, synth_en)
+        if it["kind"] == "url_missing"
+    ]
+    assert urls, "分析字段丢 URL 必须检出"
+    assert all(it["severity"] == "fail" for it in urls), urls
 
 
 def test_handle_must_be_verbatim():
@@ -384,9 +429,11 @@ def test_fidelity_fail_blocks_publication_end_to_end():
     """确定性 fail 级问题 → standard=fail → verdict=fail（即便 LLM 判 pass）。"""
     from akb2.briefing.audit import audit_briefing
 
+    # 用**数值不等价**的损坏（405B → 40 亿）作样例：等值本地化已按实测降为 warn，
+    # 拿它当 fail 样例会让本测试断言的其实是"误杀"而不是"阻断权"。
     synth_zh, synth_en = _fidelity_pair(
-        "Llama 405B beats the 8B model on https://swebench.com/leaderboard",
-        "4050 亿参数的 Llama 击败了 80 亿参数模型。",
+        "Llama 405B beats the 8B model on SWE-bench",
+        "40 亿参数的 Llama 击败了 800 亿参数模型。",
     )
 
     def mock_pass(messages, model, **kwargs):

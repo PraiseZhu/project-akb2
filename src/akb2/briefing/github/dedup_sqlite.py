@@ -14,10 +14,18 @@
    因此账本记住上次推送时的 `first_mention_at`：即使出了去重窗，若提及时间没变
    仍算重复。记忆期 `MENTION_MEMORY_DAYS` 必须长于去重窗口，否则 prune 会把判据
    连同窗口一起裁掉，不变式 2 静默失效。
+
+下限的归属（2026-07-26 补）：下限值 = **调用方链路自己的采集窗口**，不是本模块的
+常量。本模块曾用 GitHub 的 `RECENCY_WINDOW_DAYS` 给所有调用方（含复用同一
+`DedupStore` 的社媒链路）设下限——等于 GitHub 的常量在暗中决定社媒的去重窗口，
+社媒侧既无声明也无测试。故下限改为构造参数 `min_window_days`：每条链路显式声明
+自己的采集窗口，缺省保持 GitHub 的 `RECENCY_WINDOW_DAYS`（不改既有行为）。
+抬升窗口时向 stderr 打一行（constitution 原则 4：静默抬升 = 失败不可见）。
 """
 
 import os
 import sqlite3
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -29,22 +37,56 @@ _REQUESTED_WINDOW_DAYS = int(os.environ.get("AKB2_NOVELTY_WINDOW_DAYS", "7"))
 # first_mention_at 记忆期：跨越去重窗口，支撑「无新提及不复推」判定
 MENTION_MEMORY_DAYS = 90
 
-
-def _floor_window(days: int) -> int:
-    """去重窗口下限 = 采集窗口。小于采集窗口的窗口在物理上不可能去重成功。"""
-    return max(int(days), RECENCY_WINDOW_DAYS)
+# 缺省下限 = GitHub 采集窗口（历史行为）。其他链路应显式传 min_window_days。
+DEFAULT_MIN_WINDOW_DAYS = RECENCY_WINDOW_DAYS
 
 
-DEDUP_WINDOW_DAYS = _floor_window(_REQUESTED_WINDOW_DAYS)
+def _floor_window(days: int, min_days: int | None = None, *,
+                  source: str = "去重窗口") -> int:
+    """去重窗口下限 = 调用方链路的采集窗口。小于采集窗口的窗口物理上不可能去重成功。
+
+    抬升时必须可见：静默把显式传入的 1 天改成 7 天，等于配置被无声吞掉
+    （constitution 原则 4）。故抬升走 stderr 一行，不抬升时不打噪音。
+    """
+    floor = DEFAULT_MIN_WINDOW_DAYS if min_days is None else int(min_days)
+    requested = int(days)
+    if requested < floor:
+        sys.stderr.write(
+            f"WARNING [dedup_sqlite]: {source} 显式传入 {requested} 天，被下限抬到 "
+            f"{floor} 天 — 原因：下限 = 本链路采集窗口 {floor} 天，"
+            "小于采集窗口的去重窗口在物理上不可能去重成功"
+            "（条目出了去重窗仍在采集窗内，必然复活）\n"
+        )
+        return floor
+    return requested
+
+
+DEDUP_WINDOW_DAYS = _floor_window(
+    _REQUESTED_WINDOW_DAYS, source="AKB2_NOVELTY_WINDOW_DAYS"
+)
 
 
 class DedupStore:
-    """Rolling dedup + 提及记忆。窗口过 `_floor_window`，不接受小于采集窗口的值。"""
+    """Rolling dedup + 提及记忆。窗口过 `_floor_window`，不接受小于采集窗口的值。
+
+    Args:
+        db_path: 账本 sqlite 路径。
+        window_days: 请求的去重窗口；None → 模块级 `DEDUP_WINDOW_DAYS`。
+        min_window_days: **本链路的采集窗口**（窗口下限）。None → GitHub 的
+            `DEFAULT_MIN_WINDOW_DAYS`（历史行为）。社媒等其他链路应传自己的值，
+            否则 GitHub 的常量会暗中决定该链路的去重窗口。
+    """
 
     def __init__(self, db_path: str | Path = ":memory:",
-                 window_days: int | None = None):
+                 window_days: int | None = None,
+                 min_window_days: int | None = None):
         requested = window_days if window_days is not None else DEDUP_WINDOW_DAYS
-        self._window_days = _floor_window(requested)
+        self._min_window_days = (
+            DEFAULT_MIN_WINDOW_DAYS if min_window_days is None else int(min_window_days)
+        )
+        self._window_days = _floor_window(
+            requested, self._min_window_days, source="DedupStore(window_days=)"
+        )
         self._conn = sqlite3.connect(str(db_path))
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS seen_urls ("
@@ -63,6 +105,11 @@ class DedupStore:
     def window_days(self) -> int:
         """生效的去重窗口天数（已过 `_floor_window`）。"""
         return self._window_days
+
+    @property
+    def min_window_days(self) -> int:
+        """本实例生效的窗口下限（= 调用方声明的采集窗口）。"""
+        return self._min_window_days
 
     def _migrate_first_mention_column(self) -> None:
         """生产库是无 first_mention_at 列的旧 schema — 加列续用，不重建、不丢账本。"""

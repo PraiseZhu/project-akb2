@@ -10,6 +10,8 @@ from urllib.request import Request, urlopen
 
 import jsonschema
 
+from .url_normalizer import normalize
+
 PROMPT_DIR = Path(__file__).resolve().parent.parent.parent.parent.parent / "docs"
 PROMPT_FILE = "github-deepseek-prompt-v1.md"
 ITEM_SCHEMA_PATH = Path(__file__).resolve().parent / "schemas" / "github_synthesis_item_v1.json"
@@ -186,9 +188,21 @@ def _validate_items(summaries: Any) -> None:
             raise ValueError(f"LLM summary item #{i} failed schema: {errors}")
 
 
+def _match_key(url: str) -> str:
+    """对齐用的比较键 — 两侧同样归一化，把「模型顺手规范化了 URL」与「编造 repo」分开。
+
+    严格全等匹配下，DeepSeek 只要对 URL 做任何无害规范化（补/去尾斜杠、改大小写、
+    带 `.git`）就会 missing+extra 同时非空 → 整份简报 abort。归一后仍对不上的才是
+    真编造，abort 语义不被削弱。
+    """
+    if not url:
+        return ""
+    return normalize(url) or url.strip().rstrip("/").lower()
+
+
 def _align_by_repo_url(repos: list[dict[str, Any]],
                        summaries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """按 repo_url 对齐 summary；任何不匹配即 abort。
+    """按 repo_url 对齐 summary；任何不匹配即 abort（比较前两侧同样归一化）。
 
     旧实现按位置 zip 且 repo_url 不匹配时 `pass`：模型重排数组即整份错位
     （A 仓库配 B 仓库的简介），而数量/schema/URL 全对，无从发现。
@@ -196,12 +210,12 @@ def _align_by_repo_url(repos: list[dict[str, Any]],
     """
     by_url: dict[str, dict[str, Any]] = {}
     for item in summaries:
-        url = item["repo_url"]
-        if url in by_url:
-            raise ValueError(f"LLM 返回重复 repo_url，拒绝对齐: {url}")
-        by_url[url] = item
+        key = _match_key(item["repo_url"])
+        if key in by_url:
+            raise ValueError(f"LLM 返回重复 repo_url，拒绝对齐: {item['repo_url']}")
+        by_url[key] = item
 
-    expected = [r.get("repo_url", "") for r in repos]
+    expected = [_match_key(r.get("repo_url", "")) for r in repos]
     missing = [u for u in expected if u not in by_url]
     extra = [u for u in by_url if u not in set(expected)]
     if missing or extra:
@@ -212,8 +226,8 @@ def _align_by_repo_url(repos: list[dict[str, Any]],
 
     return [
         {**repo,
-         "summary": by_url[repo["repo_url"]]["summary"],
-         "use_case": by_url[repo["repo_url"]]["use_case"]}
+         "summary": by_url[_match_key(repo.get("repo_url", ""))]["summary"],
+         "use_case": by_url[_match_key(repo.get("repo_url", ""))]["use_case"]}
         for repo in repos
     ]
 

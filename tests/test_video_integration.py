@@ -22,6 +22,7 @@ from src.akb2.video.config import VideoConfig
 from src.akb2.video.extractor import ExtractedFields, Extractor
 from src.akb2.video.reasoner import ConceptStore, ReasonedLinks, Reasoner
 from src.akb2.video.researcher import VideoResearcher
+from tests.video_state_isolation import isolate_video_state  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Fixtures

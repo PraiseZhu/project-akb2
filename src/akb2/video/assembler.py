@@ -130,7 +130,7 @@ class Assembler:
             staging_dir: staging 目录（默认从 config）。
 
         Returns:
-            正式发布路径（AI TRENDS/Video/video-{slug}-{date}.md）。
+            正式发布路径（AI TRENDS/Video/video-{slug}.md，**不含日期**）。
 
         Raises:
             CandidateTargetExists: staging 或正式路径同名已存在。
@@ -143,7 +143,14 @@ class Assembler:
 
         staging.mkdir(parents=True, exist_ok=True)
 
+        # staging 中转名保留日期：它是 needs_repair 的重试工作区，同一视频跨日重试
+        # 需要能再写一次（去掉日期会让重试直接撞 CandidateTargetExists 卡死）。
         filename = f"video-{slug}-{date}.md"
+        # 正式产出名**不含日期**（缺陷 V-4）：原来 `video-{slug}-{hash}-{date}.md`
+        # 每天都是新名字，于是 `promotion_path.exists()` 这道 fail-closed 对
+        # **跨日重复**永不触发 —— 跨日防线只剩账本这个单点。身份哈希已在 slug 里，
+        # 日期对唯一性没有任何贡献，去掉后同一视频跨日重复会在文件名层被挡住。
+        published_filename = f"video-{slug}.md"
         candidate_path = staging / filename
 
         if candidate_path.exists():
@@ -180,7 +187,7 @@ class Assembler:
                 f"promotion 目标路径不存在: {promotion_dir}"
             )
 
-        promotion_path = promotion_dir / filename
+        promotion_path = promotion_dir / published_filename
         if promotion_path.exists():
             candidate_path.unlink(missing_ok=True)
             raise CandidateTargetExists(
@@ -477,11 +484,16 @@ class Assembler:
         - 先发布后登记：崩溃则下轮最多重跑一次（多花一次额度，内容不丢）。
         因此选后者；登记失败时不吞异常，打 ERROR 并在结果里标 `dedup_marked=False`，
         由 `_report_results` 汇总——否则"账本没记"会静默演化成明天的重复研究。
+
+        异常范围只收运行时故障（账本不可写 / 缺 url）。原实现还捕获
+        `AttributeError`，把"collector 没有 mark_ingested 方法"这类**接线/改名的
+        编程错误**降级成"账本写失败"，排障方向被带偏到磁盘和权限上；现在让它
+        原样抛出（由 run_pipeline 记成 failed，堆栈可见）。
         """
         try:
             collector.mark_ingested(video_meta, output_path)
             return True
-        except (VideoDedupStoreError, ValueError, RuntimeError, AttributeError) as exc:
+        except (VideoDedupStoreError, ValueError, RuntimeError) as exc:
             logger.error(
                 "产出已发布但去重登记失败: %s (%s) — 下轮会重跑该视频并重复烧额度: %s",
                 video_meta.get("title", "?"), video_meta.get("url", "?"), exc,

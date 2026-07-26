@@ -265,11 +265,20 @@ def test_frontmatter_marks_translate_flag_field(tmp_path):
 
 
 def test_frontmatter_marks_dry_run_intake(tmp_path):
-    """--dry-run-intake（fixture 数据）产出必须自报 intake_source=dry_run 且标降级。"""
+    """--dry-run-intake（fixture 数据）产出必须自报 intake_source=dry_run 且标降级。
+
+    产出位置：staging/dry-run/（缺陷 S-1 起 dry-run 不再写 Social —— 它绕过时间窗
+    与跨日去重且不记账，写 Social 会让次日真实运行重复发布同一批内容）。
+    """
     _vault(tmp_path)
     _run_pipeline(tmp_path, argv_extra=("--dry-run-intake",))
 
-    fm = _frontmatter(_social(tmp_path).read_text())
+    assert not _social(tmp_path).exists(), "dry-run 产出不得进 Social"
+    dry_out = (
+        tmp_path / "Praise Space" / "AKB2.0" / "staging" / "dry-run"
+        / f"{DATE} Daily Briefing.md"
+    )
+    fm = _frontmatter(dry_out.read_text())
     assert "intake_source: dry_run" in fm, "dry-run 产出不得冒充真实抓取"
     assert "degraded: true" in fm
     assert "evidence_paths:\n  - social/account_collector" not in fm, \

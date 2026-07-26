@@ -22,6 +22,7 @@ from .intake.twitter_collector import TwitterCollector
 from .scoring import engagement_raw, mention_threshold, score_batch
 from .star_history import StarHistory
 from .synthesis import synthesize
+from .url_normalizer import display_slug
 from .validator import validate
 
 _PROJECT_ROOT = (
@@ -421,12 +422,15 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
         _atomic_write_text(md_path, _render_markdown(briefing))
         _atomic_write_text(json_path, json.dumps(briefing, ensure_ascii=False, indent=2))
 
-    # 仅在简报真正写盘后，把这 10 个 repo 标记为"已推荐"（3 天内不再重复推）。
+    # 仅在简报真正写盘后，把这批 repo 标记为"已推荐"（去重窗口内不再重复推）。
     # 标记发生在写成功之后，避免被 skip 的候选误占用 novelty 名额。
+    # first_mention_at 必须一起落库：读端 is_duplicate 的第二判据（无新提及不复推，
+    # dedup_sqlite 不变式 2）就靠这一列。不传 → 列恒为 NULL → 第二判定恒 False，
+    # 该功能在生产 100% 空转（实证：71.5% 的跨日重复是同一条旧提及被反复触发）。
     _novelty = DedupStore(_novelty_db)
     try:
         for r in briefing["top_repos"]:
-            _novelty.mark_seen(r["repo_url"])
+            _novelty.mark_seen(r["repo_url"], r.get("first_mention_at"))
         _novelty.prune()
     finally:
         _novelty.close()
@@ -627,6 +631,28 @@ def _write_failed(reason: str, fallback_layer: str = "skip") -> None:
     print(f"briefing: FAILED ({reason})")
 
 
+def _display_name(repo: dict) -> str:
+    """Markdown 标题用的仓库显示名 — 保留 GitHub 侧真实大小写。
+
+    去重键 `repo_url` 是**无条件小写**的（GitHub owner/repo 大小写不敏感，键必须
+    小写才稳定），直接从它切名会把 `id-Software/Quake` 渲染成 `id-software/quake`、
+    `xianfei/SysMocap` 渲染成 `sysmocap`。故显示层单独取权威大小写：
+
+    1. `repo_full_name` — GitHub API `full_name`（301 改名后为新名），最权威；
+    2. `display_slug(url)` — 无 API 数据时的兜底（保留 url 里残存的大小写）；
+    3. 末段切分 — 兜底的兜底（非标准 URL）。
+
+    只影响显示；`repo_url` 一字不改，去重键仍全小写。
+    """
+    full_name = (repo.get("repo_full_name") or "").strip()
+    if full_name:
+        return full_name
+    url = repo.get("repo_url", "")
+    if not url:
+        return "unknown"
+    return display_slug(url) or "/".join(url.rstrip("/").split("/")[-2:])
+
+
 def _render_markdown(briefing: dict) -> str:
     """Render briefing JSON to Markdown per §6.12 template."""
     date_str = briefing["date"]
@@ -668,7 +694,7 @@ def _render_markdown(briefing: dict) -> str:
 
     for i, repo in enumerate(briefing["top_repos"], 1):
         url = repo.get("repo_url", "")
-        name = "/".join(url.rstrip("/").split("/")[-2:]) if url else "unknown"
+        name = _display_name(repo)
         stars = repo.get("stars", 0)
         stars_str = f"{stars:,}" if stars >= 1000 else str(stars)
         language = repo.get("language") or "unknown"

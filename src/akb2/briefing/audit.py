@@ -201,29 +201,62 @@ def _zh_number_values(zh: str) -> list[float]:
     return values
 
 
-def _check_numbers(en: str, zh: str) -> list[str]:
-    """返回"英文原文里有、译文里对不上"的数字 token 描述列表。"""
-    problems: list[str] = []
+def _values_equivalent(a: float, b: float) -> bool:
+    return abs(a - b) <= max(1e-9, abs(a) * 1e-9)
+
+
+def _check_numbers_detailed(en: str, zh: str) -> list[tuple[str, str]]:
+    """返回 [(问题描述, severity)]。severity ∈ {fail, warn}。
+
+    2026-07-26 校准（回放 `AI TRENDS/Social/` 全部 60 篇已发布简报）：
+      - 恒等回放（en := 已发布 ZH 文本本身，即"译者逐字保留一切"的最好情况）：
+        1667 个受检字段，0 误报 → 检查器自身无结构性假阳性。
+      - 参数规模 B 逐字保留：**9/60 篇（15%）** 已发布简报把它本地化成
+        「4000 亿参数」「9750 亿参数（激活 410 亿）」「2.8 万亿参数」——且这些
+        本地化**数值等价**（400B == 4000 亿 == 4e11）。原实现把这一类判 fail，
+        意味着约 15% 的天数会被判 fail、当天日报直接不发布，而产出并没有事实错误。
+        → 数值等价的本地化降为 warn（kind=number_localized）；只有既无逐字 token
+          又无等价数值时才 fail（那才是「405B → 8B」式真实损坏）。
+      - 千分位逐字保留：实测 11 个 token 全部逐字保留（4,000+ / 5,000 / 1,000 /
+        3,000 / 4,100 / 10,000 / 2,000 / 50,000），观测误报 0/11，曝光 9/60 篇
+        → 保留 fail 级。
+    """
+    problems: list[tuple[str, str]] = []
     en_body = _strip_urls_handles(en)
     zh_body = _strip_urls_handles(zh)
     zh_lower = zh_body.lower()
     zh_digits = zh_body.replace(",", "").replace(" ", "")
     zh_values = _zh_number_values(zh_body)
 
-    # 第 1 层：标识符类 token 必须逐字保留
-    identifiers: list[str] = []
+    def _preserved(token: str) -> bool:
+        plain = token.replace(",", "")
+        return token.lower() in zh_lower or plain.lower() in zh_digits.lower()
+
+    # 第 1 层a：参数规模标识（405B/8B）——逐字保留优先，数值等价本地化降 warn
+    param_tokens: list[str] = []
     for m in _PARAM_SCALE_RE.finditer(en_body):
         window = en_body[max(0, m.start() - 24): m.end() + 24]
         if _MONEY_CONTEXT_RE.search(window):
             continue  # $1B / raised 2B：是数量，可本地化
-        identifiers.append(m.group(1))
-    identifiers += [m.group(0) for m in _VERSION_RE.finditer(en_body)]
-    identifiers += [m.group(0) for m in _THOUSANDS_RE.finditer(en_body)]
-    for token in dict.fromkeys(identifiers):
-        plain = token.replace(",", "")
-        if token.lower() in zh_lower or plain.lower() in zh_digits.lower():
+        param_tokens.append(m.group(1))
+    for token in dict.fromkeys(param_tokens):
+        if _preserved(token):
             continue
-        problems.append(f"{token}（标识符类，必须逐字保留）")
+        v = _num_value(token[:-1], token[-1])
+        if v is not None and any(_values_equivalent(v, zv) for zv in zh_values):
+            problems.append(
+                (f"{token}（型号标识被本地化为等值中文量级，建议逐字保留）", "warn")
+            )
+            continue
+        problems.append((f"{token}（标识符类，必须逐字保留）", "fail"))
+
+    # 第 1 层b：版本号 / 千分位长数 —— 逐字保留（实测 11/11 保留，无观测误报）
+    strict_ids: list[str] = [m.group(0) for m in _VERSION_RE.finditer(en_body)]
+    strict_ids += [m.group(0) for m in _THOUSANDS_RE.finditer(en_body)]
+    for token in dict.fromkeys(strict_ids):
+        if _preserved(token):
+            continue
+        problems.append((f"{token}（标识符类，必须逐字保留）", "fail"))
 
     # 第 2 层：显著数字按数值等价判定
     for m in _EN_NUM_RE.finditer(en_body):
@@ -234,15 +267,18 @@ def _check_numbers(en: str, zh: str) -> list[str]:
         if raw in zh_digits:
             continue
         v = _num_value(digits, suffix)
-        if v is not None and any(
-            abs(v - zv) <= max(1e-9, abs(v) * 1e-9) for zv in zh_values
-        ):
+        if v is not None and any(_values_equivalent(v, zv) for zv in zh_values):
             continue
         token = m.group(0).strip()
-        if any(token in p for p in problems):
+        if any(token in p for p, _ in problems):
             continue
-        problems.append(f"{token}（译文中无对应数值）")
+        problems.append((f"{token}（译文中无对应数值）", "fail"))
     return problems
+
+
+def _check_numbers(en: str, zh: str) -> list[str]:
+    """向后兼容包装：返回全部数字问题描述（不分级）。"""
+    return [msg for msg, _ in _check_numbers_detailed(en, zh)]
 
 
 def _check_verbatim(en: str, zh: str, pattern: re.Pattern[str]) -> list[str]:
@@ -378,15 +414,31 @@ def _check_translation_fidelity(synth_zh: dict, synth_en: dict | None) -> list[d
             continue
 
         if en:
-            missing_nums = _check_numbers(en, zh)
-            if missing_nums:
+            num_problems = _check_numbers_detailed(en, zh)
+            fail_nums = [msg for msg, sev in num_problems if sev == "fail"]
+            warn_nums = [msg for msg, sev in num_problems if sev == "warn"]
+            if fail_nums:
                 _add("number_mismatch", field, idx,
-                     f"{field} 数字与英文原文不一致: {'; '.join(missing_nums)}", "fail")
+                     f"{field} 数字与英文原文不一致: {'; '.join(fail_nums)}", "fail")
+            if warn_nums:
+                _add("number_localized", field, idx,
+                     f"{field} 型号标识被本地化（数值等价）: {'; '.join(warn_nums)}", "warn")
 
             missing_urls = _check_verbatim(en, zh, _URL_RE)
             if missing_urls:
+                # 严重度按字段分：推文正文的 URL 在渲染时会被
+                # `pipeline._strip_inline_links` 主动删掉（用户决策：每条推文只留底部
+                # 唯一 [原文] 链接），所以译文丢 URL 对**已发布产出没有任何影响**——
+                # 拿 fail 级去守一个下游必然丢弃的属性，只会白白停发日报。
+                # 分析字段（executive_summary / topic / summary）不经该剥离，URL 会
+                # 逐字进产出，仍判 fail。实测：60 篇已发布简报里受检文本含 URL 的仅 4 篇。
+                severity = "warn" if field.startswith("tweets[") else "fail"
+                suffix = (
+                    "（推文正文 URL 渲染时本就被 _strip_inline_links 剥离，故仅告警）"
+                    if severity == "warn" else ""
+                )
                 _add("url_missing", field, idx,
-                     f"{field} 译文丢失 URL: {', '.join(missing_urls)}", "fail")
+                     f"{field} 译文丢失 URL: {', '.join(missing_urls)}{suffix}", severity)
 
             missing_handles = _check_verbatim(en, zh, _HANDLE_RE)
             if missing_handles:
@@ -416,9 +468,15 @@ def _check_standard_structured(
 
     每条 issue: {"kind": str, "field": str, "idx": int|None, "msg": str, "severity": str}
     kind ∈ {untranslated, zh_point_missing, zh_point_untranslated, empty, structural,
-            number_mismatch, url_missing, handle_missing, metric_fabricated,
-            glossary_violation, language_mixed}
+            number_mismatch, number_localized, url_missing, handle_missing,
+            metric_fabricated, glossary_violation, language_mixed}
     severity ∈ {fail, warn}；warn 级不阻断入库，但会把 verdict 压到 warn。
+
+    fail 级确定性检查的可用性契约（2026-07-26 校准，见 _check_numbers_detailed 与
+    _check_translation_fidelity 的注释）：任何 fail 级 kind 都**必须**同时出现在
+    `audit_fix._FIXABLE_KINDS` 里。理由是量化的：60 篇已发布简报平均有 27.8 个受检
+    字段，单字段 1% 的误报率就意味着 1-(1-0.01)^27.8 ≈ 24.5% 的天数被判 fail；
+    没有修复通道的 fail 级检查 = 日报可用性单点。
 
     synth_en 省略时跳过需要英文原文的确定性校验（数字/URL/@handle/指标），
     仅跑 ZH-only 检查（术语表禁用译法、语言纯度）。

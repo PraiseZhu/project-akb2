@@ -21,8 +21,24 @@ except (KeyError, ValueError):
     _MAX_FIX_ROUNDS = 3
 
 # 可程序化定点修复的 kind 集合；其余（empty/structural）走 fail-closed
-_FIXABLE_KINDS: frozenset[str] = frozenset({
+#
+# 2026-07-26 扩充（缺陷 S-2）：译后确定性校验新增的 4 个 **fail 级** kind 原先一个都
+# 不在此集合里 —— 任何一次误报都直接 standard=fail → verdict=fail → pipeline
+# sys.exit(2) → **当天日报不发布**，既没有修复循环也没有降级通道。
+# 量化依据（回放 `AI TRENDS/Social/` 60 篇已发布简报）：平均 27.8 个受检字段/篇，
+# 单字段 1% 误报即 24.5% 天数停发。故这 4 个 kind 全部纳入定点重译（constitution
+# 原则 2「收敛优先于重跑」：先给一次定点重译机会，仍不过才 fail-closed）。
+# 它们的修复动作与 untranslated 完全同构 —— 都是"从英文源重译该字段"，
+# 见 _RETRANSLATE_KINDS。
+_RETRANSLATE_KINDS: frozenset[str] = frozenset({
     "untranslated",
+    "number_mismatch",
+    "url_missing",
+    "handle_missing",
+    "metric_fabricated",
+})
+
+_FIXABLE_KINDS: frozenset[str] = _RETRANSLATE_KINDS | frozenset({
     "zh_point_missing",
     "zh_point_untranslated",
 })
@@ -66,8 +82,10 @@ def _apply_fixes(
 ) -> tuple[dict, list[str], list[str]]:
     """对 fixable 缺陷逐字段定点写入，返回 (new_synth_zh, fix_succeeded, fix_empty)。
 
-    - untranslated：调用 _translate_snippet(英文源)；推文英文源按 tweet id 匹配（非下标），
-      避免 translate 过滤/重排推文时取到错误源（M2）。
+    - _RETRANSLATE_KINDS（untranslated / number_mismatch / url_missing /
+      handle_missing / metric_fabricated）：调用 _translate_snippet(英文源) 定点重译该
+      字段；推文英文源按 tweet id 匹配（非下标），避免 translate 过滤/重排推文时取到
+      错误源（M2）。这几类缺陷的成因都是"该字段这一次译坏了"，修复动作同构。
     - zh_point_missing / zh_point_untranslated：调用 _generate_zh_point(中文text)。
       zh_point_model 仅作用于点题生成；_translate_snippet 内部读 AKB2_TRANSLATE_MODEL
       环境变量、不接收 model 参数，故翻译模型不经此函数传参（M1）。
@@ -106,7 +124,7 @@ def _apply_fixes(
         field = item["field"]
         idx = item["idx"]
 
-        if kind == "untranslated":
+        if kind in _RETRANSLATE_KINDS:
             # --- executive_summary ---
             if field == "executive_summary":
                 en_src = (synth_en.get("executive_summary") or "").strip()
@@ -150,11 +168,11 @@ def _apply_fixes(
                     else:
                         fix_empty.append(field)
 
-            # --- untranslated 字段未匹配任何已知分支 ---
+            # --- 重译类字段未匹配任何已知分支 ---
             else:
                 # 可见警告：新增 checker 字段若无对应 fixer 分支，第一次运行即暴露
                 sys.stderr.write(
-                    f"WARNING [audit_fix]: no fixer branch for untranslated field {field!r}"
+                    f"WARNING [audit_fix]: no fixer branch for {kind} field {field!r}"
                     " — update _apply_fixes to handle this field\n"
                 )
                 fix_empty.append(field)

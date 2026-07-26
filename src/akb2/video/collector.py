@@ -25,7 +25,7 @@ import logging
 import re
 import subprocess
 import time
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from src.akb2.video.config import VideoConfig
@@ -38,7 +38,11 @@ from src.akb2.video.constants import (
     VIDEO_MIN_DURATION_MIN,
     VIDEO_NLM_DAILY_QUOTA,
 )
-from src.akb2.video.dedup_store import VideoDedupStore, video_identity
+from src.akb2.video.dedup_store import (
+    VideoDedupStore,
+    local_day_start_utc_iso,
+    video_identity,
+)
 from src.akb2.video.llm_adapter import LLMAdapter, extract_json_from_llm_response
 
 logger = logging.getLogger("akb2.video.collector")
@@ -57,9 +61,10 @@ class VideoCollector:
         # db 不传就自己建：生产入口从不传 db 正是 L1/L7 空转的根因（缺陷 #2）。
         self.db = db if db is not None else VideoDedupStore(self.config.dedup_db_path)
         self._llm_adapter = llm_adapter
-        # 单轮发布日期补取预算（有界，宪法 P1）与因日期未知被拒收的计数
+        # 单轮发布日期补取预算（有界，宪法 P1）与因日期/身份未知被拒收的计数
         self._date_backfill_used = 0
         self._date_unknown_rejected = 0
+        self._url_missing_rejected = 0
 
         # 加载视频源配置
         self._video_config = self._load_video_config()
@@ -109,6 +114,7 @@ class VideoCollector:
         budget_start = time.time()
         self._date_backfill_used = 0
         self._date_unknown_rejected = 0
+        self._url_missing_rejected = 0
         results: list[dict] = []
         is_coldstart = self._settings.get("coldstart", False)
 
@@ -214,6 +220,12 @@ class VideoCollector:
                 "若持续为 0 产出，请检查 yt-dlp cookies 与日期补取是否可用",
                 self._date_unknown_rejected, len(results),
             )
+        if self._url_missing_rejected:
+            logger.warning(
+                "[身份闸] 本轮 %d 个候选因缺 url（无稳定身份）被拒收（产出 %d 个）——"
+                "上游元数据缺失，检查 yt-dlp 输出字段",
+                self._url_missing_rejected, len(results),
+            )
         return results
 
     # ------------------------------------------------------------------
@@ -253,6 +265,18 @@ class VideoCollector:
         lookback_cutoff = datetime.now() - timedelta(days=days)
 
         for v in videos:
+            # L0: 无 url 拒收 —— 没有 url 就没有稳定身份，去重、账本、研究全都做不了。
+            # 原实现在 `_is_video_ingested` 里打 warning 后 `return False` 放行，
+            # fail-closed 在这条缝上是开的（无身份候选一路走到研究，且永远无法登记
+            # → 每轮重跑）。
+            if not v.get("url"):
+                self._url_missing_rejected += 1
+                logger.warning(
+                    "[身份闸] 拒收（候选缺 url，无稳定身份 → 无法去重也无法登记）: "
+                    "[%s] %s",
+                    v.get("platform", "?"), v.get("title", "?"),
+                )
+                continue
             # L1: URL 去重
             if self._is_video_ingested(v["url"]):
                 continue
@@ -387,11 +411,23 @@ class VideoCollector:
             return VIDEO_NLM_DAILY_QUOTA
 
     def _remaining_daily_quota(self) -> int:
-        """今日剩余配额 = 日配额 − 账本中今日已入库条数。"""
+        """今日剩余配额 = 日配额 − 账本中今日已入库条数。
+
+        缺陷 V-3：原实现用 `date.today().isoformat()`（**本地日**字符串）去比对
+        `mark_ingested` 写入的 `datetime.now(UTC).isoformat()`（**UTC** 时刻）。
+        CST(UTC+8) 下本地 00:00–08:00 入库的条目 UTC 日期还是前一天，字典序小于
+        本地日字符串 → 同一本地日后续轮次数不到它们 → 当日实际入库量 =
+        配额 + 漏算数（硬上限被时区错位突破）。现在两侧统一到 UTC 基准：
+        把本地日起点换算成 UTC 时刻再做区间查询。
+        """
         quota = self._nlm_daily_quota()
-        used = self.db.count_ingested_since(date.today().isoformat())
+        since = local_day_start_utc_iso()
+        used = self.db.count_ingested_since(since)
         if used:
-            logger.info("[配额] NLM 日配额 %d，今日已入库 %d", quota, used)
+            logger.info(
+                "[配额] NLM 日配额 %d，本地日（起点 UTC %s）已入库 %d",
+                quota, since, used,
+            )
         return max(0, quota - used)
 
     # ------------------------------------------------------------------
@@ -600,17 +636,28 @@ class VideoCollector:
                 "去重库未注入（config.dedup_db_path 未解析）：拒绝在无去重保护下采集"
             )
         if not url:
-            logger.warning("[L1] 候选缺 url，无法判定是否已入库，按未入库继续")
-            return False
+            # 无 url = 无稳定身份。原实现 warning 后 return False（放行）——
+            # 无身份候选既去不了重也登记不了，放行等于每轮重跑。调用方必须显式拒收。
+            raise ValueError("候选缺 url，无稳定身份：拒绝在无去重保护下继续")
         return self.db.is_ingested(url)
 
     def _l7_catalog_dedup(self, results: list[dict]) -> tuple[list[dict], int]:
-        """L7: 去重库 URL 去重（L1 之后的兜底，过滤本轮内已入库视频）。"""
+        """L7: 去重库 URL 去重（L1 之后的兜底，过滤本轮内已入库视频）。
+
+        无 url 的产出同样拒收（fail-closed）：它不可能被登记，留着就是下轮重跑。
+        """
         deduped: list[dict] = []
         skipped_count = 0
         for r in results:
             url = r["video"].get("url", "")
-            if url and self._is_video_ingested(url):
+            if not url:
+                logger.warning(
+                    "[L7] 拒收（缺 url，无稳定身份 → 无法登记，留着必然重跑）: %s",
+                    r["video"].get("title", "?"),
+                )
+                skipped_count += 1
+                continue
+            if self._is_video_ingested(url):
                 logger.info(f"[L7] 已入库，跳过: {r['video'].get('title', url)}")
                 skipped_count += 1
             else:
@@ -649,7 +696,12 @@ class VideoCollector:
         for c in candidates:
             url = c["video"].get("url", "")
             if not url:
-                kept.append(c)
+                # 原实现 `kept.append(c)`：无身份候选被放行 → 同一无 url 视频可以
+                # 重复出现且永远登记不上。fail-closed 拒收。
+                logger.warning(
+                    "[同轮去重] 拒收（缺 url，无稳定身份）: %s",
+                    c["video"].get("title", "?"),
+                )
                 continue
             identity = video_identity(url)
             if identity in seen:

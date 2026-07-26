@@ -9,7 +9,8 @@
   "properties": {
     "repo_url": {
       "type": "string",
-      "pattern": "^https://github\\.com/[\\w.-]+/[\\w.-]+$"
+      "description": "尾斜杠可选：模型对 URL 顺手补/去尾斜杠是无害规范化，不该让整份简报 abort（对齐前两侧统一过 url_normalizer.normalize）。scheme/host 仍严格，真编造的 repo 由 _align_by_repo_url 拦。",
+      "pattern": "^https://github\\.com/[\\w.-]+/[\\w.-]+/?$"
     },
     "summary": {
       "type": "string",

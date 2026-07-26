@@ -40,6 +40,7 @@ import re
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NamedTuple
 from urllib.parse import parse_qs, urlparse
 
 logger = logging.getLogger("akb2.video.dedup_store")
@@ -54,8 +55,135 @@ DEDUP_DB_TIMEOUT_SEC = 10.0
 # seed_from_published 单次最多扫描的 markdown 文件数（有界，宪法 P1）
 DEDUP_SEED_MAX_FILES = 5000
 
+# seed_from_published 每份笔记读取的字节上限（frontmatter 足够，正文不需要）
+DEDUP_SEED_HEAD_BYTES = 4000
+
 # 已 seed 标记在 meta 表中的 key 前缀
 _SEED_META_KEY_PREFIX = "seeded_from:"
+
+# 回填条目在文件 mtime 不可读时使用的**历史哨兵**时间戳。
+# 缺陷 V-1：原实现 `except OSError: return datetime.now(UTC)` 会把历史条目打上
+# "今天"，于是回填自己吃掉今日 NLM 配额 —— 恰好是 `_file_stamp` 注释声称要避免
+# 的事。哨兵值远早于任何真实运行日，永远不会落进"今日已入库"的统计窗口。
+DEDUP_SEED_HISTORICAL_SENTINEL = "1970-01-01T00:00:00+00:00"
+
+# frontmatter 里承载视频 URL 的键名判定（缺陷 V-1）。
+#
+# 实测 `/Volumes/AKB2/.../AI TRENDS/Video`（608 份 md，只读统计）：
+#   video_url:          173 份 → 172 个平台身份
+#   source_url:         325 份 →  68 个平台身份（其中仅 14 个与 video_url 重叠）
+#   url:                 31 份 →   2 个平台身份
+#   video_source:         1 份 →   1 个平台身份
+#   original_talk_url:    1 份 →   1 个平台身份
+#   union                            230 个平台身份
+# 原实现只认 `^source_url:` → 只覆盖 68 个，漏掉 162 个（漏的比覆盖的多一倍多）。
+# 所以判定不写死键名清单，而是按"键名含 url" + 一个显式补充集合，
+# 让将来新增的第 6 种键自动被覆盖（漏认的代价是重复烧 NLM 配额，
+# 多认的代价只是同目录里的一条链接被当成已研究 —— 不对称，取宽）。
+_SEED_EXTRA_URL_KEYS = frozenset({"video_source"})
+
+# frontmatter 里的标量键行：`key: value`（value 不含空白，即单个 URL）
+_FRONTMATTER_SCALAR_RE = re.compile(
+    r"^(?P<key>[A-Za-z_][A-Za-z0-9_]*):[ \t]*(?P<value>\S+)[ \t]*$", re.MULTILINE
+)
+
+
+def _is_url_key(key: str) -> bool:
+    """该 frontmatter 键是否可能承载 URL。"""
+    return "url" in key.lower() or key in _SEED_EXTRA_URL_KEYS
+
+
+def _frontmatter_block(text: str) -> str:
+    """截出开头的 `---` frontmatter 块；没有则返回空串。
+
+    只扫 frontmatter，避免正文里的 `http://...` 行被当成身份键。
+    """
+    if not text.startswith("---"):
+        return ""
+    end = text.find("\n---", 3)
+    return text[3:end] if end > 0 else text[3:]
+
+
+def extract_video_identities(text: str) -> dict[str, str]:
+    """从一份已发布笔记的文本里取出所有**平台原生**视频身份 → 原始 URL。
+
+    只认能解析出 ``youtube:`` / ``bilibili:`` 的值；``sha256:`` 兜底身份一律丢弃
+    —— 同目录下还有 essay / 论文 / 推文类笔记，把它们的链接塞进视频账本会让
+    真视频被误判已入库。
+    """
+    found: dict[str, str] = {}
+    for match in _FRONTMATTER_SCALAR_RE.finditer(_frontmatter_block(text)):
+        if not _is_url_key(match.group("key")):
+            continue
+        value = match.group("value").strip().strip("\"'")
+        try:
+            identity = video_identity(value)
+        except ValueError:
+            continue
+        if identity.startswith("sha256:"):
+            continue
+        found.setdefault(identity, value)
+    return found
+
+
+class SeedOutcome(NamedTuple):
+    """``seed_from_published`` 的结果（部分失败必须可见，宪法 P4）。
+
+    Attributes:
+        seeded: 本次新登记的身份数。
+        scanned: 本次实际读成功的笔记数。
+        files_total: 目录里的 markdown 总数（截断前）。
+        identities_found: 扫到的去重后平台身份数。
+        read_failures: 读取失败的笔记数（这些笔记的身份没进账本）。
+        truncated: 是否被 ``DEDUP_SEED_MAX_FILES`` 截断。
+        already_seeded: 该目录之前已完整 seed 过，本次直接跳过。
+        dir_unavailable: 目录不存在（vault 未挂载）。
+        marked_complete: 是否写入了 ``seeded_from:`` 标记（= 本次完整成功）。
+    """
+
+    seeded: int = 0
+    scanned: int = 0
+    files_total: int = 0
+    identities_found: int = 0
+    read_failures: int = 0
+    truncated: bool = False
+    already_seeded: bool = False
+    dir_unavailable: bool = False
+    marked_complete: bool = False
+
+    @property
+    def complete(self) -> bool:
+        """本次扫描是否覆盖了目录里每一份笔记。"""
+        return (
+            not self.dir_unavailable
+            and not self.truncated
+            and self.read_failures == 0
+        )
+
+    @property
+    def coverage(self) -> float:
+        """读成功笔记数 / 目录 markdown 总数（1.0 = 全覆盖）。"""
+        if self.files_total <= 0:
+            return 1.0
+        return self.scanned / self.files_total
+
+
+def local_day_start_utc_iso(now: datetime | None = None) -> str:
+    """"本地日起点"换算成 UTC ISO8601 字符串（日配额比对基准，缺陷 V-3）。
+
+    ``mark_ingested`` 存的是 ``datetime.now(UTC).isoformat()``；用
+    ``date.today().isoformat()``（本地日）去比对是**两个不同时间基准**：
+    CST(UTC+8) 下本地 00:00–08:00 入库的条目 UTC 日期还是前一天，字典序小于
+    本地日字符串 → 同一本地日后续轮次数不到它们 → 当日实际入库量 = 配额 + 漏算数。
+
+    这里把本地日的 00:00 换算成 UTC 时刻，两侧统一到 UTC 基准后再比字典序
+    （ISO8601 带固定 ``+00:00`` 偏移时字典序 == 时间序）。
+    """
+    current = now or datetime.now().astimezone()
+    if current.tzinfo is None:
+        current = current.astimezone()
+    local_midnight = current.replace(hour=0, minute=0, second=0, microsecond=0)
+    return local_midnight.astimezone(UTC).isoformat()
 
 # 平台 host → 平台名
 _YOUTUBE_HOSTS = frozenset({
@@ -290,18 +418,23 @@ class VideoDedupStore:
     # 历史回填
     # ------------------------------------------------------------------
 
-    def seed_from_published(self, published_dir: str | Path) -> int:
+    def seed_from_published(self, published_dir: str | Path) -> SeedOutcome:
         """从已发布目录一次性回填历史身份（幂等，按目录记 seeded 标记）。
 
-        没有这一步，修复上线后账本是空的 → 68 个**已经发布过**的视频会被再跑一遍
-        （再烧 68 份 NLM 深研配额）。只读扫描 frontmatter 的 ``source_url``，
-        不写、不改、不删 vault 里任何文件。
+        没有这一步，修复上线后账本是空的 → 每一个**已经发布过**的视频都会被再跑
+        一遍（再烧一份 NLM 深研配额）。只读扫描 frontmatter 里所有可能承载 URL 的
+        键（见 `_is_url_key` 的实测键分布），不写、不改、不删 vault 里任何文件。
 
         只回填能解析出平台原生 id 的条目（``youtube:`` / ``bilibili:``），
         避免把同目录下的非视频笔记（论文、essay）也当成视频身份。
 
+        部分失败可见（宪法 P4，缺陷 V-1）：只有**完整成功**（目录可用 + 未被
+        `DEDUP_SEED_MAX_FILES` 截断 + 零读取失败）才写 ``seeded_from:`` 标记。
+        原实现无条件写标记 → 一次部分扫描就把窗口永久关上，日志却打"新登记 N 个"
+        像是成功。现在部分失败会打 ERROR 并保留重试机会。
+
         Returns:
-            本次新登记的条数；已 seed 过或目录不可用时返回 0。
+            SeedOutcome（含覆盖率、读取失败数、是否写入标记）。
         """
         directory = Path(published_dir)
         meta_key = f"{_SEED_META_KEY_PREFIX}{directory}"
@@ -316,7 +449,7 @@ class VideoDedupStore:
         finally:
             conn.close()
         if row is not None:
-            return 0
+            return SeedOutcome(already_seeded=True)
 
         if not directory.is_dir():
             # 不写 seeded 标记：vault 未挂载只是暂时不可用，下轮还要再试。
@@ -325,59 +458,91 @@ class VideoDedupStore:
                 "本轮无历史身份保护，已发布视频可能被重跑",
                 directory,
             )
-            return 0
+            return SeedOutcome(dir_unavailable=True)
 
-        files = sorted(directory.glob("*.md"))[:DEDUP_SEED_MAX_FILES]
+        all_files = sorted(directory.glob("*.md"))
+        files_total = len(all_files)
+        truncated = files_total > DEDUP_SEED_MAX_FILES
+        files = all_files[:DEDUP_SEED_MAX_FILES]
+
         seeded = 0
         scanned = 0
+        read_failures = 0
+        # identity → (原始 url, 出处笔记)。同一身份在多份笔记/多个键里出现时留首见。
+        identities: dict[str, tuple[str, Path]] = {}
         for md in files:
-            scanned += 1
             try:
-                head = md.read_text(encoding="utf-8", errors="replace")[:4000]
+                head = md.read_text(encoding="utf-8", errors="replace")[
+                    :DEDUP_SEED_HEAD_BYTES
+                ]
             except OSError as exc:
+                read_failures += 1
                 logger.warning("[去重库] 历史回填读取失败 %s: %s", md.name, exc)
                 continue
-            match = re.search(r"^source_url:\s*(\S+)\s*$", head, re.MULTILINE)
-            if not match:
-                continue
-            url = match.group(1).strip().strip("\"'")
-            try:
-                identity = video_identity(url)
-            except ValueError:
-                continue
-            if identity.startswith("sha256:"):
-                continue  # 非视频平台链接（essay / 论文），不进视频去重账本
+            scanned += 1
+            for identity, url in extract_video_identities(head).items():
+                identities.setdefault(identity, (url, md))
+
+        for identity, (url, md) in identities.items():
             if self.mark_ingested(
                 url,
-                platform=identity.split(":", 1)[0],
+                platform=identity.partition(":")[0],
                 title=md.stem,
                 output_path=md,
                 ingested_at=self._file_stamp(md),
             ):
                 seeded += 1
 
-        conn = self._connect()
-        try:
-            with conn:
-                conn.execute(
-                    "INSERT OR REPLACE INTO dedup_meta (key, value) VALUES (?, ?)",
-                    (meta_key, datetime.now(UTC).isoformat()),
-                )
-        except sqlite3.Error as exc:
-            raise VideoDedupStoreError(f"视频去重库 meta 写入失败: {exc}") from exc
-        finally:
-            conn.close()
+        complete = read_failures == 0 and not truncated
+        if complete:
+            conn = self._connect()
+            try:
+                with conn:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO dedup_meta (key, value) VALUES (?, ?)",
+                        (meta_key, datetime.now(UTC).isoformat()),
+                    )
+            except sqlite3.Error as exc:
+                raise VideoDedupStoreError(f"视频去重库 meta 写入失败: {exc}") from exc
+            finally:
+                conn.close()
+            logger.info(
+                "[去重库] 历史回填完成（完整覆盖 %d/%d 份）: 扫到 %d 个视频身份，"
+                "新登记 %d 个 (%s)",
+                scanned, files_total, len(identities), seeded, directory,
+            )
+        else:
+            logger.error(
+                "[去重库] 历史回填**部分失败**（覆盖 %d/%d 份，读取失败 %d，截断=%s）: "
+                "扫到 %d 个身份、新登记 %d 个；**不写 seeded 标记**，下轮会重试。"
+                "未覆盖的已发布视频本轮仍可能被重跑 (%s)",
+                scanned, files_total, read_failures, truncated,
+                len(identities), seeded, directory,
+            )
 
-        logger.info(
-            "[去重库] 历史回填完成: 扫描 %d 份已发布笔记，新登记 %d 个视频身份 (%s)",
-            scanned, seeded, directory,
+        return SeedOutcome(
+            seeded=seeded,
+            scanned=scanned,
+            files_total=files_total,
+            identities_found=len(identities),
+            read_failures=read_failures,
+            truncated=truncated,
+            marked_complete=complete,
         )
-        return seeded
 
     @staticmethod
     def _file_stamp(path: Path) -> str:
-        """用文件 mtime 作为历史条目的 ingested_at（别让回填吃掉今天的日配额）。"""
+        """用文件 mtime 作为历史条目的 ingested_at（别让回填吃掉今天的日配额）。
+
+        mtime 不可读时返回 `DEDUP_SEED_HISTORICAL_SENTINEL`（1970 哨兵）而不是
+        `now()` —— 缺陷 V-1：`now()` 会让历史条目被算进"今日已入库"，静默扣掉
+        今天的 NLM 配额，正是本方法要避免的事。
+        """
         try:
             return datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat()
-        except OSError:
-            return datetime.now(UTC).isoformat()
+        except OSError as exc:
+            logger.warning(
+                "[去重库] 历史回填无法读取 mtime，改用历史哨兵时间戳 %s (%s: %s)",
+                DEDUP_SEED_HISTORICAL_SENTINEL, path.name, exc,
+            )
+            return DEDUP_SEED_HISTORICAL_SENTINEL

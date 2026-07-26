@@ -15,6 +15,7 @@ import pytest
 
 from src.akb2.video.config import VideoConfig
 from src.akb2.video.researcher import ResearchOutput, VideoResearcher
+from tests.video_state_isolation import isolate_video_state  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Fixtures

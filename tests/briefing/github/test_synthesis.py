@@ -208,3 +208,70 @@ class TestSynthesisGrounding:
         }
         with pytest.raises(ValueError, match="grounding"):
             synthesize([repo], api_key="test-key")
+
+
+class TestSynthesisAlignmentNormalization:
+    """真实 DeepSeek 会顺手规范化 URL（去/补尾斜杠、改大小写、带 .git）。
+
+    严格全等匹配下，任一无害规范化都让 missing+extra 同时非空 → 整份简报 abort
+    （模型没编造任何 repo，却整天没产出）。故比较前两侧同样归一化；归一后仍对不上
+    的才是真编造，abort 语义不被削弱。
+    """
+
+    # 仅覆盖能过 item schema 形状闸的无害变体。改 scheme（http://）与前后空白仍被
+    # schema pattern 明确拒收 → 抛 "failed schema" 可见 abort，属刻意保留的严格边界。
+    @pytest.mark.parametrize("mangle", [
+        lambda u: u + "/",                                  # 补尾斜杠
+        lambda u: u.replace("/owner/", "/Owner/"),           # 改大小写
+        lambda u: u + ".git",                                # 带 .git
+    ])
+    def test_llm_normalized_urls_still_align(self, monkeypatch, mangle):
+        repos = _repos(3)
+        items = [{
+            "repo_url": mangle(r["repo_url"]),
+            "summary": f"{_SUMMARY_ZH}#{i}",
+            "use_case": f"{_USECASE_ZH}#{i}",
+        } for i, r in enumerate(repos)]
+
+        monkeypatch.setattr(
+            "akb2.briefing.github.synthesis._call_deepseek",
+            lambda prompt, api_key=None, **kw: _llm_response(items),
+        )
+        result = synthesize(repos, api_key="test-key")
+        for i, r in enumerate(result["top_repos"]):
+            assert r["repo_url"] == repos[i]["repo_url"], "输入 URL 不得被模型改写"
+            assert r["summary"].endswith(f"#{i}"), (
+                f"{r['repo_url']} 拿到了别人的 summary: {r['summary']}"
+            )
+
+    def test_normalization_does_not_weaken_fabrication_abort(self, monkeypatch):
+        """归一化只吸收无害差异；真编造的 repo 仍必须 abort。"""
+        repos = _repos(2)
+        items = [
+            {"repo_url": repos[0]["repo_url"] + "/",
+             "summary": _SUMMARY_ZH, "use_case": _USECASE_ZH},
+            {"repo_url": "https://github.com/Hallucinated/Repo/",
+             "summary": _SUMMARY_ZH, "use_case": _USECASE_ZH},
+        ]
+        monkeypatch.setattr(
+            "akb2.briefing.github.synthesis._call_deepseek",
+            lambda prompt, api_key=None, **kw: _llm_response(items),
+        )
+        with pytest.raises(ValueError, match="不匹配"):
+            synthesize(repos, api_key="test-key")
+
+    def test_case_only_duplicates_still_abort(self, monkeypatch):
+        """归一后撞键 = 同仓两份简介，仍是必须 abort 的重复。"""
+        repos = _repos(2)
+        items = [
+            {"repo_url": repos[0]["repo_url"],
+             "summary": _SUMMARY_ZH, "use_case": _USECASE_ZH},
+            {"repo_url": repos[0]["repo_url"].replace("/owner/", "/OWNER/"),
+             "summary": _SUMMARY_ZH, "use_case": _USECASE_ZH},
+        ]
+        monkeypatch.setattr(
+            "akb2.briefing.github.synthesis._call_deepseek",
+            lambda prompt, api_key=None, **kw: _llm_response(items),
+        )
+        with pytest.raises(ValueError, match="repo_url"):
+            synthesize(repos, api_key="test-key")

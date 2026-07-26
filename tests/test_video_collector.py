@@ -17,6 +17,7 @@ import pytest
 from src.akb2.video.collector import VideoCollector
 from src.akb2.video.config import VideoConfig
 from src.akb2.video.dedup_store import VideoDedupStore
+from tests.video_state_isolation import isolate_video_state  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Helpers

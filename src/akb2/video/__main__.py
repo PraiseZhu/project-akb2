@@ -13,6 +13,7 @@ import logging
 import socket
 import sys
 import time
+from pathlib import Path
 
 from src.akb2.video.assembler import (
     Assembler,
@@ -112,6 +113,56 @@ def _build_llm_adapter(config: VideoConfig) -> DeepSeekAdapter | None:
     )
 
 
+def _build_dedup_pair(
+    config: VideoConfig, llm_adapter: DeepSeekAdapter | None = None
+) -> tuple[VideoDedupStore, VideoCollector]:
+    """构造去重账本 + 接了账本的 collector（三条 CLI 路径共用，缺陷 V-2）。
+
+    `--source` / `--fixture` 过去是裸 `assembler.commit(...)`：既不查账本
+    （`is_ingested`）也不登记（`mark_ingested`），且 commit 不传 slug → 产出文件名
+    与主路径不同族，连文件名层都抓不到重复。这两条路是官方后门，现在与主路径共用
+    同一套查/记逻辑。
+    """
+    store = VideoDedupStore(config.dedup_db_path)
+    logger.info("去重账本: %s", config.dedup_db_path)
+    return store, VideoCollector(config, db=store, llm_adapter=llm_adapter)
+
+
+def _seed_history(store: VideoDedupStore, config: VideoConfig) -> None:
+    """一次性回填历史产出身份，并把部分失败显式暴露（宪法 P4，缺陷 V-1）。"""
+    outcome = store.seed_from_published(config.promotion_target_path)
+    if outcome.already_seeded or outcome.dir_unavailable:
+        return
+    if not outcome.marked_complete:
+        logger.error(
+            "[去重库] 历史回填未完整覆盖（%d/%d 份，覆盖率 %.1f%%）——"
+            "未覆盖的已发布视频本轮可能被重跑；标记未写入，下轮会重试",
+            outcome.scanned, outcome.files_total, outcome.coverage * 100,
+        )
+
+
+def _commit_and_mark(
+    assembler: Assembler,
+    collector: VideoCollector,
+    video_meta: dict,
+    candidate_md: str,
+) -> tuple[Path, bool, bool]:
+    """提交 + 登记（与 `run_pipeline` 相同的 slug / 账本契约）。
+
+    Returns:
+        (产出路径, 是否仍在 staging（= needs_repair）, 账本是否已登记)
+    """
+    candidate_path = assembler.commit(
+        candidate_md, slug=assembler._slug_for_video(video_meta)
+    )
+    is_staging = assembler._is_staging_candidate(candidate_path)
+    if is_staging:
+        # needs_repair 不登记：它就是要下轮重试的（与 run_pipeline 一致）。
+        return candidate_path, True, False
+    marked = assembler._mark_ingested(collector, video_meta, candidate_path)
+    return candidate_path, False, marked
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI 入口。exit 0 = 全链路通过，exit 1 = 有失败，exit 2 = 网络不可达。"""
     parser = argparse.ArgumentParser(
@@ -159,10 +210,8 @@ def _run_full(config: VideoConfig, dry_run: bool) -> int:
         llm_adapter = _build_llm_adapter(config)
         # 缺陷 #2：生产入口过去从不传 db → L1/L7 去重整条空转（79% 重复产出）。
         # 现在显式注入去重账本，并一次性回填历史产出身份，避免已发布视频再跑一遍。
-        dedup_store = VideoDedupStore(config.dedup_db_path)
-        logger.info("去重账本: %s", config.dedup_db_path)
-        dedup_store.seed_from_published(config.promotion_target_path)
-        collector = VideoCollector(config, db=dedup_store, llm_adapter=llm_adapter)
+        dedup_store, collector = _build_dedup_pair(config, llm_adapter)
+        _seed_history(dedup_store, config)
         researcher = VideoResearcher(config, llm_adapter=llm_adapter)
         extractor = Extractor(llm_adapter=llm_adapter)
         reasoner = Reasoner(ConceptStore(), llm_adapter=llm_adapter)
@@ -192,6 +241,16 @@ def _run_single_source(config: VideoConfig, url: str, dry_run: bool) -> int:
         }
 
         llm_adapter = _build_llm_adapter(config)
+        # 缺陷 V-2：这条路过去完全绕过账本。查端必须在 researcher.run 之前
+        # （花 NLM/LLM 额度之前），写端必须在发布之后。
+        dedup_store, collector = _build_dedup_pair(config, llm_adapter)
+        if dedup_store.is_ingested(url):
+            logger.warning(
+                "[去重] 该视频已入库，跳过 --source 全链路（避免重复烧 NLM/LLM 额度）: %s",
+                url,
+            )
+            return 0
+
         researcher = VideoResearcher(config, llm_adapter=llm_adapter)
         extractor = Extractor(llm_adapter=llm_adapter)
         reasoner = Reasoner(ConceptStore(), llm_adapter=llm_adapter)
@@ -211,14 +270,21 @@ def _run_single_source(config: VideoConfig, url: str, dry_run: bool) -> int:
                 logger.info(f"dry-run: {output.video_meta.get('title', '?')}")
             else:
                 try:
-                    candidate_path = assembler.commit(candidate_md)
-                    if assembler._is_staging_candidate(candidate_path):
+                    candidate_path, is_staging, marked = _commit_and_mark(
+                        assembler, collector, output.video_meta, candidate_md
+                    )
+                    if is_staging:
                         logger.warning(
                             "gate 判 needs_repair，报告未发布，已保留 staging: %s",
                             candidate_path,
                         )
                         return 1
                     logger.info(f"已发布到 AI TRENDS/Video: {candidate_path}")
+                    if not marked:
+                        logger.error(
+                            "已发布但去重账本未登记，下轮会重跑该视频: %s", candidate_path
+                        )
+                        return 1
                 except GateRejected as e:
                     logger.warning(f"gate 拒绝，报告已丢弃: {e}")
                     return 1
@@ -293,10 +359,27 @@ def _run_fixture(config: VideoConfig, dry_run: bool) -> int:
             logger.info("gate_dry_run: pass (fixture mode)")
             logger.info("PASS: fixture 全链路通过")
             return 0
-        else:
-            candidate_path = assembler.commit(candidate_md)
-            logger.info(f"candidate 写入: {candidate_path}")
+
+        # 缺陷 V-2：非 dry-run 的 fixture 模式是真写 vault 的路径，
+        # 必须和主路径共用同一套查/记逻辑（原来是裸 commit，账本既不查也不记）。
+        dedup_store, collector = _build_dedup_pair(config)
+        if dedup_store.is_ingested(video_meta["url"]):
+            logger.warning(
+                "[去重] fixture 视频已入库，跳过写入（避免重复产出）: %s",
+                video_meta["url"],
+            )
             return 0
+        candidate_path, is_staging, marked = _commit_and_mark(
+            assembler, collector, video_meta, candidate_md
+        )
+        logger.info(f"candidate 写入: {candidate_path}")
+        if is_staging:
+            logger.warning("gate 判 needs_repair，保留 staging: %s", candidate_path)
+            return 1
+        if not marked:
+            logger.error("已发布但去重账本未登记，下轮会重跑该视频: %s", candidate_path)
+            return 1
+        return 0
 
     except (CandidateTargetExists, GateRejected, PromotionTargetNotFound) as e:
         logger.error(f"提交失败: {e}")

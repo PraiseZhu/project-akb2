@@ -317,8 +317,13 @@ def _social_dedup_window_days(intake_window_days: int) -> int:
     return max(intake_window_days, override)
 
 
-def _open_social_dedup_store(window_days: int):
+def _open_social_dedup_store(window_days: int, *, min_window_days: int):
     """打开跨日去重账本（复用 github 链路的 DedupStore，键用 tweet id）。
+
+    `min_window_days` = **社媒自己的采集窗口**，显式传给 DedupStore 作窗口下限。
+    不传时 DedupStore 会用 GitHub 链路的 `RECENCY_WINDOW_DAYS`(7) 兜底——那等于
+    GitHub 的常量在暗中决定社媒的去重窗口（社媒采集窗口默认 3 天，
+    见 `_INTAKE_WINDOW_DAYS_DEFAULT`），社媒侧既无声明也无测试。故此处必传。
 
     账本不可用 → fail-closed（宪法原则 3）：没有账本就无法保证不重复，
     宁可不发也不发一份可能重复的简报。
@@ -331,7 +336,9 @@ def _open_social_dedup_store(window_days: int):
     try:
         db_path = state_file_path(_SOCIAL_DEDUP_DB_NAME, subdir=LEDGER_SUBDIR)
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        return DedupStore(db_path, window_days=window_days)
+        return DedupStore(
+            db_path, window_days=window_days, min_window_days=min_window_days
+        )
     except (RuntimeError, OSError, sqlite3.Error) as exc:
         sys.stderr.write(
             f"ERROR [social_dedup]: 跨日去重账本不可用（{type(exc).__name__}: {exc}）——"
@@ -340,14 +347,20 @@ def _open_social_dedup_store(window_days: int):
         sys.exit(5)
 
 
-def apply_cross_day_dedup(tweets: list[dict], *, window_days: int) -> tuple[list[dict], list[str]]:
+def apply_cross_day_dedup(
+    tweets: list[dict], *, window_days: int, intake_window_days: int
+) -> tuple[list[dict], list[str]]:
     """按 tweet id 剔除窗口内已发布过的推文。
+
+    Args:
+        window_days: 生效的去重窗口。
+        intake_window_days: 社媒采集窗口 = 去重窗口下限（显式声明，不借 GitHub 常量）。
 
     Returns:
         (保留的推文, 待记账的 tweet id 列表) —— 记账**推迟到实际发布成功之后**
         （见 `mark_social_dedup_seen`），否则一次未发布的运行会白吃掉当天素材。
     """
-    store = _open_social_dedup_store(window_days)
+    store = _open_social_dedup_store(window_days, min_window_days=intake_window_days)
     try:
         store.prune()
         kept: list[dict] = []
@@ -377,11 +390,13 @@ def apply_cross_day_dedup(tweets: list[dict], *, window_days: int) -> tuple[list
         store.close()
 
 
-def mark_social_dedup_seen(keys: list[str], *, window_days: int) -> None:
-    """发布成功后把本期推文 id 记入账本。"""
+def mark_social_dedup_seen(
+    keys: list[str], *, window_days: int, intake_window_days: int
+) -> None:
+    """发布成功后把本期推文 id 记入账本（窗口下限同样显式传社媒采集窗口）。"""
     if not keys:
         return
-    store = _open_social_dedup_store(window_days)
+    store = _open_social_dedup_store(window_days, min_window_days=intake_window_days)
     try:
         for k in keys:
             store.mark_seen(k)
@@ -593,6 +608,25 @@ def _render_tweet(t: dict) -> list[str]:
     return parts
 
 
+# frontmatter 里放自由文本（audit issue 文案）的单条长度上限：审计文案会带 80 字
+# 内容节选，整篇 20+ 条会把 frontmatter 撑到比正文还长，gate 解析成本也跟着涨。
+_FRONTMATTER_TEXT_MAX = 200
+# 自由文本列表（audit warn issues）落盘条数上限；超出只写总数 + 截断提示
+_FRONTMATTER_LIST_MAX = 12
+
+
+def _yaml_quote(text: str) -> str:
+    """把自由文本渲染成 YAML 双引号标量（含冒号/引号/换行也不破坏 frontmatter）。
+
+    `json.dumps` 的输出是 YAML 双引号标量的合法子集（同样的 `\\"` / `\\n` 转义规则），
+    故直接复用，避免为此引入 yaml 依赖。
+    """
+    body = " ".join((text or "").split())
+    if len(body) > _FRONTMATTER_TEXT_MAX:
+        body = body[:_FRONTMATTER_TEXT_MAX] + "…"
+    return json.dumps(body, ensure_ascii=False)
+
+
 def _degradation_frontmatter_lines(degradation: dict | None) -> list[str]:
     """把降级状态渲染成 frontmatter 行（缺陷 #9）。
 
@@ -610,10 +644,29 @@ def _degradation_frontmatter_lines(degradation: dict | None) -> list[str]:
         f"novelty_mode: {degradation.get('novelty_mode', 'unknown')}",
         f"degraded: {'true' if reasons else 'false'}",
     ]
+    # 缺陷 S-4：翻译总预算耗尽的原因（call_budget / time_budget）显式落盘，
+    # 否则「后半截条目没送去翻译」与「模型逐条失败」在产出层无法区分。
+    budget_exhausted = degradation.get("translate_budget_exhausted")
+    if budget_exhausted:
+        lines.append(f"translate_budget_exhausted: {budget_exhausted}")
     failed_fields = [str(f) for f in (degradation.get("translate_failed_fields") or [])]
     if failed_fields:
         lines.append("translate_failed_fields:")
         lines += [f"  - {f}" for f in failed_fields]
+    # 缺陷 S-3：audit 的 warn 级确定性问题（standard_warn_issues）此前只留在
+    # audit_briefing 的返回值里、pipeline 一处都不消费 —— 产出层看到 audit_verdict: warn
+    # 却无从判读究竟 warn 在哪。issue 文案含冒号/引号/换行，必须走 YAML 双引号转义。
+    # 条数上限：术语表/语言纯度检查逐字段出条，整篇 27.8 个受检字段最坏能出几十条，
+    # 全量落盘会让 frontmatter 比正文还长；截断但把总数写出来（截断本身可判读）。
+    warn_issues = [str(w) for w in (degradation.get("audit_warn_issues") or [])]
+    if warn_issues:
+        lines.append(f"audit_warn_issue_count: {len(warn_issues)}")
+        lines.append("audit_warn_issues:")
+        lines += [f"  - {_yaml_quote(w)}" for w in warn_issues[:_FRONTMATTER_LIST_MAX]]
+        if len(warn_issues) > _FRONTMATTER_LIST_MAX:
+            hidden = len(warn_issues) - _FRONTMATTER_LIST_MAX
+            note = f"…另有 {hidden} 条已截断（完整清单见 audit.jsonl）"
+            lines.append(f"  - {_yaml_quote(note)}")
     if reasons:
         lines.append("degradation_reasons:")
         lines += [f"  - {r}" for r in reasons]
@@ -923,7 +976,9 @@ def main(argv: list[str] | None = None) -> int:
         stage_start = time.monotonic()
         _stage_log("cross_day_dedup", "start")
         deduped, dedup_keys = apply_cross_day_dedup(
-            scored_data.get("tweets", []), window_days=dedup_window
+            scored_data.get("tweets", []),
+            window_days=dedup_window,
+            intake_window_days=window_days,
         )
         scored_data["tweets"] = deduped
         _stage_log("cross_day_dedup", "end", time.monotonic() - stage_start)
@@ -941,8 +996,27 @@ def main(argv: list[str] | None = None) -> int:
     social_dir = akb2_root / "AI TRENDS" / "Social"
     social_dir.mkdir(parents=True, exist_ok=True)
 
+    # 缺陷 S-1：`--dry-run-intake` 跳过 `_filter_recent` 与跨日去重（上面两个
+    # `if not dry_run_intake`），推文也**不进账本**。若这种产出仍写进 Social，
+    # 次日真实运行会把同一批内容再发一遍——fail-closed 在 dry-run 分支上是开口的。
+    #
+    # 语义选择：**dry-run 的产出不视为已发布**（与缺陷 #1 一致——真实运行一旦发现
+    # 内容来自 fixture 就 exit 3 硬阻断；dry-run 用的正是同一批 fixture 数据，
+    # 没有理由让它绕过同一条红线）。因此 dry-run 写隔离目录 staging/dry-run/，
+    # Social 完全不碰，账本也不动（排练不消耗素材）。
+    dry_run_output_dir = akb2_root / "staging" / "dry-run"
+    if dry_run_intake:
+        dry_run_output_dir.mkdir(parents=True, exist_ok=True)
+        publish_dir = dry_run_output_dir
+        sys.stderr.write(
+            "INFO [pipeline]: --dry-run-intake — 产出写隔离目录 "
+            f"{publish_dir}，不写入 Social、不记账（dry-run 产出不视为已发布）\n"
+        )
+    else:
+        publish_dir = social_dir
+
     real_briefing_path = staging_candidate_dir / briefing_filename
-    final_briefing_path = social_dir / briefing_filename
+    final_briefing_path = publish_dir / briefing_filename
 
     # SC-P3b-1: collector_name 从实际模式推导；缺陷 #1：降级时不得报 account_collector
     collector_mode = os.environ.get("AKB2_INTAKE_COLLECTOR", "account")
@@ -1014,6 +1088,19 @@ def main(argv: list[str] | None = None) -> int:
     else:
         degradation["translate_status"] = "ok"
 
+    # 缺陷 S-4：翻译总预算耗尽（总调用数 / 总时长）必须落盘可判读，
+    # 否则「后半截条目根本没送去翻译」与「模型逐条失败」在产出层长得一样。
+    translate_budget_exhausted = synth_zh.get("translate_budget_exhausted")
+    if translate_budget_exhausted:
+        degradation["translate_budget_exhausted"] = str(translate_budget_exhausted)
+        degradation["reasons"].append(
+            f"translate_budget_exhausted:{translate_budget_exhausted}"
+        )
+        sys.stderr.write(
+            "WARNING [pipeline]: translate 总预算耗尽"
+            f"（{translate_budget_exhausted}）——未翻译条目见 translate_failed_fields\n"
+        )
+
     stage_start = time.monotonic()
     _stage_log("audit_fix", "start")
     synth_zh, verdict = run_audit_fix_loop(synth_zh, synth_en)
@@ -1025,6 +1112,20 @@ def main(argv: list[str] | None = None) -> int:
     audit_degraded = bool(verdict.get("audit_degraded")) or audit_verdict == "warn"
     if audit_degraded:
         degradation["reasons"].append("audit_degraded")
+
+    # 缺陷 S-3：audit 的两个悬空键必须被消费并落盘。
+    #   standard_warn_issues → 产出层能判读「warn 具体 warn 在哪」
+    #   audit_log_failed     → 审计日志写盘失败此前只到 stderr，产出层无从判读
+    #                          裁决记录已丢失（违反 constitution 原则 4 失败可见）
+    degradation["audit_warn_issues"] = [
+        str(w) for w in (verdict.get("standard_warn_issues") or [])
+    ]
+    if verdict.get("audit_log_failed"):
+        degradation["reasons"].append("audit_log_write_failed")
+        sys.stderr.write(
+            "WARNING [pipeline]: 审计裁决未能写入 audit.jsonl——"
+            "产出标 audit_log_write_failed（裁决记录丢失可判读）\n"
+        )
 
     def _compose_final(decision: str) -> str:
         return build_briefing_markdown(
@@ -1109,7 +1210,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"proposed_gate_decision: {gate_decision}")
         sys.exit(1)
 
-    # Copy to Social
+    # Copy to Social（dry-run 时目标是 staging/dry-run，见上文 publish_dir）
     stage_start = time.monotonic()
     _stage_log("write_social", "start")
     if final_briefing_path.exists() or final_briefing_path.is_symlink():
@@ -1120,8 +1221,11 @@ def main(argv: list[str] | None = None) -> int:
     _stage_log("write_social", "end", time.monotonic() - stage_start)
 
     # 缺陷 #6：只有真正发布之后才记账，避免未发布的运行白吃掉当天素材
+    # （dry-run 不进这里：dedup_keys 恒空，账本不动）
     if dedup_keys:
-        mark_social_dedup_seen(dedup_keys, window_days=dedup_window)
+        mark_social_dedup_seen(
+            dedup_keys, window_days=dedup_window, intake_window_days=window_days
+        )
 
     print(f"proposed_gate_decision: {gate_decision}")
     return 0

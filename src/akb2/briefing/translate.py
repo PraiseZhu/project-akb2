@@ -17,6 +17,8 @@
   translate_failed: bool         整体翻译失败（模型链全灭，正文仍是英文）
   translate_degraded: bool       部分失败（某些条目/补译未成功）
   translate_failed_fields: list  具体失败字段（如 ["tweets[3]", "core_excerpt[5]"]）
+  translate_budget_exhausted: str  阶段总预算耗尽原因（call_budget | time_budget），
+                                 未耗尽时该键不存在；见 _TranslateBudget
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 
 # 翻译阶段模型链。
 # Constitution 原则 7：7×24 管线禁用 -preview 模型。故默认主力取稳定 deepseek
@@ -291,21 +294,98 @@ def _model_chain(model: str | None = None) -> list[str]:
     return chain
 
 
+# ---------------------------------------------------------------------------
+# 阶段总预算（缺陷 S-4，constitution 原则 1「循环必须有显式停止条件与预算」）
+#
+# 条目级隔离把 1 次调用变成 1+N 次，单条虽有 _TWEET_TIMEOUT_CAP=120s 上限，但整段
+# 此前**没有任何总量约束**：20 条 × 3 个 fallback 模型 × 120s ≈ 2 小时，而 launchd
+# 侧（com.akb2.briefing，07:30 触发）既无 ExitTimeOut 也无 timeout 包裹，超时行为
+# 完全不可预期。故用具名常量表达两条硬上限，任一触达即**可见地**停止后续调用。
+#
+# 取值依据：展示推文上限 = 被引用推文 + 孤儿 top-K（_ORPHAN_TOP_K 默认 5），实测
+# 每篇 18.2 条（60 篇已发布简报均值）→ 1 + 19 = 20 个逻辑条目；每条最多 len(chain)=3
+# 次模型尝试 → 60 次尝试即"每条都把整条链打穿"的最坏情况，超过它说明链路整体故障，
+# 继续打只是烧钱。时长 900s = 15 分钟，与「日报 07:30 触发、需在早高峰前落地」相容，
+# 且远小于原先 ~2h 的最坏情况。
+#
+# 精度边界（如实记录）：时长预算在**发起调用前**检查，已在飞的单次调用不会被打断，
+# 故实际上界是 900s + 单次上限 _TWEET_TIMEOUT_CAP(120s) = 1020s。要真正硬切需要在
+# 传输层加 deadline，那是 synthesis._call_llm 的职责，不在本阶段范围内。
+# ---------------------------------------------------------------------------
+
+_TRANSLATE_TOTAL_CALL_BUDGET = int(
+    os.environ.get("AKB2_TRANSLATE_TOTAL_CALLS", "60")
+)
+_TRANSLATE_TOTAL_TIME_BUDGET_S = int(
+    os.environ.get("AKB2_TRANSLATE_TOTAL_SECONDS", "900")
+)
+
+
+class _TranslateBudget:
+    """整段翻译的总预算（调用尝试数 + 墙钟时长）。任一耗尽即停止发起新调用。
+
+    记录 `exhausted_reason` 而非静默返回：未翻译的条目必须在产出层可判读
+    （constitution 原则 4），否则「预算耗尽没送去翻译」与「模型逐条失败」
+    在产出里长得一模一样。
+    """
+
+    def __init__(self, max_calls: int | None = None, max_seconds: int | None = None) -> None:
+        # 默认值在**构造时**读模块常量（不是函数定义时绑定默认参数）：否则测试/部署
+        # 覆盖常量后新建的 budget 仍是旧上限，预算就成了不可调的死值。
+        self.max_calls = _TRANSLATE_TOTAL_CALL_BUDGET if max_calls is None else max_calls
+        self.max_seconds = (
+            _TRANSLATE_TOTAL_TIME_BUDGET_S if max_seconds is None else max_seconds
+        )
+        self.started_at = time.monotonic()
+        self.calls = 0
+        self.exhausted_reason: str | None = None
+
+    def elapsed(self) -> float:
+        return time.monotonic() - self.started_at
+
+    def take(self) -> bool:
+        """领一次调用额度；返回 False 表示预算已耗尽（不得再发起调用）。"""
+        if self.calls >= self.max_calls:
+            self.exhausted_reason = "call_budget"
+            return False
+        if self.elapsed() >= self.max_seconds:
+            self.exhausted_reason = "time_budget"
+            return False
+        self.calls += 1
+        return True
+
+    def describe(self) -> str:
+        return (
+            f"{self.exhausted_reason} (calls={self.calls}/{self.max_calls}, "
+            f"elapsed={self.elapsed():.0f}s/{self.max_seconds}s)"
+        )
+
+
 def _call_json_with_chain(
     prompt: str,
     chain: list[str],
     *,
     timeout: int,
     label: str,
+    budget: _TranslateBudget | None = None,
 ) -> tuple[dict | None, list[str]]:
     """按模型链顺序请求 JSON，返回 (解析结果|None, 重排后的链)。
 
     重排：某个模型成功后把它提到链首——条目级隔离后单次运行有 1+N 次调用，
     每次都从已知不可用的主力重试会白付 N 倍失败开销。
+
+    budget 非 None 时，每次模型尝试都要先领额度；预算耗尽则不再尝试剩余模型
+    （调用方据 `budget.exhausted_reason` 标记未翻译条目）。
     """
     from akb2.briefing.synthesis import _call_llm
 
     for i, used_model in enumerate(chain):
+        if budget is not None and not budget.take():
+            sys.stderr.write(
+                f"WARNING [translate]: 翻译总预算耗尽（{budget.describe()}），"
+                f"{label} 停止尝试剩余模型 {chain[i:]}\n"
+            )
+            return None, chain
         # 主力模型走默认网关，fallback 模型走跨网关备用 URL（防单网关故障）。
         # 按模型身份而非链内位置判定：链会因"成功者提到链首"重排，用位置会让
         # 备用模型在重排后被错误地打回主网关。
@@ -407,9 +487,11 @@ def translate_briefing(
       translate_failed / translate_degraded / translate_failed_fields
     """
     chain = _model_chain(model)
+    budget = _TranslateBudget()
 
     trans, chain = _call_json_with_chain(
-        _build_analysis_prompt(synth), chain, timeout=timeout, label="analysis"
+        _build_analysis_prompt(synth), chain, timeout=timeout, label="analysis",
+        budget=budget,
     )
     if trans is None:
         sys.stderr.write(
@@ -420,6 +502,8 @@ def translate_briefing(
         failed["translate_failed"] = True
         failed["translate_degraded"] = True
         failed["translate_failed_fields"] = ["analysis"]
+        if budget.exhausted_reason:
+            failed["translate_budget_exhausted"] = budget.exhausted_reason
         return failed
 
     tweets = synth.get("tweets", [])
@@ -429,21 +513,35 @@ def translate_briefing(
     for idx in sorted(_display_tweet_indices(synth)):
         if idx >= len(tweets):
             continue
+        if budget.exhausted_reason:
+            # 预算已耗尽：剩余条目一律不再发起调用，但必须逐条点名（不静默返回英文）
+            failed_fields.append(f"tweets[{idx}](budget_exhausted)")
+            continue
         payload, chain = _call_json_with_chain(
             _build_tweet_prompt(idx, tweets[idx]),
             chain,
             timeout=tweet_timeout,
             label=f"tweets[{idx}]",
+            budget=budget,
         )
         item = _extract_tweet_item(payload, idx) if payload is not None else None
         if item is None:
-            failed_fields.append(f"tweets[{idx}]")
+            suffix = "(budget_exhausted)" if budget.exhausted_reason else ""
+            failed_fields.append(f"tweets[{idx}]{suffix}")
             continue
         tweet_items.append(item)
 
     trans["tweets"] = tweet_items
 
-    result = _apply_translation(synth, trans, model=model)
+    result = _apply_translation(synth, trans, model=model, budget=budget)
+    if budget.exhausted_reason:
+        result["translate_degraded"] = True
+        result["translate_budget_exhausted"] = budget.exhausted_reason
+        sys.stderr.write(
+            f"WARNING [translate]: 翻译总预算耗尽（{budget.describe()}）——"
+            f"{len([f for f in failed_fields if 'budget_exhausted' in f])} 条未翻译"
+            "（translate_budget_exhausted，产出保持英文并已点名）\n"
+        )
     if failed_fields:
         result["translate_degraded"] = True
         result["translate_failed_fields"] = (
@@ -456,13 +554,19 @@ def translate_briefing(
     return result
 
 
-def _apply_translation(synth: dict, trans: dict, *, model: str | None = None) -> dict:
+def _apply_translation(
+    synth: dict,
+    trans: dict,
+    *,
+    model: str | None = None,
+    budget: _TranslateBudget | None = None,
+) -> dict:
     """将翻译结果合并回 synth，逐字段回退，不抛异常；合并失败时打标记（失败可见）。"""
     import copy
     result = copy.deepcopy(synth)
 
     try:
-        return _apply_translation_inner(result, trans, model=model)
+        return _apply_translation_inner(result, trans, model=model, budget=budget)
     except Exception as e:
         sys.stderr.write(
             f"WARNING [translate]: _apply_translation failed ({e}), "
@@ -499,8 +603,18 @@ def _mark_degraded(result: dict, field: str) -> None:
     result["translate_failed_fields"] = fields
 
 
-def _apply_translation_inner(result: dict, trans: dict, *, model: str | None = None) -> dict:
-    """实际合并逻辑，由 _apply_translation 包裹捕获。"""
+def _apply_translation_inner(
+    result: dict,
+    trans: dict,
+    *,
+    model: str | None = None,
+    budget: _TranslateBudget | None = None,
+) -> dict:
+    """实际合并逻辑，由 _apply_translation 包裹捕获。
+
+    budget 一路透传给补译（topic / core_excerpt）：补译也是真实 LLM 调用，
+    不计入总预算就等于给预算开了后门（最多再来 N 次 × 完整模型链）。
+    """
     # executive_summary
     zh_summary = (trans.get("executive_summary") or "").strip()
     if zh_summary:
@@ -519,7 +633,7 @@ def _apply_translation_inner(result: dict, trans: dict, *, model: str | None = N
                     f"WARNING [translate]: focus_discussions[{i}].topic "
                     f"未翻译（纯英文）{topic_zh!r}，尝试补译\n"
                 )
-                retranslated = _translate_snippet(topic_zh, model=model)
+                retranslated = _translate_snippet(topic_zh, model=model, budget=budget)
                 if retranslated:
                     fd["topic"] = retranslated
                 else:
@@ -560,7 +674,7 @@ def _apply_translation_inner(result: dict, trans: dict, *, model: str | None = N
                     tw["core_excerpt"] = core_zh_direct
                 else:
                     # 无直接译文：单独翻译 core_en
-                    snippet_zh = _translate_snippet(core_en, model=model)
+                    snippet_zh = _translate_snippet(core_en, model=model, budget=budget)
                     if snippet_zh:
                         tw["core_excerpt"] = snippet_zh
                     else:
@@ -585,6 +699,7 @@ def _translate_snippet(
     timeout: int = 60,
     *,
     model: str | None = None,
+    budget: _TranslateBudget | None = None,
 ) -> str:
     """单独翻译一段英文（补译：残英 topic / core_excerpt_en 无对应 core_excerpt_zh）。
 
@@ -599,6 +714,12 @@ def _translate_snippet(
 
     chain = _model_chain(model)
     for i, used_model in enumerate(chain):
+        if budget is not None and not budget.take():
+            sys.stderr.write(
+                f"WARNING [translate]: 翻译总预算耗尽（{budget.describe()}），"
+                "snippet 补译停止（返回空串，调用方降级）\n"
+            )
+            return ""
         fb_base_url = (
             _TRANSLATE_FALLBACK_BASE_URL
             if used_model in _TRANSLATE_FALLBACK_MODELS
