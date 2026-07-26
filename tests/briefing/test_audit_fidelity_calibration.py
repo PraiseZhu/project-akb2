@@ -3,16 +3,27 @@
 背景（缺陷 S-2）：audit 的 4 个 fail 级确定性检查是日报可用性单点 —— 一次误报即
 `standard=fail` → `verdict=fail` → `pipeline sys.exit(2)` → 当天日报不发布。
 
-量化依据（回放 `/Volumes/AKB2/.../AI TRENDS/Social/` 全部 60 篇已发布简报，只读）：
-  * 受检字段 27.8 个/篇（executive_summary + topic + summary + 展示推文）
-    → 单字段 1% 误报即 1-(1-0.01)^27.8 ≈ 24.5% 的天数被判 fail。
-  * 恒等回放（en := 已发布 ZH 文本自身）：1667 字段 0 误报 → 检查器无结构性假阳性。
+量化依据（回放 `/Volumes/AKB2/.../AI TRENDS/Social/` 全部 60 篇已发布简报，只读）。
+
+**回放口径**：vault 里只有中文成品，没有任何 en/zh 配对产物，而所有 fail 级判据都需要
+英文原文 → 回放能量化的是**曝光面**（某判据多久触发一次），**不是误报率**（触发中有多少
+是错的）。误报率本地在原理上不可测，须用真机 en/zh 配对样本（译前 synth_en + 译后
+synth_zh）另测。下列 "x/60 篇" "n/n token" 一律读作曝光面。
+  * 受检字段 26.0 个/篇（executive_summary + topic + summary + 展示推文）
+    → 单字段 1% 误报即 1-(1-0.01)^26 ≈ 23.0% 的天数被判 fail。这是"为什么 fail 级
+      必须有修复通道"的敏感度论证，不是"误报率已知"的声明。
+  * 恒等回放（en := 已发布 ZH 文本自身）**不能**证明"无结构性假阳性"：此时数字/URL/
+    @handle 在构造上必然逐字保留，检查器不可能报错，"0 误报"是同义反复。它有效的用途
+    是暴露"en 侧其实不是英文"这类前提破坏 —— 实测暴露了 33 条 `metric_fabricated`
+    （fail 级，21/60 篇 = 35.0%）：中文文本永不含 `accuracy` 词根。已由
+    `audit._is_cjk_source` 门修掉，见本文件 TestMetricFabricationCjkSource。
   * 参数规模 B 逐字保留：9/60 篇（15%）实际把它本地化成「4000 亿参数」
     「9750 亿参数（激活 410 亿）」「2.8 万亿参数」，且**数值等价**（400B == 4000 亿）
     → 该类降 warn（kind=number_localized）。
-  * 千分位逐字保留：11/11 token 全部逐字保留（4,000+ / 5,000 / 1,000 / 3,000 /
-    4,100 / 10,000 / 2,000 / 50,000），观测误报 0 → 维持 fail 级。
-  * 中文指标名曝光 28/60（准确率 13 / 召回率 1 走严格档；解决率 7 / 通过率 2 /
+  * 千分位逐字保留：曝光 9/60 篇，11/11 token 在已发布中文里逐字保留（4,000+ / 5,000 /
+    1,000 / 3,000 / 4,100 / 10,000 / 2,000 / 50,000）→ 该判据在现网产出上不会到处开火，
+    维持 fail 级。**不是"误报率 0"**：没有英文原文，无从判断这 11 次是否有漏报/误报。
+  * 中文指标名曝光 27/60（准确率 13 / 召回率 1 走严格档；解决率 7 / 通过率 1 /
     成功率 8 走 rate|% 宽松档）。
 
 这些豁免此前**一条断言都没有**：将来把「裸 1-2 位小整数跳过」「速率类接受 rate/%」
@@ -123,7 +134,7 @@ def test_thousands_verbatim_preserved_passes():
 
 
 def test_thousands_dropped_is_fail():
-    """千分位长数丢失仍 fail：观测误报 0/11，没有降级依据。"""
+    """千分位长数丢失仍 fail：现网 11/11 token 逐字保留（曝光面低），没有降级依据。"""
     issues = _issues("已获得很多 GitHub star", "18,432 GitHub stars")
     kinds = {it["kind"] for it in issues}
     assert "number_mismatch" in kinds, f"千分位丢失应 fail，实际 {issues}"
@@ -221,8 +232,9 @@ def test_handle_missing_stays_fail():
 def test_every_fail_kind_from_fidelity_checks_has_a_fixer():
     """fail 级确定性检查若不在 _FIXABLE_KINDS 里，一次误报 = 当天日报直接不发布。
 
-    27.8 个受检字段/篇（60 篇实测均值）→ 单字段 1% 误报即 24.5% 天数停发，
+    26.0 个受检字段/篇（60 篇实测曝光面均值）→ 单字段 1% 误报即约 23% 天数停发，
     所以"有修复通道"是硬契约，不是优化项。
+    （注：1% 是敏感度分析的假设输入，不是实测误报率 —— 后者本地不可测，见模块 docstring。）
     """
     zh, en = _synth("综述里没有链接、没有 @人、指标是准确率 72%、模型 40 亿参数。",
                     "Summary: 72% on SWE-bench by @karpathy, 405B model, "
@@ -280,3 +292,70 @@ def test_audit_fix_loop_actually_retranslates_number_mismatch():
     assert verdict["fix_loop_reason"] == "converged", (
         f"重译后应收敛，实际 {verdict.get('fix_loop_reason')} / {verdict.get('standard_issues')}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 中文↔中文比较不得走严格档（恒等回放证伪出的构造性假阳性）
+# ---------------------------------------------------------------------------
+
+class TestMetricFabricationCjkSource:
+    """`_check_metric_fabrication` 是缺席检验：「en 里没有 accuracy 词根」→ 判捏造。
+
+    缺席检验只在"存在是可能的"时携带信息。en 侧是中文时英文词根在构造上不可能出现，
+    每个中文指标名都会 100% 命中 fail → 当天日报不发布。恒等回放 60 篇已发布简报
+    实测 33 条命中（21/60 = 35.0%），全部是这个模式。
+    """
+
+    _ZH_SOURCE = (
+        "月之暗面发布 Kimi K2 思考模型，在多项中文基准上把准确率推到新高，"
+        "并宣布开源权重与推理代码。"
+    )
+
+    def test_cjk_source_does_not_fire_metric_fabricated(self):
+        """en 侧是中文散文 → 不得报 metric_fabricated（构造上不可能有英文词根）。"""
+        issues = _issues(self._ZH_SOURCE, self._ZH_SOURCE)
+        assert not _by_kind(issues, "metric_fabricated"), (
+            "中文↔中文比较走了严格档 —— 中文原文永不含 accuracy 词根，"
+            f"该判定 100% 是构造性假阳性: {issues}"
+        )
+
+    def test_english_source_still_fires_metric_fabricated(self):
+        """反向门：en 侧是真英文散文时，严格档必须照旧开火（不得被上一条顺手关掉）。"""
+        en = ("The agent resolved 72% of the SWE-bench tasks that were given to it, "
+              "and this is a strong result for the whole team.")
+        zh = "该智能体在 SWE-bench 上把准确率做到 72%。"
+        fabricated = _by_kind(_issues(zh, en), "metric_fabricated")
+        assert fabricated, (
+            "英文原文报 resolve rate、译文写「准确率」是真实事实损坏，必须仍报 fail"
+        )
+        assert all(it["severity"] == "fail" for it in fabricated), fabricated
+
+    def test_short_english_source_without_stopwords_still_fires(self):
+        """短英文（无虚词、无汉字）不得被误判成中文原文 —— 否则真实捏造被放过。"""
+        fabricated = _by_kind(
+            _issues("SWE-bench 准确率榜单", "SWE-bench resolve leaderboard"),
+            "metric_fabricated",
+        )
+        assert fabricated, "短英文原文被误判为非英文，严格档被错误关闭"
+
+    def test_english_prose_with_cjk_product_name_still_fires(self):
+        """真英文散文夹一串中文专名（汉字数 9 > 下限 6）—— 只有虚词条件能救它。
+
+        专门锁 `_is_cjk_source` 的**第二个**条件：若判据退化成"只看汉字数"，这段英文
+        会被判成中文原文，真实捏造（resolve rate → 准确率）就被放过。
+        """
+        en = ("The team behind 通义千问大模型系列 reported that the model resolved 41% "
+              "of the tasks in the benchmark, and they will publish the weights soon.")
+        zh = "通义千问团队称模型在该基准上准确率达 41%。"
+        assert _by_kind(_issues(zh, en), "metric_fabricated"), (
+            "英文散文夹中文专名被误判为非英文原文 —— 判据不该只看汉字数"
+        )
+
+    def test_numbers_and_handles_remain_checked_on_cjk_source(self):
+        """只关指标严格档，不得顺手关掉数字/@handle —— 那两类与原文文字无关。"""
+        en = "作者 @karpathy 表示该模型有 405B 参数，训练用了 18,432 张卡。"
+        zh = "作者表示该模型有 40 亿参数。"
+        issues = _issues(zh, en)
+        kinds = {it["kind"] for it in issues if it["severity"] == "fail"}
+        assert "handle_missing" in kinds, f"@handle 检查被误关: {issues}"
+        assert "number_mismatch" in kinds, f"数字检查被误关: {issues}"

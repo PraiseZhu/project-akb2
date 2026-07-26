@@ -370,6 +370,8 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
     for r in top10_with_summaries:
         r["engagement_raw"] = engagement_raw(r.get("engagement"))
 
+    _warn_display_name_degraded(top10_with_summaries)
+
     briefing = {
         "schema_version": "v1",
         "briefing_type": "github-curator",
@@ -426,7 +428,17 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
     # 标记发生在写成功之后，避免被 skip 的候选误占用 novelty 名额。
     # first_mention_at 必须一起落库：读端 is_duplicate 的第二判据（无新提及不复推，
     # dedup_sqlite 不变式 2）就靠这一列。不传 → 列恒为 NULL → 第二判定恒 False，
-    # 该功能在生产 100% 空转（实证：71.5% 的跨日重复是同一条旧提及被反复触发）。
+    # 该防御在生产 100% 空转。
+    #
+    # 收益归属（2026-07-26 独立回放 48 份已发布 GitHub 简报 / 480 条 top_repos 核实）：
+    # 不变式 2 对**历史**重复的独占拦截量 = 0/179。179 对跨日重复里确有 128 对
+    # （71.5%）first_mention_at 逐字相同，但这 128 对间隔全部 ≤6 天，落在 7 天去重窗
+    # 内 —— is_duplicate 第 1 步 `seen_at >= cutoff` 已返回 True，第 2 判据根本读不到。
+    # 唯一需要第 2 判据的场景（间隔 >7 天）共 16 对，其中 first_mention_at 相同的是
+    # 0 对。真正消掉这批重复的是把默认去重窗口从 3 天抬到 ≥采集窗口（163/179 = 91.1%）。
+    # 故本判据的价值是**防御未来场景**（"出了去重窗、但仍是同一条旧提及"，历史样本里
+    # 尚未出现），不是已实现的收益 —— 不得据此宣称已消掉 71.5% 的重复。
+    # 保留它仍是对的：一旦该场景出现，缺这一列就会静默复推，故写端必须传。
     _novelty = DedupStore(_novelty_db)
     try:
         for r in briefing["top_repos"]:
@@ -643,6 +655,14 @@ def _display_name(repo: dict) -> str:
     3. 末段切分 — 兜底的兜底（非标准 URL）。
 
     只影响显示；`repo_url` 一字不改，去重键仍全小写。
+
+    **兜底 2 在生产恢复不了大小写**：collector 入库时就写的是 `normalize(url)`
+    （`twitter_collector.py` → `repo_url=normalized`，无条件 `.lower()`），到渲染时
+    URL 里已经没有大小写可保留 —— 实测 `display_slug(normalize(".../id-Software/Quake"))
+    == "id-software/quake"`。所以显示名**完全依赖** `repo_full_name`：API 失败/无
+    `full_name` 时结果就是小写降级，不可恢复。这类降级必须可见（constitution 原则 4），
+    由 `_warn_display_name_degraded()` 在写盘前逐条点名；本函数保持纯函数不打日志，
+    因为 `_render_markdown` 在测试/重渲染里会被反复调用。
     """
     full_name = (repo.get("repo_full_name") or "").strip()
     if full_name:
@@ -651,6 +671,27 @@ def _display_name(repo: dict) -> str:
     if not url:
         return "unknown"
     return display_slug(url) or "/".join(url.rstrip("/").split("/")[-2:])
+
+
+def _warn_display_name_degraded(repos: list[dict]) -> int:
+    """缺 `repo_full_name` → 显示名降级为小写且不可恢复，逐条告警。返回降级条数。
+
+    为什么必须告警而不是静默兜底：`_display_name` 的兜底链在生产**恢复不了大小写**
+    （见该函数 docstring：collector 已把 `repo_url` 小写化）。于是 API 没给
+    `full_name` 时，简报标题会安静地写成 `id-software/quake`、`xianfei/sysmocap`，
+    读者与后来的 agent 都无从知道这是降级产物还是仓库真名。不阻断（小写名仍可点、
+    仍指向正确仓库），但不得静默 —— 静默降级正是 constitution 原则 4 禁止的那类。
+    """
+    degraded = [r for r in repos if not (r.get("repo_full_name") or "").strip()]
+    if not degraded:
+        return 0
+    names = ", ".join(_display_name(r) for r in degraded)
+    sys.stderr.write(
+        f"WARNING [github-pipeline]: {len(degraded)}/{len(repos)} 条缺 repo_full_name"
+        "（GitHub API 未返回 full_name / 调用失败）— 显示名降级为小写且**不可恢复**"
+        f"（repo_url 已被 collector 归一化为小写）: {names}\n"
+    )
+    return len(degraded)
 
 
 def _render_markdown(briefing: dict) -> str:

@@ -243,7 +243,14 @@ def _run_single_source(config: VideoConfig, url: str, dry_run: bool) -> int:
         llm_adapter = _build_llm_adapter(config)
         # 缺陷 V-2：这条路过去完全绕过账本。查端必须在 researcher.run 之前
         # （花 NLM/LLM 额度之前），写端必须在发布之后。
+        #
+        # 第二轮复核补：只查账本不够。账本实证会缺记录（V-1 部分回填 / 新装机器
+        # 账本为空），此时 `--source` 会先把 NLM 深研 + LLM 额度全烧完，最后才在
+        # `assembler.commit` 撞文件名 fail-closed —— "花钱之前拦"只对"账本里已有
+        # 记录"成立。所以这里与主路径一样先做历史回填（幂等，已 seed 过直接返回），
+        # 让"历史产出里已存在该视频"这件事在花钱之前就能查到。
         dedup_store, collector = _build_dedup_pair(config, llm_adapter)
+        _seed_history(dedup_store, config)
         if dedup_store.is_ingested(url):
             logger.warning(
                 "[去重] 该视频已入库，跳过 --source 全链路（避免重复烧 NLM/LLM 额度）: %s",
@@ -362,7 +369,9 @@ def _run_fixture(config: VideoConfig, dry_run: bool) -> int:
 
         # 缺陷 V-2：非 dry-run 的 fixture 模式是真写 vault 的路径，
         # 必须和主路径共用同一套查/记逻辑（原来是裸 commit，账本既不查也不记）。
+        # 同 `--source`：先历史回填再查，否则账本缺记录时这条路照样会写重复产出。
         dedup_store, collector = _build_dedup_pair(config)
+        _seed_history(dedup_store, config)
         if dedup_store.is_ingested(video_meta["url"]):
             logger.warning(
                 "[去重] fixture 视频已入库，跳过写入（避免重复产出）: %s",

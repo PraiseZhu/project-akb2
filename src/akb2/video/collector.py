@@ -10,7 +10,8 @@
 缺陷 #2 / #12 修复记录（2026-07-26）：
 - 去重库不再可能为 None：`db` 不传时从 `config.dedup_db_path` 构造，
   L1/L7 真正生效；库不可用时抛 `VideoDedupStoreError`（fail-closed），
-  不再 `return False` 静默放行（原来正是这一步让 79% 重复产出通过）。
+  不再 `return False` 静默放行（原来正是这一步让重复产出通过：实测 608 份产出
+  只对应 230 个视频身份；只看 `source_url:` 子集是 325 份 → 68 个身份 = 79%）。
 - 时间闸（`days_lookback` / `start_date`）不再被空 upload_date 静默绕过：
   缺日期先补取，仍缺则拒收并告警。
 - `nlm_daily_quota` 成为真正的日硬上限（按账本统计今日已入库数扣减），
@@ -236,8 +237,8 @@ class VideoCollector:
         """检测 creator 近 N 天的新视频，排除已入库的。
 
         时间闸契约（缺陷 #12）：`days_lookback` 与 `start_date` 都必须真正生效。
-        `--flat-playlist` 对 YouTube 从不返回 `upload_date`（实证：324 份产出里只有
-        1 份有 `published_at`），原实现 `if upload_date:` 守卫让空值直接跳过两道闸
+        `--flat-playlist` 对 YouTube 从不返回 `upload_date`（实测：608 份产出里只有
+        1 份 frontmatter 带 `published_at`），原实现 `if upload_date:` 守卫让空值直接跳过两道闸
         —— 2025 年的老视频因此永驻候选集。现在缺日期先补取，补不到就拒收。
         """
         platform = creator["platform"]
@@ -629,7 +630,9 @@ class VideoCollector:
         """L1: 该视频身份是否已在去重库中（在花任何 LLM/NLM 额度之前）。
 
         fail-closed：去重库缺失或不可用时 **抛异常**，不再 `return False`
-        —— 原来的静默放行正是 79% 重复产出（≈1766 次 LLM 调用）的直接出口。
+        —— 原来的静默放行正是重复产出（实测 608 份产出只对应 230 个视频身份，
+        271 份冗余）的直接出口。LLM 调用次数无遥测，不引用具体次数
+        （见 `dedup_store` 模块 docstring 的实测口径说明）。
         """
         if self.db is None:
             raise RuntimeError(

@@ -134,6 +134,37 @@ def test_identity_ignores_title_entirely():
     assert video_identity(url) == video_identity(url + "&list=PLxyz")
 
 
+@pytest.mark.parametrize(
+    ("decorated", "plain"),
+    [
+        # sha256 兜底路径（非 youtube/bilibili host）：跟踪参数不得分裂身份
+        ("https://vimeo.com/12345?utm_source=newsletter&utm_medium=email",
+         "https://vimeo.com/12345"),
+        ("https://vimeo.com/12345?fbclid=abc123", "https://vimeo.com/12345"),
+        ("https://vimeo.com/12345?t=120", "https://vimeo.com/12345"),
+        # 有意义的参数保留，但顺序无关
+        ("https://vimeo.com/12345?a=1&b=2", "https://vimeo.com/12345?b=2&a=1"),
+        # bilibili 短链未展开时也走兜底，跟踪参数同样要剥
+        ("https://b23.tv/abc123?share_source=copy_web", "https://b23.tv/abc123"),
+    ],
+)
+def test_identity_fallback_strips_tracking_params(decorated: str, plain: str):
+    """sha256 兜底身份必须与跟踪参数/参数顺序无关。
+
+    回归前兜底把 query 整串拼进归一化串 → 同一页带 `?utm_source=` 与不带算出两个
+    身份，账本对兜底身份形同失效（每次分享链接换个来源标记就重烧一次额度）。
+    """
+    assert video_identity(decorated).startswith("sha256:")
+    assert video_identity(decorated) == video_identity(plain)
+
+
+def test_identity_fallback_keeps_content_selecting_params():
+    """只剥来源/播放位置类参数：能选内容的参数必须仍然区分身份（不得过度合并）。"""
+    base = "https://example.com/watch"
+    assert video_identity(f"{base}?id=1") != video_identity(f"{base}?id=2")
+    assert video_identity(f"{base}?p=2") != video_identity(base)
+
+
 def test_identity_rejects_empty_url():
     """空 URL 不得静默生成假身份（否则两个视频撞成一个）。"""
     with pytest.raises(ValueError):
@@ -159,7 +190,9 @@ def test_store_fail_closed_when_db_unusable(tmp_path):
     """库不可用 → 抛 VideoDedupStoreError，绝不 return False 静默放行。
 
     回归前：collector 吞掉 sqlite3.OperationalError 直接 return False，
-    所有视频都被判"未入库" → 79% 重复产出正是从这里流出去的。
+    所有视频都被判"未入库" → 重复产出正是从这里流出去的
+    （实测 608 份产出 → 230 个身份；"79%" 是 `source_url:` 子集口径，
+    见 `dedup_store` 模块 docstring）。
     """
     broken = tmp_path / "broken.sqlite"
     broken.write_bytes(b"this is not a sqlite database" * 10)
@@ -286,9 +319,11 @@ def test_seed_recognizes_both_historical_frontmatter_keys(tmp_path):
 def test_seed_recognizes_third_key_shapes(tmp_path):
     """实测还存在 `url:` / `video_source:` / `original_talk_url:` 三种少数键。
 
-    只读统计（同目录）：`url:` 2 个平台身份、`video_source:` 1 个、
-    `original_talk_url:` 1 个 —— 都不在 source_url/video_url 的覆盖集合里。
-    键名判定按"含 url"+ 显式补集，所以将来第 6 种键也自动被认。
+    只读统计（同目录 608 份，2026-07-26 复核）：`url:` 51 份 → 2 个平台身份、
+    `video_source:` 1 份 → 1 个、`original_talk_url:` 1 份 → 1 个 —— 都不在
+    source_url/video_url 的覆盖集合里。另有 `original_url:` / `x_url:` 各 1 份，
+    值不是视频链接（解析出 0 个平台身份），所以不在本测试的样例里。
+    键名判定按"含 url"+ 显式补集，所以将来新出现的键名也自动被认。
     """
     published = tmp_path / "Video"
     published.mkdir()
@@ -676,7 +711,7 @@ def test_missing_upload_date_is_rejected_not_silently_passed(dedup_config):
     """缺 upload_date 且补取不到 → 拒收（不静默通过时间闸）。
 
     回归前：`if upload_date:` 守卫让空值直接跳过 days_lookback 与 start_date
-    两道闸（实证：324 份产出里只有 1 份有 published_at）。
+    两道闸（实测：608 份产出里只有 1 份 frontmatter 带 published_at）。
     """
     _write_sources(dedup_config.video_sources_path, {"start_date": "2026-04-01"})
     collector = VideoCollector(dedup_config)
@@ -815,13 +850,36 @@ def test_local_day_start_utc_iso_crosses_utc_day_boundary():
     assert ingested_at >= since, "新基准（本地日起点换算成 UTC）必须数得到"
 
 
+# 时钟注入（本节两条生产路径测试的已知边界）：
+#   `collector._remaining_daily_quota()` 直接调 `local_day_start_utc_iso()`（无参），
+#   读的是墙上时间，生产路径上没有 now 注入点。所以从 `collect()` 进的测试，其入库
+#   时间戳必须落在**真实当前本地日**的窗口里 —— 时/分/秒/偏移能写死，UTC 日期部分
+#   不能。全字面量（连日期一起写死）的判别见
+#   `test_quota_window_counts_local_early_morning_entry_all_literal`。
+#
+# 测试自己声明的时区假定（**不问被测代码**）：`cst_timezone` fixture 把进程时区钉在
+# Asia/Shanghai = UTC+8，所以"本地日 00:00"恒等于**前一 UTC 日 16:00**，
+# "本地日 00:30"恒等于前一 UTC 日 16:30。下面两个字面量就是这个换算的结果。
+_ASSUMED_LOCAL_UTC_OFFSET = timedelta(hours=8)
+_LOCAL_DAY_START_UTC_TIME_LITERAL = "16:00:00+00:00"   # 本地日 00:00 的 UTC 时刻
+_LOCAL_EARLY_MORNING_UTC_TIME_LITERAL = "16:30:00+00:00"  # 本地日 00:30 的 UTC 时刻
+
+
 def _seed_local_early_morning(store: VideoDedupStore, count: int) -> str:
     """按"本地日 00:30"入库 `count` 条，返回它们的 UTC 时间戳。
 
-    不 mock 时钟：CST 下本地 00:30 恒等于前一 UTC 日 16:30，无论测试何时跑。
+    时间戳用**写死的字面量 UTC 串**拼装（时/分/秒/`+00:00` 偏移全部字面量，换算
+    关系由 `_ASSUMED_LOCAL_UTC_OFFSET` 显式声明），**绝不调用 `local_day_start_utc_iso`**
+    —— 原实现用被测函数反推入库时间戳，测试数据与被测逻辑同源，于是把实现改回
+    `date.today().isoformat()`（缺陷版）后两边一起偏移、测试照样通过（mutation 已证）。
+
+    只有"UTC 日期"部分取自 stdlib 时钟（`datetime.now().date()`，与被测实现无关）：
+    生产路径 `_remaining_daily_quota()` 读墙上时间且没有 now 注入点，所以窗口必须
+    落在**真实当前本地日**里，日期部分无法也写死（见上方「时钟注入」说明）。
     """
-    local_midnight_utc = datetime.fromisoformat(local_day_start_utc_iso())
-    stamp = (local_midnight_utc + timedelta(minutes=30)).isoformat()
+    local_today = datetime.now().date()  # 进程时区 = CST（cst_timezone fixture 保证）
+    utc_date = local_today - timedelta(days=1)  # UTC+8 下本地日起点落在前一 UTC 日
+    stamp = f"{utc_date.isoformat()}T{_LOCAL_EARLY_MORNING_UTC_TIME_LITERAL}"
     for i in range(count):
         store.mark_ingested(
             f"https://www.youtube.com/watch?v=early{i}",
@@ -831,21 +889,28 @@ def _seed_local_early_morning(store: VideoDedupStore, count: int) -> str:
     return stamp
 
 
+def _assert_cst_fixture_effective() -> None:
+    """守 fixture：进程时区真的是 UTC+8，否则上面的字面量换算不成立。"""
+    actual = datetime.now().astimezone().utcoffset()
+    assert actual == _ASSUMED_LOCAL_UTC_OFFSET, (
+        f"cst_timezone fixture 未生效（实际偏移 {actual}）→ 字面量时间戳失去意义"
+    )
+
+
 def test_quota_counts_entries_ingested_in_local_early_morning(dedup_config, cst_timezone):
     """**生产路径绑定**：本地凌晨（UTC 前一日）入库的条目必须算进今日配额。
 
-    实测复现（缺陷 V-3）：3 条 UTC `2026-07-26T16:30`（= 本地 07-27 00:30）入库后
-    `count_ingested_since("2026-07-27")` 返回 0 → 当日实际可入库 = 配额 + 漏算数。
-    这条测试从 `collector.collect()` 进（生产路径），断言配额真的被扣光。
+    缺陷 V-3 形态：入库时间戳 UTC `…T16:30+00:00`（= 本地日 00:30），旧实现拿
+    `date.today().isoformat()`（本地日字符串）当下界 → 字典序比不到 → 返回 0 →
+    当日实际可入库 = 配额 + 漏算数。这条测试从 `collector.collect()` 进（生产路径），
+    断言配额真的被扣光；入库时间戳是字面量 UTC 串，不经被测函数反推。
     """
     _write_sources(dedup_config.video_sources_path, {
         "nlm_daily_quota": 3, "coldstart_max_per_day": 10,
     })
+    _assert_cst_fixture_effective()
     store = VideoDedupStore(dedup_config.dedup_db_path)
-    stamp = _seed_local_early_morning(store, 3)
-    assert stamp < datetime.now().strftime("%Y-%m-%d"), (
-        "前置条件：这些条目的 UTC 日期必须早于本地日（否则测不到错位）"
-    )
+    _seed_local_early_morning(store, 3)
 
     collector = VideoCollector(dedup_config, db=store)
     with mock.patch.object(collector, "_detect_yt_videos") as detect:
@@ -858,10 +923,15 @@ def test_quota_counts_entries_ingested_in_local_early_morning(dedup_config, cst_
 def test_quota_partially_consumed_by_local_early_morning_entries(
     dedup_config, cst_timezone
 ):
-    """漏算是逐条的：配额 3、凌晨已入库 2 → 本轮只剩 1 个额度。"""
+    """漏算是逐条的：配额 3、凌晨已入库 2 → 本轮只剩 1 个额度。
+
+    缺陷版（`date.today().isoformat()` 当下界）下这 2 条数不到 → 剩余额度仍是 3 →
+    本轮放行 3 个候选，与断言的 1 个不符。
+    """
     _write_sources(dedup_config.video_sources_path, {
         "nlm_daily_quota": 3, "coldstart_max_per_day": 10,
     })
+    _assert_cst_fixture_effective()
     store = VideoDedupStore(dedup_config.dedup_db_path)
     _seed_local_early_morning(store, 2)
 
@@ -871,6 +941,31 @@ def test_quota_partially_consumed_by_local_early_morning_entries(
         results = collector.collect()
 
     assert len(results) == 1, f"配额 3 − 凌晨已入库 2 = 1，实得 {len(results)}"
+
+
+def test_quota_window_counts_local_early_morning_entry_all_literal(tmp_path):
+    """配额统计窗口的**全字面量**判别：输入、下界、期望值都写死，不依赖运行时时钟。
+
+    固定输入 now = 本地 2026-07-27 00:30 (UTC+8)：
+      正确下界 = `2026-07-26T16:00:00+00:00` → 数到 1 条（同一本地日入库）；
+      缺陷下界 = `2026-07-27`（本地日字符串）→ 数到 0 条（漏算 → 配额被突破）。
+    两条断言同时钉住"下界值"和"数出来的条数"，缺陷实现连第一条都过不去。
+    """
+    cst = timezone(timedelta(hours=8))
+    store = VideoDedupStore(tmp_path / "quota" / "dedup.sqlite")
+    store.mark_ingested(
+        "https://www.youtube.com/watch?v=literal1",
+        platform="youtube",
+        ingested_at="2026-07-26T16:30:00+00:00",
+    )
+
+    since = local_day_start_utc_iso(datetime(2026, 7, 27, 0, 30, tzinfo=cst))
+
+    assert since == f"2026-07-26T{_LOCAL_DAY_START_UTC_TIME_LITERAL}"
+    assert store.count_ingested_since(since) == 1, "本地日 00:30 入库的条目必须算进当日"
+    assert store.count_ingested_since("2026-07-27") == 0, (
+        "对照组：本地日字符串当下界就是缺陷版，会把这条漏掉"
+    )
 
 
 def test_quota_exhausted_returns_empty_without_detection(dedup_config):
@@ -1087,6 +1182,48 @@ def test_cli_source_path_skips_already_ingested_before_spending(cli_config, monk
     assert list(cli_config.promotion_target_path.glob("*.md")) == []
 
 
+def test_cli_source_path_seeds_history_before_spending(cli_config, monkeypatch):
+    """`--source` 必须在花钱之前完成历史回填（第二轮复核补的缺口）。
+
+    场景：**账本里没有该视频**（账本实证会缺记录：V-1 部分回填、换机器后账本为空），
+    但历史产出目录里已经有它的报告。修复前 `--source` 只查账本、不做 `_seed_history`
+    → 查不到 → 先把 NLM 深研 + LLM 额度全烧完，最后才在 `assembler.commit` 撞文件名
+    fail-closed 停下。"花钱之前拦"于是只对"账本里已有记录"成立。
+
+    断言绑定可观测行为：researcher 调用次数为 0，且没写出第二份产出。
+    """
+    from src.akb2.video import __main__ as video_main
+
+    url = "https://www.youtube.com/watch?v=cliSrc004"
+    video_meta = dict(_video("cliSrc004"), url=url, title="CLI Source Video")
+    calls = _stub_pipeline_stages(video_main, monkeypatch, video_meta)
+
+    # 历史产出已存在（账本为空 —— 故意不 mark_ingested）
+    existing = cli_config.promotion_target_path / "video-cli-source-video-deadbeef.md"
+    existing.write_text(
+        f"---\ntitle: \"CLI Source Video\"\nsource_url: {url}\n---\n# 旧报告\n",
+        encoding="utf-8",
+    )
+    store = VideoDedupStore(cli_config.dedup_db_path)
+    assert store.is_ingested(url) is False, "前置条件：账本必须是空的"
+
+    with mock.patch.object(Assembler, "_gate_decision", return_value="active"):
+        rc = video_main.main(["--source", url, "--skip-preflight"])
+
+    # 承重断言放最前：花钱这件事本身没发生
+    assert calls["research"] == 0, (
+        "账本缺记录、但历史产出里已有该视频 → 仍然进了 researcher："
+        "NLM 深研 + LLM 额度先被烧掉"
+    )
+    # 历史文件用的是旧命名（无身份哈希或哈希不同），所以 commit 的文件名 fail-closed
+    # 也拦不住 —— 缺陷版会**再写一份**产出。
+    assert [p.name for p in cli_config.promotion_target_path.glob("*.md")] == [
+        existing.name
+    ], "不得写出第二份产出"
+    assert rc == 0
+    assert store.is_ingested(url) is True, "历史回填应把该身份登进账本"
+
+
 def test_cli_fixture_path_marks_dedup_ledger(cli_config, monkeypatch):
     """**生产路径绑定**：`--fixture`（非 dry-run）也真写 vault，必须查/记账本。"""
     from src.akb2.video import __main__ as video_main
@@ -1103,8 +1240,16 @@ def test_cli_fixture_path_marks_dedup_ledger(cli_config, monkeypatch):
     )
     published = [p.name for p in cli_config.promotion_target_path.glob("*.md")]
     assert len(published) == 1
-    assert published[0].endswith(".md")
-    assert "-" in published[0]
+    # 精确文件名：必须与主路径同族 `video-{_slug_for_video(...)}.md`
+    # （原来这里是 `endswith(".md")` + `"-" in name` 两条恒真噪音断言，
+    #  任何文件名都能过，等于没断言文件名）。
+    expected_slug = Assembler(cli_config)._slug_for_video({
+        "title": "DeepSeek V4 Architecture Deep Dive",
+        "url": fixture_url,
+    })
+    assert published[0] == f"video-{expected_slug}.md", (
+        f"--fixture 产出文件名与主路径不同族: {published[0]}"
+    )
 
     # 第二次跑：账本已有 → 直接跳过，不再产出第二份
     with mock.patch.object(Assembler, "_gate_decision", return_value="active"):
@@ -1176,7 +1321,8 @@ def test_needs_repair_can_still_retry_next_day(dedup_config):
 def test_second_full_pipeline_run_does_not_call_researcher(dedup_config):
     """同一视频第二轮跑完整 `run_pipeline` → researcher.run 调用次数为 0。
 
-    这是"省下 ≈1766 次 LLM 调用 + ≈179 份 NLM 深研配额"的唯一直接证据：
+    这是"第二轮不再重复花钱"的唯一直接证据（省下的具体调用次数无遥测、不可考，
+    见 `dedup_store` 模块 docstring 的实测口径）：
     真正花钱的 researcher/extractor/reasoner 在 `collector.collect()` 里根本不参与，
     只断言 collect() 返回空、或断言 `_dedup_by_topic` 的 LLM 计数（单候选时恒为 0，
     等于 `0 == 0` 的空断言）都测不到这件事。
@@ -1234,7 +1380,7 @@ def test_second_full_pipeline_run_does_not_call_researcher(dedup_config):
     assert second == [], "第二轮必须在 collector 阶段止步"
     assert researcher.calls == calls_after_first == 1, (
         f"第二轮又调了 researcher {researcher.calls - calls_after_first} 次 —— "
-        "NLM 深研配额被重复烧掉，这正是 79% 重复产出的花钱出口"
+        "NLM 深研配额被重复烧掉，这正是重复产出（608 份 → 230 个身份）的花钱出口"
     )
     assert len(list(dedup_config.promotion_target_path.glob("*.md"))) == 1
 

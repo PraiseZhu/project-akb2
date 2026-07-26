@@ -141,8 +141,13 @@ class TestGH1MarkSeenWiring:
         """两轮 pipeline：第 2 轮同一批 repo、同一 first_mention_at、间隔 > 去重窗口
         → 必须全部被拦（无新提及不复推），产不出简报。
 
-        这是 GH-1 真正要消掉的 128/179 = 71.5%：同一条旧推文被反复当新事件触发。
-        写端不传 first_mention_at 时，第 2 轮会照常出报（本断言随即失败）。
+        锁的是**防御性**不变式 2，不是已实现的历史收益：2026-07-26 回放 48 份已发布
+        简报（480 条 top_repos / 179 对跨日重复）核实，「first_mention_at 逐字相同」
+        的 128 对（71.5%）间隔全部 ≤6 天，均由去重窗口（不变式 1）拦下；间隔 >7 天的
+        16 对里 first_mention_at 相同的是 0 对 → 不变式 2 的历史独占拦截量 = 0/179。
+        本用例构造的正是历史样本里尚未出现的那个场景（窗口外 + 提及未变），因为一旦
+        出现就会静默复推。写端不传 first_mention_at 时，第 2 轮会照常出报（本断言随即
+        失败）—— 这是本用例真正守住的东西。
         """
         mentioned_at = "2026-06-01T10:00:00+00:00"
         urls = [f"https://github.com/trending/repo{i}" for i in range(7)]
@@ -234,15 +239,68 @@ class TestGH2DisplayNameWiring:
         assert keys
         assert all(k == k.lower() for k in keys), f"去重键出现大写，键将分裂: {keys}"
 
-    def test_display_name_falls_back_to_display_slug(self):
-        """无 API full_name 时走 display_slug（不是回到 `.lower()` 的键切分）。"""
-        from akb2.briefing.github.pipeline import _display_name
+    def test_display_slug_fallback_cannot_recover_case_in_production(self):
+        """反映生产真实情况：缺 repo_full_name 时兜底**恢复不了**大小写。
 
-        assert _display_name({
-            "repo_url": "https://github.com/id-Software/Quake",
-            "repo_full_name": None,
-        }) == "id-Software/Quake"
+        原用例传的是混合大小写 URL，暗示"兜底能保住 id-Software/Quake"。生产里做不到：
+        collector 写入的就是 `normalize(url)`（无条件 .lower()），到渲染时 URL 里已经
+        没有大小写可保留。所以显示名完全依赖 GitHub API 的 repo_full_name，缺失即为
+        不可恢复的降级 —— 必须告警（见 test_missing_full_name_emits_visible_warning）。
+        """
+        from akb2.briefing.github.pipeline import _display_name
+        from akb2.briefing.github.url_normalizer import normalize
+
+        prod_url = normalize("https://github.com/id-Software/Quake")
+        assert prod_url == "https://github.com/id-software/quake", (
+            "前置条件：collector 入库的 repo_url 必须已小写"
+        )
+        assert _display_name({"repo_url": prod_url, "repo_full_name": None}) == (
+            "id-software/quake"
+        ), "兜底在生产不可能恢复大小写；若这里真恢复了，说明入库键没被归一化"
         assert _display_name({"repo_url": "", "repo_full_name": None}) == "unknown"
+
+    def test_missing_full_name_emits_visible_warning(self, capsys):
+        """缺 repo_full_name → 必须有可见告警，不得静默小写降级。"""
+        from akb2.briefing.github.pipeline import _warn_display_name_degraded
+
+        n = _warn_display_name_degraded([
+            {"repo_url": "https://github.com/id-software/quake", "repo_full_name": None},
+            {"repo_url": "https://github.com/a/b", "repo_full_name": "a/B"},
+        ])
+        err = capsys.readouterr().err
+        assert n == 1, f"降级计数错误: {n}"
+        assert "repo_full_name" in err, f"缺 full_name 的降级未告警: {err!r}"
+        assert "id-software/quake" in err, f"告警未点名降级条目: {err!r}"
+
+    def test_no_warning_when_all_full_names_present(self, capsys):
+        """全部有 full_name → 不得打噪音告警（否则告警失去信号价值）。"""
+        from akb2.briefing.github.pipeline import _warn_display_name_degraded
+
+        n = _warn_display_name_degraded(
+            [{"repo_url": "https://github.com/a/b", "repo_full_name": "a/B"}]
+        )
+        assert n == 0
+        assert capsys.readouterr().err == ""
+
+    def test_degradation_warning_is_wired_into_pipeline(
+        self, tmp_path, vault, monkeypatch, capsys
+    ):
+        """跑真实 pipeline：缺 full_name 时告警必须真的出现在 stderr。
+
+        单测 `_warn_display_name_degraded` 只证明"调对了参数行为对"。一个从不被调用的
+        告警函数 = 本轮要消灭的那类"生产 100% 空转"缺陷，故这里锁调用点本身。
+        """
+        now = datetime.now(UTC).isoformat()
+        urls = [f"https://github.com/trending/repo{i}" for i in range(7)]
+
+        rc = _run(_candidates(urls, now), tmp_path / "novelty.sqlite", vault,
+                  monkeypatch)  # 不传 full_names → 全部降级
+
+        assert rc == 0, "前置条件：本用例需要 pipeline 真正走到写盘"
+        err = capsys.readouterr().err
+        assert "repo_full_name" in err, (
+            f"pipeline 未发出显示名降级告警（调用点没接上）: {err!r}"
+        )
 
     def test_render_markdown_uses_full_name_directly(self):
         """单元层：_render_markdown 标题取 repo_full_name，不从小写 url 切。"""

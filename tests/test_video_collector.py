@@ -138,7 +138,7 @@ def test_L1_url_dedup(temp_config, mock_ytdlp_output):
 
     2026-07-26 改写（缺陷 #2）：原测试手工建 catalog.db、手工 INSERT、并显式
     `db=db` 注入 —— 这三件事生产一件都不做，测的是**生产不可达的代码路径**，
-    所以 79% 重复能在 CI 全绿下跑一个月。现在：不传 db（走生产默认注入），
+    所以重复产出能在 CI 全绿下跑一个月。现在：不传 db（走生产默认注入），
     前置状态用**写端** `VideoDedupStore.mark_ingested`（生产 run_pipeline 用的同一入口）。
     """
     store = VideoDedupStore(temp_config.dedup_db_path)

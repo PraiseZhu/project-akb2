@@ -70,9 +70,15 @@ class Assembler:
         """
         # 标题是**事实性身份字段**，从 video_meta（yt-dlp 原值）结构化透传。
         # 缺陷 #10：原实现 `report_title = self._extract_h1(report_markdown) or title`
-        # 把标题取自 LLM 产出的报告 H1，实证同一视频（M_AmPWmkpwA）标题在
-        # "paradigm"/"paradiagm" 之间来回翻转，且降级路 prompt 要求中文输出使得
-        # 98 份英文标题全部来自 degraded 路 —— 身份字段被生成路径污染。
+        # 把标题取自 LLM 产出的报告 H1 —— 身份字段被生成路径污染。
+        # 实测（2026-07-26 只读统计 `AI TRENDS/Video`，608 份 md）：同一视频
+        # `youtube:M_AmPWmkpwA` 的产出带 **8 个互不相同的标题**，其中
+        # "New AI coding paradigm - OpenAI Symphony" 与拼错的 "…paradiagm…" 并存
+        # （全目录 4 份含 paradiagm）—— 同一 URL 的标题不稳定，铁证。
+        # 另有 89 份产出的 title 是纯 ASCII（疑似 LLM 未按中文 prompt 输出），但
+        # **无法归因到 degraded 路**：目录里 0 份笔记的 frontmatter 记了 `degraded`
+        # 字段，早期注释写的"98 份英文标题全部来自 degraded 路"既数字不对
+        # （实为 89 份）、也没有任何数据支持那个因果。
         title = video_meta.get("title", "Untitled")
         video_url = video_meta.get("url", "")
         platform = video_meta.get("platform", "youtube")

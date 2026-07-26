@@ -208,18 +208,32 @@ def _values_equivalent(a: float, b: float) -> bool:
 def _check_numbers_detailed(en: str, zh: str) -> list[tuple[str, str]]:
     """返回 [(问题描述, severity)]。severity ∈ {fail, warn}。
 
-    2026-07-26 校准（回放 `AI TRENDS/Social/` 全部 60 篇已发布简报）：
-      - 恒等回放（en := 已发布 ZH 文本本身，即"译者逐字保留一切"的最好情况）：
-        1667 个受检字段，0 误报 → 检查器自身无结构性假阳性。
+    2026-07-26 校准（回放 `AI TRENDS/Social/` 全部 60 篇已发布简报）。
+
+    回放能测什么、不能测什么（**先读这段再读下面的数字**）：
+      - 可测 = **曝光面**：某个判据在已发布产出里多久触发一次（分母是天数/字段数）。
+        下面所有 "x/60 篇" "n/n token" 都是曝光面。
+      - **不可测 = 误报率**：触发中有多少是错的。所有 fail 级判据都需要英文原文，而
+        vault 里只有中文成品，**没有任何 en/zh 配对产物** → 本地在原理上无法算误报率。
+        要量化误报率必须拿真机 en/zh 配对样本（译前 synth_en + 译后 synth_zh）重跑。
+      - 恒等回放（en := 已发布 ZH 文本自身）**不能**用来论证"无结构性假阳性"：此时
+        每个数字 token 必然逐字保留、每个 URL/@handle 必然存在，数字/URL/handle 三类
+        检查在构造上不可能报错，"0 误报"是同义反复而非证据。它唯一有效的用途是暴露
+        "en 侧其实不是英文"这类前提破坏 —— 实测确实暴露了：恒等回放跑真实
+        `_check_translation_fidelity` 得 33 条 `metric_fabricated`（fail 级，21/60 篇
+        = 35.0%），因为中文文本永不含 `accuracy` 词根。该缺陷已由
+        `_check_metric_fabrication` 的非英文原文门修掉。
       - 参数规模 B 逐字保留：**9/60 篇（15%）** 已发布简报把它本地化成
         「4000 亿参数」「9750 亿参数（激活 410 亿）」「2.8 万亿参数」——且这些
         本地化**数值等价**（400B == 4000 亿 == 4e11）。原实现把这一类判 fail，
         意味着约 15% 的天数会被判 fail、当天日报直接不发布，而产出并没有事实错误。
         → 数值等价的本地化降为 warn（kind=number_localized）；只有既无逐字 token
           又无等价数值时才 fail（那才是「405B → 8B」式真实损坏）。
-      - 千分位逐字保留：实测 11 个 token 全部逐字保留（4,000+ / 5,000 / 1,000 /
-        3,000 / 4,100 / 10,000 / 2,000 / 50,000），观测误报 0/11，曝光 9/60 篇
-        → 保留 fail 级。
+      - 千分位逐字保留：曝光 9/60 篇，其中 11 个 token 在已发布中文里全部逐字保留
+        （4,000+ / 5,000 / 1,000 / 3,000 / 4,100 / 10,000 / 2,000 / 50,000）
+        → 该判据在现网产出上"不会到处开火"，故保留 fail 级。
+        注意这仍只是曝光面：没有英文原文，无法判断这 11 次里是否有该报未报（漏报）或
+        不该报（误报），**不要把它读成"误报率 0"**。
     """
     problems: list[tuple[str, str]] = []
     en_body = _strip_urls_handles(en)
@@ -290,8 +304,46 @@ def _check_verbatim(en: str, zh: str, pattern: re.Pattern[str]) -> list[str]:
     return missing
 
 
+def _is_cjk_source(en: str) -> bool:
+    """"英文原文"侧其实是中日韩散文吗？
+
+    判据 = **汉字数 ≥ `_MIN_PROSE_HAN`** 且 **英文虚词数 ≤ `_MAX_EN_STOPWORDS`**，
+    即"有成段 CJK 正文，且没有英文散文的痕迹"。两个条件都是正向证据，缺一不可：
+      - 只看汉字数：真英文原文里夹一个中文产品名就会被误判成中文。
+      - 只看虚词数：短英文标题（"SWE-bench results"）天然没有虚词，会被误判成中文，
+        白白放过真实捏造。
+    虚词（而非"英文长词数"）作为英文散文判据是本模块已有的既有校准
+    （见 `_EN_STOPWORDS` 上方注释：技术栈堆叠/项目原名几乎不含小写虚词），这里复用
+    同一判据而不另造阈值。
+
+    实测（2026-07-26 恒等回放 60 篇已发布简报的 1560 个受检字段，en 侧全为中文）：
+    1555/1560 落在 (汉字≥6, 虚词≤2)，本判据把 33/33 条构造性 `metric_fabricated`
+    全部抑制，且不抑制汉字 <6 的短文本（3 例）。
+    """
+    body = _strip_urls_handles(en or "")
+    han = len(re.findall(r"[一-鿿]", body))
+    if han < _MIN_PROSE_HAN:
+        return False
+    stop_hits = [w for w in re.findall(r"\b[a-z]+\b", body) if w in _EN_STOPWORDS]
+    return len(stop_hits) <= _MAX_EN_STOPWORDS
+
+
 def _check_metric_fabrication(en: str, zh: str) -> list[str]:
-    """译文出现英文原文没有依据的指标类型（SWE-bench 是 resolve rate，不是准确率）。"""
+    """译文出现英文原文没有依据的指标类型（SWE-bench 是 resolve rate，不是准确率）。
+
+    本判据是一个**缺席检验**：「en 里找不到 accuracy 词根」→ 判「准确率」是捏造。
+    缺席检验只在"存在是可能的"时才携带信息。当 en 侧本身就是中文（中文源推文的
+    `text_original` 兜底、或译前 synth_en 里混入中文原文），英文词根**在构造上**不可能
+    出现 → 每个中文指标名都会 100% 命中，而且是 fail 级 → 当天日报直接不发布。
+    这不是理论风险：恒等回放 60 篇已发布简报得 33 条命中（21/60 篇 = 35.0%），全部是
+    这个模式。故中文↔中文的比较不走严格档，直接跳过本检查（与 `synth_en` 整体缺失时
+    跳过所有需要英文原文的检查同构，见 `_check_standard_structured` 文档）。
+
+    这里只关掉本检查，不关数字/URL/@handle —— 那三类判据比对的是数字与逐字 token，
+    与原文是什么文字无关，en 侧是中文时依然成立。
+    """
+    if _is_cjk_source(en):
+        return []
     en_lower = (en or "").lower()
     fabricated: list[str] = []
     for zh_metric, evidence in _METRIC_ZH_EVIDENCE.items():

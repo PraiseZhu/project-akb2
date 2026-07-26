@@ -9,8 +9,17 @@
     2. 即使传了 db 也仍然无效——本链路**从来没有写端**（`grep INSERT src/akb2/video/`
        为空），去重表永远读不到自己的产出。
 
-    实证代价：`AI TRENDS/Video/` 324 份产出只对应 68 个唯一视频（重复 79%，
-    单个视频最高 25 份），≈1766 次 LLM 调用 + ≈179 个 NotebookLM 深研配额被烧掉。
+    实测代价（2026-07-26 只读统计 `/Volumes/AKB2/.../AI TRENDS/Video`，608 份 md）：
+        产出 608 份 → 只有 230 个平台身份，即 271 份是重复产出（62%）；
+        单个视频最高 26 份（`youtube:EWvNQjAaOHw`）。
+        只看 `source_url:` 键那一子集是 325 份 → 68 个身份（重复 79.1%，最高 25 份）
+        —— 早期注释写的"324 份 / 68 个 / 79%"是这个**子集**口径，不是整目录。
+        NotebookLM：245 份笔记记了 `notebook_id`，245 个 id 互不相同、只覆盖 175 个
+        身份 → **至少 70 个** notebook 是给已研究过的视频重开的（下界：只有 245/608
+        份笔记记了 notebook_id，其余无从统计）。
+    LLM 调用次数**无遥测、不可考**：本链路从未记录调用计数，任何具体次数（早期注释
+    写的"≈1766 次"）都不是实测值。按代码路径能给的下界是 271 份冗余产出 ×
+    （extractor 1 次 + reasoner 1 次）≈ 542 次，仅为推算下界，不作为实证数据引用。
 
 本模块是这条链路唯一的去重账本，同时提供读端与写端：
 
@@ -26,7 +35,8 @@
   只用平台原生 videoId；无法解析平台 id 时退到 `sha256(规范化 url)`。
 - **fail-closed（宪法 P3）**：库不可用（损坏 / 权限 / 磁盘）时抛
   `VideoDedupStoreError`，绝不 `return False` 静默放行——静默放行的代价就是
-  上面那 1766 次 LLM 调用。
+  上面那 271 份冗余产出（每份都重跑一遍 extractor/reasoner，并可能重开一个
+  NotebookLM notebook）。
 - 状态文件走 `common/state_paths`（机器本地状态根，避开 Syncthing 同步范围，
   缺陷 #11），不落在 vault 或仓库里。
 - 写入用 `INSERT OR IGNORE` + `identity` 主键，天然幂等（重复标记不报错、不重复计数）。
@@ -69,16 +79,18 @@ DEDUP_SEED_HISTORICAL_SENTINEL = "1970-01-01T00:00:00+00:00"
 
 # frontmatter 里承载视频 URL 的键名判定（缺陷 V-1）。
 #
-# 实测 `/Volumes/AKB2/.../AI TRENDS/Video`（608 份 md，只读统计）：
-#   video_url:          173 份 → 172 个平台身份
+# 实测 `/Volumes/AKB2/.../AI TRENDS/Video`（608 份 md，只读统计，2026-07-26 复核）：
 #   source_url:         325 份 →  68 个平台身份（其中仅 14 个与 video_url 重叠）
-#   url:                 31 份 →   2 个平台身份
+#   video_url:          173 份 → 172 个平台身份
+#   url:                 51 份 →   2 个平台身份
+#   original_url:         1 份 →   0 个平台身份（值不是视频链接）
 #   video_source:         1 份 →   1 个平台身份
+#   x_url:                1 份 →   0 个平台身份（值不是视频链接）
 #   original_talk_url:    1 份 →   1 个平台身份
 #   union                            230 个平台身份
 # 原实现只认 `^source_url:` → 只覆盖 68 个，漏掉 162 个（漏的比覆盖的多一倍多）。
 # 所以判定不写死键名清单，而是按"键名含 url" + 一个显式补充集合，
-# 让将来新增的第 6 种键自动被覆盖（漏认的代价是重复烧 NLM 配额，
+# 让将来新出现的键名自动被覆盖（漏认的代价是重复烧 NLM 配额，
 # 多认的代价只是同目录里的一条链接被当成已研究 —— 不对称，取宽）。
 _SEED_EXTRA_URL_KEYS = frozenset({"video_source"})
 
@@ -197,6 +209,41 @@ _BILIBILI_HOSTS = frozenset({
 # bilibili 原生 id：BV 号或 av 号
 _BILI_ID_RE = re.compile(r"^(BV[0-9A-Za-z]{8,12}|av\d+)$")
 
+# sha256 兜底身份归一化时剥离的**跟踪参数**（第二轮复核指出的身份缝隙）。
+#
+# 兜底路径原来把 query 整串拼进归一化串：同一个视频页，一次带
+# `?utm_source=newsletter`、一次不带，就算出两个身份 → 去重对兜底身份失效
+# （平台 id 路径不受影响，那条路只取 `v=` / BV 号）。
+#
+# 取舍是不对称的：**少剥**只多烧一次额度，**多剥**会把两个真不同的 URL 并成一个
+# 身份、让新视频被误判已入库（丢内容）。所以只列语义上确定"只标记来源/播放位置"
+# 的键，不含任何可能选择内容的键（如 `id` / `p` / `page` / `q` / `source`）。
+_TRACKING_QUERY_PREFIXES: tuple[str, ...] = ("utm_", "spm_", "share_", "from_")
+_TRACKING_QUERY_KEYS = frozenset({
+    "spm", "fbclid", "gclid", "msclkid", "igshid", "si", "feature",
+    "ref", "referrer", "referer", "from", "vd_source", "unique_k",
+    "buvid", "seid", "t", "start_time", "timestamp",
+})
+
+
+def _is_tracking_param(key: str) -> bool:
+    """该 query 键是否只承载来源/播放位置（可从身份里剥掉）。"""
+    lowered = key.lower()
+    return lowered in _TRACKING_QUERY_KEYS or lowered.startswith(
+        _TRACKING_QUERY_PREFIXES
+    )
+
+
+def _canonical_query(query: str) -> str:
+    """剥掉跟踪参数并排序，得到与参数顺序/装饰无关的 query 串。"""
+    kept = sorted(
+        (k, v)
+        for k, values in parse_qs(query, keep_blank_values=True).items()
+        if not _is_tracking_param(k)
+        for v in values
+    )
+    return "&".join(f"{k}={v}" for k, v in kept)
+
 
 class VideoDedupStoreError(RuntimeError):
     """去重库不可用（fail-closed，不得降级为"未入库"放行）。"""
@@ -215,6 +262,14 @@ def video_identity(url: str) -> str:
 
     只依赖 URL——**不碰标题、不碰 slug、不碰 LLM 产出**（缺陷 #10 实证 LLM 会
     改写标题，用标题做键等于没有键）。
+
+    sha256 兜底会先剥掉跟踪参数并排序剩余参数（见 `_canonical_query`），所以
+    `?utm_source=` / 参数换序不会把同一页分裂成两个身份。
+
+    **已知残余缝隙（未修，需网络）**：`https://b23.tv/<code>` 这类短链不含 BV 号，
+    解析不到平台 id → 落到 sha256 兜底，与展开后的完整 bilibili URL 是两个身份。
+    修它需要真发一次 HTTP 请求跟随重定向（本函数当前是纯函数、无 IO，且在
+    collector 热路径上被逐候选调用），因此本轮只登记不修。
 
     Raises:
         ValueError: url 为空。空 URL 说明上游元数据缺失，静默给个假身份会让
@@ -249,10 +304,11 @@ def video_identity(url: str) -> str:
             if _BILI_ID_RE.match(part):
                 return f"bilibili:{part}"
 
-    # 兜底：规范化 URL 的 sha256（去掉 scheme 大小写差异与尾斜杠）
+    # 兜底：规范化 URL 的 sha256（去 scheme 大小写差异、尾斜杠、跟踪参数、参数顺序）
     normalized = f"{host}{path.rstrip('/')}"
-    if parsed.query:
-        normalized = f"{normalized}?{parsed.query}"
+    canonical_query = _canonical_query(parsed.query)
+    if canonical_query:
+        normalized = f"{normalized}?{canonical_query}"
     return f"sha256:{hashlib.sha256(normalized.encode('utf-8')).hexdigest()}"
 
 
