@@ -1,11 +1,20 @@
 """视频采集器 — VideoCollector。
 
 从旧 AKB scripts/pipeline/video_collector.py 迁移，适配 AKB2 目录结构：
-- 导入路径：旧 AKB scripts.utils.db → 内建轻量 CatalogDBAdapter
+- 去重账本：`dedup_store.VideoDedupStore`（读端 + 写端，默认从 config 注入）
 - yt-dlp 路径：self.config.ytdlp_bin（解决 #5 硬编码路径）
 - L1-L7 + L4.5 共 8 层过滤链路保持不变
 - 文件锁保护 pending_research.json（解决 #7 并发竞态）
 - L5 LLM 话题聚类通过 llm_adapter.py 注入接口调用
+
+缺陷 #2 / #12 修复记录（2026-07-26）：
+- 去重库不再可能为 None：`db` 不传时从 `config.dedup_db_path` 构造，
+  L1/L7 真正生效；库不可用时抛 `VideoDedupStoreError`（fail-closed），
+  不再 `return False` 静默放行（原来正是这一步让 79% 重复产出通过）。
+- 时间闸（`days_lookback` / `start_date`）不再被空 upload_date 静默绕过：
+  缺日期先补取，仍缺则拒收并告警。
+- `nlm_daily_quota` 成为真正的日硬上限（按账本统计今日已入库数扣减），
+  超额候选写回 pending 而不是静默处理掉。
 """
 
 from __future__ import annotations
@@ -14,39 +23,25 @@ import fcntl
 import json
 import logging
 import re
-import sqlite3
 import subprocess
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from src.akb2.video.config import VideoConfig
 from src.akb2.video.constants import (
     VIDEO_BUDGET_SECONDS,
+    VIDEO_DATE_BACKFILL_SLEEP_SEC,
     VIDEO_DAYS_LOOKBACK,
+    VIDEO_MAX_DATE_BACKFILL_PER_RUN,
     VIDEO_MAX_DURATION_MIN,
     VIDEO_MIN_DURATION_MIN,
+    VIDEO_NLM_DAILY_QUOTA,
 )
+from src.akb2.video.dedup_store import VideoDedupStore
 from src.akb2.video.llm_adapter import LLMAdapter, extract_json_from_llm_response
 
 logger = logging.getLogger("akb2.video.collector")
-
-
-class CatalogDBAdapter:
-    """轻量级 catalog.db 适配器 — 替代旧 AKB scripts.utils.db.CatalogDB。
-
-    只提供 collector 需要的 connect() 方法，返回 sqlite3.Connection。
-    不依赖旧 AKB 任何模块。
-    """
-
-    def __init__(self, db_path: str | Path):
-        self.db_path = Path(db_path)
-
-    def connect(self) -> sqlite3.Connection:
-        """返回只读 sqlite3 连接。"""
-        conn = sqlite3.connect(str(self.db_path))
-        conn.row_factory = sqlite3.Row
-        return conn
 
 
 class VideoCollector:
@@ -55,12 +50,15 @@ class VideoCollector:
     def __init__(
         self,
         config: VideoConfig | None = None,
-        db: CatalogDBAdapter | None = None,
+        db: VideoDedupStore | None = None,
         llm_adapter: LLMAdapter | None = None,
     ):
         self.config = config or VideoConfig()
-        self.db = db
+        # db 不传就自己建：生产入口从不传 db 正是 L1/L7 空转的根因（缺陷 #2）。
+        self.db = db if db is not None else VideoDedupStore(self.config.dedup_db_path)
         self._llm_adapter = llm_adapter
+        # 单轮发布日期补取预算（有界，宪法 P1）
+        self._date_backfill_used = 0
 
         # 加载视频源配置
         self._video_config = self._load_video_config()
@@ -108,12 +106,22 @@ class VideoCollector:
     def collect(self) -> list[dict]:
         """主流程：检测 → 8 层过滤 → 处理。受 VIDEO_BUDGET_SECONDS 总预算控制。"""
         budget_start = time.time()
+        self._date_backfill_used = 0
         results: list[dict] = []
         is_coldstart = self._settings.get("coldstart", False)
 
         creators = [c for c in self._video_config.get("creators", []) if c.get("enabled", False)]
         if not creators:
             logger.info("无视频源配置，跳过视频采集")
+            return results
+
+        # NLM 日配额硬上限（缺陷 #12）：按账本统计今日已入库数扣减，多次触发也不超额
+        quota_remaining = self._remaining_daily_quota()
+        if quota_remaining <= 0:
+            logger.warning(
+                "[配额硬上限] NLM 日配额 %d 今日已用尽，本轮不处理任何视频",
+                self._nlm_daily_quota(),
+            )
             return results
 
         # 1. quality_first 排序：quality tier 先处理
