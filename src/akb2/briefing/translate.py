@@ -5,9 +5,18 @@
   - 翻译展示推文集合（被任何主题 supporting_tweet_ids 引用 ∪ 孤儿高分 top-K）
   - 长推（>500字）：先从英文原文抽核心段（子串校验防编造），再译中文；原文存 text_original
   - 每条展示推文生成中文点题 zh_point
-  - 任何字段/调用失败逐项回退（不抛异常，不崩流程）
+  - 任何字段/调用失败逐项回退（不抛异常，不崩流程），但失败状态必须回传（见下）
 
-设计：一次 LLM 调用处理全部翻译内容（batch），返回结构化 JSON。
+设计（2026-07-26 起）：**条目级隔离**。
+  - 分析字段（executive_summary + focus_discussions）跨条目综述，天然需要全局视野 → 1 次调用
+  - 每条展示推文单独一次调用，并做 idx 绑定校验（模型返回的 idx 与请求不符即拒收）
+    → 切断"整批塞进同一次调用"的串味通道（实证：@AnthropicAI 的译文里被塞进同批次
+      @paulfchristiano 推文的「消除对齐税」）
+
+失败可见（constitution 原则 4）：返回的 dict 上会挂以下标记，供 pipeline 落盘/降级：
+  translate_failed: bool         整体翻译失败（模型链全灭，正文仍是英文）
+  translate_degraded: bool       部分失败（某些条目/补译未成功）
+  translate_failed_fields: list  具体失败字段（如 ["tweets[3]", "core_excerpt[5]"]）
 """
 
 from __future__ import annotations
@@ -42,15 +51,86 @@ LONG_TWEET_THRESHOLD = 500
 # 孤儿高分推文上限（被主题引用之外的高分推文最多保留这么多）
 _ORPHAN_TOP_K = int(__import__("os").environ.get("AKB2_ORPHAN_TOP_K", "5"))
 
+# ---------------------------------------------------------------------------
+# 术语表（#14 术语锁定）
+#
+# 放在代码里而不是配置文件：这份表同时被翻译端（注入 prompt）和审计端
+# （audit._check_glossary 校验译文是否遵守）读取，是两端共享的判据。做成配置文件
+# 会引入"文件读不到/解析失败时怎么办"的降级分支，与 fail-closed 冲突；而术语表的
+# 变更频率与代码同级（每次都要同步改校验用例），放代码里改一处即两端生效。
+#
+# 每条：term（英文源词） → {"zh": 唯一指定译法 | KEEP_EN(保留英文), "forbidden": 已实证的错译/分裂译法}
+# 收录门槛：**同一管线内已实证出现译名分裂或错译**的词，不做预防性扩表。
+# ---------------------------------------------------------------------------
+
+KEEP_EN = "__KEEP_EN__"
+
+TRANSLATION_GLOSSARY: dict[str, dict] = {
+    # 实证：上下文腐烂(16 文件)/腐败(8)/衰减(2)/退化(3) 四种并存；"腐烂/腐败"是字面直译错误
+    "Context Rot": {
+        "zh": "上下文衰减",
+        "forbidden": ["上下文腐烂", "上下文腐败", "上下文退化", "语境腐烂"],
+    },
+    # 实证：37 份译作"安德烈·卡帕斯"（对应 Karpas，错译）；人名按 prompt 规则保留原文
+    "Andrej Karpathy": {
+        "zh": KEEP_EN,
+        "forbidden": ["安德烈·卡帕斯", "卡帕斯", "卡帕西"],
+    },
+    # 实证：译作"支架工程"（harness 误作 scaffolding）；AKB taxonomy 内该概念用英文
+    "Harness Engineering": {
+        "zh": KEEP_EN,
+        "forbidden": ["支架工程", "线束工程", "脚手架工程"],
+    },
+    # 实证：氛围编程(39)/氛围编码(12)/保留原文 三种并存；取多数派为唯一指定
+    "Vibe Coding": {
+        "zh": "氛围编程",
+        "forbidden": ["氛围编码", "振动编码", "感觉编程", "氛围写代码"],
+    },
+    # 实证：Copilot(114)/Co-pilot(3)；产品名不得改写
+    "Copilot": {
+        "zh": KEEP_EN,
+        "forbidden": ["Co-pilot", "副驾驶", "协同驾驶"],
+    },
+    # benchmark 名不得翻译（另见 audit._check_metric_fabrication：SWE-bench 是 resolve rate）
+    "SWE-bench": {
+        "zh": KEEP_EN,
+        "forbidden": ["软件工程基准测试", "SWE 基准"],
+    },
+}
+
+
+def _render_glossary_rules() -> str:
+    """把术语表渲染成 prompt 规则文本（翻译端与审计端同源）。"""
+    lines: list[str] = []
+    for term, spec in TRANSLATION_GLOSSARY.items():
+        zh = spec.get("zh")
+        target = (
+            "保留英文原文，不得音译/意译"
+            if zh == KEEP_EN
+            else f"必须译作「{zh}」"
+        )
+        forbidden = spec.get("forbidden") or []
+        tail = f"（禁用：{'、'.join(forbidden)}）" if forbidden else ""
+        lines.append(f"   - {term} → {target}{tail}")
+    return "\n".join(lines)
+
+
 _TRANSLATE_SYSTEM = (
     "你是专业的 AI/ML 领域简体中文翻译编辑。"
     "将提供的英文 AI 趋势分析内容翻译为简体中文，要求：\n"
     "1. 专业名词保留英文（如 RAG、MCP、LangGraph、GPT-5、Claude、Transformer、API 等）\n"
     "2. 博主 @id 完全保留（如 @AndrewNg、@OpenAI）\n"
-    "3. 数字、百分比、版本号保持原样\n"
-    "4. URL 完全保留\n"
-    "5. 译文准确、自然，避免机器翻译腔\n"
-    "6. 严格按 JSON schema 输出，不添加额外字段"
+    "3. 数字、百分比、版本号保持原样。模型参数规模（405B / 8B / 72B 这类紧贴数字的大写 B）"
+    "属于型号标识，必须逐字保留，禁止换算成「4050 亿参数」这类中文量级\n"
+    "4. URL 完全保留（逐字，不得改写/截断/加空格）\n"
+    "5. 禁止改写事实：不得新增原文没有的指标类型（原文只说 72% on SWE-bench，"
+    "不得译成「72% 准确率」）、不得反转语义（Reproducible on 8B models too "
+    "是「在 8B 上同样可复现」，不是「可扩展到 8B」）、"
+    "不得删减限定词（production Rust 的 production 要保留）\n"
+    "6. 译文准确、自然，避免机器翻译腔\n"
+    "7. 术语表（唯一指定译法，不得使用其他说法）：\n"
+    f"{_render_glossary_rules()}\n"
+    "8. 严格按 JSON schema 输出，不添加额外字段"
 )
 
 

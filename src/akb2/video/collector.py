@@ -153,19 +153,31 @@ class VideoCollector:
             all_candidates = self._dedup_by_topic(all_candidates)
 
         # 4. NLM 配额回填（日常模式下）
-        nlm_quota = self._settings.get("nlm_daily_quota", 20)
-        if not is_coldstart and len(all_candidates) < nlm_quota:
+        if not is_coldstart and len(all_candidates) < quota_remaining:
             backfill = self._backfill_quota(
                 all_candidates,
                 creators,
-                nlm_quota - len(all_candidates),
+                quota_remaining - len(all_candidates),
             )
             if backfill:
                 all_candidates.extend(backfill)
                 logger.info(
                     f"配额回填: +{len(backfill)} 个视频 "
-                    f"(总计 {len(all_candidates)}/{nlm_quota})"
+                    f"(总计 {len(all_candidates)}/{quota_remaining})"
                 )
+
+        # 4.5 配额硬截断（缺陷 #12）：超额候选写回 pending 等下轮，不静默丢弃
+        if len(all_candidates) > quota_remaining:
+            deferred = all_candidates[quota_remaining:]
+            all_candidates = all_candidates[:quota_remaining]
+            logger.warning(
+                "[配额硬上限] NLM 日配额 %d，今日剩余 %d；推迟 %d 个候选到下轮: %s",
+                self._nlm_daily_quota(),
+                quota_remaining,
+                len(deferred),
+                [c["video"].get("title", "?") for c in deferred],
+            )
+            self._save_pending(deferred, increment_retry=False)
 
         # 5. 逐个处理
         for candidate in all_candidates:
@@ -179,8 +191,8 @@ class VideoCollector:
             except Exception as e:
                 logger.error(f"视频处理失败 [{candidate['video'].get('title', '?')}]: {e}")
 
-        # L7: catalog.db URL 去重（过滤已入库视频）
-        if results and self.db:
+        # L7: 去重库 URL 去重（过滤已入库视频）
+        if results:
             deduped, skipped_count = self._l7_catalog_dedup(results)
             results = deduped
             if skipped_count:
@@ -195,7 +207,13 @@ class VideoCollector:
     # ------------------------------------------------------------------
 
     def _detect_new_videos(self, creator: dict) -> list[dict]:
-        """检测 creator 近 N 天的新视频，排除已入库的。"""
+        """检测 creator 近 N 天的新视频，排除已入库的。
+
+        时间闸契约（缺陷 #12）：`days_lookback` 与 `start_date` 都必须真正生效。
+        `--flat-playlist` 对 YouTube 从不返回 `upload_date`（实证：324 份产出里只有
+        1 份有 `published_at`），原实现 `if upload_date:` 守卫让空值直接跳过两道闸
+        —— 2025 年的老视频因此永驻候选集。现在缺日期先补取，补不到就拒收。
+        """
         platform = creator["platform"]
         days = self._settings.get("days_lookback", VIDEO_DAYS_LOOKBACK)
 
@@ -215,20 +233,37 @@ class VideoCollector:
             try:
                 start_date_cutoff = datetime.strptime(start_date_str, "%Y-%m-%d")
             except ValueError:
-                pass
+                logger.warning(
+                    "start_date 配置非法(%r)，该道时间闸本轮不生效", start_date_str
+                )
+        lookback_cutoff = datetime.now() - timedelta(days=days)
 
         for v in videos:
             # L1: URL 去重
             if self._is_video_ingested(v["url"]):
                 continue
-            # L2: start_date 过滤
-            if start_date_cutoff and v.get("upload_date"):
-                try:
-                    upload_dt = datetime.strptime(v["upload_date"], "%Y%m%d")
-                    if upload_dt < start_date_cutoff:
-                        continue
-                except ValueError:
-                    pass
+            # L2: 时间闸 — 缺发布日期先补取，仍缺则拒收（不静默放行）
+            if not v.get("upload_date"):
+                self._fill_upload_date(v)
+            upload_dt = self._parse_upload_date(v.get("upload_date", ""))
+            if upload_dt is None:
+                logger.warning(
+                    "[时间闸] 拒收（无法确定发布日期，fail-closed）: [%s] %s — %s",
+                    v.get("platform", "?"), v.get("title", "?"), v.get("url", "?"),
+                )
+                continue
+            if upload_dt < lookback_cutoff:
+                logger.info(
+                    "[时间闸] 超出回溯窗口 %d 天 (%s): %s",
+                    days, v["upload_date"], v.get("title", "?"),
+                )
+                continue
+            if start_date_cutoff and upload_dt < start_date_cutoff:
+                logger.info(
+                    "[时间闸] 早于 start_date %s (%s): %s",
+                    start_date_str, v["upload_date"], v.get("title", "?"),
+                )
+                continue
             # L3: 时长过滤
             duration = v.get("duration_minutes", 0)
             max_dur = self._settings.get("max_video_duration_minutes", VIDEO_MAX_DURATION_MIN)
@@ -256,6 +291,93 @@ class VideoCollector:
                     continue
             filtered.append(v)
         return filtered
+
+    # ------------------------------------------------------------------
+    # 时间闸辅助（缺陷 #12）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_upload_date(raw: str) -> datetime | None:
+        """解析 yt-dlp 的 `upload_date`（YYYYMMDD）；空值或非法格式返回 None。"""
+        value = (raw or "").strip()
+        if not value:
+            return None
+        try:
+            return datetime.strptime(value, "%Y%m%d")
+        except ValueError:
+            logger.warning("[时间闸] upload_date 格式非法(%r)，按未知处理", value)
+            return None
+
+    def _fill_upload_date(self, video: dict) -> None:
+        """对缺 upload_date 的视频单独 `yt-dlp --dump-json` 补取真实发布日期。
+
+        与 `_detect_bili_videos` 的 2 阶段补全同一范式。有界：单轮最多
+        `VIDEO_MAX_DATE_BACKFILL_PER_RUN` 次（宪法 P1），预算耗尽时告警而不是
+        静默放行——放行的后果就是 2025 年的老视频被反复研究。
+        """
+        url = video.get("url", "")
+        if not url:
+            return
+        if self._date_backfill_used >= VIDEO_MAX_DATE_BACKFILL_PER_RUN:
+            logger.warning(
+                "[时间闸] 发布日期补取预算耗尽 (%d)，%s 保持日期未知（将被拒收）",
+                VIDEO_MAX_DATE_BACKFILL_PER_RUN, video.get("title", url),
+            )
+            return
+
+        self._date_backfill_used += 1
+        try:
+            detail = subprocess.run(
+                [self.config.ytdlp_bin] + self._ytdlp_base_args +
+                ["--dump-json", "--skip-download", url],
+                capture_output=True, text=True, timeout=30,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+            logger.warning("[时间闸] 发布日期补取失败 %s: %s", url, exc)
+            return
+
+        if detail.returncode != 0 or not detail.stdout.strip():
+            logger.warning(
+                "[时间闸] 发布日期补取无输出 %s (rc=%s)", url, detail.returncode
+            )
+            return
+        try:
+            info = json.loads(detail.stdout.strip().split("\n")[0])
+        except (json.JSONDecodeError, IndexError) as exc:
+            logger.warning("[时间闸] 发布日期补取响应不可解析 %s: %s", url, exc)
+            return
+
+        upload_date = (info.get("upload_date") or "").strip()
+        if upload_date:
+            video["upload_date"] = upload_date
+            logger.info("[时间闸] 补取到发布日期 %s: %s", upload_date, url)
+        else:
+            logger.warning("[时间闸] 平台未返回发布日期: %s", url)
+
+        time.sleep(VIDEO_DATE_BACKFILL_SLEEP_SEC)
+
+    # ------------------------------------------------------------------
+    # 日配额（缺陷 #12）
+    # ------------------------------------------------------------------
+
+    def _nlm_daily_quota(self) -> int:
+        """NLM 每日深研配额（配置优先，缺省用具名常量）。"""
+        try:
+            return int(self._settings.get("nlm_daily_quota", VIDEO_NLM_DAILY_QUOTA))
+        except (TypeError, ValueError):
+            logger.warning(
+                "nlm_daily_quota 配置非法(%r)，回退到默认 %d",
+                self._settings.get("nlm_daily_quota"), VIDEO_NLM_DAILY_QUOTA,
+            )
+            return VIDEO_NLM_DAILY_QUOTA
+
+    def _remaining_daily_quota(self) -> int:
+        """今日剩余配额 = 日配额 − 账本中今日已入库条数。"""
+        quota = self._nlm_daily_quota()
+        used = self.db.count_ingested_since(date.today().isoformat())
+        if used:
+            logger.info("[配额] NLM 日配额 %d，今日已入库 %d", quota, used)
+        return max(0, quota - used)
 
     # ------------------------------------------------------------------
     # 关键词过滤

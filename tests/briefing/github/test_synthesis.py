@@ -95,3 +95,116 @@ class TestSynthesis:
         } for i in range(40)]
         with pytest.raises(ValueError, match="too large"):
             synthesize(huge_repos)
+
+
+# ── 缺陷 #9：摘要必须按 repo_url 对齐，不匹配即 abort ──────────────────────────
+# 旧实现按位置 zip（synthesis.py:177 strict=False），repo_url 不匹配时显式 pass
+# （:182-184）。模型重排数组即整份错位：A 仓库配 B 仓库的简介，而数量/schema/URL
+# 全对，无从发现。实测已有 4 条 summary 提到同日另一个 repo 的名字。
+# docs/github-deepseek-prompt-v1.md:70 明文承诺 "repo_url 与输入不匹配 → abort"。
+
+_SUMMARY_ZH = "这是一个用于测试对齐的中文摘要，描述项目做什么、技术栈与解决的核心问题。"
+_USECASE_ZH = "正向场景：需要该能力时适用。反向场景：生产环境未验证前不要直接上。"
+
+
+def _repos(n: int) -> list[dict]:
+    return [{
+        "repo_url": f"https://github.com/owner/repo{i}",
+        "stars": 100 + i,
+        "language": "Python",
+        "topic_tags": ["ai"],
+        "mentioners": ["@a"],
+        "description": f"desc {i}",
+        "readme_excerpt": f"readme {i}",
+    } for i in range(n)]
+
+
+def _llm_response(items: list[dict]) -> dict:
+    return {"choices": [{"message": {"content": json.dumps(items, ensure_ascii=False)}}]}
+
+
+class TestSynthesisAlignment:
+    def test_reversed_summaries_are_realigned_by_repo_url(self, monkeypatch):
+        """LLM 逆序返回时，每个 repo 必须拿到自己的 summary（旧实现必挂）。"""
+        repos = _repos(3)
+        items = [{
+            "repo_url": r["repo_url"],
+            "summary": f"{_SUMMARY_ZH}#{i}",
+            "use_case": f"{_USECASE_ZH}#{i}",
+        } for i, r in enumerate(repos)]
+        items.reverse()
+
+        monkeypatch.setattr(
+            "akb2.briefing.github.synthesis._call_deepseek",
+            lambda prompt, api_key=None, **kw: _llm_response(items),
+        )
+        result = synthesize(repos, api_key="test-key")
+        for i, r in enumerate(result["top_repos"]):
+            assert r["repo_url"] == repos[i]["repo_url"]
+            assert r["summary"].endswith(f"#{i}"), (
+                f"{r['repo_url']} 拿到了别人的 summary: {r['summary']}"
+            )
+
+    def test_unknown_repo_url_aborts(self, monkeypatch):
+        """LLM 编造/替换 repo_url → abort，不得用输入 URL 兜底掩盖。"""
+        repos = _repos(2)
+        items = [
+            {"repo_url": repos[0]["repo_url"], "summary": _SUMMARY_ZH, "use_case": _USECASE_ZH},
+            {"repo_url": "https://github.com/hallucinated/repo",
+             "summary": _SUMMARY_ZH, "use_case": _USECASE_ZH},
+        ]
+        monkeypatch.setattr(
+            "akb2.briefing.github.synthesis._call_deepseek",
+            lambda prompt, api_key=None, **kw: _llm_response(items),
+        )
+        with pytest.raises(ValueError, match="repo_url"):
+            synthesize(repos, api_key="test-key")
+
+    def test_duplicate_repo_url_aborts(self, monkeypatch):
+        repos = _repos(2)
+        items = [
+            {"repo_url": repos[0]["repo_url"], "summary": _SUMMARY_ZH, "use_case": _USECASE_ZH},
+            {"repo_url": repos[0]["repo_url"], "summary": _SUMMARY_ZH, "use_case": _USECASE_ZH},
+        ]
+        monkeypatch.setattr(
+            "akb2.briefing.github.synthesis._call_deepseek",
+            lambda prompt, api_key=None, **kw: _llm_response(items),
+        )
+        with pytest.raises(ValueError, match="repo_url"):
+            synthesize(repos, api_key="test-key")
+
+    def test_missing_item_field_aborts_via_jsonschema(self, monkeypatch):
+        """兑现 prompt 文档承诺：返回后逐项 jsonschema 校验，少字段直接 abort。"""
+        repos = _repos(2)
+        items = [
+            {"repo_url": repos[0]["repo_url"], "summary": _SUMMARY_ZH, "use_case": _USECASE_ZH},
+            {"repo_url": repos[1]["repo_url"], "summary": _SUMMARY_ZH},  # 缺 use_case
+        ]
+        monkeypatch.setattr(
+            "akb2.briefing.github.synthesis._call_deepseek",
+            lambda prompt, api_key=None, **kw: _llm_response(items),
+        )
+        with pytest.raises(ValueError, match="use_case"):
+            synthesize(repos, api_key="test-key")
+
+
+class TestSynthesisGrounding:
+    def test_description_is_fed_to_the_model(self):
+        repo = {
+            "repo_url": "https://github.com/mattpocock/skills",
+            "stars": 10, "language": "Shell", "topic_tags": [], "mentioners": ["@a"],
+            "description": "Skills for Real Engineers. Straight from my .agents directory.",
+            "readme_excerpt": None,
+        }
+        xml = _render_repo_xml(repo)
+        assert "Real Engineers" in xml
+
+    def test_repo_without_grounding_aborts(self):
+        """空 grounding 不得进 LLM（否则只能靠 repo 名编）。"""
+        repo = {
+            "repo_url": "https://github.com/mattpocock/skills",
+            "stars": 10, "language": "Shell", "topic_tags": [], "mentioners": ["@a"],
+            "description": None, "readme_excerpt": None,
+        }
+        with pytest.raises(ValueError, match="grounding"):
+            synthesize([repo], api_key="test-key")
