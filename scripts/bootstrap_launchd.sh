@@ -22,7 +22,9 @@ PLIST_LABEL="com.akb2.briefing"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VAULT_ROOT="${VAULT_ROOT:-/Volumes/AKB2/Obsidian}"
-STATE_ROOT="${AKB2_STATE_ROOT:-$HOME/Library/Application Support/akb2}"
+# shellcheck source=scripts/lib/state-root.sh
+. "$SCRIPT_DIR/lib/state-root.sh"
+akb2_resolve_state_root
 PLIST_SRC="$SCRIPT_DIR/../launchd/com.akb2.briefing.plist"
 RENDER_ONLY_OUT=""
 
@@ -38,12 +40,10 @@ while [ $# -gt 0 ]; do
 done
 
 # fail-closed：状态根落在跨机同步范围内 → 拒绝渲染（与 python 侧同语义）
-case "$STATE_ROOT" in
-    "$HOME/AI-Agent"|"$HOME/AI-Agent"/*|"$HOME/Library/Mobile Documents"/*|/Volumes/AKB2/*)
-        echo "ERROR: AKB2_STATE_ROOT=$STATE_ROOT 在跨机同步范围内；状态放同步目录会被 Syncthing 分叉丢数据" >&2
-        exit 2
-        ;;
-esac
+if akb2_state_root_is_synced; then
+    echo "ERROR: AKB2_STATE_ROOT=$STATE_ROOT 在跨机同步范围内；状态放同步目录会被 Syncthing 分叉丢数据" >&2
+    exit 2
+fi
 
 if [ -n "$RENDER_ONLY_OUT" ]; then
     echo "=== Rendering $PLIST_LABEL (render-only, 不注册) ==="

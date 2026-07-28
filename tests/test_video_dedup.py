@@ -1533,7 +1533,7 @@ def test_cli_fixture_path_blocked_by_published_identity_index(cli_config, monkey
     """**双真值源绑定**：账本为空但 vault 已有同身份的**旧命名**存量产出 → 拒绝重写。
 
     2026-07-28 对抗复核抓到的漏洞：`--fixture` 调用点虽然接了
-    `collector._is_video_ingested`（账本 OR 已发布身份索引），但没有任何测试绑定它 ——
+    `collector.is_ingested_url`（账本 OR 已发布身份索引），但没有任何测试绑定它 ——
     把该行单独还原成 `dedup_store.is_ingested(...)`（只查账本），全量 2906 项零失败。
     这正是本仓栽过三次的形态（代码接上了、断言没跟上）。
 

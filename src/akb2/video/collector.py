@@ -291,7 +291,7 @@ class VideoCollector:
 
         for v in videos:
             # L0: 无 url 拒收 —— 没有 url 就没有稳定身份，去重、账本、研究全都做不了。
-            # 原实现在 `_is_video_ingested` 里打 warning 后 `return False` 放行，
+            # 原实现在 `is_ingested_url` 里打 warning 后 `return False` 放行，
             # fail-closed 在这条缝上是开的（无身份候选一路走到研究，且永远无法登记
             # → 每轮重跑）。
             if not v.get("url"):
@@ -307,7 +307,7 @@ class VideoCollector:
             # 只对已知短链域名发网络请求，每候选一次，预算有界。
             v["url"] = self.shortlink_expander.expand(v["url"])
             # L1: URL 去重
-            if self._is_video_ingested(v["url"]):
+            if self.is_ingested_url(v["url"]):
                 continue
             # L2: 时间闸 — 缺发布日期先补取，仍缺则拒收（不静默放行）
             if not v.get("upload_date"):
@@ -654,7 +654,7 @@ class VideoCollector:
     # L1 / L7: 入库去重
     # ------------------------------------------------------------------
 
-    def _is_video_ingested(self, url: str) -> bool:
+    def is_ingested_url(self, url: str) -> bool:
         """L1: 该视频是否已处理过（在花任何 LLM/NLM 额度之前）。
 
         两个真值来源，任一命中即跳过：
@@ -706,7 +706,7 @@ class VideoCollector:
                 )
                 skipped_count += 1
                 continue
-            if self._is_video_ingested(url):
+            if self.is_ingested_url(url):
                 logger.info(f"[L7] 已入库，跳过: {r['video'].get('title', url)}")
                 skipped_count += 1
             else:

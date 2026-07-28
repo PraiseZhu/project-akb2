@@ -203,10 +203,6 @@ def diagnose_upstream_fatal(signature: str | None = None) -> str:
     )
 
 
-# keyword 模式为「search 端点可用性」额外付出的调用次数。
-# 取 0 是刻意的：keyword 模式整轮只有一次 search 调用，那一次调用本身就是探针
-# ——单独再发一次 `-n 1` 探测拿不到任何额外信息，只会让已经坏掉的端点多挨一次。
-KEYWORD_SEARCH_EXTRA_PROBE_CALLS = 0
 
 _KEYWORD_NO_EQUIVALENT_ENDPOINT = (
     "keyword 模式是跨账号关键词搜索，user-posts（单账号时间线）无等价能力，"
@@ -305,7 +301,7 @@ class L0Collector(BaseCollector):
     ) -> list[dict]:
         """通过 twitter-cli 拉真实推文；任何失败都 fail-closed，不降级 fixture。
 
-        这次 search 调用本身就是「端点可用性探针」（`KEYWORD_SEARCH_EXTRA_PROBE_CALLS`
+        这次 search 调用本身就是「端点可用性探针」（额外探针调用数 = 0
         = 0）：它成功即端点可用，失败即拒绝启动并把成因写清楚。
         """
         cfg = (self.config or load_config()).get("sources", {}).get("l0", {})

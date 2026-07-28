@@ -340,7 +340,7 @@ def test_L5_topic_dedup(temp_config):
     collector = VideoCollector(temp_config, llm_adapter=mock_llm)
 
     # disable L1/L2/L3/L4 for this test
-    with mock.patch.object(collector, "_is_video_ingested", return_value=False):
+    with mock.patch.object(collector, "is_ingested_url", return_value=False):
         with mock.patch.object(collector, "_detect_yt_videos", return_value=[
             {
                 "platform": "youtube", "id": "dup1", "title": "DeepSeek V4 Review (short)",

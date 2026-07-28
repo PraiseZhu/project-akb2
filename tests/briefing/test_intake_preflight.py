@@ -323,9 +323,11 @@ def test_keyword_healthy_path_uses_search_and_no_extra_probe(monkeypatch):
     tweets = collector.collect(dry_run=False)
 
     assert [t["id"] for t in tweets] == ["111"]
+    # `len(cmds) == 1` 就是"零额外探针调用"的真断言。
+    # 原先还有一行 `assert l0.KEYWORD_SEARCH_EXTRA_PROBE_CALLS == 0` —— 常量等于
+    # 自己的字面量、恒真，且该常量生产零读取，已连同常量一起删除。
     assert len(cmds) == 1, f"不得为可用性探测额外调用一次，实际 {cmds}"
     assert cmds[0][1] == "search"
-    assert l0.KEYWORD_SEARCH_EXTRA_PROBE_CALLS == 0
 
 
 def test_keyword_dry_run_still_reads_fixture(monkeypatch):

@@ -120,11 +120,15 @@ class ShortLinkExpander:
             return self._cache[url]
         if self.expansions_used >= self.max_per_run:
             self.budget_exhausted += 1
-            logger.warning(
-                "[短链] 展开预算耗尽 (%d)，保持短链形态（该视频的身份可能与展开后的"
-                "完整链接分裂，最多多烧一次额度）: %s",
-                self.max_per_run, url,
-            )
+            # 预算耗尽后**不写缓存**（写了会让 budget_exhausted 从"命中次数"变成
+            # "唯一 URL 数"，可观测计数的语义就变了）；但同一 URL 反复查会刷屏，
+            # 所以日志只打第一次，计数照旧每次累加。
+            if self.budget_exhausted == 1:
+                logger.warning(
+                    "[短链] 展开预算耗尽 (%d)，保持短链形态（该视频的身份可能与展开后的"
+                    "完整链接分裂，最多多烧一次额度）；后续同类不再重复告警: %s",
+                    self.max_per_run, url,
+                )
             return url
 
         self.expansions_used += 1

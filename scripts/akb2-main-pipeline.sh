@@ -28,13 +28,13 @@ ENV_FILE="${AKB2_ENV_FILE:-$HOME/.config/akb2/github-briefing.env}"
 # (Syncthing folder,~/AI-Agent/.stfolder 实证)内,锁放 $PROJECT_ROOT/staging/locks
 # 会被跨机同步 → 两台机器互看/互删对方的锁 PID 文件,`kill -0` 判活对另一台的 PID
 # 毫无意义。解析顺序与 python 侧 src/akb2/common/state_paths.get_state_root() 一致。
-STATE_ROOT="${AKB2_STATE_ROOT:-$HOME/Library/Application Support/akb2}"
-case "$STATE_ROOT" in
-    "$HOME/AI-Agent"|"$HOME/AI-Agent"/*|"$HOME/Library/Mobile Documents"/*|/Volumes/AKB2/*)
-        echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] FATAL: AKB2_STATE_ROOT=$STATE_ROOT 在跨机同步范围内(状态会被 Syncthing 分叉丢失)" >&2
-        exit 1
-        ;;
-esac
+# shellcheck source=scripts/lib/state-root.sh
+. "$(cd "$(dirname "$0")" && pwd)/lib/state-root.sh"
+akb2_resolve_state_root
+if akb2_state_root_is_synced; then
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] FATAL: AKB2_STATE_ROOT=$STATE_ROOT 在跨机同步范围内(状态会被 Syncthing 分叉丢失)" >&2
+    exit 1
+fi
 # 迁移期兜底:锁位置从仓库换到状态根的那一刻,旧位置可能还有一个活着的 daemon
 # 持锁(实测 2026-07-25 起的常驻进程锁就在 staging/locks/runner.lock)。新位置查不到
 # 它 → 会再起第二个 daemon。所以旧锁仍要判活一次,活着就让位。

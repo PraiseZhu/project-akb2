@@ -386,3 +386,52 @@ class TestStartupCrossMachineDetection:
         assert Path(config.lock_dir) == (
             home / "Library" / "Application Support" / "akb2" / "locks"
         )
+
+
+class TestShardKeyIsArticleId:
+    """分片键必须是 `article_id`，不是整个文件名（2026-07-28 /simplify altitude 复核）。
+
+    改前用整个文件名做键：文件名带 `--<date>--` 段，同一篇文章隔天被重新抓一次就
+    产生两个名字 → 实测分别落 shard 2 与 shard 15 → 两台机器可能各占一片、同一
+    内容仍被双跑，恰好是分片要防的那件事。`article_id` 由
+    `compute_article_id(url)` 从 URL 派生，跨机跨日恒定。
+    """
+
+    def test_same_article_different_date_same_shard(self) -> None:
+        from src.akb2.quality.runner import _shard_of
+
+        d27 = "/v/raw/addy-osmani--a1b2c3d4e5f6--raw--2026-07-27.md"
+        d28 = "/v/raw/addy-osmani--a1b2c3d4e5f6--raw--2026-07-28.md"
+        assert _shard_of(d27) == _shard_of(d28), (
+            "同一 article_id 跨日必须同片，否则两机各占一片 → 同一内容双跑"
+        )
+
+    def test_same_article_different_mount_point_same_shard(self) -> None:
+        """两台机器 vault 挂载点不同时也必须同片（这是不用绝对路径的原因）。"""
+        from src.akb2.quality.runner import _shard_of
+
+        here = "/Volumes/AKB2/Obsidian/ws/raw/blog--deadbeef1234--raw--2026-07-28.md"
+        there = "/mnt/other/ws/raw/blog--deadbeef1234--raw--2026-07-28.md"
+        assert _shard_of(here) == _shard_of(there)
+
+    def test_different_article_same_slug_different_key(self) -> None:
+        """反向：同一 source 的两篇不同文章不得被并到同一键（否则分布退化）。"""
+        from src.akb2.quality.runner import _shard_key
+
+        a = "/v/raw/blog--aaaaaaaaaaaa--raw--2026-07-28.md"
+        b = "/v/raw/blog--bbbbbbbbbbbb--raw--2026-07-28.md"
+        assert _shard_key(a) != _shard_key(b)
+
+    def test_slug_containing_double_dash_still_extracts_article_id(self) -> None:
+        """source_slug 自身含 `--` 时仍取到 article_id（不能按固定下标取）。"""
+        from src.akb2.quality.runner import _shard_key
+
+        p = "/v/raw/some--weird--slug--cafebabe0001--raw--2026-07-28.md"
+        assert _shard_key(p) == "cafebabe0001"
+
+    def test_missing_raw_segment_falls_back_visibly(self, capsys) -> None:
+        """不含 `--raw--` 时回退整个文件名并**明示**（不静默挤到同一片）。"""
+        from src.akb2.quality.runner import _shard_key
+
+        assert _shard_key("/v/raw/weird-name.md") == "weird-name.md"
+        assert "不含 `--raw--` 段" in capsys.readouterr().err

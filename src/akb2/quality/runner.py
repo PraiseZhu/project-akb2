@@ -183,14 +183,41 @@ def _parse_shard_spec(
     return frozenset(owned)
 
 
-def _shard_of(raw_path: str, count: int = RUNNER_SHARD_COUNT) -> int:
-    """raw 的分片号。
+def _shard_key(raw_path: str) -> str:
+    """raw 的跨机分片键 = 文件名里的 `article_id` 段。
 
-    分片键用**文件名**而非绝对路径：两台机器的 vault 挂载点可能不同
-    （`/Volumes/AKB2/...` vs 别的挂载点），按路径哈希会让同一篇分到不同片，
-    分片互斥立即失效。文件名由 intake 生成、跨机随 Syncthing 一致。
+    raw 文件名形态是 `<source_slug>--<article_id>--raw--<date>.md`，其中
+    `article_id` 由 `quality.intake.models.compute_article_id(url)` 从 URL 派生，
+    因此**同一篇文章跨机、跨日都是同一个值**。
+
+    为什么不用绝对路径：两台机器的 vault 挂载点可能不同，按路径哈希会让同一篇
+    分到不同片，分片互斥立即失效。
+
+    为什么不用整个文件名（本轮修正）：文件名带 `<date>` 段，同一篇文章隔天被
+    重新抓一次就会产生 `…--a1b2c3d4e5f6--raw--2026-07-27.md` 与
+    `…--2026-07-28.md` 两个名字 → 实测分别落 shard 2 与 shard 15 → 两台机器
+    可能各占一片、同一内容仍被双跑，恰好是分片要防的那件事。
+
+    取不到 `article_id` 段时回退整个文件名并**明示**（不静默按某个默认片走，
+    否则所有异常命名会挤到同一片上）。
     """
-    digest = hashlib.sha256(Path(raw_path).name.encode("utf-8")).hexdigest()
+    name = Path(raw_path).name
+    # `article_id` = `--raw--` 左侧的最后一段。不能按固定下标取（不同 source_slug
+    # 自身可能含 `--`），也不能整段左侧都拿（那样 slug 变了分片就变）。
+    head, sep, _ = name.partition("--raw--")
+    if sep and head:
+        return head.rsplit("--", 1)[-1]
+    print(
+        f"[runner] raw 文件名不含 `--raw--` 段，分片键回退为整个文件名"
+        f"（跨日重抓时会分到不同片）: {name}",
+        file=sys.stderr,
+    )
+    return name
+
+
+def _shard_of(raw_path: str, count: int = RUNNER_SHARD_COUNT) -> int:
+    """raw 的分片号（键见 `_shard_key`）。"""
+    digest = hashlib.sha256(_shard_key(raw_path).encode("utf-8")).hexdigest()
     return int(digest[:8], 16) % count
 
 
@@ -819,9 +846,14 @@ def _scan_queue(config: RunnerConfig) -> list[str]:
         if "--raw--" not in fpath.name:
             continue
         raw_path_str = str(fpath)
-        content_hash = _compute_raw_hash(raw_path_str)
-        if _is_processed(content_hash, config.ledger_path):
-            continue
+        # 分片过滤必须在 `_is_processed` **之前**：`_shard_of` 是纯字符串 sha256
+        # （零 I/O，4369 项实测 0.0088s），而 `_is_processed` 每项都要读一遍全账本
+        # 并逐行解析 JSON（19.4MB / 25583 行）。
+        # 实测 A/B（raw 4369 项、owned=0-7）：过滤在后 379.3s / 全账本扫 4369 次；
+        # 过滤在前 189.0s / 扫 2168 次 —— 省 190.3s 每轮，队列逐项一致。
+        # 接管分支的 `stat` 判龄同样比全账本读取便宜，故也放在前面；接管日志
+        # 仍在确认该项未处理之后才打，日志行与过滤在后时完全一致。
+        takeover_note: str | None = None
         if owned is not None:
             shard = _shard_of(raw_path_str)
             if shard not in owned:
@@ -830,12 +862,16 @@ def _scan_queue(config: RunnerConfig) -> list[str]:
                 age = _raw_item_age_sec(raw_path_str)
                 if age < SHARD_TAKEOVER_AFTER_SEC:
                     continue
-                print(
+                takeover_note = (
                     f"[runner] 接管外机分片项: shard={shard} 不属本机 "
                     f"{sorted(owned)}，但已滞留 {int(age)}s "
-                    f"(> {SHARD_TAKEOVER_AFTER_SEC}s) — {fpath.name}",
-                    file=sys.stderr,
+                    f"(> {SHARD_TAKEOVER_AFTER_SEC}s) — {fpath.name}"
                 )
+        content_hash = _compute_raw_hash(raw_path_str)
+        if _is_processed(content_hash, config.ledger_path):
+            continue
+        if takeover_note:
+            print(takeover_note, file=sys.stderr)
         queue.append(raw_path_str)
 
     return queue

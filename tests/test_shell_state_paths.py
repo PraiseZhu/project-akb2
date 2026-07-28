@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -270,6 +271,99 @@ class TestDeployScriptLockDir:
             "仍在仓库(Syncthing folder)内建锁目录"
         )
         assert '"$STATE_ROOT/locks"' in text, "未改成在机器本地状态根建锁目录"
-        assert 'STATE_ROOT="${AKB2_STATE_ROOT:-' in text, (
-            "未按 AKB2_STATE_ROOT > HOME 默认的顺序解析状态根"
+
+    def test_state_root_resolution_order_is_behavioural(self, tmp_path) -> None:
+        """解析顺序断言改为**跑共用库**，不再匹配脚本源码字面量。
+
+        原断言是 `'STATE_ROOT="${AKB2_STATE_ROOT:-' in text` —— 脚本一改写法
+        （本轮正是把三份复制收口成 `scripts/lib/state-root.sh`）它就失效，
+        属 /code-review 标为 MEDIUM 的源码文本断言。现在断言可观测行为。
+        """
+        lib = REPO_ROOT / "scripts" / "lib" / "state-root.sh"
+        home = tmp_path / "home"
+        home.mkdir()
+
+        def _resolve(env_extra: dict[str, str]) -> str:
+            proc = subprocess.run(
+                ["bash", "-c", f'. "{lib}"\nakb2_resolve_state_root\nprintf %s "$STATE_ROOT"'],
+                capture_output=True, text=True, timeout=30,
+                env={"PATH": os.environ["PATH"], "HOME": str(home), **env_extra},
+            )
+            assert proc.returncode == 0, proc.stderr
+            return proc.stdout
+
+        # AKB2_STATE_ROOT 优先
+        assert _resolve({"AKB2_STATE_ROOT": "/tmp/explicit-root"}) == "/tmp/explicit-root"
+        # 未设时回落 HOME 下的 macOS 标准位置
+        assert _resolve({}) == f"{home}/Library/Application Support/akb2"
+
+
+class TestShellPythonParity:
+    """shell 侧同步范围判据必须与 python 侧一致（2026-07-28 /simplify 复核）。
+
+    分叉的成因就是没有这层守卫：三个脚本各复制一份 case 分支，三份都漏了 python
+    侧 `state_paths._VAULT_ENV_NAMES`（AKB2_ROOT / AKB2_VAULT_ROOT / VAULT_ROOT）
+    指定的 vault 前缀，而三处注释都写着「与 python 侧一致」。
+    判据是安全判定：漏判一次 = 状态又落回 Syncthing（`data/star_history.sqlite`
+    已实证被同步覆盖丢过 690 行）。
+    """
+
+    LIB = "scripts/lib/state-root.sh"
+
+    def _shell_says_synced(self, repo_root, target: str, env: dict[str, str]) -> bool:
+        """跑共用库判定 target 是否在同步范围内（返回码 0 = 在范围内）。"""
+        script = (
+            f'. "{repo_root}/{self.LIB}"\n'
+            f'STATE_ROOT="{target}"\n'
+            "akb2_state_root_is_synced && echo SYNCED || echo SAFE\n"
+        )
+        proc = subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True, text=True, timeout=30,
+            env={"PATH": os.environ["PATH"], **env},
+        )
+        assert proc.returncode == 0, proc.stderr
+        return proc.stdout.strip() == "SYNCED"
+
+    def _python_says_synced(self, target: str, env: dict[str, str]) -> bool:
+        script = (
+            "import sys; sys.path.insert(0, 'src')\n"
+            "from akb2.common.state_paths import is_synced_path\n"
+            f"print('SYNCED' if is_synced_path({target!r}) else 'SAFE')\n"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True, text=True, timeout=60,
+            cwd=str(REPO_ROOT),
+            env={"PATH": os.environ["PATH"], **env},
+        )
+        assert proc.returncode == 0, proc.stderr
+        return proc.stdout.strip() == "SYNCED"
+
+    @pytest.mark.parametrize(
+        ("target_tpl", "env_extra"),
+        [
+            # 已知同步前缀（三份旧拷贝都覆盖到的）
+            ("{home}/AI-Agent/x/state", {}),
+            ("{home}/Library/Mobile Documents/state", {}),
+            ("/Volumes/AKB2/state", {}),
+            # 安全位置
+            ("{home}/Library/Application Support/akb2", {}),
+            ("/tmp/akb2-state", {}),
+            # **三份旧拷贝漏掉的**：vault 由环境变量指定
+            ("/mnt/vault-a/state", {"VAULT_ROOT": "/mnt/vault-a"}),
+            ("/mnt/vault-b/state", {"AKB2_ROOT": "/mnt/vault-b"}),
+            ("/mnt/vault-c/state", {"AKB2_VAULT_ROOT": "/mnt/vault-c"}),
+        ],
+    )
+    def test_shell_matches_python(self, tmp_path, target_tpl, env_extra):
+        home = str(tmp_path / "home")
+        (tmp_path / "home").mkdir(exist_ok=True)
+        target = target_tpl.format(home=home)
+        env = {"HOME": home, **env_extra}
+        shell = self._shell_says_synced(REPO_ROOT, target, env)
+        py = self._python_says_synced(target, env)
+        assert shell == py, (
+            f"shell 与 python 对 {target}（env={env_extra}）判定不一致："
+            f"shell={'SYNCED' if shell else 'SAFE'} python={'SYNCED' if py else 'SAFE'}"
         )

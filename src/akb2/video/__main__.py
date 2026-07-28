@@ -216,7 +216,10 @@ def _run_full(config: VideoConfig, dry_run: bool) -> int:
         researcher = VideoResearcher(config, llm_adapter=llm_adapter)
         extractor = Extractor(llm_adapter=llm_adapter)
         reasoner = Reasoner(ConceptStore(), llm_adapter=llm_adapter)
-        assembler = Assembler(config)
+        # 共享 collector 的身份索引：不注入时 collector 与 assembler 各扫一遍
+        # 同一目录（608 份产出实测 1216 次读 / 5.55MB 解码每轮），且两份缓存
+        # 状态不通 —— collector 那份永远收不到 assembler 的 mark_published()。
+        assembler = Assembler(config, published_index=getattr(collector, "published_index", None))
 
         results = assembler.run_pipeline(
             collector, researcher, extractor, reasoner, dry_run=dry_run,
@@ -261,7 +264,7 @@ def _run_single_source(config: VideoConfig, url: str, dry_run: bool) -> int:
         # 走 collector 的 L1 判定（账本 **或** 已发布产出的身份索引），不是裸查账本：
         # 回填是按目录记 `seeded_from:` 标记的，标记已置而账本被清空/重建时
         # （残余风险「视频存量覆盖」的失守形态）裸查账本会漏判，索引仍能查到。
-        if collector._is_video_ingested(url):
+        if collector.is_ingested_url(url):
             logger.warning(
                 "[去重] 该视频已入库，跳过 --source 全链路（避免重复烧 NLM/LLM 额度）: %s",
                 url,
@@ -271,7 +274,10 @@ def _run_single_source(config: VideoConfig, url: str, dry_run: bool) -> int:
         researcher = VideoResearcher(config, llm_adapter=llm_adapter)
         extractor = Extractor(llm_adapter=llm_adapter)
         reasoner = Reasoner(ConceptStore(), llm_adapter=llm_adapter)
-        assembler = Assembler(config)
+        # 共享 collector 的身份索引：不注入时 collector 与 assembler 各扫一遍
+        # 同一目录（608 份产出实测 1216 次读 / 5.55MB 解码每轮），且两份缓存
+        # 状态不通 —— collector 那份永远收不到 assembler 的 mark_published()。
+        assembler = Assembler(config, published_index=getattr(collector, "published_index", None))
 
         outputs = researcher.run([video_result])
         if not outputs:
@@ -369,7 +375,16 @@ def _run_fixture(config: VideoConfig, dry_run: bool) -> int:
             ],
         )
 
-        assembler = Assembler(config)
+        # 缺陷 V-2：非 dry-run 的 fixture 模式是真写 vault 的路径，
+        # 必须和主路径共用同一套查/记逻辑（原来是裸 commit，账本既不查也不记）。
+        # 同 `--source`：先历史回填再查，否则账本缺记录时这条路照样会写重复产出。
+        #
+        # 构造顺序：dedup_pair 提到 assembler **之前**，这样 assembler 能复用
+        # collector 的身份索引（否则两份索引各扫一遍同一目录、缓存状态还不通）。
+        # dry_run 分支在下面才返回，所以 fixture dry-run 也会走这次构造 —— 它只读
+        # 目录、不写任何东西，代价是一次有界扫描。
+        dedup_store, collector = _build_dedup_pair(config)
+        assembler = Assembler(config, published_index=getattr(collector, "published_index", None))
         candidate_md = assembler.assemble(video_meta, research_output, extracted, reasoned)
 
         if dry_run:
@@ -377,13 +392,9 @@ def _run_fixture(config: VideoConfig, dry_run: bool) -> int:
             logger.info("PASS: fixture 全链路通过")
             return 0
 
-        # 缺陷 V-2：非 dry-run 的 fixture 模式是真写 vault 的路径，
-        # 必须和主路径共用同一套查/记逻辑（原来是裸 commit，账本既不查也不记）。
-        # 同 `--source`：先历史回填再查，否则账本缺记录时这条路照样会写重复产出。
-        dedup_store, collector = _build_dedup_pair(config)
         _seed_history(dedup_store, config)
         # 同 `--source`：走 L1 双真值源判定（账本 或 已发布产出身份索引），不裸查账本。
-        if collector._is_video_ingested(video_meta["url"]):
+        if collector.is_ingested_url(video_meta["url"]):
             logger.warning(
                 "[去重] fixture 视频已入库，跳过写入（避免重复产出）: %s",
                 video_meta["url"],

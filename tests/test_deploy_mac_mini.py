@@ -24,6 +24,13 @@ def _prepare_deploy_repo(tmp_path: Path, repo_root: Path) -> tuple[Path, Path, P
     scripts.mkdir(parents=True)
     launchd.mkdir()
     shutil.copy2(repo_root / "scripts" / "deploy-mac-mini.sh", scripts / "deploy-mac-mini.sh")
+    # 2026-07-28：状态根解析/同步范围判定收口到共用库（原来三个脚本各复制一份，
+    # 且三份都漏了 python 侧会查的 VAULT_ROOT 类环境变量）。假 repo 必须带上它，
+    # 否则脚本第一行 source 就失败 —— 这是真实依赖，不是测试脚手架。
+    (scripts / "lib").mkdir(exist_ok=True)
+    shutil.copy2(
+        repo_root / "scripts" / "lib" / "state-root.sh", scripts / "lib" / "state-root.sh"
+    )
     (launchd / "com.akb2.main-pipeline.plist").write_text("<plist></plist>\n", encoding="utf-8")
 
     fake_bin = tmp_path / "fake-bin"

@@ -213,6 +213,16 @@ class AccountCollector:
             self._hard_failure_kind = None
         return tweets
 
+    def _raise_broken(self, sig: str, count: int, sample: str = "") -> None:
+        """统一抛点：保证每次中止都带上成因归因。
+
+        四个抛点原本各写一遍 `diagnosis=diagnose_upstream_fatal(sig)`，第五个抛点
+        忘写就会让异常照抛而运维少一段成因（静默降级的信息损失）。
+        """
+        raise UpstreamCollectorBroken(
+            sig, count, sample, diagnosis=diagnose_upstream_fatal(sig)
+        )
+
     def _note_hard_failure(self, kind: str) -> None:
         """记录一次**无签名硬失败**（超时 / 输出非 JSON）并维护连击。
 
@@ -240,12 +250,7 @@ class AccountCollector:
                 f"{self._hard_failure_streak} 个账号，中止本轮 —— 剩余账号不再遍历"
                 f"（每个超时账号赔 {TWITTER_TIMEOUT_SEC}s，跑满会推进 429）\n"
             )
-            raise UpstreamCollectorBroken(
-                self._hard_failure_kind,
-                self._hard_failure_streak,
-                "",
-                diagnosis=diagnose_upstream_fatal(self._hard_failure_kind),
-            )
+            self._raise_broken(self._hard_failure_kind, self._hard_failure_streak, "")
 
     def _post_filter(
         self,
@@ -318,12 +323,20 @@ class AccountCollector:
             self._upstream_fatal_sig
             and self._upstream_fatal_streak >= UPSTREAM_FATAL_FAILFAST_STREAK
         ):
-            raise UpstreamCollectorBroken(
+            self._raise_broken(
                 self._upstream_fatal_sig,
                 self._upstream_fatal_streak,
                 self._upstream_fatal_sample,
-                diagnosis=diagnose_upstream_fatal(self._upstream_fatal_sig),
             )
+
+    def _abort_if_broken(self) -> None:
+        """两类连击护栏的统一入口（签名连击优先，顺序与合并前一致）。
+
+        合并前两个 abort 在 `_fetch_tier_raw` 的两个位置恒成对出现 —— 本轮加第二类
+        连击就要改 2 处，加第三类会再漏一处。收口成一个入口后新增护栏只改这里。
+        """
+        self._abort_if_upstream_broken()
+        self._abort_if_hard_failures_streak()
 
     def _abort_if_preflight_failed(self, tier: str, handle: str) -> None:
         """开跑前探针：前 PREFLIGHT_PROBE_ACCOUNTS 个账号命中全局签名即中止整轮。
@@ -342,11 +355,8 @@ class AccountCollector:
             f"{PREFLIGHT_PROBE_ACCOUNTS} 账号）命中上游全局故障签名，中止本轮 —— "
             "剩余账号不再遍历\n"
         )
-        raise UpstreamCollectorBroken(
-            self._last_fatal_sig,
-            PREFLIGHT_PROBE_ACCOUNTS,
-            self._upstream_fatal_sample,
-            diagnosis=diagnose_upstream_fatal(self._last_fatal_sig),
+        self._raise_broken(
+            self._last_fatal_sig, PREFLIGHT_PROBE_ACCOUNTS, self._upstream_fatal_sample
         )
 
     def _fetch_tier_raw(
@@ -376,15 +386,13 @@ class AccountCollector:
         ok_accounts = 0
         # 前 PREFLIGHT_PROBE_ACCOUNTS 个账号同时充当 preflight 探针：抓取照常进聚合，
         # 但一命中全局签名就立刻中止，不遍历剩下 46 个账号（也就不会被推进 429）。
-        probe_boundary = min(PREFLIGHT_PROBE_ACCOUNTS, len(handles))
         for i, handle in enumerate(handles):
             if i > 0 and self.pacing_sec > 0:
                 time.sleep(self.pacing_sec)  # 限流防护
             tweets = self._fetch_one(handle, since_date, until_date)
-            if i < probe_boundary:
+            if i < PREFLIGHT_PROBE_ACCOUNTS:
                 self._abort_if_preflight_failed(tier, handle)
-            self._abort_if_upstream_broken()
-            self._abort_if_hard_failures_streak()
+            self._abort_if_broken()
             if tweets:
                 ok_accounts += 1
             for t in tweets:
@@ -418,8 +426,7 @@ class AccountCollector:
                     if reserve_used > 0 and self.pacing_sec > 0:
                         time.sleep(self.pacing_sec)
                     new_tweets = self._fetch_one(rh, since_date, until_date)
-                    self._abort_if_upstream_broken()
-                    self._abort_if_hard_failures_streak()
+                    self._abort_if_broken()
                     reserve_used += 1
                     for t in new_tweets:
                         tid = str(t.get("id", ""))
