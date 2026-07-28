@@ -1527,3 +1527,54 @@ def test_mark_ingested_wiring_error_is_not_masked_as_ledger_failure(dedup_config
 
     with pytest.raises(AttributeError):
         assembler._mark_ingested(_NoMarkCollector(), _video(), Path("/tmp/x.md"))
+
+
+def test_cli_fixture_path_blocked_by_published_identity_index(cli_config, monkeypatch):
+    """**双真值源绑定**：账本为空但 vault 已有同身份的**旧命名**存量产出 → 拒绝重写。
+
+    2026-07-28 对抗复核抓到的漏洞：`--fixture` 调用点虽然接了
+    `collector._is_video_ingested`（账本 OR 已发布身份索引），但没有任何测试绑定它 ——
+    把该行单独还原成 `dedup_store.is_ingested(...)`（只查账本），全量 2906 项零失败。
+    这正是本仓栽过三次的形态（代码接上了、断言没跟上）。
+
+    构造让两者产生分歧的唯一场景：`seeded_from:` 标记已置（seed 变 no-op）、
+    账本表为空、而 vault 里有一份旧命名产出。此时只查账本会放行 → 写出重复产出；
+    走身份索引才会拦住。存量 608 份旧命名产出正是这个处境。
+    """
+    from src.akb2.video import __main__ as video_main
+    from src.akb2.video.dedup_store import (
+        _SEED_META_KEY_PREFIX,
+        VideoDedupStore,
+        video_identity,
+    )
+
+    monkeypatch.setattr(video_main, "VideoConfig", lambda: cli_config)
+    fixture_url = "https://www.youtube.com/watch?v=test123"
+
+    # 旧命名存量产出（无身份哈希后缀、带日期）——与 vault 里 608 份同形态
+    legacy = cli_config.promotion_target_path / "video-deepseek-v4-deep-dive-2026-05-12.md"
+    legacy.write_text(
+        f"---\nsource_url: {fixture_url}\ntitle: DeepSeek V4 Architecture Deep Dive\n---\n\n# 旧产出\n",
+        encoding="utf-8",
+    )
+
+    # seed 标记已置 + 账本表为空 → 账本这一路必然放行
+    store = VideoDedupStore(cli_config.dedup_db_path)
+    with store._connect() as conn:  # noqa: SLF001 — 直接构造"标记已置但表为空"的失守态
+        conn.execute(
+            "INSERT OR REPLACE INTO dedup_meta (key, value) VALUES (?, ?)",
+            (f"{_SEED_META_KEY_PREFIX}{cli_config.promotion_target_path}", "stub"),
+        )
+        conn.commit()
+    assert store.is_ingested(fixture_url) is False, "前置条件：账本必须查不到该身份"
+    assert video_identity(fixture_url), "前置条件：该 URL 必须能解析出稳定身份"
+
+    with mock.patch.object(Assembler, "_gate_decision", return_value="active"):
+        rc = video_main.main(["--fixture", "--skip-preflight"])
+
+    assert rc == 0
+    published = sorted(p.name for p in cli_config.promotion_target_path.glob("*.md"))
+    assert published == [legacy.name], (
+        "账本失守时身份索引必须兜住旧命名存量产出，实际写出了重复产出: "
+        f"{published}"
+    )

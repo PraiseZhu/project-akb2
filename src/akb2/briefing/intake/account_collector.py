@@ -34,10 +34,13 @@ import yaml
 from .base import REPO_ROOT
 from .l0_collector import (
     FIXTURE_PATH,
+    HARD_FAILURE_BAD_OUTPUT,
+    HARD_FAILURE_TIMEOUT,
     PATCH_RUNBOOK,
     TWITTER_BIN,
     TWITTER_TIMEOUT_SEC,
     UPSTREAM_FATAL_FAILFAST_STREAK,
+    UPSTREAM_HARD_FAILURE_FAILFAST_STREAK,
     UpstreamCollectorBroken,
     _twitter_cli_to_akb2,
     diagnose_upstream_fatal,
@@ -117,6 +120,10 @@ class AccountCollector:
         # preflight 判据必须只看探针自己这一次的结果 —— 用 upstream_fatal_seen
         # （整轮粘滞）会让 en 层早先的一次抖动误杀 zh 层的探针。
         self._last_fatal_sig: str | None = None
+        # 无签名硬失败（超时 / 输出非 JSON）的连击 —— 与签名连击分开计数，
+        # 因为这两类失败不产生 stderr 签名，而 429 限流必须继续遍历。
+        self._hard_failure_streak: int = 0
+        self._hard_failure_kind: str | None = None
         # 整轮是否见过全局故障（即使未达 fail-fast 阈值）—— 用于区分
         # 「上游工具坏了」与「curator 配置里 zh 账号不对」两类完全不同的 0 产量。
         self.upstream_fatal_seen: str | None = None
@@ -169,6 +176,9 @@ class AccountCollector:
             )
         except subprocess.TimeoutExpired:
             sys.stderr.write(f"WARNING: @{handle} timeout ({TWITTER_TIMEOUT_SEC}s) — skip\n")
+            # 超时不产生任何 stderr 签名 → 若不在这里计数，签名护栏与 preflight
+            # 都不会开火，47 账号跑满赔 2820s（2026-07-28 对抗复核实测）。
+            self._note_hard_failure(HARD_FAILURE_TIMEOUT)
             return []
 
         if result.returncode != 0:
@@ -182,6 +192,8 @@ class AccountCollector:
             payload = json.loads(result.stdout)
         except json.JSONDecodeError:
             sys.stderr.write(f"WARNING: @{handle} output not JSON — skip\n")
+            # 同上：stdout 不可解析也不产生签名，需独立计数。
+            self._note_hard_failure(HARD_FAILURE_BAD_OUTPUT)
             return []
         if not payload.get("ok"):
             sys.stderr.write(f"WARNING: @{handle} payload.ok=false — skip\n")
@@ -197,7 +209,43 @@ class AccountCollector:
             # 有账号真的取到了内容 → 上游没坏，连击归零（防单账号私密/限流误判为全局故障）
             self._upstream_fatal_streak = 0
             self._upstream_fatal_sig = None
+            self._hard_failure_streak = 0
+            self._hard_failure_kind = None
         return tweets
+
+    def _note_hard_failure(self, kind: str) -> None:
+        """记录一次**无签名硬失败**（超时 / 输出非 JSON）并维护连击。
+
+        与 `_note_upstream_failure` 分开的理由：那条靠 stderr 里的已登记签名判定，
+        而这两类失败根本不产生签名。合并进同一计数会让「429 限流」也被算进去，
+        而限流必须继续遍历（账号间 pacing 就是为它设计的）。
+
+        **刻意不写 `_last_fatal_sig`**：preflight 探针预算是 1 个账号，若单次超时
+        就中止整轮，一次网络抖动 = 当天无日报。超时只走连击（阈值 3）。
+        """
+        if kind == self._hard_failure_kind:
+            self._hard_failure_streak += 1
+        else:
+            self._hard_failure_kind = kind
+            self._hard_failure_streak = 1
+
+    def _abort_if_hard_failures_streak(self) -> None:
+        """连续无签名硬失败达阈值 → 中止整轮（不降级 fixture）。"""
+        if (
+            self._hard_failure_kind
+            and self._hard_failure_streak >= UPSTREAM_HARD_FAILURE_FAILFAST_STREAK
+        ):
+            sys.stderr.write(
+                f"ERROR [account_collector]: {self._hard_failure_kind} 连续 "
+                f"{self._hard_failure_streak} 个账号，中止本轮 —— 剩余账号不再遍历"
+                f"（每个超时账号赔 {TWITTER_TIMEOUT_SEC}s，跑满会推进 429）\n"
+            )
+            raise UpstreamCollectorBroken(
+                self._hard_failure_kind,
+                self._hard_failure_streak,
+                "",
+                diagnosis=diagnose_upstream_fatal(self._hard_failure_kind),
+            )
 
     def _post_filter(
         self,
@@ -336,6 +384,7 @@ class AccountCollector:
             if i < probe_boundary:
                 self._abort_if_preflight_failed(tier, handle)
             self._abort_if_upstream_broken()
+            self._abort_if_hard_failures_streak()
             if tweets:
                 ok_accounts += 1
             for t in tweets:
@@ -370,6 +419,7 @@ class AccountCollector:
                         time.sleep(self.pacing_sec)
                     new_tweets = self._fetch_one(rh, since_date, until_date)
                     self._abort_if_upstream_broken()
+                    self._abort_if_hard_failures_streak()
                     reserve_used += 1
                     for t in new_tweets:
                         tid = str(t.get("id", ""))

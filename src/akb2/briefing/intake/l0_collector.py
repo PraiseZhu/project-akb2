@@ -49,6 +49,28 @@ UPSTREAM_FATAL_SIGNATURES: tuple[str, ...] = (
 # 相对 47 账号 × 17s ≈ 793s 的实测浪费仍是两个量级的改善。
 UPSTREAM_FATAL_FAILFAST_STREAK = 3
 
+# 「无签名的硬失败」连续多少个账号后中止整轮。
+#
+# 为什么需要它：签名匹配（上面那条）只覆盖 stderr 里出现已登记字符串的失败。
+# 但 twitter-cli 还有两条失败路径**不产生任何签名**：
+#   - 超时（`subprocess.TimeoutExpired`，每次赔满 TWITTER_TIMEOUT_SEC=60s）
+#   - 输出不是 JSON（工具坏了/被中间层改写，stdout 无法解析）
+# 2026-07-28 对抗复核实测：全账号超时的场景下签名护栏与 preflight 都不开火，
+# 47 个账号跑满 = **2820s**，且把 IP 一路推进 429。
+#
+# 与 429 限流的区别（刻意不合并）：限流是**可重试**的瞬时问题，账号间 pacing
+# 就是为它设计的，必须继续遍历（回归见 test_upstream_failfast.py 的
+# test_transient_per_account_failure_does_not_trigger_failfast）；而连续超时/连续
+# 输出非 JSON 说明上游整体无响应，继续遍历零收益。
+#
+# 取 3 与签名护栏对齐：单个账号偶发超时（网络抖动、某账号内容特别大）是正常的，
+# 连续 3 个才判整体。代价上限 3 × 60s = 180s。
+UPSTREAM_HARD_FAILURE_FAILFAST_STREAK = 3
+
+# 无签名硬失败的伪签名（进入 UpstreamCollectorBroken 的 signature 位，供运维辨认）。
+HARD_FAILURE_TIMEOUT = "连续超时（上游无响应）"
+HARD_FAILURE_BAD_OUTPUT = "连续输出非 JSON（上游工具异常）"
+
 
 class UpstreamCollectorBroken(RuntimeError):
     """twitter-cli 侧全局故障 —— 整轮抓取无意义，立即中止且**不降级 fixture**。
