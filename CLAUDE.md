@@ -11,24 +11,31 @@ AKB2.0 工程根：lint / gate / intake / briefing / video / feishu_sync 等管�
 ## 常用命令
 
 ```bash
-# 环境（2026-07-25 起用项目内 .venv，不再依赖 pyenv global —— 全局环境存在
-# Crawl4AI(lxml~=5.3) 与 scrapling(lxml>=6.1) 的约束互斥，无法从 freeze 还原）
+# ⚠ 环境现状（2026-07-28 核实）：仓库内的 `.venv` **已损坏，不要用**。
+#   它的基础解释器 Python 3.13.12 已从 pyenv 移除（`~/.pyenv/versions/` 只剩
+#   3.12.13），`.venv/bin/python3` 是指向不存在路径的死符号链接，任何调用报
+#   `no such file or directory`。目录本体（~1.6G）保留未删，仅为留证据。
+#   **本机实际在用的是全局 `python3`（pyenv shims → 3.12.13）**，pytest /
+#   jsonschema / yaml / lxml 等依赖齐备，全量测试可跑通；生产 launchd 三条链路
+#   （briefing / github_briefing / video）用的也是 `~/.pyenv/shims/python3`，
+#   即 .venv 从未进入生产路径。
+#   重建（需要时）：`pyenv install 3.13.12` 后再执行下面两行；或直接用全局 python3。
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"   # 首次搭建（约 1.6G）
 .venv/bin/pip install -r constraints-akb2-2026-07-25.txt     # 还原到已验证版本组合
 
 # 测试（默认排除 integration 标记的真机测试）
 # ⚠ 未挂载 /Volumes/AKB2 时必须给 VAULT_ROOT，否则 44 项测试报「无法解析 AKB2_ROOT」
-VAULT_ROOT="$(mktemp -d)" .venv/bin/python -m pytest -q      # 全量（-m 'not integration' 已配置）
-.venv/bin/python -m pytest tests/test_gate.py                # 单文件
-.venv/bin/python -m pytest tests/test_gate.py::test_name     # 单测试
-.venv/bin/python -m pytest -m integration                    # 真机集成（需 NLM 登录态 + gateway）
+VAULT_ROOT="$(mktemp -d)" python3 -m pytest -q               # 全量（-m 'not integration' 已配置）
+python3 -m pytest tests/test_gate.py                         # 单文件
+python3 -m pytest tests/test_gate.py::test_name              # 单测试
+python3 -m pytest -m integration                             # 真机集成（需 NLM 登录态 + gateway）
 
 # Lint
 ruff check src tests            # line-length=100, py311, select E/F/W/I/B/UP
 
 # 管线入口
 python3 -m akb2.briefing.pipeline --date YYYY-MM-DD --vault-root <path> [--dry-run-intake]
-python3 -m akb2.video --dry-run --fixture       # video 链路（manual 触发）
+python3 -m akb2.video --dry-run --fixture       # video 链路（⚠ 实际是 schedule：每天 02:00）
 
 # 主质量管线（循环1）：24h 常驻 runner daemon（launchd KeepAlive 托管）
 bash scripts/akb2-main-pipeline.sh [--once] [--spot-check]
@@ -39,7 +46,9 @@ python3 -m akb2.quality.calibration \
     --report-out reports/calibration/factory.json
 ```
 
-- `requires-python >= 3.11`，但**实际验证过的只有 3.13.12**（`.venv` 与 CI tests job 均用 3.13）；3.11 路径未被执行过
+- `requires-python >= 3.11`。**实测跑绿过的是 3.12.13（本机全局，2797 项）与 CI 的 3.13**；3.11 路径未被执行过
+- **外部 CLI 依赖 `defuddle`**（5 项 extract 测试真调它）：装法与「包身份陷阱」见 `docs/runbooks/intake-tools-setup.md` §6 —— 钉的是 `defuddle-cli@0.7.0`，**不要**按 `defuddle --version` 打印的 `0.1.0` 去装同名包 `defuddle@0.1.0`（那个包没有 bin）。缺失时本地 skip、CI 靠 `AKB2_REQUIRE_DEFUDDLE=1` 强制 fail
+- **CI 历史坑（2026-07-28 查实）**：pytest job 在 2026-06-27 被删除（commit `755d5cf`，理由"消除远端长期红"），直到 2026-07-25 才加回、07-27 首次真跑。期间约一个月的 "CI success" 因单 job + `continue-on-error` 而与实际结论脱钩（抽样到 job 全 failure 但 run 报 success）。`ruff` 的 `continue-on-error` 已于 2026-07-28 摘除转硬闸。**不要把历史绿当作回归基线**
 - `pythonpath = ["src", "src/akb2/toolbox_scan"]` 由 pytest 配置注入，无需安装即可跑测试
 - 依赖约束在 `pyproject.toml`：下界=实测通过版本、上界=下一 major 边界（防新版自动装入）。CI `tests` job 是这条防线的闸门
 
@@ -52,7 +61,7 @@ python3 -m akb2.quality.calibration \
 | `briefing/` | 社媒日报主链路：intake → scoring → synthesis → gate → 写 vault。含 `github/` 子链路、audit_fix 收敛循环、translate、embeddings |
 | `quality/` | **循环1 主质量管线（唯一入库出口）**：`admission`（准入三硬判定，二值无连续分）→ `distill`（DeepSeek 两段式提炼）→ `checks_structural`（A 层 6 项纯代码结构校验）→ `grader`（B 层 10 维 LLM 评分，GPT-5.4）→ `repair`（定点修复循环，收敛优先）→ `promote`（五闸升格）。`runner` 是 24h 常驻串行单工 daemon（七段生命线），`calibration` 满仓端到端校准 + 出厂判定，`llm_router` 三族模型统一路由，`smoke_validator` 只读冒烟校验。含 `intake/`、`source_ops_scanners/` 子模块 |
 | `loops/` | 循环骨架：`ledger`（幂等账本追加）/ `signatures`（故障签名记录与升级）/ `paths`（隔离区与 staging 路径常量） |
-| `video/` | 视频报告链路：collector → extractor → reasoner → assembler，LLM 经 `llm_adapter`。CLI 手动触发 |
+| `video/` | 视频报告链路：collector → extractor → reasoner → assembler，LLM 经 `llm_adapter`。**触发方式 = `schedule`（每天 02:00）**，由 `~/Library/LaunchAgents/com.akb2.video.plist` 驱动；该 plist **不在仓库 `launchd/` 内、未入 git**（2026-07-28 查实，此前文档误记为"CLI 手动触发"） |
 | `gate/` | `akb2_gate_check.py` — fail-closed 质量门控 CLI |
 | `lint/` | `akb2_lint.py` + `rules/` — vault 笔记 lint |
 | `feishu_sync/` | vault → 飞书同步：discover → render → gate → notify，带 idempotency/state |
