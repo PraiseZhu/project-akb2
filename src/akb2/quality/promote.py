@@ -1022,6 +1022,29 @@ def finalize_promotion(
 # ---------------------------------------------------------------------------
 
 
+def _resolve_ledger_path(vault_root: Path, name: str) -> Path:
+    """账本路径解析：与 runner 共用同一份（机器本地状态根，避开跨机同步）。
+
+    2026-07-28：runner 的账本已移出 Syncthing 同步范围（`common/state_paths`），
+    而本模块此前仍拼 `<vault>/staging/<name>` → 两份账本分裂。分裂的后果不是
+    "少记一条"，而是 runner 的 `_is_processed` 读不到 promote 写的 finalize 事件
+    → 判定"未处理" → 同一篇重复走完整管线并重复入库。
+
+    `state_paths` 不可用时**回退旧路径并告警**（而不是静默失败丢账本）：
+    账本写入失败会让幂等判定失效，必须可见。
+    """
+    legacy = vault_root / "staging" / name
+    try:
+        from src.akb2.common.state_paths import LEDGER_SUBDIR, resolve_state_file
+    except ImportError:
+        sys.stderr.write(
+            f"WARNING [promote]: state_paths 不可用，账本回退旧路径 {legacy}"
+            "（与 runner 可能不是同一份，幂等判定有风险）\n"
+        )
+        return legacy
+    return Path(resolve_state_file(name, subdir=LEDGER_SUBDIR, legacy_path=legacy))
+
+
 def _write_ledger_event(
     vault_root: Path,
     event_type: str,
@@ -1035,7 +1058,10 @@ def _write_ledger_event(
     except ImportError:
         return False
 
-    ledger_path = vault_root / "staging" / "quality-ledger.jsonl"
+    # 必须与 runner 读的是同一份账本（runner.py:3078 走 resolve_state_file）。
+    # 2026-07-28 事故风险：promote 写 vault 旧账本、runner 读机器本地新账本 →
+    # finalize 事件 runner 看不到 → `_is_processed` 判"未处理" → 同一篇重复入库。
+    ledger_path = _resolve_ledger_path(vault_root, "quality-ledger.jsonl")
     event = {
         "loop_id": "loop1",
         "node": node,

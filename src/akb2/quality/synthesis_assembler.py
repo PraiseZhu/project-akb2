@@ -257,7 +257,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     vault = Path(args.vault_root)
     raw_dir = vault / "raw"
-    ledger = vault / "staging" / "quality-ledger.jsonl"
+    # 与 runner / promote 共用同一份账本：读 vault 旧账本会让同主题簇建议基于
+    # 半份历史（runner 的入库事件已落到机器本地状态根）。
+    from src.akb2.quality.promote import _resolve_ledger_path
+
+    ledger = _resolve_ledger_path(vault, "quality-ledger.jsonl")
 
     if args.suggest:
         clusters = suggest_clusters(ledger, raw_dir)
@@ -278,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     result = assemble_synthesis(
         paths, args.topic, output_dir=raw_dir,
-        failures_path=str(vault / "staging" / "failures.jsonl"),
+        failures_path=str(_resolve_ledger_path(vault, "failures.jsonl")),
     )
     if result.success:
         print(f"[SYNTHESIS] 合成 raw 已落盘: {result.output_path}"

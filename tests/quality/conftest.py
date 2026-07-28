@@ -11,6 +11,22 @@ from typing import Any
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _isolate_quality_state(tmp_path_factory, monkeypatch):
+    """状态隔离（autouse）：把机器本地状态根指向 tmp，防污染生产账本。
+
+    2026-07-28：promote / requeue / synthesis_assembler 的账本路径统一改走
+    `common.state_paths`（修账本分裂）后，它们不再落在测试传入的 tmp vault，
+    而是落在真实状态根 `~/Library/Application Support/akb2/ledgers/`。
+    实测后果：跑一次全量就往生产账本追加了 4 条 `mock grader pass` 事件 —— 把
+    fixture 内容标成"已入库"，会让真实管线跳过或误判。
+
+    与 `tests/briefing/conftest.py` 同一范式（红线 11：convention beats novelty）。
+    """
+    monkeypatch.setenv("AKB2_STATE_ROOT", str(tmp_path_factory.mktemp("akb2-state")))
+    yield
+
 # ---------------------------------------------------------------------------
 # Intake 模块 fixtures（step-2: 抓取/发现/抽取/raw 归档）
 # ---------------------------------------------------------------------------
