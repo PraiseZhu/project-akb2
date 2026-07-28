@@ -16,7 +16,7 @@ jobs:
     # success，"CI success" 信息量为 0）。此后 ruff 为硬闸。
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - run: pip install ruff
@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           # 跟实际运行时对齐(本地 pyenv 3.13.12)。requires-python 声明 >=3.11,
           # 但 3.11 路径从未被真实执行过 —— 若要兑现该承诺,这里加 matrix 补 3.11。
