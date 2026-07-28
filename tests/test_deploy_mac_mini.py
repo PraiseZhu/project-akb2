@@ -38,6 +38,17 @@ def _prepare_deploy_repo(tmp_path: Path, repo_root: Path) -> tuple[Path, Path, P
     _write_executable(scripts / "find-python311.sh", f"#!/usr/bin/env bash\necho {fake_python}\n")
 
     subprocess.run(["git", "init"], cwd=work, check=True, capture_output=True, text=True)
+    # 显式把 fixture 仓的分支定成 main,不吃环境里的 init.defaultBranch:
+    # macOS 的 Apple git 默认 main,而 Linux(CI runner)上游 git 仍默认 master
+    # → deploy 脚本 B3「必须在 main 分支」会失败,FAIL_COUNT>0 让整个 B-dep 段被跳过,
+    # 于是下面断言的 defuddle 字符串永不出现(CI-only 假红)。
+    subprocess.run(
+        ["git", "symbolic-ref", "HEAD", "refs/heads/main"],
+        cwd=work,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     subprocess.run(
         ["git", "config", "user.email", "test@example.com"],
         cwd=work,
@@ -63,13 +74,13 @@ def _prepare_deploy_repo(tmp_path: Path, repo_root: Path) -> tuple[Path, Path, P
     return work, fake_bin, fake_python
 
 
-def _prepare_home(tmp_path: Path) -> tuple[Path, Path]:
+def _prepare_home(tmp_path: Path, *, env_mode: int = 0o600) -> tuple[Path, Path]:
     home = tmp_path / "home"
     env_dir = home / ".config" / "akb2"
     env_dir.mkdir(parents=True)
     env_file = env_dir / "github-briefing.env"
     env_file.write_text("AI_GATEWAY_API_KEY=test\n", encoding="utf-8")
-    env_file.chmod(0o600)
+    env_file.chmod(env_mode)
 
     vault_root = tmp_path / "vault"
     (vault_root / "Praise Space" / "AKB2.0" / "raw").mkdir(parents=True)
@@ -128,6 +139,23 @@ def test_deploy_dry_run_passes_with_defuddle(tmp_path, repo_root):
     assert result.returncode == 0, combined
     assert "B-dep defuddle CLI 可用" in combined
     assert "dry-run 完成" in combined
+
+
+def test_deploy_dry_run_fails_closed_on_wide_env_permissions(tmp_path, repo_root):
+    """env 文件宽权限(644,Linux checkout 默认)必须被 B7 判失败并中止。
+
+    同时钉住权限探测的跨平台正确性:B7 只有真读到八进制权限位才能区分 600/644,
+    stat 的 BSD/GNU 分派若坏掉(如误判成 '?'),另一项 600 用例会立刻变红。
+    """
+    work, fake_bin, _fake_python = _prepare_deploy_repo(tmp_path, repo_root)
+    home, vault_root = _prepare_home(tmp_path, env_mode=0o644)
+
+    result = _run_deploy_dry_run(work, fake_bin, home, vault_root, include_defuddle=True)
+
+    combined = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "B7 env 文件权限 = 644" in combined
+    assert "dry-run 完成" not in combined
 
 
 def test_deploy_script_waits_for_launchctl_teardown(repo_root):

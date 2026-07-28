@@ -125,20 +125,20 @@ class AccountCollector:
         since_date: str | None,
         until_date: str | None,
     ) -> list[dict]:
-        """抓单个账号；失败/0 条返回 []（不抛、不降级，由调用方聚合处理）。"""
+        """抓单个账号；失败/0 条返回 []（不抛、不降级，由调用方聚合处理）。
+
+        2026-07-28 端点切换：`search "" --from <h>` → `user-posts <h>`。
+        X 轮换了 SearchTimeline 的 persisted queryId，search 端点恒 404
+        （UserTweets / UserByScreenName 等端点均正常）。user-posts 不支持
+        --exclude / --since / --until，三类过滤移到 `_post_filter`（raw 层）：
+        RT 用 isRetweet 字段、回复用 text 前缀、日期窗用 createdAtISO。
+        抓取量放大到 cap*2 再截断，补偿过滤损耗（有界：至多 2 倍）。
+        """
         cmd = [
-            TWITTER_BIN, "search", "",
-            "--from", handle,
-            "-t", "latest",
-            "--exclude", "retweets",
-            "--exclude", "replies",
-            "-n", str(self.per_account_cap),
+            TWITTER_BIN, "user-posts", handle,
+            "-n", str(self.per_account_cap * 2),
             "--json",
         ]
-        if since_date:
-            cmd += ["--since", since_date]
-        if until_date:
-            cmd += ["--until", until_date]
 
         try:
             result = subprocess.run(
@@ -166,12 +166,64 @@ class AccountCollector:
             # GraphQL 返回 404，warning 打在 stderr、错误体在 stdout）。两侧都查。
             self._note_upstream_failure((result.stderr or "") + (result.stdout or ""))
             return []
-        tweets = _twitter_cli_to_akb2(payload.get("data") or [])
+        raw = self._post_filter(
+            handle, payload.get("data") or [], since_date, until_date
+        )
+        tweets = _twitter_cli_to_akb2(raw)
         if tweets:
             # 有账号真的取到了内容 → 上游没坏，连击归零（防单账号私密/限流误判为全局故障）
             self._upstream_fatal_streak = 0
             self._upstream_fatal_sig = None
         return tweets
+
+    def _post_filter(
+        self,
+        handle: str,
+        raw: list[dict],
+        since_date: str | None,
+        until_date: str | None,
+    ) -> list[dict]:
+        """user-posts 端点缺少服务端过滤，在 raw 层补齐（替代原 search 语法）。
+
+        - RT：`isRetweet=true` 剔除（原 `--exclude retweets`）
+        - 回复：text 以 "@" 开头剔除（原 `--exclude replies`；user-posts 走
+          UserTweets 端点、对应 X 的 Posts tab，纯回复本就不在其中，此为兜底）
+        - 日期窗：createdAtISO 与 since/until 做 ISO 字符串日界比较
+          （原 `--since/--until`；缺 createdAtISO 的条目**剔除**——与 pipeline
+          侧「缺时间戳即拒」的既有判据一致，不做保守保留）
+        - 截断到 per_account_cap（抓取时放大了 2 倍）
+        """
+        kept: list[dict] = []
+        dropped_rt = dropped_reply = dropped_window = dropped_nodate = 0
+        for t in raw:
+            if t.get("isRetweet"):
+                dropped_rt += 1
+                continue
+            if str(t.get("text", "")).startswith("@"):
+                dropped_reply += 1
+                continue
+            iso = str(t.get("createdAtISO", ""))
+            day = iso[:10]
+            if not day:
+                dropped_nodate += 1
+                continue
+            if since_date and day < since_date:
+                dropped_window += 1
+                continue
+            if until_date and day > until_date:
+                dropped_window += 1
+                continue
+            kept.append(t)
+            if len(kept) >= self.per_account_cap:
+                break
+        dropped = dropped_rt + dropped_reply + dropped_window + dropped_nodate
+        if dropped:
+            sys.stderr.write(
+                f"INFO [account_collector]: @{handle} post-filter kept {len(kept)}"
+                f"/{len(raw)} (rt={dropped_rt} reply={dropped_reply} "
+                f"window={dropped_window} nodate={dropped_nodate})\n"
+            )
+        return kept
 
     def _note_upstream_failure(self, text: str) -> None:
         """记录一次失败是否属于上游全局故障，并维护连击计数。"""

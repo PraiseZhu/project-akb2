@@ -42,10 +42,15 @@ def many_handles(monkeypatch):
     return handles
 
 
+def _handle_from_cmd(cmd: list[str]) -> str:
+    # 2026-07-28 端点切换后 cmd = [bin, "user-posts", handle, "-n", N, "--json"]
+    assert cmd[1] == "user-posts", f"采集端点应为 user-posts（search 已被 X 下线），实际: {cmd[1]}"
+    return cmd[2]
+
+
 def _stub_run(calls: list[str], *, stderr: str, returncode: int = 1, stdout: str = ""):
     def _run(cmd, **kwargs):
-        # cmd = [bin, "search", "", "--from", handle, ...]
-        calls.append(cmd[cmd.index("--from") + 1])
+        calls.append(_handle_from_cmd(cmd))
         return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
 
     return _run
@@ -103,7 +108,7 @@ def test_success_resets_streak(many_handles, monkeypatch):
     calls: list[str] = []
 
     def _run(cmd, **kwargs):
-        handle = cmd[cmd.index("--from") + 1]
+        handle = _handle_from_cmd(cmd)
         calls.append(handle)
         idx = int(handle.replace("acct", ""))
         if idx % 2 == 0:  # 偶数账号成功

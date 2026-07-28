@@ -34,7 +34,60 @@ jobs:
           # 但 3.11 路径从未被真实执行过 —— 若要兑现该承诺,这里加 matrix 补 3.11。
           python-version: "3.13"
           cache: pip
+
+      # ── defuddle:intake 抽取层的外部 CLI 依赖(Node 包,不在 pyproject 里) ──
+      # 缺它时 tests/quality/test_intake_extract.py 的 5 项"真实抽取输出"断言必红
+      # (extract.py 调 `defuddle parse <file> --json -m`,FileNotFoundError 后返回 {})。
+      # 这 5 项的价值正是防真实输出退化(标题变硬编码桩 / 正文混入 HTML),
+      # 用 mock 顶替等于删掉它们全部覆盖,所以 CI 装真 CLI 让它们真跑。
+      # 包身份/钉版本理由/本地装法:docs/runbooks/intake-tools-setup.md §6
+      - uses: actions/setup-node@v7
+        with:
+          # 写死在 Active LTS 线(24.x = Krypton)。不用 latest / lts/*:
+          # defuddle-cli 依赖 jsdom,Node 大版本跳变会改抽取行为,必须可复现。
+          # 已实测 Node 24.18.0 + defuddle-cli@0.7.0 → 39 项 extract 测试全过。
+          # 注意:此处不能用 setup-node 的 `cache: npm` —— 本仓无 package.json /
+          # package-lock.json,该选项会因"找不到 lock 文件"直接让 job 失败。
+          node-version: "24"
+
+      # npm HTTP 缓存。key 是静态的(版本已钉死、内容不可变),首跑写入、后续恒命中,
+      # 配合 --prefer-offline 让重装不走 registry。
+      - uses: actions/cache@v6
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-defuddle-cli-0.7.0
+
+      # 钉 defuddle-cli@0.7.0 = 本地绿基线用的同一份产物(见 runbook §6 的包身份陷阱:
+      # `defuddle --version` 打印的 0.1.0 是 defuddle-cli 内部写死的字面量,不是包版本;
+      # 而 npm 上另有同名库包 `defuddle`,其 0.1.0 根本不带 bin —— 别按 --version 输出装)。
+      - run: npm install -g --prefer-offline defuddle-cli@0.7.0
+
+      # 自检:确认 CLI 真在 PATH 上,且 extract.py 实际调用的 `parse` 子命令存在。
+      # 装成功但 CLI 接口变了,要在这一步就红,而不是让 5 项测试去背锅。
+      - name: Verify defuddle CLI on PATH
+        run: |
+          command -v defuddle || {
+            echo "::error::defuddle 不在 PATH 上 —— npm 全局 bin 目录未被 setup-node 加入 PATH"
+            exit 1
+          }
+          defuddle --version
+          defuddle parse --help > /dev/null
+
+      # tests/test_deploy_mac_mini.py 的 fixture 用 `git init` 造临时仓,再断言
+      # deploy-mac-mini.sh 的 B3「必须在 main 分支」检查通过。
+      # macOS 上 Apple CLT 自带的 system gitconfig 有 init.defaultBranch=main,
+      # ubuntu-latest 的上游 git 仍默认 master → B3 直接 fail、FAIL_COUNT>0 让
+      # 整个 B-dep 段被跳过,于是 2 项 deploy 测试断言的字符串永不出现。
+      # 这是与 defuddle 无关的第二个 CI-only 环境差异,在此对齐,不放宽任何断言。
+      - run: git config --global init.defaultBranch main
+
       - run: pip install -e ".[dev]"
+
       # 无 VAULT_ROOT 时 44 项测试会因 /Volumes/AKB2 未挂载而报
       # "无法解析 AKB2_ROOT" 直接失败;CI 里没有该卷,必须指向临时目录。
-      - run: VAULT_ROOT="$(mktemp -d)" pytest -q
+      - name: pytest
+        env:
+          # 硬开关:defuddle 缺失时让依赖它的测试"失败"而不是 skip。
+          # 只加 skipif 会让 CI 静默跳过 → 变绿但覆盖为零,正是本项目栽过两次的模式。
+          AKB2_REQUIRE_DEFUDDLE: "1"
+        run: VAULT_ROOT="$(mktemp -d)" pytest -q
