@@ -56,8 +56,8 @@ _DEFAULT_MAX_RESERVE_ACCOUNTS = 10  # reserve 最多抓多少个账号（限流�
 # 取 1 是因为这类故障（ClientTransaction 初始化失败 / 补丁被 uv upgrade 冲掉）
 # 对每个账号逐字复现 —— 第 1 个账号的结果已经是判据。
 # 探针**不额外消耗配额**：它就是第一个正式账号的抓取，成功时结果照常进聚合，
-# 正常路径的总调用次数与没有探针时完全一致（回归见
-# tests/briefing/test_intake_preflight.py::test_preflight_adds_no_extra_call_when_upstream_healthy）。
+# 正常路径的总调用次数与没有探针时完全一致（回归见 tests/briefing/
+# test_intake_preflight.py::test_preflight_adds_no_extra_call_when_upstream_healthy）。
 PREFLIGHT_PROBE_ACCOUNTS = 1
 
 

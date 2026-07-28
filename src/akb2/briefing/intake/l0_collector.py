@@ -144,7 +144,8 @@ def _login_state() -> tuple[str, str]:
     except Exception as exc:  # noqa: BLE001
         # 诊断失败绝不能掩盖它要解释的那个主故障：回报 unknown 并把原因带出去。
         return "unknown", f"`twitter status --json` 未能判定: {type(exc).__name__}: {exc}"
-    return ("authenticated" if authed else "unauthenticated"), f"twitter status ok={payload.get('ok')}"
+    state = "authenticated" if authed else "unauthenticated"
+    return state, f"twitter status ok={payload.get('ok')}"
 
 
 def diagnose_upstream_fatal(signature: str | None = None) -> str:
