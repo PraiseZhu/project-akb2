@@ -280,6 +280,40 @@ def test_collector_still_accepts_video_absent_from_history(video_config):
     assert [r["video"]["id"] for r in results] == ["BRANDNEW001"]
 
 
+def test_run_single_source_blocked_by_history_when_ledger_rows_lost(
+    video_config, monkeypatch
+):
+    """`--source` 生产路径：seed 标记还在、账本行没了 → 仍必须在花钱之前拦住。
+
+    这正是残余风险描述的失守形态（账本被清/重建，`seeded_from:` 标记误置成已 seed）：
+    `_seed_history` 被标记短路，不会重新回填；裸查账本查不到 → 缺陷版直接进
+    researcher 烧掉一次 NLM 深研。断言绑定"钱有没有花"：researcher 一被构造就炸。
+    """
+    from src.akb2.video import __main__ as video_main
+
+    video_meta = _video()
+    _legacy_note(video_config.promotion_target_path, video_meta["url"])
+
+    # 先正常回填（写入 seeded_from 标记），再把账本行清空 —— 标记留着，行没了
+    store = VideoDedupStore(video_config.dedup_db_path)
+    assert store.seed_from_published(video_config.promotion_target_path).seeded == 1
+    import sqlite3
+
+    with sqlite3.connect(str(video_config.dedup_db_path)) as conn:
+        conn.execute("DELETE FROM video_ingested")
+    assert store.is_ingested(video_meta["url"]) is False, "前提：账本行已丢失"
+
+    class _ExplodingResearcher:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("历史产出已存在，不该进研究阶段（会重烧 NLM 深研）")
+
+    monkeypatch.setattr(video_main, "VideoResearcher", _ExplodingResearcher)
+
+    assert video_main._run_single_source(
+        video_config, video_meta["url"], dry_run=False
+    ) == 0
+
+
 def test_index_ignores_non_video_notes(video_config):
     """同目录的非视频笔记（essay/论文链接）不得进索引 → 不得误拦真视频。
 

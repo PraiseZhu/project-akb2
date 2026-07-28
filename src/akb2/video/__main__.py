@@ -258,7 +258,10 @@ def _run_single_source(config: VideoConfig, url: str, dry_run: bool) -> int:
         # 让"历史产出里已存在该视频"这件事在花钱之前就能查到。
         dedup_store, collector = _build_dedup_pair(config, llm_adapter)
         _seed_history(dedup_store, config)
-        if dedup_store.is_ingested(url):
+        # 走 collector 的 L1 判定（账本 **或** 已发布产出的身份索引），不是裸查账本：
+        # 回填是按目录记 `seeded_from:` 标记的，标记已置而账本被清空/重建时
+        # （残余风险「视频存量覆盖」的失守形态）裸查账本会漏判，索引仍能查到。
+        if collector._is_video_ingested(url):
             logger.warning(
                 "[去重] 该视频已入库，跳过 --source 全链路（避免重复烧 NLM/LLM 额度）: %s",
                 url,
@@ -379,7 +382,8 @@ def _run_fixture(config: VideoConfig, dry_run: bool) -> int:
         # 同 `--source`：先历史回填再查，否则账本缺记录时这条路照样会写重复产出。
         dedup_store, collector = _build_dedup_pair(config)
         _seed_history(dedup_store, config)
-        if dedup_store.is_ingested(video_meta["url"]):
+        # 同 `--source`：走 L1 双真值源判定（账本 或 已发布产出身份索引），不裸查账本。
+        if collector._is_video_ingested(video_meta["url"]):
             logger.warning(
                 "[去重] fixture 视频已入库，跳过写入（避免重复产出）: %s",
                 video_meta["url"],

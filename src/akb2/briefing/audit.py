@@ -208,32 +208,46 @@ def _values_equivalent(a: float, b: float) -> bool:
 def _check_numbers_detailed(en: str, zh: str) -> list[tuple[str, str]]:
     """返回 [(问题描述, severity)]。severity ∈ {fail, warn}。
 
-    2026-07-26 校准（回放 `AI TRENDS/Social/` 全部 60 篇已发布简报）。
+    校准口径（**先读这段再读下面的数字**）：
 
-    回放能测什么、不能测什么（**先读这段再读下面的数字**）：
-      - 可测 = **曝光面**：某个判据在已发布产出里多久触发一次（分母是天数/字段数）。
-        下面所有 "x/60 篇" "n/n token" 都是曝光面。
-      - **不可测 = 误报率**：触发中有多少是错的。所有 fail 级判据都需要英文原文，而
-        vault 里只有中文成品，**没有任何 en/zh 配对产物** → 本地在原理上无法算误报率。
-        要量化误报率必须拿真机 en/zh 配对样本（译前 synth_en + 译后 synth_zh）重跑。
-      - 恒等回放（en := 已发布 ZH 文本自身）**不能**用来论证"无结构性假阳性"：此时
-        每个数字 token 必然逐字保留、每个 URL/@handle 必然存在，数字/URL/handle 三类
-        检查在构造上不可能报错，"0 误报"是同义反复而非证据。它唯一有效的用途是暴露
-        "en 侧其实不是英文"这类前提破坏 —— 实测确实暴露了：恒等回放跑真实
-        `_check_translation_fidelity` 得 33 条 `metric_fabricated`（fail 级，21/60 篇
-        = 35.0%），因为中文文本永不含 `accuracy` 词根。该缺陷已由
-        `_check_metric_fabrication` 的非英文原文门修掉。
-      - 参数规模 B 逐字保留：**9/60 篇（15%）** 已发布简报把它本地化成
-        「4000 亿参数」「9750 亿参数（激活 410 亿）」「2.8 万亿参数」——且这些
-        本地化**数值等价**（400B == 4000 亿 == 4e11）。原实现把这一类判 fail，
-        意味着约 15% 的天数会被判 fail、当天日报直接不发布，而产出并没有事实错误。
-        → 数值等价的本地化降为 warn（kind=number_localized）；只有既无逐字 token
-          又无等价数值时才 fail（那才是「405B → 8B」式真实损坏）。
-      - 千分位逐字保留：曝光 9/60 篇，其中 11 个 token 在已发布中文里全部逐字保留
-        （4,000+ / 5,000 / 1,000 / 3,000 / 4,100 / 10,000 / 2,000 / 50,000）
-        → 该判据在现网产出上"不会到处开火"，故保留 fail 级。
-        注意这仍只是曝光面：没有英文原文，无法判断这 11 次里是否有该报未报（漏报）或
-        不该报（误报），**不要把它读成"误报率 0"**。
+      - 可测 = **曝光面**：判据在已发布产出里多久开火一次、有多少 token 可被它扫到。
+      - **不可测 = 误报率**：开火里有多少是错的。所有 fail 级判据都要「英文原文 ↔
+        中文译文」配对，vault 里只有中文成品 → 曝光面能算，误报率不能。
+      - 恒等回放（en := 已发布 ZH 文本自身）**尤其不能**用来论证"无结构性假阳性"：
+        en == zh 时每个数字 token 必然逐字保留、每个 URL/@handle 必然存在，数字 /
+        URL / handle 三类检查在构造上不可能报错，任何"0 误报""N/N 逐字保留"都是
+        同义反复而非证据。它唯一有效的用途是暴露"en 侧其实不是英文"这类前提破坏
+        （见 `_check_metric_fabrication`）。
+      - 要真的量化误报率：靠 `translate.dump_fidelity_pairs` 累积的真机 en/zh 配对
+        语料 + 人工裁决，出数通道是 `evals/audit-fidelity-fp/run.py`（语料/裁决不够
+        时它输出"样本不足"，不给假数字）。
+
+    可复现命令（下面所有数字都出自它，2026-07-28 跑过；vault 只读）::
+
+        python3 evals/audit-fidelity-fp/run.py --corpus-mode identity \\
+            --vault-root /Volumes/AKB2/Obsidian --report-out /tmp/exposure.json
+
+    该命令 2026-07-28 的输出（60 篇已发布简报 / 59 天 / 1587 个受检配对）：
+
+      - 4 个 fail 级 kind 触发数全 0（`exposure.per_kind`）—— 这只说明"恒等回放不
+        会让它们开火"，**不是**误报率，见上。
+      - `exposure.token_families`：`param_scale` 122 token（去重 22）分布在 33 天；
+        `thousands` 4 token / 3 天；`version` 25 token / 12 天；`url` 1 token / 1 天；
+        `handle` 107 token（去重 64）/ 44 天。
+        → 千分位与版本号两类"必须逐字保留"的判据，其可扫 token 在现网产出上很稀
+          （4 与 25 个），即**曝光面低**，故保留 fail 级的可用性代价可控。
+          注意"保留率"在恒等回放下恒为 100%，不构成任何证据。
+      - 注意该语料是**下界**：`load_identity_corpus` 只还原确定性 markdown 结构
+        （执行摘要 / `### 主题` / `**@handle**` + `>` 引用），列表与表格里的文本不进
+        配对，故真实曝光面 ≥ 上列数字。
+
+    参数规模 B 的 warn 降级依据（**未保留可复现命令，本轮未复现**）：
+        2026-07-26 一次性人工回放报告"9/60 篇已发布简报把 400B 本地化成
+        「4000 亿参数」且数值等价"，据此把这一类从 fail 降为 warn
+        （kind=number_localized）。降级方向是保守的（阻断 → 告警），故即使该数字偏
+        差也不会造成漏发以外的风险；但"本地化占比"本身需要 en/zh 配对才能重算，
+        恒等回放（en == zh，token 必然逐字保留）**测不到它**。待配对语料攒够后由
+        `evals/audit-fidelity-fp` 复核，不要把 9/60 当已验证事实引用。
     """
     problems: list[tuple[str, str]] = []
     en_body = _strip_urls_handles(en)
@@ -264,7 +278,9 @@ def _check_numbers_detailed(en: str, zh: str) -> list[tuple[str, str]]:
             continue
         problems.append((f"{token}（标识符类，必须逐字保留）", "fail"))
 
-    # 第 1 层b：版本号 / 千分位长数 —— 逐字保留（实测 11/11 保留，无观测误报）
+    # 第 1 层b：版本号 / 千分位长数 —— 必须逐字保留。曝光面低（见 docstring 的
+    # token_families：thousands 4 token / version 25 token），故 fail 级代价可控；
+    # 误报率仍未测（恒等回放测不了，需配对语料 + 人工裁决）。
     strict_ids: list[str] = [m.group(0) for m in _VERSION_RE.finditer(en_body)]
     strict_ids += [m.group(0) for m in _THOUSANDS_RE.finditer(en_body)]
     for token in dict.fromkeys(strict_ids):
@@ -316,9 +332,18 @@ def _is_cjk_source(en: str) -> bool:
     （见 `_EN_STOPWORDS` 上方注释：技术栈堆叠/项目原名几乎不含小写虚词），这里复用
     同一判据而不另造阈值。
 
-    实测（2026-07-26 恒等回放 60 篇已发布简报的 1560 个受检字段，en 侧全为中文）：
-    1555/1560 落在 (汉字≥6, 虚词≤2)，本判据把 33/33 条构造性 `metric_fabricated`
-    全部抑制，且不抑制汉字 <6 的短文本（3 例）。
+    实测（可复现，2026-07-28；恒等回放 60 篇已发布简报 = 1587 个受检配对，en 侧全为
+    中文）：本判据判 CJK 源 1513 / 1587，其余 74 条不判（多为汉字 <`_MIN_PROSE_HAN`
+    的短标题）。开/关本门对比 `metric_fabricated` 触发数 = 31 → 0，即 31 条构造性
+    命中被全部抑制::
+
+        R="python3 evals/audit-fidelity-fp/run.py --corpus-mode identity \\
+            --vault-root /Volumes/AKB2/Obsidian"
+        eval "$R"                              # 门开启：metric_fabricated 触发 0
+        eval "$R --replay-without-cjk-gate"    # 门关闭（还原加门前实现）：触发 31 / 19 天
+
+    这 31 条是**构造性**假阳（en 侧是中文，英文词根在构造上不可能出现），不是对真实
+    en/zh 配对测出的误报率 —— 后者仍需配对语料，见 `_check_numbers_detailed` docstring。
     """
     body = _strip_urls_handles(en or "")
     han = len(re.findall(r"[一-鿿]", body))
@@ -335,9 +360,10 @@ def _check_metric_fabrication(en: str, zh: str) -> list[str]:
     缺席检验只在"存在是可能的"时才携带信息。当 en 侧本身就是中文（中文源推文的
     `text_original` 兜底、或译前 synth_en 里混入中文原文），英文词根**在构造上**不可能
     出现 → 每个中文指标名都会 100% 命中，而且是 fail 级 → 当天日报直接不发布。
-    这不是理论风险：恒等回放 60 篇已发布简报得 33 条命中（21/60 篇 = 35.0%），全部是
-    这个模式。故中文↔中文的比较不走严格档，直接跳过本检查（与 `synth_en` 整体缺失时
-    跳过所有需要英文原文的检查同构，见 `_check_standard_structured` 文档）。
+    这不是理论风险：恒等回放 60 篇已发布简报、关掉本门后得 31 条命中（19/59 天），全部
+    是这个模式（复现命令见 `_is_cjk_source` docstring）。故中文↔中文的比较不走严格档，
+    直接跳过本检查（与 `synth_en` 整体缺失时跳过所有需要英文原文的检查同构，见
+    `_check_standard_structured` 文档）。
 
     这里只关掉本检查，不关数字/URL/@handle —— 那三类判据比对的是数字与逐字 token，
     与原文是什么文字无关，en 侧是中文时依然成立。
@@ -483,7 +509,9 @@ def _check_translation_fidelity(synth_zh: dict, synth_en: dict | None) -> list[d
                 # 唯一 [原文] 链接），所以译文丢 URL 对**已发布产出没有任何影响**——
                 # 拿 fail 级去守一个下游必然丢弃的属性，只会白白停发日报。
                 # 分析字段（executive_summary / topic / summary）不经该剥离，URL 会
-                # 逐字进产出，仍判 fail。实测：60 篇已发布简报里受检文本含 URL 的仅 4 篇。
+                # 逐字进产出，仍判 fail。曝光面（可复现，见 _check_numbers_detailed
+                # docstring 的命令 → exposure.token_families.url）：60 篇已发布简报的
+                # 1587 个受检配对里只有 1 个 URL token / 1 天，即该判据极少开火。
                 severity = "warn" if field.startswith("tweets[") else "fail"
                 suffix = (
                     "（推文正文 URL 渲染时本就被 _strip_inline_links 剥离，故仅告警）"
@@ -524,11 +552,12 @@ def _check_standard_structured(
             metric_fabricated, glossary_violation, language_mixed}
     severity ∈ {fail, warn}；warn 级不阻断入库，但会把 verdict 压到 warn。
 
-    fail 级确定性检查的可用性契约（2026-07-26 校准，见 _check_numbers_detailed 与
-    _check_translation_fidelity 的注释）：任何 fail 级 kind 都**必须**同时出现在
-    `audit_fix._FIXABLE_KINDS` 里。理由是量化的：60 篇已发布简报平均有 27.8 个受检
-    字段，单字段 1% 的误报率就意味着 1-(1-0.01)^27.8 ≈ 24.5% 的天数被判 fail；
-    没有修复通道的 fail 级检查 = 日报可用性单点。
+    fail 级确定性检查的可用性契约（校准口径与复现命令见 _check_numbers_detailed
+    docstring）：任何 fail 级 kind 都**必须**同时出现在 `audit_fix._FIXABLE_KINDS`
+    里。理由是量化的：60 篇已发布简报共 1587 个受检配对 = 平均 26.5 个/篇，单字段 1%
+    的误报率就意味着 1-(1-0.01)^26.5 ≈ 23.3% 的天数被判 fail；没有修复通道的 fail 级
+    检查 = 日报可用性单点。（26.5 是恒等回放语料的**下界**，见该 docstring 说明；这里
+    的 1% 是敏感度演算的假设值，不是实测误报率——实测值当前仍未知。）
 
     synth_en 省略时跳过需要英文原文的确定性校验（数字/URL/@handle/指标），
     仅跑 ZH-only 检查（术语表禁用译法、语言纯度）。

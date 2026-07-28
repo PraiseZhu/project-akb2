@@ -10,9 +10,9 @@ X 前端改版后，社媒简报采集全瘫（07-27 / 07-28 连续两天 `intak
    （实测：未登录 34KB / `ondemand` 0 次；带 cookie 的 `/home` 276KB / 240 次）。
    → 每次调用打 `Failed to init ClientTransaction: 'NoneType' object has no
    attribute 'group'`，GraphQL 全部 404。
-2. **search 端点 queryId 失效**：修好 CT 后，`twitter search` 仍恒 404
-   （X 轮换了 SearchTimeline 的 persisted queryId），而 `user-posts` /
-   `user` / `status` 等端点正常。
+2. **search 端点 404**：修好 CT 后，`twitter search` 仍连续 404（当时判定为 X 轮换了
+   SearchTimeline 的 persisted queryId），而 `user-posts` / `user` / `status` 等端点正常。
+   ⚠ 这条结论**当天晚间已被复测推翻**，见下方「验证方式」的更正块。
 
 登录态全程正常（`twitter status` → `authenticated: true`），与 auth 无关。
 `twitter-cli 0.8.5` 与 `xclienttransaction 1.0.3` 均为 PyPI 最新，上游无修复版。
@@ -91,7 +91,7 @@ twitter search "" --from karpathy -n 1 --json    # keyword 回退模式用的 se
 人手敲或塞 cron 都可以，全部只读、不触仓库状态：
 
 ```bash
-# 1. 补丁在位性（判据是补丁注释块 marker，不是"文件存在"——upgrade 后文件仍在)
+# 1. 补丁在位性（判据是补丁注释块 marker，不是"文件存在" —— upgrade 后文件仍在）
 grep -l "LOCAL PATCH 2026-07-28 (AKB2)" \
   ~/.local/share/uv/tools/twitter-cli/lib/*/site-packages/twitter_cli/client.py \
   || echo "补丁已丢失 —— 按上面「修复 1」重打"
@@ -102,14 +102,22 @@ twitter status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)[
 # 3. 生产端点采集能力（account 模式实际用的那条）
 twitter user-posts karpathy -n 2 --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["ok"], len(d.get("data") or []))'
 
-# 4. 仓库侧同一判据（1+2 与报错文案共用同一实现，避免自检与线上结论打架）
-cd "<repo>" && python3 -c "
+# 4. 仓库侧同一判据（1+2 与线上报错文案共用同一实现，避免自检与线上结论打架）
+#    在工程根执行；干跑，不触网抓取、不写任何状态
+PYTHONPATH=src python3 -c "
 from akb2.briefing.intake.l0_collector import _patch_state, _login_state, diagnose_upstream_fatal
 print(_patch_state()); print(_login_state())
-print(diagnose_upstream_fatal('(自检，非真实故障)'))" 2>/dev/null \
-  || PYTHONPATH=src python3 -c "
-from akb2.briefing.intake.l0_collector import diagnose_upstream_fatal
 print(diagnose_upstream_fatal('(自检，非真实故障)'))"
+```
+
+第 4 条的实测输出（2026-07-28，本机 mac，补丁在位 + 已登录）：
+
+```
+('present', '/Users/praise/.local/share/uv/tools/twitter-cli/lib/python3.12/site-packages/twitter_cli/client.py')
+('authenticated', 'twitter status ok=True')
+成因判定: 补丁在位但上游又变了      ← 自检时这行没有意义（没有真实故障），看上下两行即可
+  登录态: authenticated（twitter status ok=True）
+  本地补丁: present（…/twitter_cli/client.py）
 ```
 
 ### 报错文案 → 成因 → 下一步

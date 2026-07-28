@@ -71,6 +71,32 @@ def test_translate_briefing_writes_paired_samples():
     assert set(exec_rec) == {"date", "field", "en", "zh", "captured_at"}, exec_rec
 
 
+def test_untranslated_item_is_not_written_as_an_identity_pair():
+    """单条推文翻译失败（译文仍是英文原文）→ 该 en == zh 伪配对不得进语料。
+
+    这是"恒等回放同义反复"的入口防线：en == zh 的配对上，数字/URL/@handle 在构造上
+    必然逐字保留，判据不可能报错，留在语料里只会把误报率分母兑水、把结论稀释成
+    "看起来很低"。整体失败路径另有 `test_translate_failed_path_writes_no_sample`
+    覆盖，本例覆盖的是**部分失败**（更常见）。
+    """
+    partial = dict(MOCK_TRANSLATE_RESPONSE)
+    # 只保留 idx=0 的推文条目：idx=1 未预置 → mock 返回空对象 → 该条被拒收，
+    # 译文保持英文原文（走生产降级路径，不是测试里手工造的状态）
+    partial["tweets"] = [t for t in MOCK_TRANSLATE_RESPONSE["tweets"] if t["idx"] == 0]
+
+    result = _run_translate(response=partial)
+    assert "tweets[1]" in result["translate_failed_fields"], result.get(
+        "translate_failed_fields"
+    )
+    assert result["tweets"][1]["text"] == FIXTURE_SYNTH["tweets"][1]["text"], "前提不成立"
+
+    records = _read_samples()
+    assert records, "部分失败不应导致整批不落盘"
+    for rec in records:
+        assert rec["en"] != rec["zh"], rec
+    assert not any(r["field"] == "tweets[1].text" for r in records), records
+
+
 def test_sample_file_named_by_briefing_date_and_appends():
     """同一天两次运行追加到同一文件（不互相覆盖，语料才能攒起来）。"""
     _run_translate()

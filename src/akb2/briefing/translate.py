@@ -490,7 +490,8 @@ FIDELITY_SAMPLE_ENV = "AKB2_FIDELITY_SAMPLE"
 FIDELITY_SAMPLE_SUBDIR = "fidelity-samples"
 # 单次运行落盘条数上限。取值依据：受检字段 = 1 个 executive_summary + 每主题 2 个
 # （topic/summary）+ 展示推文，展示集合上界 = 被引用推文 + 孤儿 top-K
-# （_ORPHAN_TOP_K 默认 5）；实测 26.0 个受检字段/篇（见 audit 校准注释），40 留余量。
+# （_ORPHAN_TOP_K 默认 5）；实测 26.5 个受检配对/篇（60 篇已发布简报共 1587 个，复现
+# 命令见 audit._check_numbers_detailed docstring），40 留余量。
 # 超过即停止写入并点名（不静默截断）。
 FIDELITY_SAMPLE_MAX_PAIRS_PER_RUN = 40
 # 采样目录字节上限：达到即停止写入（可见告警）。按每配对 ~1.5KB、每天 ~30 条估算，

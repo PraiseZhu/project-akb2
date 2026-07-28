@@ -58,7 +58,13 @@ for _p in (_REPO_ROOT / "src",):
         sys.path.insert(0, str(_p))
 
 from akb2.briefing.audit import (  # noqa: E402
+    _HANDLE_RE,
+    _PARAM_SCALE_RE,
+    _THOUSANDS_RE,
+    _URL_RE,
+    _VERSION_RE,
     _check_translation_fidelity,
+    _strip_urls_handles,
     _translation_pairs,
 )
 from akb2.briefing.translate import (  # noqa: E402
@@ -263,6 +269,50 @@ def _pair_to_synths(field: str, en: str, zh: str) -> tuple[dict, dict, str] | No
     return None
 
 
+# 判据实际扫描的正则家族。`strip` 标明生产是否先剥 URL/@handle 再扫（数字类判据会剥，
+# URL/@handle 判据本身不剥）——口径必须与 `audit._check_numbers_detailed` /
+# `_check_verbatim` 一致，否则算出来的曝光面不是这些判据真正看到的东西。
+_TOKEN_FAMILIES: tuple[tuple[str, object, bool], ...] = (
+    ("param_scale", _PARAM_SCALE_RE, True),
+    ("thousands", _THOUSANDS_RE, True),
+    ("version", _VERSION_RE, True),
+    ("url", _URL_RE, False),
+    ("handle", _HANDLE_RE, False),
+)
+
+
+def token_family_exposure(pairs: list[dict]) -> dict:
+    """各正则家族在**受检侧（en）**的 token 曝光面。
+
+    只回答"有多少东西可被检查、分布在多少配对/天上"，**不含对错**——它和误报率是两
+    件事。存在的理由：`audit` 里那些"某类 token 在产出里出现 N 次"的量化注释必须有一
+    条可复现命令支撑，否则下一轮没人能验证它还成不成立。
+    """
+    out: dict[str, dict] = {}
+    for name, regex, strip in _TOKEN_FAMILIES:
+        tokens: list[str] = []
+        hit_pairs = 0
+        days: set[str] = set()
+        for pair in pairs:
+            body = pair["en"] or ""
+            if strip:
+                body = _strip_urls_handles(body)
+            hits = [m.group(0) for m in regex.finditer(body)]
+            if not hits:
+                continue
+            tokens.extend(hits)
+            hit_pairs += 1
+            if pair.get("date"):
+                days.add(pair["date"])
+        out[name] = {
+            "tokens": len(tokens),
+            "distinct": len(set(tokens)),
+            "pairs": hit_pairs,
+            "days": len(days),
+        }
+    return out
+
+
 def trigger_id(kind: str, field: str, en: str, zh: str) -> str:
     payload = "\x00".join((kind, field, en, zh)).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()[:16]
@@ -328,7 +378,9 @@ def build_report(
     check_stats: dict,
     labels: dict,
     max_age_days: int,
+    token_families: dict | None = None,
 ) -> dict:
+    token_families = token_families or {}
     pairs_usable = corpus["stats"]["pairs_usable"]
     exposure_kinds: dict[str, dict] = {}
     fp_kinds: dict[str, dict] = {}
@@ -430,6 +482,7 @@ def build_report(
             "cjk_source_gate_disabled": check_stats["cjk_source_gate_disabled"],
             "pairs_triggering_any_fail_kind": len(triggering_pair_keys),
             "per_kind": exposure_kinds,
+            "token_families": token_families,
         },
         "false_positive": {"per_kind": fp_kinds},
         "verdict": verdict,
@@ -456,6 +509,15 @@ def render_summary(report: dict) -> str:
             f"  - {kind}: 触发 {ex['triggers']} 次 / 涉及配对 {ex['pairs_triggering']}"
             f" / 涉及天数 {ex['days_triggering']} / 每配对 {ex['trigger_rate_per_pair']}"
         )
+    families = report["exposure"].get("token_families") or {}
+    if families:
+        lines.append("")
+        lines.append("token 曝光面（受检侧有多少东西可被检查，不含对错）:")
+        for name, fam in families.items():
+            lines.append(
+                f"  - {name}: token {fam['tokens']} 个（去重 {fam['distinct']}）"
+                f" / 涉及配对 {fam['pairs']} / 涉及天数 {fam['days']}"
+            )
     lines.append("")
     lines.append("误报率（触发中有多少是错的，需人工裁决）:")
     for kind, fp in report["false_positive"]["per_kind"].items():
@@ -535,6 +597,7 @@ def main(argv: list[str] | None = None) -> int:
         check_stats=check_stats,
         labels=labels,
         max_age_days=args.max_age_days,
+        token_families=token_family_exposure(corpus["pairs"]),
     )
 
     if args.report_out:
