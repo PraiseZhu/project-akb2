@@ -10,7 +10,7 @@ from pathlib import Path
 
 from langgraph.graph import END, START, StateGraph
 
-from . import config, gate, idempotency, notify, render
+from . import blocked, config, gate, idempotency, notify, render
 from . import discover as discover_mod
 from .feishu.send import send_card, send_card_dm
 from .state import SyncState
@@ -27,6 +27,11 @@ def discover_node(state: SyncState) -> dict:
     if state.get("strict") and missing_expected:
         for kind, path in missing_expected:
             msg = f"{kind} 缺失（期望路径: {path}）"
+            # 缺失往往不是"文件丢了"而是"上游被阻断/失败了"，真因已由各链路落盘。
+            # 不带真因的告警在 2026-07-28 事故里让运维连续两天无法定位（只看到"缺失"）。
+            reason = blocked.blocking_reason(kind, state["date"])
+            if reason:
+                msg = f"{msg}；真因: {reason}"
             errors.append(msg)
             log.append(msg)
     return {"briefings": briefings, "errors": errors, "log": log}

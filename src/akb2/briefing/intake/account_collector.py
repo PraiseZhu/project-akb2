@@ -32,7 +32,10 @@ from .l0_collector import (
     FIXTURE_PATH,
     TWITTER_BIN,
     TWITTER_TIMEOUT_SEC,
+    UPSTREAM_FATAL_FAILFAST_STREAK,
+    UpstreamCollectorBroken,
     _twitter_cli_to_akb2,
+    match_upstream_fatal,
 )
 
 CURATOR_CONFIG = REPO_ROOT / "config" / "curator-accounts.yaml"
@@ -92,6 +95,13 @@ class AccountCollector:
         self.supplement_threshold = supplement_threshold
         self.max_reserve_accounts = max_reserve_accounts
         self.used_fallback: bool = False
+        # 连续命中同一上游全局故障签名的账号数；任一账号成功即归零。
+        self._upstream_fatal_streak: int = 0
+        self._upstream_fatal_sig: str | None = None
+        self._upstream_fatal_sample: str = ""
+        # 整轮是否见过全局故障（即使未达 fail-fast 阈值）—— 用于区分
+        # 「上游工具坏了」与「curator 配置里 zh 账号不对」两类完全不同的 0 产量。
+        self.upstream_fatal_seen: str | None = None
 
     def collect(
         self,
@@ -143,6 +153,7 @@ class AccountCollector:
             sys.stderr.write(
                 f"WARNING: @{handle} twitter-cli exit {result.returncode}: {excerpt} — skip\n"
             )
+            self._note_upstream_failure(result.stderr or "")
             return []
         try:
             payload = json.loads(result.stdout)
@@ -151,8 +162,43 @@ class AccountCollector:
             return []
         if not payload.get("ok"):
             sys.stderr.write(f"WARNING: @{handle} payload.ok=false — skip\n")
+            # payload.ok=false 也可能是全局故障的下游表现（ClientTransaction 失败后
+            # GraphQL 返回 404，warning 打在 stderr、错误体在 stdout）。两侧都查。
+            self._note_upstream_failure((result.stderr or "") + (result.stdout or ""))
             return []
-        return _twitter_cli_to_akb2(payload.get("data") or [])
+        tweets = _twitter_cli_to_akb2(payload.get("data") or [])
+        if tweets:
+            # 有账号真的取到了内容 → 上游没坏，连击归零（防单账号私密/限流误判为全局故障）
+            self._upstream_fatal_streak = 0
+            self._upstream_fatal_sig = None
+        return tweets
+
+    def _note_upstream_failure(self, text: str) -> None:
+        """记录一次失败是否属于上游全局故障，并维护连击计数。"""
+        sig = match_upstream_fatal(text)
+        if not sig:
+            self._upstream_fatal_streak = 0
+            self._upstream_fatal_sig = None
+            return
+        if sig == self._upstream_fatal_sig:
+            self._upstream_fatal_streak += 1
+        else:
+            self._upstream_fatal_sig = sig
+            self._upstream_fatal_streak = 1
+        self.upstream_fatal_seen = sig
+        self._upstream_fatal_sample = text[:300].replace("\n", " | ")
+
+    def _abort_if_upstream_broken(self) -> None:
+        """连续命中同一全局签名达阈值 → 中止整轮（不降级 fixture）。"""
+        if (
+            self._upstream_fatal_sig
+            and self._upstream_fatal_streak >= UPSTREAM_FATAL_FAILFAST_STREAK
+        ):
+            raise UpstreamCollectorBroken(
+                self._upstream_fatal_sig,
+                self._upstream_fatal_streak,
+                self._upstream_fatal_sample,
+            )
 
     def _fetch_tier_raw(
         self,
@@ -183,6 +229,7 @@ class AccountCollector:
             if i > 0 and self.pacing_sec > 0:
                 time.sleep(self.pacing_sec)  # 限流防护
             tweets = self._fetch_one(handle, since_date, until_date)
+            self._abort_if_upstream_broken()
             if tweets:
                 ok_accounts += 1
             for t in tweets:
@@ -216,6 +263,7 @@ class AccountCollector:
                     if reserve_used > 0 and self.pacing_sec > 0:
                         time.sleep(self.pacing_sec)
                     new_tweets = self._fetch_one(rh, since_date, until_date)
+                    self._abort_if_upstream_broken()
                     reserve_used += 1
                     for t in new_tweets:
                         tid = str(t.get("id", ""))
@@ -239,12 +287,26 @@ class AccountCollector:
             self.tier, since_date, until_date, allow_reserve=True
         )
         if not aggregated:
+            self._raise_if_upstream_fatal_seen()
             sys.stderr.write(
                 f"WARNING: curator fetch_tier.{self.tier} returned 0 tweets — fallback to fixture\n"
             )
             self.used_fallback = True
             return self._read_fixture()
         return aggregated
+
+    def _raise_if_upstream_fatal_seen(self) -> None:
+        """0 产量 + 本轮见过全局故障 → 显式失败，不降级 fixture。
+
+        与 `_abort_if_upstream_broken` 的区别：后者是「连击达阈值就立刻停」（省时间），
+        这里是「跑完了但一无所获，且已知上游坏了」的兜底归因（防伪装成无素材）。
+        """
+        if self.upstream_fatal_seen:
+            raise UpstreamCollectorBroken(
+                self.upstream_fatal_seen,
+                max(self._upstream_fatal_streak, 1),
+                self._upstream_fatal_sample,
+            )
 
     def collect_merged(
         self,
@@ -269,10 +331,19 @@ class AccountCollector:
             self._fetch_tier_raw("zh", since_date, until_date, allow_reserve=False), "zh"
         )
         if not zh:
-            sys.stderr.write(
-                "WARNING: fetch_tier.zh 产量为 0 —— 本次仅 en 上线；"
-                "precondition 提示先复核 config/curator-accounts.yaml 的 zh 账号\n"
-            )
+            # 归因必须分清：见过上游全局故障时，0 产量的成因是工具坏了，
+            # 让运维去"复核 curator-accounts.yaml"是把人指向错误方向。
+            # 2026-07-28 事故里日志正是这么误导的（constitution 原则 4：失败可见 ≠ 归因可乱写）。
+            if self.upstream_fatal_seen:
+                sys.stderr.write(
+                    "WARNING: fetch_tier.zh 产量为 0 —— 成因是上游 twitter-cli 全局故障"
+                    f"（{self.upstream_fatal_seen}），**不是** curator-accounts.yaml 配置问题\n"
+                )
+            else:
+                sys.stderr.write(
+                    "WARNING: fetch_tier.zh 产量为 0 —— 本次仅 en 上线；"
+                    "precondition 提示先复核 config/curator-accounts.yaml 的 zh 账号\n"
+                )
 
         seen: set[str] = set()
         merged: list[dict] = []
@@ -283,6 +354,9 @@ class AccountCollector:
                 merged.append(t)
 
         if not merged:
+            # 见过上游全局故障 → 显式失败，绝不降级 fixture。降级会把「工具坏了」
+            # 伪装成「今天没素材」，正是 12 天假数据入库的成因。
+            self._raise_if_upstream_fatal_seen()
             sys.stderr.write(
                 "WARNING: en+zh 双 tier 均 0 tweets — fallback to fixture\n"
             )
@@ -325,18 +399,31 @@ def main():
     pacing = float(os.environ.get("AKB2_ACCOUNT_PACING_SEC", _DEFAULT_PACING_SEC))
 
     collector = AccountCollector(tier=args.tier, per_account_cap=cap, pacing_sec=pacing)
-    if args.merge:
-        tweets = collector.collect_merged(
-            dry_run=args.dry_run,
-            since_date=args.since,
-            until_date=args.until,
+    try:
+        if args.merge:
+            tweets = collector.collect_merged(
+                dry_run=args.dry_run,
+                since_date=args.since,
+                until_date=args.until,
+            )
+        else:
+            tweets = collector.collect(
+                dry_run=args.dry_run,
+                since_date=args.since,
+                until_date=args.until,
+            )
+    except UpstreamCollectorBroken as exc:
+        # 显式失败：不写 output、不落 fixture。调用方（pipeline）看到非零退出码即中止，
+        # 不会拿到一份"看起来正常"的 tweets 列表。
+        sys.stderr.write(
+            f"ERROR [account_collector]: {exc}\n"
+            f"ERROR [account_collector]: 排障入口 —— 先跑 `twitter status`（登录态）"
+            f"与 `twitter search \"\" --from karpathy -n 1 --json`（采集能力）；"
+            f"两者结论不同即为上游工具故障，不是配置或登录问题\n"
         )
-    else:
-        tweets = collector.collect(
-            dry_run=args.dry_run,
-            since_date=args.since,
-            until_date=args.until,
-        )
+        if exc.sample:
+            sys.stderr.write(f"ERROR [account_collector]: 上游原始输出: {exc.sample}\n")
+        return 4
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -345,7 +432,8 @@ def main():
         output["_fallback_used"] = True
     with open(out_path, "w") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
