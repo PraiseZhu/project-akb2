@@ -218,17 +218,18 @@ class TestRunnerQueue:
         assert _acquire_processing_lock(config)
         _release_processing_lock(config)
 
-    def test_stale_lock_is_reclaimed_after_max_age(self, tmp_path: Path) -> None:
-        """worker 崩溃留死锁 → 超 MAX_PROCESSING_LOCK_AGE_SEC 后自动回收。
+    def test_crashed_holder_lock_is_reclaimed(self, tmp_path: Path) -> None:
+        """worker 崩溃留死锁 → 锁可回收，队列不被永久卡死。
 
-        这是 worker 崩溃后队列不被永久卡死的唯一兜底（runner.py 过期锁 unlink 分支）。
-        现有测试只走「未过期 → 拒绝」分支，过期回收分支零覆盖：改坏了单次崩溃就永久卡死。
-        造一个 mtime 改老到超龄的锁文件，断言 acquire 能回收它。
+        缺陷 #11b 后机制变更：锁改用 fcntl.flock，**进程死亡时内核自动释放 flock**，
+        所以"崩溃残留"不再靠 mtime 超龄猜（旧断言把 mtime 超龄当作唯一回收条件，
+        且用「同一进程再 acquire 一次」冒充崩溃 —— 在 flock 语义下那是活着的持有者，
+        本就该被拒，原断言方向是错的）。这里改为直接让持锁 fd 消失（等价于进程死亡、
+        内核释放 flock），断言残留锁文件不会卡死队列。跨机超龄回收分支见
+        tests/quality/test_runner_state_lock.py。
         """
-        import os
-
+        import src.akb2.quality.runner as runner_mod
         from src.akb2.quality.runner import (
-            MAX_PROCESSING_LOCK_AGE_SEC,
             RunnerConfig,
             _acquire_processing_lock,
             _release_processing_lock,
@@ -247,22 +248,19 @@ class TestRunnerQueue:
             lock_dir=str(lock_dir),
         )
 
-        # 模拟崩溃 worker 留下的锁。
         assert _acquire_processing_lock(config)
         lock_file = lock_dir / "processing.lock"
         assert lock_file.exists()
 
-        # 新鲜锁：第二次 acquire 必须被拒（未过期分支）。
+        # 活着的持有者：第二次 acquire 必须被拒。
         assert not _acquire_processing_lock(config)
 
-        # 把锁 mtime 改老到「超龄 + 余量」→ 视为崩溃残留死锁。
-        import time as _time
+        # 模拟持锁进程崩溃：fd 消失（内核释放 flock），锁文件仍留在盘上且标记 held。
+        runner_mod._PROCESSING_LOCK_FD.close()
+        runner_mod._PROCESSING_LOCK_FD = None
+        assert lock_file.exists()
 
-        stale = _time.time() - (MAX_PROCESSING_LOCK_AGE_SEC + 60)
-        os.utime(lock_file, (stale, stale))
-
-        # 过期锁被回收 → acquire 成功（兜底分支）。
-        assert _acquire_processing_lock(config), "过期死锁未被回收 → 队列会永久卡死"
+        assert _acquire_processing_lock(config), "崩溃残留死锁未被回收 → 队列会永久卡死"
         _release_processing_lock(config)
 
 

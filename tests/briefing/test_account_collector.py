@@ -18,12 +18,12 @@ def _fake_proc(returncode=0, payload=None, stdout=None):
     return SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
 
 
-def _tw(id_, screen, text="hello AI world"):
+def _tw(id_, screen, text="hello AI world", iso="2026-05-31T01:00:00Z"):
     return {
         "id": id_,
         "text": text,
         "author": {"screenName": screen},
-        "createdAtISO": "2026-05-31T01:00:00Z",
+        "createdAtISO": iso,
         "metrics": {"likes": 5, "retweets": 1, "replies": 0},
     }
 
@@ -55,7 +55,7 @@ def test_zh_collect_merged_tags_lang_and_dedups():
     tier_map = {"en": ["en_a"], "zh": ["zh_a"]}
 
     def fake_run(cmd, **kw):
-        h = cmd[cmd.index("--from") + 1]
+        h = cmd[2]  # user-posts 的位置参数（2026-07-28 端点切换）
         if h == "en_a":
             return _fake_proc(payload={"ok": True, "data": [_tw("1", "en_a", "English AI tweet")]})
         return _fake_proc(payload={"ok": True, "data": [_tw("2", "zh_a", "国产大模型推理提升")]})
@@ -79,7 +79,7 @@ def test_zh_empty_does_not_inject_fixture():
     tier_map = {"en": ["en_a"], "zh": ["zh_dead"]}
 
     def fake_run(cmd, **kw):
-        h = cmd[cmd.index("--from") + 1]
+        h = cmd[2]  # user-posts 的位置参数（2026-07-28 端点切换）
         if h == "en_a":
             return _fake_proc(payload={"ok": True, "data": [_tw("1", "en_a")]})
         return _fake_proc(payload={"ok": True, "data": []})  # zh 账号 0 产量
@@ -126,23 +126,27 @@ def test_fetch_tier_reserve_loads_from_top_level():
 # ---------------------------------------------------------------------------
 
 def test_fetch_one_command_shape():
-    """逐账号命令含 --from / 两次 --exclude(retweets,replies) / -t latest / --since/--until。"""
+    """2026-07-28 端点切换后：user-posts <handle> -n cap*2 --json。
+
+    search 端点被 X 下线（SearchTimeline queryId 轮换后恒 404），原 search 语法的
+    --exclude/--since/--until 过滤移到 raw 层 `_post_filter`（行为断言见
+    test_account_collector_userposts.py）。此处只锁命令形态：不得回退到 search。
+    """
     col = ac.AccountCollector(pacing_sec=0)
     with patch.object(
         ac.subprocess, "run",
-        return_value=_fake_proc(payload={"ok": True, "data": [_tw("1", "karpathy")]}),
+        return_value=_fake_proc(payload={"ok": True, "data": [_tw("1", "karpathy",
+                                          iso="2026-05-30T01:00:00Z")]}),
     ) as m:
-        col._fetch_one("karpathy", "2026-05-28", "2026-06-01")
+        tweets = col._fetch_one("karpathy", "2026-05-28", "2026-06-01")
 
     cmd = m.call_args[0][0]
-    assert cmd[:3] == [ac.TWITTER_BIN, "search", ""]
-    assert "--from" in cmd and cmd[cmd.index("--from") + 1] == "karpathy"
-    # --exclude 必须重复两次（之前栽过 "--exclude retweets replies" 把 replies 当位置参数的坑）
-    assert cmd.count("--exclude") == 2
-    assert "retweets" in cmd and "replies" in cmd
-    assert "-t" in cmd and cmd[cmd.index("-t") + 1] == "latest"
-    assert cmd[cmd.index("--since") + 1] == "2026-05-28"
-    assert cmd[cmd.index("--until") + 1] == "2026-06-01"
+    assert cmd[:3] == [ac.TWITTER_BIN, "user-posts", "karpathy"]
+    assert "search" not in cmd and "--from" not in cmd
+    assert cmd[cmd.index("-n") + 1] == str(col.per_account_cap * 2)
+    assert "--json" in cmd
+    # 日期窗虽然不再进命令行，但语义必须保留（raw 层过滤）：窗内条目应通过
+    assert [t["id"] for t in tweets] == ["1"]
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +162,7 @@ def test_aggregates_and_dedups_across_accounts():
     }
 
     def fake_run(cmd, **kw):
-        return per_handle[cmd[cmd.index("--from") + 1]]
+        return per_handle[cmd[2]]  # user-posts 的位置参数
 
     with patch.object(ac, "_load_fetch_tier", return_value=["a", "b"]), \
          patch.object(ac.subprocess, "run", side_effect=fake_run), \
@@ -175,7 +179,7 @@ def test_single_account_failure_does_not_abort():
     col = ac.AccountCollector(pacing_sec=0)
 
     def fake_run(cmd, **kw):
-        h = cmd[cmd.index("--from") + 1]
+        h = cmd[2]  # user-posts 的位置参数（2026-07-28 端点切换）
         if h == "bad":
             return _fake_proc(returncode=1, stdout="")
         return _fake_proc(payload={"ok": True, "data": [_tw("9", "good")]})
@@ -270,7 +274,7 @@ def test_reserve_supplement_when_en_below_threshold():
     call_count = {"n": 0}
 
     def fake_run(cmd, **kw):
-        h = cmd[cmd.index("--from") + 1]
+        h = cmd[2]  # user-posts 的位置参数（2026-07-28 端点切换）
         call_count["n"] += 1
         if h in en_handles:
             # en 层只给 1 条
@@ -296,7 +300,7 @@ def test_reserve_not_called_when_en_sufficient():
     reserve_called: list[str] = []
 
     def fake_run(cmd, **kw):
-        h = cmd[cmd.index("--from") + 1]
+        h = cmd[2]  # user-posts 的位置参数（2026-07-28 端点切换）
         if h == "reserve_should_not_be_called":
             reserve_called.append(h)
         # en 层给足 5 条
@@ -323,7 +327,7 @@ def test_reserve_has_budget_cap():
     reserve_calls: list[str] = []
 
     def fake_run(cmd, **kw):
-        h = cmd[cmd.index("--from") + 1]
+        h = cmd[2]  # user-posts 的位置参数（2026-07-28 端点切换）
         if h in reserve_handles:
             reserve_calls.append(h)
         return _fake_proc(payload={"ok": True, "data": [_tw(f"{h}-1", h)]})

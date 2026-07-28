@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from src.akb2.quality.promote import _resolve_ledger_path
 from src.akb2.quality.requeue import REQUEUE_MAX_PER_RUN
 from src.akb2.quality.requeue import main as requeue_main
 from src.akb2.quality.runner import _compute_raw_hash, _is_processed
@@ -75,13 +76,20 @@ class TestRequeueCli:
             "--raw-file", name, "--reason", "test", "--vault-root", str(vault),
         ])
         assert rc == 0
-        lines = [json.loads(x) for x in
-                 (vault / "staging" / "quality-ledger.jsonl").read_text().splitlines()]
+        # 2026-07-28：requeue 改写 runner 共用的那份账本（机器本地状态根，见
+        # promote._resolve_ledger_path）。写 vault 旧账本 → runner 看不到 requeue
+        # 事件 → 手动重排队静默失效。这里必须按解析后的路径断言，否则测的是
+        # 一条 runner 永远读不到的账本。AKB2_STATE_ROOT 由 conftest autouse 隔离。
+        resolved = _resolve_ledger_path(vault, "quality-ledger.jsonl")
+        assert resolved != vault / "staging" / "quality-ledger.jsonl", (
+            "requeue 不应再写 vault 旧账本"
+        )
+        lines = [json.loads(x) for x in resolved.read_text().splitlines()]
         assert lines[-1]["event"] == "requeue"
         assert lines[-1]["content_hash"] == h
         assert lines[-1]["details"]["reason"] == "test"
         # 与 runner 语义闭环:现在应重新可处理
-        assert _is_processed(h, str(vault / "staging" / "quality-ledger.jsonl")) is False
+        assert _is_processed(h, str(resolved)) is False
 
     def test_bounded_rejects_over_cap(self, tmp_path: Path) -> None:
         """超 REQUEUE_MAX_PER_RUN 拒绝整个调用(有界,宪法 P1)。"""

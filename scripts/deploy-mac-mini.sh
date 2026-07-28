@@ -76,6 +76,29 @@ abort_if_failed() {
 # sed 替换值转义(& | \ 都可能破坏 sed 表达式)
 sed_escape() { printf '%s' "$1" | sed -e 's/[&|\\]/\\&/g'; }
 
+# 文件权限位(八进制,如 600)。BSD(macOS)与 GNU(Linux/CI)stat 参数不同,且不能靠
+# `stat -f … || stat -c …` 短路:GNU 的 `-f` 是"文件系统状态",遇到未知格式符 %Lp 只打
+# '?' 却仍 exit 0 → 永远走不到 GNU 分支,拿垃圾值把 chmod 600 的文件误判成宽权限
+# (Linux CI 上实证)。按平台分派(与 scripts/akb2-watchdog.sh:file_age_sec 同一写法),
+# 并校验输出确实是八进制;探测不出就回报 '?' 让调用方 fail-closed,不静默当成 600。
+file_mode_octal() {
+  local _f="$1" _mode
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    _mode="$(stat -f '%Lp' "$_f" 2>/dev/null || true)"
+  else
+    _mode="$(stat -c '%a' "$_f" 2>/dev/null || true)"
+  fi
+  if [[ ! "$_mode" =~ ^[0-7]{3,4}$ ]]; then
+    printf '?'
+    return 0
+  fi
+  # 4 位形式去前导 0(0600 → 600);setuid/setgid 等 4xxx 原样返回 → 与 600 不等 → 判失败
+  if [[ ${#_mode} -eq 4 && "${_mode:0:1}" == "0" ]]; then
+    _mode="${_mode#0}"
+  fi
+  printf '%s' "$_mode"
+}
+
 launchctl_domain_label() { printf 'gui/%s/%s' "$UID_N" "$LABEL"; }
 
 wait_for_launchctl_teardown() {
@@ -164,7 +187,7 @@ fi
 if [[ ! -f "$ENV_FILE" ]]; then
   fail "B7 LLM env 文件缺失:$ENV_FILE(daemon wrapper 从此加载 grader/maker key)"
 else
-  PERM="$(stat -f '%Lp' "$ENV_FILE" 2>/dev/null || stat -c '%a' "$ENV_FILE" 2>/dev/null || echo '?')"
+  PERM="$(file_mode_octal "$ENV_FILE")"
   if [[ "$PERM" == "600" ]]; then
     ok "B7 env 文件存在且 chmod 600"
   else

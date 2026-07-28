@@ -30,6 +30,7 @@ from src.akb2.video.extractor import (
 )
 from src.akb2.video.reasoner import ProposedNode, ReasonedLinks, RelatedConcept
 from src.akb2.video.researcher import ResearchOutput
+from tests.video_state_isolation import isolate_video_state  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -182,8 +183,8 @@ def test_commit_active_publishes_to_promotion_path(
     staging_copy = temp_config.staging_dir / "video-test-video-2026-05-28.md"
     assert not staging_copy.exists(), f"staging 中转未删除: {staging_copy}"
 
-    # 返回路径在 promotion_target_path 下（SC-1）
-    assert formal_path == temp_config.promotion_target_path / "video-test-video-2026-05-28.md"
+    # 返回路径在 promotion_target_path 下（SC-1）；正式名不含日期（缺陷 V-4）
+    assert formal_path == temp_config.promotion_target_path / "video-test-video.md"
 
     # 正式文件已标记发布态：gate_decision: active（非 null）；page_status 保持 candidate（SC-4）
     formal_content = formal_path.read_text()
@@ -301,7 +302,8 @@ def test_promotion_file_exists_fail_closed(
 
     # 创建 promotion 目录 + 预置同名文件
     temp_config.promotion_target_path.mkdir(parents=True, exist_ok=True)
-    existing_promo = temp_config.promotion_target_path / "video-test-promo2-2026-05-28.md"
+    # 正式名不含日期（缺陷 V-4）：预置的同名文件就是"这个身份已发布过"
+    existing_promo = temp_config.promotion_target_path / "video-test-promo2.md"
     existing_promo.write_text("pre-existing promotion content")
 
     with mock.patch.object(assembler, "_gate_decision", return_value="active"):

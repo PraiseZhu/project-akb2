@@ -11,10 +11,14 @@
     "ts": "<ISO8601>",
   }
 
-verdict 聚合规则（provisional enforcement matrix）：
-  - standard=fail → verdict=fail（不入库）
-  - standard=pass + llm_audit=fail → verdict=warn（入库但标记）
-  - standard=pass + llm_audit=pass/warn/skipped → verdict=pass
+verdict 聚合规则（enforcement matrix，2026-07-26 起 LLM 判 fail 不再降级）：
+  - standard=fail        → verdict=fail（不入库）
+  - llm_audit=fail       → verdict=fail（不入库）
+  - llm_audit=skipped    → verdict=warn + audit_degraded=True（入库但强制降级标记）
+  - standard 仅有 warn 级确定性问题 → verdict=warn
+  - 其余                  → verdict=pass
+
+pipeline 侧消费契约：fail 不发布；warn 发布但强制降级标记。
 """
 
 from __future__ import annotations
@@ -93,16 +97,448 @@ def _get_referenced_tweet_ids(synth: dict) -> set[str]:
     return ids
 
 
-def _check_standard_structured(synth_zh: dict) -> list[dict]:
+# ---------------------------------------------------------------------------
+# 确定性译后校验（#13）：不调 LLM，纯代码比对英文原文与中文译文
+#
+# 背景：此前"是否已翻译"的唯一判据是 _has_chinese（有一个汉字就算已译），所以
+# 「405B → 4050 亿参数」「72% on SWE-bench → 72% 准确率」这类事实损坏零拦截。
+#
+# 数字判据分两层（关键：区分"合法本地化"与"标识符被换算"）：
+#   第 1 层 标识符类 —— 必须逐字保留：型号参数规模（紧贴数字的大写 B：405B/8B）、
+#           版本号（v0.22.0）、千分位长数（18,432）。这类 token 是名字不是数量，
+#           哪怕换算后数值相等（4050 亿 == 405B）也算损坏。
+#   第 2 层 量词类 —— 允许合法本地化，按数值等价判定：50k→5万(5e4)、2M→200万(2e6)、
+#           72%→72%。只校验"显著数字"（带量级/百分号/小数/千分位/≥3 位），
+#           裸 1-2 位小整数跳过（"2 things→两件事"这类是假阳性主要来源，且非事实关键）。
+# ---------------------------------------------------------------------------
+
+_URL_RE = re.compile(r"https?://[^\s<>()\[\]{}'\"，。、；：！？（）《》]+")
+_HANDLE_RE = re.compile(r"@[A-Za-z0-9_]{2,15}")
+
+# 型号标识：紧贴数字的大写 B（405B / 8B / 1.5B）。AI 内容里 <数字>B 压倒性地指
+# 参数规模（Llama 405B 是型号 SKU），而 prompt 规则 3 本就要求数字原样保留，
+# 故要求逐字保留是既有契约的严格超集；货币/融资语境例外（$1B/raised 2B 是数量）。
+_PARAM_SCALE_RE = re.compile(r"(?<![\w$¥€£.])(\d+(?:\.\d+)?B)(?![A-Za-z])")
+_MONEY_CONTEXT_RE = re.compile(
+    r"[$¥€£]|valuation|funding|revenue|raised|market cap|ARR", re.IGNORECASE
+)
+_VERSION_RE = re.compile(r"v\d+(?:\.\d+)+|\b\d+\.\d+\.\d+\b")
+_THOUSANDS_RE = re.compile(r"\b\d{1,3}(?:,\d{3})+\b")
+_EN_NUM_RE = re.compile(r"(?<![\w.])(\d+(?:[.,]\d+)*)\s*(%|[kKmMbBtT](?![A-Za-z]))?")
+_ZH_NUM_RE = re.compile(
+    r"(\d+(?:[.,]\d+)*)\s*(万亿|百万|十亿|亿|万|千|%|[kKmMbBtT](?![A-Za-z]))?"
+)
+
+_SCALE_MAP: dict[str, float] = {
+    "": 1.0, "%": 1.0,
+    "k": 1e3, "K": 1e3, "m": 1e6, "M": 1e6, "b": 1e9, "B": 1e9, "t": 1e12, "T": 1e12,
+    "千": 1e3, "万": 1e4, "百万": 1e6, "十亿": 1e9, "亿": 1e8, "万亿": 1e12,
+}
+
+# 译文凭空指定指标类型 → 事实损坏。key=中文指标名，value=英文原文里必须出现的词根之一
+#
+# 严格度分两档（实测取舍）：
+#   具名指标（准确率/正确率/召回率）—— 只认对应词根。SWE-bench 报的是 resolve rate，
+#     原文没有 accuracy 词根却译成「准确率」就是事实错误（06-27 实际发生）。
+#   速率类（解决率/通过率/成功率）—— 额外接受 rate / %。这类中文名之间语义邻接，
+#     原文只要有速率/百分比概念，选哪个中文名是措辞而非捏造；实测 28/59 份日报出现
+#     中文指标名，若一律严格判会把大量正常日报打成 fail。
+_METRIC_ZH_EVIDENCE: dict[str, tuple[str, ...]] = {
+    "准确率": ("accuracy", "accurate", "correct", "precision"),
+    "正确率": ("accuracy", "correct"),
+    "召回率": ("recall",),
+    "解决率": ("resolve", "resolution", "solved", "solving", "fix", "rate", "%"),
+    "通过率": ("pass", "passing", "passed", "rate", "%"),
+    "成功率": ("success", "succeed", "rate", "%"),
+}
+
+# 语言纯度：英文小写虚词计数。技术栈堆叠（Remix / React / TypeScript / Prisma）与
+# 保留的项目原名（Machine Learning for Algorithmic Trading）几乎不含小写虚词，
+# 而"整句英文没译"必然带一串小写虚词 —— 用虚词数而非"英文长词数"做判据，
+# 把实测 98.6% 的假阳性压下去。
+_EN_STOPWORDS = frozenset({
+    "the", "of", "and", "is", "are", "to", "with", "that", "this", "for", "on", "in",
+    "a", "an", "as", "be", "been", "was", "were", "it", "its", "they", "their", "we",
+    "our", "you", "your", "not", "but", "from", "have", "has", "had", "can", "will",
+    "would", "should", "could", "by", "at", "if", "or", "which", "what", "how", "when",
+    "there", "these", "those", "about", "all", "more", "than", "so", "just", "like",
+    "do", "does", "did", "into", "out", "up", "over", "also", "because",
+})
+_MAX_EN_STOPWORDS = 2          # 小写虚词数上限
+_MIN_EN_PROSE_RATIO = 0.35     # 且英文占比须过半线，避免"中文句中引用一段英文原话"被误判
+_MIN_PROSE_HAN = 6             # 分析类长文本的汉字下限
+_PROSE_HAN_MIN_LEN = 80        # 实测：术语密集短行（"NVFP4 评估：MMLU Pro 86.3"）汉字天然少，
+                               # 而生产里的 executive_summary / summary 都在 100 字以上
+
+
+def _strip_urls_handles(text: str) -> str:
+    """把 URL 与 @handle 换成空格（它们各有专门检查，避免数字/虚词重复计入）。"""
+    return _HANDLE_RE.sub(" ", _URL_RE.sub(" ", text or ""))
+
+
+def _num_value(digits: str, suffix: str) -> float | None:
+    try:
+        return float(digits.replace(",", "")) * _SCALE_MAP.get(suffix or "", 1.0)
+    except ValueError:
+        return None
+
+
+def _is_salient_number(digits: str, suffix: str) -> bool:
+    """是否为需要校验的"显著数字"（见本节 docstring 第 2 层）。"""
+    if suffix:
+        return True
+    if "," in digits or "." in digits:
+        return True
+    return len(digits) >= 3
+
+
+def _zh_number_values(zh: str) -> list[float]:
+    values: list[float] = []
+    for m in _ZH_NUM_RE.finditer(zh or ""):
+        v = _num_value(m.group(1), m.group(2) or "")
+        if v is not None:
+            values.append(v)
+    return values
+
+
+def _values_equivalent(a: float, b: float) -> bool:
+    return abs(a - b) <= max(1e-9, abs(a) * 1e-9)
+
+
+def _check_numbers_detailed(en: str, zh: str) -> list[tuple[str, str]]:
+    """返回 [(问题描述, severity)]。severity ∈ {fail, warn}。
+
+    2026-07-26 校准（回放 `AI TRENDS/Social/` 全部 60 篇已发布简报）。
+
+    回放能测什么、不能测什么（**先读这段再读下面的数字**）：
+      - 可测 = **曝光面**：某个判据在已发布产出里多久触发一次（分母是天数/字段数）。
+        下面所有 "x/60 篇" "n/n token" 都是曝光面。
+      - **不可测 = 误报率**：触发中有多少是错的。所有 fail 级判据都需要英文原文，而
+        vault 里只有中文成品，**没有任何 en/zh 配对产物** → 本地在原理上无法算误报率。
+        要量化误报率必须拿真机 en/zh 配对样本（译前 synth_en + 译后 synth_zh）重跑。
+      - 恒等回放（en := 已发布 ZH 文本自身）**不能**用来论证"无结构性假阳性"：此时
+        每个数字 token 必然逐字保留、每个 URL/@handle 必然存在，数字/URL/handle 三类
+        检查在构造上不可能报错，"0 误报"是同义反复而非证据。它唯一有效的用途是暴露
+        "en 侧其实不是英文"这类前提破坏 —— 实测确实暴露了：恒等回放跑真实
+        `_check_translation_fidelity` 得 33 条 `metric_fabricated`（fail 级，21/60 篇
+        = 35.0%），因为中文文本永不含 `accuracy` 词根。该缺陷已由
+        `_check_metric_fabrication` 的非英文原文门修掉。
+      - 参数规模 B 逐字保留：**9/60 篇（15%）** 已发布简报把它本地化成
+        「4000 亿参数」「9750 亿参数（激活 410 亿）」「2.8 万亿参数」——且这些
+        本地化**数值等价**（400B == 4000 亿 == 4e11）。原实现把这一类判 fail，
+        意味着约 15% 的天数会被判 fail、当天日报直接不发布，而产出并没有事实错误。
+        → 数值等价的本地化降为 warn（kind=number_localized）；只有既无逐字 token
+          又无等价数值时才 fail（那才是「405B → 8B」式真实损坏）。
+      - 千分位逐字保留：曝光 9/60 篇，其中 11 个 token 在已发布中文里全部逐字保留
+        （4,000+ / 5,000 / 1,000 / 3,000 / 4,100 / 10,000 / 2,000 / 50,000）
+        → 该判据在现网产出上"不会到处开火"，故保留 fail 级。
+        注意这仍只是曝光面：没有英文原文，无法判断这 11 次里是否有该报未报（漏报）或
+        不该报（误报），**不要把它读成"误报率 0"**。
+    """
+    problems: list[tuple[str, str]] = []
+    en_body = _strip_urls_handles(en)
+    zh_body = _strip_urls_handles(zh)
+    zh_lower = zh_body.lower()
+    zh_digits = zh_body.replace(",", "").replace(" ", "")
+    zh_values = _zh_number_values(zh_body)
+
+    def _preserved(token: str) -> bool:
+        plain = token.replace(",", "")
+        return token.lower() in zh_lower or plain.lower() in zh_digits.lower()
+
+    # 第 1 层a：参数规模标识（405B/8B）——逐字保留优先，数值等价本地化降 warn
+    param_tokens: list[str] = []
+    for m in _PARAM_SCALE_RE.finditer(en_body):
+        window = en_body[max(0, m.start() - 24): m.end() + 24]
+        if _MONEY_CONTEXT_RE.search(window):
+            continue  # $1B / raised 2B：是数量，可本地化
+        param_tokens.append(m.group(1))
+    for token in dict.fromkeys(param_tokens):
+        if _preserved(token):
+            continue
+        v = _num_value(token[:-1], token[-1])
+        if v is not None and any(_values_equivalent(v, zv) for zv in zh_values):
+            problems.append(
+                (f"{token}（型号标识被本地化为等值中文量级，建议逐字保留）", "warn")
+            )
+            continue
+        problems.append((f"{token}（标识符类，必须逐字保留）", "fail"))
+
+    # 第 1 层b：版本号 / 千分位长数 —— 逐字保留（实测 11/11 保留，无观测误报）
+    strict_ids: list[str] = [m.group(0) for m in _VERSION_RE.finditer(en_body)]
+    strict_ids += [m.group(0) for m in _THOUSANDS_RE.finditer(en_body)]
+    for token in dict.fromkeys(strict_ids):
+        if _preserved(token):
+            continue
+        problems.append((f"{token}（标识符类，必须逐字保留）", "fail"))
+
+    # 第 2 层：显著数字按数值等价判定
+    for m in _EN_NUM_RE.finditer(en_body):
+        digits, suffix = m.group(1), m.group(2) or ""
+        if not _is_salient_number(digits, suffix):
+            continue
+        raw = digits.replace(",", "")
+        if raw in zh_digits:
+            continue
+        v = _num_value(digits, suffix)
+        if v is not None and any(_values_equivalent(v, zv) for zv in zh_values):
+            continue
+        token = m.group(0).strip()
+        if any(token in p for p, _ in problems):
+            continue
+        problems.append((f"{token}（译文中无对应数值）", "fail"))
+    return problems
+
+
+def _check_numbers(en: str, zh: str) -> list[str]:
+    """向后兼容包装：返回全部数字问题描述（不分级）。"""
+    return [msg for msg, _ in _check_numbers_detailed(en, zh)]
+
+
+def _check_verbatim(en: str, zh: str, pattern: re.Pattern[str]) -> list[str]:
+    """URL / @handle 逐字存在校验，返回缺失 token 列表。"""
+    missing: list[str] = []
+    for token in dict.fromkeys(m.group(0) for m in pattern.finditer(en or "")):
+        if token not in (zh or ""):
+            missing.append(token)
+    return missing
+
+
+def _is_cjk_source(en: str) -> bool:
+    """"英文原文"侧其实是中日韩散文吗？
+
+    判据 = **汉字数 ≥ `_MIN_PROSE_HAN`** 且 **英文虚词数 ≤ `_MAX_EN_STOPWORDS`**，
+    即"有成段 CJK 正文，且没有英文散文的痕迹"。两个条件都是正向证据，缺一不可：
+      - 只看汉字数：真英文原文里夹一个中文产品名就会被误判成中文。
+      - 只看虚词数：短英文标题（"SWE-bench results"）天然没有虚词，会被误判成中文，
+        白白放过真实捏造。
+    虚词（而非"英文长词数"）作为英文散文判据是本模块已有的既有校准
+    （见 `_EN_STOPWORDS` 上方注释：技术栈堆叠/项目原名几乎不含小写虚词），这里复用
+    同一判据而不另造阈值。
+
+    实测（2026-07-26 恒等回放 60 篇已发布简报的 1560 个受检字段，en 侧全为中文）：
+    1555/1560 落在 (汉字≥6, 虚词≤2)，本判据把 33/33 条构造性 `metric_fabricated`
+    全部抑制，且不抑制汉字 <6 的短文本（3 例）。
+    """
+    body = _strip_urls_handles(en or "")
+    han = len(re.findall(r"[一-鿿]", body))
+    if han < _MIN_PROSE_HAN:
+        return False
+    stop_hits = [w for w in re.findall(r"\b[a-z]+\b", body) if w in _EN_STOPWORDS]
+    return len(stop_hits) <= _MAX_EN_STOPWORDS
+
+
+def _check_metric_fabrication(en: str, zh: str) -> list[str]:
+    """译文出现英文原文没有依据的指标类型（SWE-bench 是 resolve rate，不是准确率）。
+
+    本判据是一个**缺席检验**：「en 里找不到 accuracy 词根」→ 判「准确率」是捏造。
+    缺席检验只在"存在是可能的"时才携带信息。当 en 侧本身就是中文（中文源推文的
+    `text_original` 兜底、或译前 synth_en 里混入中文原文），英文词根**在构造上**不可能
+    出现 → 每个中文指标名都会 100% 命中，而且是 fail 级 → 当天日报直接不发布。
+    这不是理论风险：恒等回放 60 篇已发布简报得 33 条命中（21/60 篇 = 35.0%），全部是
+    这个模式。故中文↔中文的比较不走严格档，直接跳过本检查（与 `synth_en` 整体缺失时
+    跳过所有需要英文原文的检查同构，见 `_check_standard_structured` 文档）。
+
+    这里只关掉本检查，不关数字/URL/@handle —— 那三类判据比对的是数字与逐字 token，
+    与原文是什么文字无关，en 侧是中文时依然成立。
+    """
+    if _is_cjk_source(en):
+        return []
+    en_lower = (en or "").lower()
+    fabricated: list[str] = []
+    for zh_metric, evidence in _METRIC_ZH_EVIDENCE.items():
+        if zh_metric in (zh or "") and not any(ev in en_lower for ev in evidence):
+            fabricated.append(zh_metric)
+    return fabricated
+
+
+def _check_glossary(zh: str, en: str | None) -> list[str]:
+    """术语表遵守校验（#14）。返回违规描述列表（warn 级）。"""
+    from akb2.briefing.translate import KEEP_EN, TRANSLATION_GLOSSARY
+
+    violations: list[str] = []
+    zh_text = zh or ""
+    zh_lower = zh_text.lower()
+    for term, spec in TRANSLATION_GLOSSARY.items():
+        # 禁用译法只看译文，无需英文原文即可判；同一术语只报第一个命中，避免
+        # 「安德烈·卡帕斯」同时命中「卡帕斯」造成重复噪声
+        hit_forbidden = next(
+            (bad for bad in (spec.get("forbidden") or []) if bad in zh_text), None
+        )
+        if hit_forbidden:
+            target = (
+                f"保留英文「{term}」" if spec.get("zh") == KEEP_EN
+                else f"「{spec.get('zh')}」"
+            )
+            violations.append(f"{term}: 使用了禁用译法「{hit_forbidden}」，应为{target}")
+            continue  # 已报错译，不再重复报"未使用指定译法"
+        if not en or term.lower() not in en.lower():
+            continue
+        expected = spec.get("zh")
+        needle = term if expected == KEEP_EN else expected
+        if needle and needle.lower() not in zh_lower:
+            violations.append(
+                f"{term}: 英文原文出现该术语，但译文未使用指定译法"
+                f"{'（保留英文）' if expected == KEEP_EN else f'「{expected}」'}"
+            )
+    return violations
+
+
+def _check_language_purity(zh: str, *, prose: bool) -> list[str]:
+    """语言纯度（warn 级）：治中英混杂，同时避免技术栈堆叠/项目原名的假阳性。"""
+    problems: list[str] = []
+    body = _strip_urls_handles(zh or "")
+    words = re.findall(r"\b[a-z]+\b", body)  # 只数小写词：技术栈/专名多为首字母大写
+    stop_hits = [w for w in words if w in _EN_STOPWORDS]
+    han = len(re.findall(r"[一-鿿]", body))
+    ascii_letters = len(re.findall(r"[A-Za-z]", body))
+    en_ratio = ascii_letters / (han + ascii_letters) if (han + ascii_letters) else 0.0
+    if len(stop_hits) > _MAX_EN_STOPWORDS and en_ratio > _MIN_EN_PROSE_RATIO:
+        problems.append(
+            f"英文散文泄漏：命中 {len(stop_hits)} 个英文虚词 {sorted(set(stop_hits))[:6]}"
+            f"（上限 {_MAX_EN_STOPWORDS}），英文字符占比 {en_ratio:.0%}"
+            f"（上限 {_MIN_EN_PROSE_RATIO:.0%}）"
+        )
+    if prose and len(body.strip()) >= _PROSE_HAN_MIN_LEN:
+        if han < _MIN_PROSE_HAN:
+            problems.append(f"汉字过少：{han} 字 < 下限 {_MIN_PROSE_HAN}")
+    return problems
+
+
+def _translation_pairs(synth_zh: dict, synth_en: dict | None) -> list[dict]:
+    """构造 (field, en, zh) 对照集合。synth_en 缺失时只带 zh（仅跑 ZH-only 检查）。"""
+    pairs: list[dict] = []
+    en = synth_en or {}
+
+    pairs.append({
+        "field": "executive_summary", "idx": None, "prose": True,
+        "en": (en.get("executive_summary") or "").strip(),
+        "zh": (synth_zh.get("executive_summary") or "").strip(),
+    })
+
+    en_fds = en.get("focus_discussions", []) or []
+    for i, fd in enumerate(synth_zh.get("focus_discussions", [])):
+        en_fd = en_fds[i] if i < len(en_fds) else {}
+        pairs.append({
+            "field": f"focus_discussions[{i}].summary", "idx": i, "prose": True,
+            "en": (en_fd.get("summary") or "").strip(),
+            "zh": (fd.get("summary") or "").strip(),
+        })
+        pairs.append({
+            "field": f"focus_discussions[{i}].topic", "idx": i, "prose": False,
+            "en": (en_fd.get("topic") or "").strip(),
+            "zh": (fd.get("topic") or "").strip(),
+        })
+
+    from akb2.briefing.translate import _display_tweet_indices  # noqa: PLC0415
+
+    en_by_id = {str(t.get("id", "")): t for t in en.get("tweets", []) or []}
+    display_idxs = _display_tweet_indices(synth_zh)
+    tweets = synth_zh.get("tweets", [])
+    for i in sorted(display_idxs):
+        if i >= len(tweets):
+            continue
+        tw = tweets[i]
+        if (tw.get("lang") or "").lower() == "zh":
+            continue  # 中文原文推文不参与译前/译后比对
+        en_tw = en_by_id.get(str(tw.get("id", "")), {})
+        en_text = (en_tw.get("text") or tw.get("text_original") or "").strip()
+        pairs.append({
+            "field": f"tweets[{i}].text", "idx": i, "prose": False,
+            "en": en_text,
+            "zh": (tw.get("text") or "").strip(),
+        })
+    return pairs
+
+
+def _check_translation_fidelity(synth_zh: dict, synth_en: dict | None) -> list[dict]:
+    """确定性译后校验，返回 issue 列表（含 severity）。"""
+    issues: list[dict] = []
+
+    def _add(kind: str, field: str, idx, msg: str, severity: str) -> None:
+        issues.append({
+            "kind": kind, "field": field, "idx": idx, "msg": msg, "severity": severity,
+        })
+
+    for pair in _translation_pairs(synth_zh, synth_en):
+        field, idx, zh, en = pair["field"], pair["idx"], pair["zh"], pair["en"]
+        if not zh:
+            continue
+
+        if en:
+            num_problems = _check_numbers_detailed(en, zh)
+            fail_nums = [msg for msg, sev in num_problems if sev == "fail"]
+            warn_nums = [msg for msg, sev in num_problems if sev == "warn"]
+            if fail_nums:
+                _add("number_mismatch", field, idx,
+                     f"{field} 数字与英文原文不一致: {'; '.join(fail_nums)}", "fail")
+            if warn_nums:
+                _add("number_localized", field, idx,
+                     f"{field} 型号标识被本地化（数值等价）: {'; '.join(warn_nums)}", "warn")
+
+            missing_urls = _check_verbatim(en, zh, _URL_RE)
+            if missing_urls:
+                # 严重度按字段分：推文正文的 URL 在渲染时会被
+                # `pipeline._strip_inline_links` 主动删掉（用户决策：每条推文只留底部
+                # 唯一 [原文] 链接），所以译文丢 URL 对**已发布产出没有任何影响**——
+                # 拿 fail 级去守一个下游必然丢弃的属性，只会白白停发日报。
+                # 分析字段（executive_summary / topic / summary）不经该剥离，URL 会
+                # 逐字进产出，仍判 fail。实测：60 篇已发布简报里受检文本含 URL 的仅 4 篇。
+                severity = "warn" if field.startswith("tweets[") else "fail"
+                suffix = (
+                    "（推文正文 URL 渲染时本就被 _strip_inline_links 剥离，故仅告警）"
+                    if severity == "warn" else ""
+                )
+                _add("url_missing", field, idx,
+                     f"{field} 译文丢失 URL: {', '.join(missing_urls)}{suffix}", severity)
+
+            missing_handles = _check_verbatim(en, zh, _HANDLE_RE)
+            if missing_handles:
+                _add("handle_missing", field, idx,
+                     f"{field} 译文丢失 @handle: {', '.join(missing_handles)}", "fail")
+
+            fabricated = _check_metric_fabrication(en, zh)
+            if fabricated:
+                _add("metric_fabricated", field, idx,
+                     f"{field} 译文凭空指定指标类型 {fabricated}（英文原文无对应词根）",
+                     "fail")
+
+        for violation in _check_glossary(zh, en or None):
+            _add("glossary_violation", field, idx, f"{field} 术语表违规: {violation}", "warn")
+
+        for problem in _check_language_purity(zh, prose=pair["prose"]):
+            _add("language_mixed", field, idx, f"{field} {problem}", "warn")
+
+    return issues
+
+
+def _check_standard_structured(
+    synth_zh: dict,
+    synth_en: dict | None = None,
+) -> list[dict]:
     """代码规则检查，返回结构化 issues 列表。
 
-    每条 issue: {"kind": str, "field": str, "idx": int|None, "msg": str}
-    kind ∈ {untranslated, zh_point_missing, zh_point_untranslated, empty, structural}
+    每条 issue: {"kind": str, "field": str, "idx": int|None, "msg": str, "severity": str}
+    kind ∈ {untranslated, zh_point_missing, zh_point_untranslated, empty, structural,
+            number_mismatch, number_localized, url_missing, handle_missing,
+            metric_fabricated, glossary_violation, language_mixed}
+    severity ∈ {fail, warn}；warn 级不阻断入库，但会把 verdict 压到 warn。
+
+    fail 级确定性检查的可用性契约（2026-07-26 校准，见 _check_numbers_detailed 与
+    _check_translation_fidelity 的注释）：任何 fail 级 kind 都**必须**同时出现在
+    `audit_fix._FIXABLE_KINDS` 里。理由是量化的：60 篇已发布简报平均有 27.8 个受检
+    字段，单字段 1% 的误报率就意味着 1-(1-0.01)^27.8 ≈ 24.5% 的天数被判 fail；
+    没有修复通道的 fail 级检查 = 日报可用性单点。
+
+    synth_en 省略时跳过需要英文原文的确定性校验（数字/URL/@handle/指标），
+    仅跑 ZH-only 检查（术语表禁用译法、语言纯度）。
     """
     items: list[dict] = []
 
-    def _add(kind: str, field: str, idx, msg: str) -> None:
-        items.append({"kind": kind, "field": field, "idx": idx, "msg": msg})
+    def _add(kind: str, field: str, idx, msg: str, severity: str = "fail") -> None:
+        items.append({
+            "kind": kind, "field": field, "idx": idx, "msg": msg, "severity": severity,
+        })
 
     # executive_summary 必须非空且含中文
     summary = (synth_zh.get("executive_summary") or "").strip()
@@ -202,12 +638,15 @@ def _check_standard_structured(synth_zh: dict) -> list[dict]:
             _add("zh_point_untranslated", f"tweets[{i}].zh_point", i,
                  f"tweets[{i}].zh_point 无中文: {zh_point!r}")
 
+    # 确定性译后校验（#13/#14）
+    items.extend(_check_translation_fidelity(synth_zh, synth_en))
+
     return items
 
 
-def _check_standard(synth_zh: dict) -> list[str]:
+def _check_standard(synth_zh: dict, synth_en: dict | None = None) -> list[str]:
     """代码规则检查，返回 issues 列表（空 = pass）。向后兼容包装器。"""
-    return [it["msg"] for it in _check_standard_structured(synth_zh)]
+    return [it["msg"] for it in _check_standard_structured(synth_zh, synth_en)]
 
 
 # ---------------------------------------------------------------------------
@@ -295,10 +734,16 @@ def audit_briefing(
     ts = datetime.now(UTC).isoformat()
     used_model = model or _AUDIT_MODEL
 
-    # 1. 代码标准检查
-    standard_issues_structured = _check_standard_structured(synth_zh)
+    # 1. 代码标准检查（含确定性译后校验；warn 级不判 standard=fail）
+    standard_issues_structured = _check_standard_structured(synth_zh, synth_en)
     standard_issues = [it["msg"] for it in standard_issues_structured]
-    standard = "fail" if standard_issues else "pass"
+    fail_issues = [
+        it for it in standard_issues_structured if it.get("severity", "fail") == "fail"
+    ]
+    warn_issues = [
+        it for it in standard_issues_structured if it.get("severity") == "warn"
+    ]
+    standard = "fail" if fail_issues else "pass"
 
     # 2. LLM 漂移/准确审计
     llm_audit = "skipped"
@@ -326,10 +771,15 @@ def audit_briefing(
         )
         llm_audit = "skipped"
 
-    # 3. 聚合 verdict（provisional enforcement matrix）
+    # 3. 聚合 verdict（enforcement matrix；LLM 判 fail 不再降级为 warn）
+    #    audit_degraded：LLM 审计没跑成 → 只过了代码检查，裁决可信度下降，
+    #    pipeline 侧据此强制降级标记（warn 发布但标记）。
+    audit_degraded = llm_audit == "skipped"
     if standard == "fail":
         verdict = "fail"
     elif llm_audit == "fail":
+        verdict = "fail"
+    elif audit_degraded or warn_issues:
         verdict = "warn"
     else:
         verdict = "pass"
@@ -338,19 +788,23 @@ def audit_briefing(
         "standard": standard,
         "standard_issues": standard_issues,
         "standard_issues_structured": standard_issues_structured,
+        "standard_warn_issues": [it["msg"] for it in warn_issues],
         "llm_audit": llm_audit,
+        "audit_degraded": audit_degraded,
         "drift_score": drift_score,
         "accuracy_issues": accuracy_issues,
         "verdict": verdict,
         "ts": ts,
     }
 
-    _log_audit(result)
+    if not _log_audit(result):
+        # 裁决记录写盘失败：不得静默丢失（constitution 原则 4）
+        result["audit_log_failed"] = True
     return result
 
 
-def _log_audit(verdict: dict) -> None:
-    """追加审计裁决到日志文件。"""
+def _log_audit(verdict: dict) -> bool:
+    """追加审计裁决到日志文件。返回是否写入成功（失败时 stderr 告警，不静默）。"""
     import json
     from pathlib import Path
 
@@ -359,5 +813,11 @@ def _log_audit(verdict: dict) -> None:
         log_dir.mkdir(parents=True, exist_ok=True)
         with open(log_dir / "audit.jsonl", "a") as f:
             f.write(json.dumps(verdict, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
+        return True
+    except Exception as e:
+        sys.stderr.write(
+            f"WARNING [audit]: failed to persist audit verdict to {log_dir}/audit.jsonl "
+            f"({e}); verdict={verdict.get('verdict')!r} standard={verdict.get('standard')!r} "
+            f"llm_audit={verdict.get('llm_audit')!r} (audit_log_failed=True).\n"
+        )
+        return False

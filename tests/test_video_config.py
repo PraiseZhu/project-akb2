@@ -24,6 +24,7 @@ from src.akb2.video.config import (
     _resolve_nlm,
     _resolve_ytdlp,
 )
+from tests.video_state_isolation import isolate_video_state  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # _resolve_ytdlp：env → which → candidates → default

@@ -70,6 +70,21 @@ def _resolve_nlm() -> str:
     return str(default) if default.exists() else "nlm"
 
 
+def _resolve_dedup_db_path() -> Path:
+    """视频去重账本路径（缺陷 #2 的可注入配置项）。
+
+    落在机器本地状态根（`common/state_paths`），不进 Syncthing 同步范围也不进
+    vault —— 账本被同步分叉等于账本失效（缺陷 #11 实测：`data/star_history.sqlite`
+    与其 `.sync-conflict-20260725-233326` 副本双向分叉，2026-07-26 复测 live 独有
+    882 行 / 冲突副本独有 1378 行；`common/state_paths` 模块 docstring 记的 690 行
+    是 07-25 首测值，live 侧此后仍在增长）。
+    """
+    from src.akb2.common.state_paths import LEDGER_SUBDIR, state_file_path
+    from src.akb2.video.constants import VIDEO_DEDUP_DB_FILENAME
+
+    return state_file_path(VIDEO_DEDUP_DB_FILENAME, subdir=LEDGER_SUBDIR)
+
+
 def _resolve_akb2_root() -> Path:
     """解析 AKB2.0 子库根：env / 本机默认 / vault config。"""
     try:
@@ -109,6 +124,9 @@ class VideoConfig:
 
     # -- staging 目录 --
     staging_dir: Path = field(default_factory=lambda: Path("staging/candidate"))
+
+    # -- 去重账本路径（L1/L7 的读端与写端共用；缺陷 #2）--
+    dedup_db_path: Path = field(default_factory=_resolve_dedup_db_path)
 
     # -- pending 文件路径 --
     pending_filename: str = "pending_research.json"

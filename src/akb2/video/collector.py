@@ -1,11 +1,21 @@
 """视频采集器 — VideoCollector。
 
 从旧 AKB scripts/pipeline/video_collector.py 迁移，适配 AKB2 目录结构：
-- 导入路径：旧 AKB scripts.utils.db → 内建轻量 CatalogDBAdapter
+- 去重账本：`dedup_store.VideoDedupStore`（读端 + 写端，默认从 config 注入）
 - yt-dlp 路径：self.config.ytdlp_bin（解决 #5 硬编码路径）
 - L1-L7 + L4.5 共 8 层过滤链路保持不变
 - 文件锁保护 pending_research.json（解决 #7 并发竞态）
 - L5 LLM 话题聚类通过 llm_adapter.py 注入接口调用
+
+缺陷 #2 / #12 修复记录（2026-07-26）：
+- 去重库不再可能为 None：`db` 不传时从 `config.dedup_db_path` 构造，
+  L1/L7 真正生效；库不可用时抛 `VideoDedupStoreError`（fail-closed），
+  不再 `return False` 静默放行（原来正是这一步让重复产出通过：实测 608 份产出
+  只对应 230 个视频身份；只看 `source_url:` 子集是 325 份 → 68 个身份 = 79%）。
+- 时间闸（`days_lookback` / `start_date`）不再被空 upload_date 静默绕过：
+  缺日期先补取，仍缺则拒收并告警。
+- `nlm_daily_quota` 成为真正的日硬上限（按账本统计今日已入库数扣减），
+  超额候选写回 pending 而不是静默处理掉。
 """
 
 from __future__ import annotations
@@ -14,7 +24,6 @@ import fcntl
 import json
 import logging
 import re
-import sqlite3
 import subprocess
 import time
 from datetime import datetime, timedelta
@@ -23,30 +32,21 @@ from pathlib import Path
 from src.akb2.video.config import VideoConfig
 from src.akb2.video.constants import (
     VIDEO_BUDGET_SECONDS,
+    VIDEO_DATE_BACKFILL_SLEEP_SEC,
     VIDEO_DAYS_LOOKBACK,
+    VIDEO_MAX_DATE_BACKFILL_PER_RUN,
     VIDEO_MAX_DURATION_MIN,
     VIDEO_MIN_DURATION_MIN,
+    VIDEO_NLM_DAILY_QUOTA,
+)
+from src.akb2.video.dedup_store import (
+    VideoDedupStore,
+    local_day_start_utc_iso,
+    video_identity,
 )
 from src.akb2.video.llm_adapter import LLMAdapter, extract_json_from_llm_response
 
 logger = logging.getLogger("akb2.video.collector")
-
-
-class CatalogDBAdapter:
-    """轻量级 catalog.db 适配器 — 替代旧 AKB scripts.utils.db.CatalogDB。
-
-    只提供 collector 需要的 connect() 方法，返回 sqlite3.Connection。
-    不依赖旧 AKB 任何模块。
-    """
-
-    def __init__(self, db_path: str | Path):
-        self.db_path = Path(db_path)
-
-    def connect(self) -> sqlite3.Connection:
-        """返回只读 sqlite3 连接。"""
-        conn = sqlite3.connect(str(self.db_path))
-        conn.row_factory = sqlite3.Row
-        return conn
 
 
 class VideoCollector:
@@ -55,12 +55,17 @@ class VideoCollector:
     def __init__(
         self,
         config: VideoConfig | None = None,
-        db: CatalogDBAdapter | None = None,
+        db: VideoDedupStore | None = None,
         llm_adapter: LLMAdapter | None = None,
     ):
         self.config = config or VideoConfig()
-        self.db = db
+        # db 不传就自己建：生产入口从不传 db 正是 L1/L7 空转的根因（缺陷 #2）。
+        self.db = db if db is not None else VideoDedupStore(self.config.dedup_db_path)
         self._llm_adapter = llm_adapter
+        # 单轮发布日期补取预算（有界，宪法 P1）与因日期/身份未知被拒收的计数
+        self._date_backfill_used = 0
+        self._date_unknown_rejected = 0
+        self._url_missing_rejected = 0
 
         # 加载视频源配置
         self._video_config = self._load_video_config()
@@ -108,12 +113,24 @@ class VideoCollector:
     def collect(self) -> list[dict]:
         """主流程：检测 → 8 层过滤 → 处理。受 VIDEO_BUDGET_SECONDS 总预算控制。"""
         budget_start = time.time()
+        self._date_backfill_used = 0
+        self._date_unknown_rejected = 0
+        self._url_missing_rejected = 0
         results: list[dict] = []
         is_coldstart = self._settings.get("coldstart", False)
 
         creators = [c for c in self._video_config.get("creators", []) if c.get("enabled", False)]
         if not creators:
             logger.info("无视频源配置，跳过视频采集")
+            return results
+
+        # NLM 日配额硬上限（缺陷 #12）：按账本统计今日已入库数扣减，多次触发也不超额
+        quota_remaining = self._remaining_daily_quota()
+        if quota_remaining <= 0:
+            logger.warning(
+                "[配额硬上限] NLM 日配额 %d 今日已用尽，本轮不处理任何视频",
+                self._nlm_daily_quota(),
+            )
             return results
 
         # 1. quality_first 排序：quality tier 先处理
@@ -144,20 +161,36 @@ class VideoCollector:
         if self._settings.get("dedup_strategy") == "llm_cluster" and len(all_candidates) > 1:
             all_candidates = self._dedup_by_topic(all_candidates)
 
+        # 3.5 同轮内身份去重：同一视频可能以不同 URL 形态（youtu.be / watch?v=&t=）
+        # 出现在多个 creator 列表里；账本此刻还没有它们，L1/L7 都拦不住。
+        all_candidates = self._dedup_by_identity(all_candidates)
+
         # 4. NLM 配额回填（日常模式下）
-        nlm_quota = self._settings.get("nlm_daily_quota", 20)
-        if not is_coldstart and len(all_candidates) < nlm_quota:
+        if not is_coldstart and len(all_candidates) < quota_remaining:
             backfill = self._backfill_quota(
                 all_candidates,
                 creators,
-                nlm_quota - len(all_candidates),
+                quota_remaining - len(all_candidates),
             )
             if backfill:
                 all_candidates.extend(backfill)
                 logger.info(
                     f"配额回填: +{len(backfill)} 个视频 "
-                    f"(总计 {len(all_candidates)}/{nlm_quota})"
+                    f"(总计 {len(all_candidates)}/{quota_remaining})"
                 )
+
+        # 4.5 配额硬截断（缺陷 #12）：超额候选写回 pending 等下轮，不静默丢弃
+        if len(all_candidates) > quota_remaining:
+            deferred = all_candidates[quota_remaining:]
+            all_candidates = all_candidates[:quota_remaining]
+            logger.warning(
+                "[配额硬上限] NLM 日配额 %d，今日剩余 %d；推迟 %d 个候选到下轮: %s",
+                self._nlm_daily_quota(),
+                quota_remaining,
+                len(deferred),
+                [c["video"].get("title", "?") for c in deferred],
+            )
+            self._save_pending(deferred, increment_retry=False)
 
         # 5. 逐个处理
         for candidate in all_candidates:
@@ -171,8 +204,8 @@ class VideoCollector:
             except Exception as e:
                 logger.error(f"视频处理失败 [{candidate['video'].get('title', '?')}]: {e}")
 
-        # L7: catalog.db URL 去重（过滤已入库视频）
-        if results and self.db:
+        # L7: 去重库 URL 去重（过滤已入库视频）
+        if results:
             deduped, skipped_count = self._l7_catalog_dedup(results)
             results = deduped
             if skipped_count:
@@ -180,6 +213,20 @@ class VideoCollector:
 
         elapsed = int(time.time() - budget_start)
         logger.info(f"视频采集完成: {len(results)} 个视频, {elapsed}s / {VIDEO_BUDGET_SECONDS}s")
+        # "0 个新视频" 与 "全被时间闸拒收（cookies 失效 / yt-dlp 取不到日期）"必须可区分
+        # （宪法 P4）：否则采集能力整体失效会长期伪装成"今天没有新视频"。
+        if self._date_unknown_rejected:
+            logger.warning(
+                "[时间闸] 本轮 %d 个候选因无法确定发布日期被拒收（产出 %d 个）——"
+                "若持续为 0 产出，请检查 yt-dlp cookies 与日期补取是否可用",
+                self._date_unknown_rejected, len(results),
+            )
+        if self._url_missing_rejected:
+            logger.warning(
+                "[身份闸] 本轮 %d 个候选因缺 url（无稳定身份）被拒收（产出 %d 个）——"
+                "上游元数据缺失，检查 yt-dlp 输出字段",
+                self._url_missing_rejected, len(results),
+            )
         return results
 
     # ------------------------------------------------------------------
@@ -187,7 +234,13 @@ class VideoCollector:
     # ------------------------------------------------------------------
 
     def _detect_new_videos(self, creator: dict) -> list[dict]:
-        """检测 creator 近 N 天的新视频，排除已入库的。"""
+        """检测 creator 近 N 天的新视频，排除已入库的。
+
+        时间闸契约（缺陷 #12）：`days_lookback` 与 `start_date` 都必须真正生效。
+        `--flat-playlist` 对 YouTube 从不返回 `upload_date`（实测：608 份产出里只有
+        1 份 frontmatter 带 `published_at`），原实现 `if upload_date:` 守卫让空值直接跳过两道闸
+        —— 2025 年的老视频因此永驻候选集。现在缺日期先补取，补不到就拒收。
+        """
         platform = creator["platform"]
         days = self._settings.get("days_lookback", VIDEO_DAYS_LOOKBACK)
 
@@ -207,20 +260,50 @@ class VideoCollector:
             try:
                 start_date_cutoff = datetime.strptime(start_date_str, "%Y-%m-%d")
             except ValueError:
-                pass
+                logger.warning(
+                    "start_date 配置非法(%r)，该道时间闸本轮不生效", start_date_str
+                )
+        lookback_cutoff = datetime.now() - timedelta(days=days)
 
         for v in videos:
+            # L0: 无 url 拒收 —— 没有 url 就没有稳定身份，去重、账本、研究全都做不了。
+            # 原实现在 `_is_video_ingested` 里打 warning 后 `return False` 放行，
+            # fail-closed 在这条缝上是开的（无身份候选一路走到研究，且永远无法登记
+            # → 每轮重跑）。
+            if not v.get("url"):
+                self._url_missing_rejected += 1
+                logger.warning(
+                    "[身份闸] 拒收（候选缺 url，无稳定身份 → 无法去重也无法登记）: "
+                    "[%s] %s",
+                    v.get("platform", "?"), v.get("title", "?"),
+                )
+                continue
             # L1: URL 去重
             if self._is_video_ingested(v["url"]):
                 continue
-            # L2: start_date 过滤
-            if start_date_cutoff and v.get("upload_date"):
-                try:
-                    upload_dt = datetime.strptime(v["upload_date"], "%Y%m%d")
-                    if upload_dt < start_date_cutoff:
-                        continue
-                except ValueError:
-                    pass
+            # L2: 时间闸 — 缺发布日期先补取，仍缺则拒收（不静默放行）
+            if not v.get("upload_date"):
+                self._fill_upload_date(v)
+            upload_dt = self._parse_upload_date(v.get("upload_date", ""))
+            if upload_dt is None:
+                self._date_unknown_rejected += 1
+                logger.warning(
+                    "[时间闸] 拒收（无法确定发布日期，fail-closed）: [%s] %s — %s",
+                    v.get("platform", "?"), v.get("title", "?"), v.get("url", "?"),
+                )
+                continue
+            if upload_dt < lookback_cutoff:
+                logger.info(
+                    "[时间闸] 超出回溯窗口 %d 天 (%s): %s",
+                    days, v["upload_date"], v.get("title", "?"),
+                )
+                continue
+            if start_date_cutoff and upload_dt < start_date_cutoff:
+                logger.info(
+                    "[时间闸] 早于 start_date %s (%s): %s",
+                    start_date_str, v["upload_date"], v.get("title", "?"),
+                )
+                continue
             # L3: 时长过滤
             duration = v.get("duration_minutes", 0)
             max_dur = self._settings.get("max_video_duration_minutes", VIDEO_MAX_DURATION_MIN)
@@ -248,6 +331,105 @@ class VideoCollector:
                     continue
             filtered.append(v)
         return filtered
+
+    # ------------------------------------------------------------------
+    # 时间闸辅助（缺陷 #12）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_upload_date(raw: str) -> datetime | None:
+        """解析 yt-dlp 的 `upload_date`（YYYYMMDD）；空值或非法格式返回 None。"""
+        value = (raw or "").strip()
+        if not value:
+            return None
+        try:
+            return datetime.strptime(value, "%Y%m%d")
+        except ValueError:
+            logger.warning("[时间闸] upload_date 格式非法(%r)，按未知处理", value)
+            return None
+
+    def _fill_upload_date(self, video: dict) -> None:
+        """对缺 upload_date 的视频单独 `yt-dlp --dump-json` 补取真实发布日期。
+
+        与 `_detect_bili_videos` 的 2 阶段补全同一范式。有界：单轮最多
+        `VIDEO_MAX_DATE_BACKFILL_PER_RUN` 次（宪法 P1），预算耗尽时告警而不是
+        静默放行——放行的后果就是 2025 年的老视频被反复研究。
+        """
+        url = video.get("url", "")
+        if not url:
+            return
+        if self._date_backfill_used >= VIDEO_MAX_DATE_BACKFILL_PER_RUN:
+            logger.warning(
+                "[时间闸] 发布日期补取预算耗尽 (%d)，%s 保持日期未知（将被拒收）",
+                VIDEO_MAX_DATE_BACKFILL_PER_RUN, video.get("title", url),
+            )
+            return
+
+        self._date_backfill_used += 1
+        try:
+            detail = subprocess.run(
+                [self.config.ytdlp_bin] + self._ytdlp_base_args +
+                ["--dump-json", "--skip-download", url],
+                capture_output=True, text=True, timeout=30,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+            logger.warning("[时间闸] 发布日期补取失败 %s: %s", url, exc)
+            return
+
+        if detail.returncode != 0 or not detail.stdout.strip():
+            logger.warning(
+                "[时间闸] 发布日期补取无输出 %s (rc=%s)", url, detail.returncode
+            )
+            return
+        try:
+            info = json.loads(detail.stdout.strip().split("\n")[0])
+        except (json.JSONDecodeError, IndexError) as exc:
+            logger.warning("[时间闸] 发布日期补取响应不可解析 %s: %s", url, exc)
+            return
+
+        upload_date = (info.get("upload_date") or "").strip()
+        if upload_date:
+            video["upload_date"] = upload_date
+            logger.info("[时间闸] 补取到发布日期 %s: %s", upload_date, url)
+        else:
+            logger.warning("[时间闸] 平台未返回发布日期: %s", url)
+
+        time.sleep(VIDEO_DATE_BACKFILL_SLEEP_SEC)
+
+    # ------------------------------------------------------------------
+    # 日配额（缺陷 #12）
+    # ------------------------------------------------------------------
+
+    def _nlm_daily_quota(self) -> int:
+        """NLM 每日深研配额（配置优先，缺省用具名常量）。"""
+        try:
+            return int(self._settings.get("nlm_daily_quota", VIDEO_NLM_DAILY_QUOTA))
+        except (TypeError, ValueError):
+            logger.warning(
+                "nlm_daily_quota 配置非法(%r)，回退到默认 %d",
+                self._settings.get("nlm_daily_quota"), VIDEO_NLM_DAILY_QUOTA,
+            )
+            return VIDEO_NLM_DAILY_QUOTA
+
+    def _remaining_daily_quota(self) -> int:
+        """今日剩余配额 = 日配额 − 账本中今日已入库条数。
+
+        缺陷 V-3：原实现用 `date.today().isoformat()`（**本地日**字符串）去比对
+        `mark_ingested` 写入的 `datetime.now(UTC).isoformat()`（**UTC** 时刻）。
+        CST(UTC+8) 下本地 00:00–08:00 入库的条目 UTC 日期还是前一天，字典序小于
+        本地日字符串 → 同一本地日后续轮次数不到它们 → 当日实际入库量 =
+        配额 + 漏算数（硬上限被时区错位突破）。现在两侧统一到 UTC 基准：
+        把本地日起点换算成 UTC 时刻再做区间查询。
+        """
+        quota = self._nlm_daily_quota()
+        since = local_day_start_utc_iso()
+        used = self.db.count_ingested_since(since)
+        if used:
+            logger.info(
+                "[配额] NLM 日配额 %d，本地日（起点 UTC %s）已入库 %d",
+                quota, since, used,
+            )
+        return max(0, quota - used)
 
     # ------------------------------------------------------------------
     # 关键词过滤
@@ -445,48 +627,115 @@ class VideoCollector:
     # ------------------------------------------------------------------
 
     def _is_video_ingested(self, url: str) -> bool:
-        """检查该视频 URL 是否已在 catalog.db 中。"""
-        if not self.db:
-            return False
-        try:
-            with self.db.connect() as conn:
-                row = conn.execute(
-                    "SELECT 1 FROM items WHERE url = ?", (url,)
-                ).fetchone()
-                return row is not None
-        except sqlite3.OperationalError:
-            return False
+        """L1: 该视频身份是否已在去重库中（在花任何 LLM/NLM 额度之前）。
+
+        fail-closed：去重库缺失或不可用时 **抛异常**，不再 `return False`
+        —— 原来的静默放行正是重复产出（实测 608 份产出只对应 230 个视频身份，
+        271 份冗余）的直接出口。LLM 调用次数无遥测，不引用具体次数
+        （见 `dedup_store` 模块 docstring 的实测口径说明）。
+        """
+        if self.db is None:
+            raise RuntimeError(
+                "去重库未注入（config.dedup_db_path 未解析）：拒绝在无去重保护下采集"
+            )
+        if not url:
+            # 无 url = 无稳定身份。原实现 warning 后 return False（放行）——
+            # 无身份候选既去不了重也登记不了，放行等于每轮重跑。调用方必须显式拒收。
+            raise ValueError("候选缺 url，无稳定身份：拒绝在无去重保护下继续")
+        return self.db.is_ingested(url)
 
     def _l7_catalog_dedup(self, results: list[dict]) -> tuple[list[dict], int]:
-        """L7: catalog.db URL 去重（过滤已入库视频）。"""
-        if not self.db:
-            return results, 0
+        """L7: 去重库 URL 去重（L1 之后的兜底，过滤本轮内已入库视频）。
+
+        无 url 的产出同样拒收（fail-closed）：它不可能被登记，留着就是下轮重跑。
+        """
         deduped: list[dict] = []
         skipped_count = 0
-        try:
-            with self.db.connect() as conn:
-                for r in results:
-                    url = r["video"].get("url", "")
-                    if url and conn.execute(
-                        "SELECT 1 FROM items WHERE url = ?", (url,)
-                    ).fetchone():
-                        logger.info(f"[L7] 已入库，跳过: {r['video'].get('title', url)}")
-                        skipped_count += 1
-                    else:
-                        deduped.append(r)
-        except sqlite3.OperationalError as e:
-            logger.warning(f"L7 去重跳过 (DB 不可用): {e}")
-            return results, 0
+        for r in results:
+            url = r["video"].get("url", "")
+            if not url:
+                logger.warning(
+                    "[L7] 拒收（缺 url，无稳定身份 → 无法登记，留着必然重跑）: %s",
+                    r["video"].get("title", "?"),
+                )
+                skipped_count += 1
+                continue
+            if self._is_video_ingested(url):
+                logger.info(f"[L7] 已入库，跳过: {r['video'].get('title', url)}")
+                skipped_count += 1
+            else:
+                deduped.append(r)
         return deduped, skipped_count
+
+    def mark_ingested(self, video: dict, output_path: Path | str | None = None) -> bool:
+        """写端：产出已落地后登记视频身份（缺陷 #2 的"读端有、写端无"修复）。
+
+        由 `assembler.run_pipeline` 在报告成功发布之后调用，绝不提前调用
+        （提前 = 崩溃窗口里内容永久丢失；滞后 = 最多重跑一次）。
+
+        Returns:
+            True 新登记，False 之前已登记过。
+        """
+        if self.db is None:
+            raise RuntimeError("去重库未注入：无法登记已处理视频")
+        url = video.get("url", "")
+        if not url:
+            raise ValueError("mark_ingested: video 缺 url，无法登记稳定身份")
+        return self.db.mark_ingested(
+            url,
+            platform=video.get("platform", ""),
+            title=video.get("title", ""),
+            output_path=output_path,
+        )
+
+    # ------------------------------------------------------------------
+    # 同轮内身份去重
+    # ------------------------------------------------------------------
+
+    def _dedup_by_identity(self, candidates: list[dict]) -> list[dict]:
+        """同一轮内按稳定身份去重（保留首次出现，丢弃项显式记日志）。"""
+        seen: set[str] = set()
+        kept: list[dict] = []
+        for c in candidates:
+            url = c["video"].get("url", "")
+            if not url:
+                # 原实现 `kept.append(c)`：无身份候选被放行 → 同一无 url 视频可以
+                # 重复出现且永远登记不上。fail-closed 拒收。
+                logger.warning(
+                    "[同轮去重] 拒收（缺 url，无稳定身份）: %s",
+                    c["video"].get("title", "?"),
+                )
+                continue
+            identity = video_identity(url)
+            if identity in seen:
+                logger.info(
+                    "[同轮去重] 同一视频重复出现(%s)，丢弃: %s",
+                    identity, c["video"].get("title", url),
+                )
+                continue
+            seen.add(identity)
+            kept.append(c)
+        return kept
 
     # ------------------------------------------------------------------
     # L5: LLM 话题聚类去重
     # ------------------------------------------------------------------
 
     def _dedup_by_topic(self, candidates: list[dict]) -> list[dict]:
-        """调用 LLM 对视频标题做话题聚类，同话题保留最长视频。"""
+        """调用 LLM 对视频标题做话题聚类，同话题保留最长视频。
+
+        降级策略（缺陷 #12 附带项的裁决）：本层是**省钱的优化**，不是安全闸。
+        adapter 缺失或响应不可解析时保持"不去重"降级而不 fail-closed —— 让全天
+        的运行因为一次分类调用失败而中断，代价高于多研究一两个同话题视频；且超额
+        风险已被 `_remaining_daily_quota` 的日硬上限接住（缺陷 #12 主项）。
+        但降级必须**说清后果**（宪法 P4），不能只留一行"跳过去重"。
+        """
         if not self._llm_adapter:
-            logger.warning("话题去重: LLM adapter 未初始化，跳过去重")
+            logger.warning(
+                "[话题去重] LLM adapter 未初始化 → 本轮不做同话题去重，"
+                "%d 个候选按原样进入研究（同话题可能被重复研究；总量仍受日配额硬上限约束）",
+                len(candidates),
+            )
             return candidates
 
         titles = [f"{i}: {c['video']['title']}" for i, c in enumerate(candidates)]
@@ -506,26 +755,51 @@ class VideoCollector:
             )
             data = extract_json_from_llm_response(resp)
             if not data or "groups" not in data:
-                logger.warning("话题去重: 无法解析 LLM 响应，跳过去重")
+                logger.warning(
+                    "[话题去重] LLM 响应不含 groups → 本轮不做同话题去重，"
+                    "%d 个候选按原样进入研究（受日配额硬上限约束）",
+                    len(candidates),
+                )
                 return candidates
             groups = data["groups"]
         except Exception as e:
-            logger.warning(f"话题去重失败: {e}，跳过去重")
+            logger.warning(
+                "[话题去重] 分类调用失败(%s) → 本轮不做同话题去重，"
+                "%d 个候选按原样进入研究（受日配额硬上限约束）",
+                e, len(candidates),
+            )
             return candidates
 
-        kept: list[dict] = []
+        kept_indices: list[int] = []
         deduped_count = 0
+        covered: set[int] = set()
         for group in groups:
-            valid = [i for i in group if 0 <= i < len(candidates)]
+            valid = [i for i in group if isinstance(i, int) and 0 <= i < len(candidates)]
             if not valid:
                 continue
+            covered.update(valid)
             best = max(valid, key=lambda i: candidates[i]["video"].get("duration_minutes", 0))
-            kept.append(candidates[best])
+            kept_indices.append(best)
             if len(valid) > 1:
                 skipped = [candidates[i]["video"]["title"] for i in valid if i != best]
                 deduped_count += len(skipped)
                 logger.info(f"话题去重: 保留 「{candidates[best]['video']['title']}」, "
                             f"跳过 {skipped}")
+
+        # LLM 未提到的索引必须保留（宪法 P4）：原实现只遍历 groups，漏掉的候选
+        # 被静默丢弃——分类模型少写一个下标就等于一个视频永久消失。
+        missing = [i for i in range(len(candidates)) if i not in covered]
+        if missing:
+            logger.warning(
+                "[话题去重] LLM 分组未覆盖 %d 个候选(索引 %s)，按未去重全部保留: %s",
+                len(missing), missing,
+                [candidates[i]["video"].get("title", "?") for i in missing],
+            )
+            kept_indices.extend(missing)
+
+        # 去掉重复下标（LLM 可能把同一下标写进多组），按原顺序输出
+        ordered = sorted(set(kept_indices))
+        kept = [candidates[i] for i in ordered]
 
         if deduped_count:
             logger.info(f"话题去重: {len(candidates)} → {len(kept)} (去除 {deduped_count} 个重复)")

@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import tempfile
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -21,6 +22,7 @@ from src.akb2.video.config import VideoConfig
 from src.akb2.video.extractor import ExtractedFields, Extractor
 from src.akb2.video.reasoner import ConceptStore, ReasonedLinks, Reasoner
 from src.akb2.video.researcher import VideoResearcher
+from tests.video_state_isolation import isolate_video_state  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -59,6 +61,8 @@ def integration_config() -> VideoConfig:
             ytdlp_bin="/usr/bin/true",
             video_sources_path=tmp_path / "config" / "video_sources.json",
             keywords_path=tmp_path / "config" / "keywords.json",
+            # 去重账本隔离到 tmp（collector 现在默认自带去重库，缺陷 #2）
+            dedup_db_path=tmp_path / "state" / "video-dedup.sqlite",
         )
         yield config
 
@@ -110,7 +114,10 @@ def test_full_pipeline_mock_nlm(integration_config):
             "platform": "youtube", "id": "int-test-1",
             "title": "Integration Test Video",
             "url": "https://youtube.com/watch?v=int-test-1",
-            "duration_minutes": 15, "upload_date": "20260601",
+            "duration_minutes": 15,
+            # 相对日期：时间闸（days_lookback，缺陷 #12）现在真正生效，
+            # 写死日期会随时间推移让本用例的采集阶段返回空。
+            "upload_date": (datetime.now() - timedelta(days=1)).strftime("%Y%m%d"),
             "creator": "Test Channel",
         },
     ]):

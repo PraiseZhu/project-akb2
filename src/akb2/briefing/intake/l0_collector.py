@@ -21,6 +21,53 @@ FIXTURE_PATH = REPO_ROOT / "tests/fixtures/intake/dry-run-2026-05-27/sample.json
 TWITTER_BIN = shutil.which("twitter") or str(Path.home() / ".local" / "bin" / "twitter")
 TWITTER_TIMEOUT_SEC = 60
 
+# 上游 twitter-cli / x_client_transaction 的**全局性**故障签名。
+#
+# 这类错误与账号无关：它在 twitter-cli 构造 client 时就已发生，对每个账号都会
+# 逐字复现。2026-07-28 事故实测：47 个账号全部返回
+# "Failed to init ClientTransaction: 'NoneType' object has no attribute 'group'"，
+# 逐账号重试烧掉 793s 并把 IP 推进 429（后半段账号叠加 "Rate limited (429)"），
+# 最终仍然 0 条 → 降级 fixture。逐账号重试对这类故障零收益，必须整轮 fail-fast
+# （constitution 原则 1「有界自动化」：循环要有显式停止条件）。
+UPSTREAM_FATAL_SIGNATURES: tuple[str, ...] = (
+    # x_client_transaction 无法从 x.com 首页推导 ondemand bundle → GraphQL 返回 404。
+    # 登录态本身是好的（twitter status/whoami 仍返回 authenticated: true），
+    # 所以这不是 auth 过期，重新登录不解决。
+    "Failed to init ClientTransaction",
+)
+
+# 连续命中同一全局签名多少个账号后中止整轮。
+# 取 3 而非 1：留一次性抖动的余地；代价是 3 × TWITTER_TIMEOUT_SEC 上限，
+# 相对 47 账号 × 17s ≈ 793s 的实测浪费仍是两个量级的改善。
+UPSTREAM_FATAL_FAILFAST_STREAK = 3
+
+
+class UpstreamCollectorBroken(RuntimeError):
+    """twitter-cli 侧全局故障 —— 整轮抓取无意义，立即中止且**不降级 fixture**。
+
+    降级 fixture 会把「上游工具坏了」伪装成「今天没素材」，这正是 2026-06/07
+    连续 12 天假数据冒充真实抓取的成因。这里选择显式失败（constitution 原则 4）。
+    """
+
+    def __init__(self, signature: str, accounts_tried: int, sample: str = "") -> None:
+        self.signature = signature
+        self.accounts_tried = accounts_tried
+        self.sample = sample
+        super().__init__(
+            f"twitter-cli 全局故障（连续 {accounts_tried} 个账号命中同一签名）: "
+            f"{signature}；登录态与账号配置均非成因，需修复/更换上游采集工具"
+        )
+
+
+def match_upstream_fatal(stderr_text: str) -> str | None:
+    """命中全局故障签名则返回该签名，否则 None（= 可能只是单账号问题）。"""
+    if not stderr_text:
+        return None
+    for sig in UPSTREAM_FATAL_SIGNATURES:
+        if sig in stderr_text:
+            return sig
+    return None
+
 
 def _twitter_cli_to_akb2(raw_data: list[dict]) -> list[dict]:
     """twitter-cli 输出的 tweet list → AKB2 schema list."""

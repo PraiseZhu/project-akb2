@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from src.akb2.video.config import VideoConfig
+from src.akb2.video.dedup_store import VideoDedupStoreError, video_identity
 from src.akb2.video.extractor import ExtractedFields
 from src.akb2.video.reasoner import ReasonedLinks
 from src.akb2.video.researcher import ResearchOutput
@@ -67,6 +68,17 @@ class Assembler:
         Returns:
             candidate markdown 全文。
         """
+        # 标题是**事实性身份字段**，从 video_meta（yt-dlp 原值）结构化透传。
+        # 缺陷 #10：原实现 `report_title = self._extract_h1(report_markdown) or title`
+        # 把标题取自 LLM 产出的报告 H1 —— 身份字段被生成路径污染。
+        # 实测（2026-07-26 只读统计 `AI TRENDS/Video`，608 份 md）：同一视频
+        # `youtube:M_AmPWmkpwA` 的产出带 **8 个互不相同的标题**，其中
+        # "New AI coding paradigm - OpenAI Symphony" 与拼错的 "…paradiagm…" 并存
+        # （全目录 4 份含 paradiagm）—— 同一 URL 的标题不稳定，铁证。
+        # 另有 89 份产出的 title 是纯 ASCII（疑似 LLM 未按中文 prompt 输出），但
+        # **无法归因到 degraded 路**：目录里 0 份笔记的 frontmatter 记了 `degraded`
+        # 字段，早期注释写的"98 份英文标题全部来自 degraded 路"既数字不对
+        # （实为 89 份）、也没有任何数据支持那个因果。
         title = video_meta.get("title", "Untitled")
         video_url = video_meta.get("url", "")
         platform = video_meta.get("platform", "youtube")
@@ -74,12 +86,9 @@ class Assembler:
         upload_date = video_meta.get("upload_date", "")
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        # 从报告提取 H1 标题
-        report_title = self._extract_h1(research_output.report_markdown) or title
-
         # 构建 frontmatter
         frontmatter = self._build_frontmatter(
-            title=report_title,
+            title=title,
             source_url=video_url,
             author=creator,
             published_at=upload_date,
@@ -91,10 +100,10 @@ class Assembler:
             degraded=research_output.degraded,
         )
 
-        # 构建正文（注入 gate 要求的结构化章节）
+        # 构建正文（注入 gate 要求的结构化章节）。顶层 H1 = 透传标题，
+        # 保持与 frontmatter.title 一致；LLM 报告正文原样附在后面不改写。
         gate_sections = self._build_gate_sections(extracted_fields)
-        report_h1 = self._extract_h1(research_output.report_markdown) or report_title
-        body = f"# {report_h1}\n\n{gate_sections}{research_output.report_markdown}"
+        body = f"# {title}\n\n{gate_sections}{research_output.report_markdown}"
 
         # 完整的 candidate markdown
         candidate_md = frontmatter + "\n" + body
@@ -127,7 +136,7 @@ class Assembler:
             staging_dir: staging 目录（默认从 config）。
 
         Returns:
-            正式发布路径（AI TRENDS/Video/video-{slug}-{date}.md）。
+            正式发布路径（AI TRENDS/Video/video-{slug}.md，**不含日期**）。
 
         Raises:
             CandidateTargetExists: staging 或正式路径同名已存在。
@@ -140,7 +149,14 @@ class Assembler:
 
         staging.mkdir(parents=True, exist_ok=True)
 
+        # staging 中转名保留日期：它是 needs_repair 的重试工作区，同一视频跨日重试
+        # 需要能再写一次（去掉日期会让重试直接撞 CandidateTargetExists 卡死）。
         filename = f"video-{slug}-{date}.md"
+        # 正式产出名**不含日期**（缺陷 V-4）：原来 `video-{slug}-{hash}-{date}.md`
+        # 每天都是新名字，于是 `promotion_path.exists()` 这道 fail-closed 对
+        # **跨日重复**永不触发 —— 跨日防线只剩账本这个单点。身份哈希已在 slug 里，
+        # 日期对唯一性没有任何贡献，去掉后同一视频跨日重复会在文件名层被挡住。
+        published_filename = f"video-{slug}.md"
         candidate_path = staging / filename
 
         if candidate_path.exists():
@@ -177,7 +193,7 @@ class Assembler:
                 f"promotion 目标路径不存在: {promotion_dir}"
             )
 
-        promotion_path = promotion_dir / filename
+        promotion_path = promotion_dir / published_filename
         if promotion_path.exists():
             candidate_path.unlink(missing_ok=True)
             raise CandidateTargetExists(
@@ -382,10 +398,31 @@ class Assembler:
         return None
 
     def _make_slug(self, content: str) -> str:
-        """从内容生成 URL-safe slug。"""
+        """从内容生成 URL-safe slug（H1 现在就是透传标题，见 assemble()）。"""
         title = self._extract_h1(content) or "untitled"
-        slug = re.sub(r"[^\w-]", "", title.lower().replace(" ", "-"))[:40]
-        return slug or "untitled"
+        return self._slugify(title)
+
+    @staticmethod
+    def _slugify(text: str) -> str:
+        """标题 → URL-safe slug 片段。"""
+        slug = re.sub(r"[^\w-]", "", (text or "").lower().replace(" ", "-"))[:40]
+        return slug.strip("-") or "untitled"
+
+    def _slug_for_video(self, video_meta: dict) -> str:
+        """文件名 slug = 透传标题 slug + 稳定身份短哈希。
+
+        缺陷 #10：slug 不能从 LLM 产出派生（报告 H1 会被改写 → 同一视频每天一个
+        新文件名 → 文件名层面完全无法察觉重复）。这里 slug 只依赖 yt-dlp 原标题
+        与 URL 派生的稳定身份，后缀让"标题被作者改过"的同一视频仍映射到同一族
+        文件名，也让两个同名不同源的视频不撞名。
+        """
+        title_part = self._slugify(video_meta.get("title", ""))
+        url = video_meta.get("url", "")
+        if not url:
+            return title_part
+        identity = video_identity(url)
+        short = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:8]
+        return f"{title_part}-{short}"
 
     def _compute_hash(self, content: str) -> str:
         """计算 candidate 的 SHA-256 content_hash。"""
@@ -442,6 +479,31 @@ class Assembler:
                 or staging_resolved in candidate_resolved.parents
             )
         except OSError:
+            return False
+
+    @staticmethod
+    def _mark_ingested(collector, video_meta: dict, output_path: Path) -> bool:
+        """产出落地后登记去重身份，失败必须可见（宪法 P4）。
+
+        顺序契约：**发布成功之后**才登记。两种失败窗口的代价不对称——
+        - 先登记后发布：崩溃则该视频被永久标记已处理，报告永远不会产出（丢内容）；
+        - 先发布后登记：崩溃则下轮最多重跑一次（多花一次额度，内容不丢）。
+        因此选后者；登记失败时不吞异常，打 ERROR 并在结果里标 `dedup_marked=False`，
+        由 `_report_results` 汇总——否则"账本没记"会静默演化成明天的重复研究。
+
+        异常范围只收运行时故障（账本不可写 / 缺 url）。原实现还捕获
+        `AttributeError`，把"collector 没有 mark_ingested 方法"这类**接线/改名的
+        编程错误**降级成"账本写失败"，排障方向被带偏到磁盘和权限上；现在让它
+        原样抛出（由 run_pipeline 记成 failed，堆栈可见）。
+        """
+        try:
+            collector.mark_ingested(video_meta, output_path)
+            return True
+        except (VideoDedupStoreError, ValueError, RuntimeError) as exc:
+            logger.error(
+                "产出已发布但去重登记失败: %s (%s) — 下轮会重跑该视频并重复烧额度: %s",
+                video_meta.get("title", "?"), video_meta.get("url", "?"), exc,
+            )
             return False
 
     def run_pipeline(
@@ -528,15 +590,24 @@ class Assembler:
                         "dry_run": True,
                     })
                 else:
-                    # 6. 提交
-                    candidate_path = self.commit(candidate_md)
+                    # 6. 提交（slug 用稳定身份派生，不用 LLM 产出的 H1）
+                    candidate_path = self.commit(
+                        candidate_md, slug=self._slug_for_video(video_meta)
+                    )
                     # 判断 gate 决策：staging 路径 = needs_repair，promotion 路径 = active
                     is_staging = self._is_staging_candidate(candidate_path)
-                    results.append({
+                    result = {
                         "video": video_meta,
                         "candidate_path": str(candidate_path),
                         "status": "needs_repair" if is_staging else "ok",
-                    })
+                    }
+                    if not is_staging:
+                        # 7. 产出已落地 → 登记去重身份（写端，缺陷 #2）。
+                        # needs_repair 不登记：它就是要下轮重试的。
+                        result["dedup_marked"] = self._mark_ingested(
+                            collector, video_meta, candidate_path
+                        )
+                    results.append(result)
             except (CandidateTargetExists, GateRejected, PromotionTargetNotFound) as e:
                 logger.warning(f"视频 {video_meta.get('title', '?')} 提交失败: {e}")
                 results.append({

@@ -110,3 +110,65 @@ def test_normalize_idempotent():
     assert first is not None
     second = normalize(first)
     assert second == first
+
+
+# --- 缺陷 #8：GitHub 保留路径不是 repo，必须拒收 ---
+# 实证：https://github.com/features/ai（3 天）与 /features/copilot（2 天）被当 repo
+# 收录，GitHub API 返回 404（营销页），stars=0/lang=null，却仍产出完整中文简介，
+# 并挤掉 5 个真实名额（2026-06-25 一份简报同时收了两条）。
+
+@pytest.mark.parametrize("url", [
+    "https://github.com/features/ai",
+    "https://github.com/features/copilot",
+    "https://github.com/about/careers",
+    "https://github.com/pricing/team",
+    "https://github.com/topics/machine-learning",
+    "https://github.com/sponsors/simonw",
+    "https://github.com/marketplace/actions/checkout",
+    "https://github.com/orgs/anthropics",
+    "https://github.com/apps/dependabot",
+    "https://github.com/settings/profile",
+    "https://github.com/explore/trending",
+    "https://github.com/collections/ai",
+    "https://github.com/trending/python",
+    "https://github.com/login/oauth",
+    "https://github.com/signup/free",
+    # 大小写与尾巴变体都得拒
+    "https://github.com/Features/AI",
+    "https://www.github.com/features/copilot?ref=nav",
+])
+def test_normalize_rejects_reserved_paths(url):
+    assert normalize(url) is None
+
+
+def test_reserved_set_is_exposed_for_audit():
+    from akb2.briefing.github.url_normalizer import RESERVED_OWNER_PATHS
+
+    assert "features" in RESERVED_OWNER_PATHS
+    assert all(p == p.lower() for p in RESERVED_OWNER_PATHS)
+
+
+# --- 缺陷 #8：去重键保持小写稳定，显示名保留原始大小写 ---
+
+def test_dedup_key_stays_lowercase():
+    """去重键必须继续小写归一（GitHub 侧大小写不敏感，键分裂 = 同仓双份入库）。"""
+    assert normalize("https://github.com/id-Software/Quake") == "https://github.com/id-software/quake"
+
+
+@pytest.mark.parametrize("url,expected", [
+    ("https://github.com/id-Software/Quake", "id-Software/Quake"),
+    ("https://github.com/xianfei/SysMocap", "xianfei/SysMocap"),
+    ("https://github.com/owner/repo.git", "owner/repo"),
+    ("https://github.com/Microsoft/Qlib/issues/123", "Microsoft/Qlib"),
+])
+def test_display_slug_preserves_case(url, expected):
+    from akb2.briefing.github.url_normalizer import display_slug
+
+    assert display_slug(url) == expected
+
+
+def test_display_slug_none_for_invalid():
+    from akb2.briefing.github.url_normalizer import display_slug
+
+    assert display_slug("https://github.com/features/ai") is None
+    assert display_slug("not a url") is None

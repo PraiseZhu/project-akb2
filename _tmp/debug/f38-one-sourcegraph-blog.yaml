@@ -1,9 +1,0 @@
-sources:
-- slug: sourcegraph-blog
-  domain: sourcegraph.com
-  feed_url: https://sourcegraph.com/blog/rss.xml
-  listing_url: https://sourcegraph.com/blog
-  rate_limit: 3600
-  status: trial
-  category: authority
-  notes: Sourcegraph — AI coding/代码智能工程(Cody/Amp 团队)

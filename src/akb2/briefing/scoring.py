@@ -43,6 +43,7 @@ import json
 import math
 import os
 import re
+import sys
 from datetime import UTC, datetime
 
 from akb2.briefing.embeddings import cosine
@@ -234,8 +235,20 @@ class ScoreEngine:
         self._seen_hashes: set = set()
         self._seen_embeddings: list = []
         self._embed_client = embed_client
+        # 降级可见性（宪法原则 4）：嵌入不可用 → novelty 退化为 sha1 精确去重，
+        # 改写/转发的近重复会漏检。调用方据此在产出层落降级标记。
+        self.embed_degraded: bool = False
+        self.embed_failure: str | None = None
+        self._used_semantic: bool = False
+
+    @property
+    def novelty_mode(self) -> str:
+        """本次打分实际使用的判重模式：`semantic`（嵌入 cosine）或 `exact_sha1`。"""
+        return "semantic" if self._used_semantic else "exact_sha1"
 
     def _score_one(self, tweet: dict, *, embedding=None, anchor_vecs=None) -> dict:
+        if embedding is not None:
+            self._used_semantic = True
         dims = {
             "recency": recency(tweet),
             "engagement": engagement(tweet),
@@ -270,9 +283,19 @@ class ScoreEngine:
             try:
                 anchor_vecs = self._embed_client.embed(list(TOPIC_ANCHORS))
                 embeddings = self._embed_client.embed([t.get("text", "") for t in tweets])
-            except Exception:
+            except Exception as e:
                 anchor_vecs = None
                 embeddings = None  # 降级关键词版
+                # 宪法原则 4：降级必须可见 —— 此处失败会让 novelty 从语义判重退化为
+                # sha1 精确去重（改写/转发的近重复漏检），静默吞掉会让产出无从判读。
+                self.embed_degraded = True
+                self.embed_failure = f"{type(e).__name__}: {str(e)[:200]}"
+                print(
+                    f"WARNING [scoring]: 嵌入网关不可用（{self.embed_failure}）——"
+                    "topic_relevance 回退关键词版、novelty 回退 sha1 精确去重，"
+                    "近重复（改写/转发）将漏检",
+                    file=sys.stderr,
+                )
         results = []
         for i, t in enumerate(tweets):
             emb = embeddings[i] if embeddings is not None else None

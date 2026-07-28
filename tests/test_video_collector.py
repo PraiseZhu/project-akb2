@@ -8,13 +8,30 @@ from __future__ import annotations
 import json
 import subprocess
 import tempfile
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
 import pytest
 
-from src.akb2.video.collector import CatalogDBAdapter, VideoCollector
+from src.akb2.video.collector import VideoCollector
 from src.akb2.video.config import VideoConfig
+from src.akb2.video.dedup_store import VideoDedupStore
+from tests.video_state_isolation import isolate_video_state  # noqa: F401
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _ago(days: int) -> str:
+    """N 天前的 yt-dlp 风格日期（YYYYMMDD）。
+
+    2026-07-26 起时间闸（`days_lookback`，缺陷 #12）真正生效，写死日期的
+    fixture 会随时间推移全部被拒收 —— 各层过滤测试必须用相对日期。
+    """
+    return (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -23,7 +40,11 @@ from src.akb2.video.config import VideoConfig
 
 @pytest.fixture
 def temp_config() -> VideoConfig:
-    """使用临时目录的 VideoConfig，避免污染真实配置。"""
+    """使用临时目录的 VideoConfig，避免污染真实配置。
+
+    去重账本与 staging 也隔离到临时目录：collector 现在默认自带去重库
+    （缺陷 #2 修复），不隔离会写到本机真实状态根 `~/Library/Application Support/akb2/`。
+    """
     with tempfile.TemporaryDirectory() as tmp:
         sources_path = Path(tmp) / "video_sources.json"
         keywords_path = Path(tmp) / "keywords.json"
@@ -58,6 +79,8 @@ def temp_config() -> VideoConfig:
         config = VideoConfig(
             video_sources_path=sources_path,
             keywords_path=keywords_path,
+            staging_dir=Path(tmp) / "staging" / "candidate",
+            dedup_db_path=Path(tmp) / "state" / "video-dedup.sqlite",
         )
         yield config
 
@@ -72,7 +95,7 @@ def mock_ytdlp_output():
             "url": "https://www.youtube.com/watch?v=abc123",
             "webpage_url": "https://www.youtube.com/watch?v=abc123",
             "duration": 1200,  # 20 min
-            "upload_date": "20260525",
+            "upload_date": _ago(3),
         },
         {
             "id": "def456",
@@ -80,7 +103,7 @@ def mock_ytdlp_output():
             "url": "https://www.youtube.com/watch?v=def456",
             "webpage_url": "https://www.youtube.com/watch?v=def456",
             "duration": 2400,  # 40 min
-            "upload_date": "20260528",
+            "upload_date": _ago(1),
         },
         {
             "id": "ghi789",
@@ -88,7 +111,7 @@ def mock_ytdlp_output():
             "url": "https://www.youtube.com/watch?v=ghi789",
             "webpage_url": "https://www.youtube.com/watch?v=ghi789",
             "duration": 600,  # 10 min
-            "upload_date": "20260527",
+            "upload_date": _ago(2),
         },
     ]
 
@@ -111,37 +134,43 @@ class MockLLMAdapter:
 
 
 def test_L1_url_dedup(temp_config, mock_ytdlp_output):
-    """L1: URL 去重 — mock catalog.db 已有 abc123，验证该视频被过滤。"""
-    with tempfile.TemporaryDirectory() as tmp:
-        db_path = Path(tmp) / "catalog.db"
-        import sqlite3
-        conn = sqlite3.connect(str(db_path))
-        conn.execute("CREATE TABLE IF NOT EXISTS items (url TEXT)")
-        conn.execute("INSERT INTO items (url) VALUES (?)", ("https://www.youtube.com/watch?v=abc123",))
-        conn.commit()
-        conn.close()
+    """L1: URL 去重 — 去重库已登记 abc123，验证该视频被过滤。
 
-        db = CatalogDBAdapter(db_path)
-        collector = VideoCollector(temp_config, db=db)
+    2026-07-26 改写（缺陷 #2）：原测试手工建 catalog.db、手工 INSERT、并显式
+    `db=db` 注入 —— 这三件事生产一件都不做，测的是**生产不可达的代码路径**，
+    所以重复产出能在 CI 全绿下跑一个月。现在：不传 db（走生产默认注入），
+    前置状态用**写端** `VideoDedupStore.mark_ingested`（生产 run_pipeline 用的同一入口）。
+    """
+    store = VideoDedupStore(temp_config.dedup_db_path)
+    store.mark_ingested(
+        "https://www.youtube.com/watch?v=abc123", platform="youtube", title="已入库",
+    )
 
-        with mock.patch.object(collector, "_detect_yt_videos", return_value=[
-            {
-                "platform": "youtube", "id": "abc123",
-                "title": "How to Build AI Agents with LangGraph",
-                "url": "https://www.youtube.com/watch?v=abc123",
-                "duration_minutes": 20, "upload_date": "20260525", "creator": "Test Channel",
-            },
-            {
-                "platform": "youtube", "id": "def456",
-                "title": "DeepSeek V4 Architecture Deep Dive",
-                "url": "https://www.youtube.com/watch?v=def456",
-                "duration_minutes": 40, "upload_date": "20260528", "creator": "Test Channel",
-            },
-        ]):
-            results = collector.collect()
+    collector = VideoCollector(temp_config)
+    assert collector.db is not None, "collector 必须自带去重库（生产从不显式传 db）"
 
-        urls = [r["video"]["url"] for r in results]
-        assert "https://www.youtube.com/watch?v=abc123" not in urls
+    # 保持窗口内：用今天的日期，避免 days_lookback 时间闸（#12）把两个视频都过滤掉
+    today = datetime.now().strftime("%Y%m%d")
+    with mock.patch.object(collector, "_detect_yt_videos", return_value=[
+        {
+            "platform": "youtube", "id": "abc123",
+            "title": "How to Build AI Agents with LangGraph",
+            "url": "https://www.youtube.com/watch?v=abc123",
+            "duration_minutes": 20, "upload_date": today, "creator": "Test Channel",
+        },
+        {
+            "platform": "youtube", "id": "def456",
+            "title": "DeepSeek V4 LLM Architecture Deep Dive",
+            "url": "https://www.youtube.com/watch?v=def456",
+            "duration_minutes": 40, "upload_date": today, "creator": "Test Channel",
+        },
+    ]):
+        results = collector.collect()
+
+    urls = [r["video"]["url"] for r in results]
+    assert "https://www.youtube.com/watch?v=abc123" not in urls
+    # 正向断言：未入库的视频必须留下，否则"全被过滤"也能让上一条空过
+    assert "https://www.youtube.com/watch?v=def456" in urls
 
 
 # ---------------------------------------------------------------------------
@@ -150,10 +179,16 @@ def test_L1_url_dedup(temp_config, mock_ytdlp_output):
 
 
 def test_L2_start_date_filter(temp_config, mock_ytdlp_output):
-    """L2: start_date 过滤 — video_sources.json start_date 为 2026-05-28，旧视频应被过滤。"""
+    """L2: start_date 过滤 — 早于 start_date 的视频被过滤（用相对日期，与回溯窗口解耦）。
+
+    old1 落在 days_lookback(14 天) 之内、但早于 start_date，所以只有 start_date
+    这道闸能拦住它。
+    """
     temp_config.video_sources_path.parent.mkdir(parents=True, exist_ok=True)
     sources = json.loads(temp_config.video_sources_path.read_text())
-    sources["settings"]["start_date"] = "2026-05-28"
+    sources["settings"]["start_date"] = (
+        datetime.now() - timedelta(days=5)
+    ).strftime("%Y-%m-%d")
     sources["settings"]["coldstart"] = True  # 禁用 backfill，避免读取真实 pending
     sources["settings"]["coldstart_max_per_day"] = 5
     temp_config.video_sources_path.write_text(json.dumps(sources))
@@ -164,12 +199,12 @@ def test_L2_start_date_filter(temp_config, mock_ytdlp_output):
         {
             "platform": "youtube", "id": "old1",
             "title": "Old AI Video", "url": "https://youtube.com/watch?v=old1",
-            "duration_minutes": 15, "upload_date": "20260520", "creator": "Test Channel",
+            "duration_minutes": 15, "upload_date": _ago(10), "creator": "Test Channel",
         },
         {
             "platform": "youtube", "id": "new1",
             "title": "New AI Video", "url": "https://youtube.com/watch?v=new1",
-            "duration_minutes": 20, "upload_date": "20260528", "creator": "Test Channel",
+            "duration_minutes": 20, "upload_date": _ago(1), "creator": "Test Channel",
         },
     ]):
         results = collector.collect()
@@ -197,12 +232,12 @@ def test_L3_duration_filter(temp_config):
         {
             "platform": "youtube", "id": "short1",
             "title": "AI Short", "url": "https://youtube.com/watch?v=short1",
-            "duration_minutes": 0.5, "upload_date": "20260528", "creator": "Test Channel",
+            "duration_minutes": 0.5, "upload_date": _ago(1), "creator": "Test Channel",
         },
         {
             "platform": "youtube", "id": "long1",
             "title": "Long AI Tutorial", "url": "https://youtube.com/watch?v=long1",
-            "duration_minutes": 25, "upload_date": "20260528", "creator": "Test Channel",
+            "duration_minutes": 25, "upload_date": _ago(1), "creator": "Test Channel",
         },
     ]):
         results = collector.collect()
@@ -235,12 +270,12 @@ def test_L4_keyword_filter(temp_config):
         {
             "platform": "youtube", "id": "match1",
             "title": "Claude Code New Features", "url": "https://youtube.com/watch?v=match1",
-            "duration_minutes": 10, "upload_date": "20260528", "creator": "Test Channel",
+            "duration_minutes": 10, "upload_date": _ago(1), "creator": "Test Channel",
         },
         {
             "platform": "youtube", "id": "nomatch1",
             "title": "History of Computing", "url": "https://youtube.com/watch?v=nomatch1",
-            "duration_minutes": 15, "upload_date": "20260528", "creator": "Test Channel",
+            "duration_minutes": 15, "upload_date": _ago(1), "creator": "Test Channel",
         },
     ]):
         results = collector.collect()
@@ -270,12 +305,12 @@ def test_L4_5_ai_relevance(temp_config):
         {
             "platform": "youtube", "id": "ai1",
             "title": "Building LLM Applications in 2026", "url": "https://youtube.com/watch?v=ai1",
-            "duration_minutes": 20, "upload_date": "20260528", "creator": "Test Channel",
+            "duration_minutes": 20, "upload_date": _ago(1), "creator": "Test Channel",
         },
         {
             "platform": "youtube", "id": "cooking1",
             "title": "Easy Pasta Recipes for Dinner", "url": "https://youtube.com/watch?v=cooking1",
-            "duration_minutes": 12, "upload_date": "20260528", "creator": "Test Channel",
+            "duration_minutes": 12, "upload_date": _ago(1), "creator": "Test Channel",
         },
     ]):
         results = collector.collect()
@@ -310,17 +345,17 @@ def test_L5_topic_dedup(temp_config):
             {
                 "platform": "youtube", "id": "dup1", "title": "DeepSeek V4 Review (short)",
                 "url": "https://youtube.com/watch?v=dup1", "duration_minutes": 5,
-                "upload_date": "20260528", "creator": "Test Channel",
+                "upload_date": _ago(1), "creator": "Test Channel",
             },
             {
                 "platform": "youtube", "id": "dup2", "title": "DeepSeek V4 Full Analysis",
                 "url": "https://youtube.com/watch?v=dup2", "duration_minutes": 45,
-                "upload_date": "20260528", "creator": "Test Channel",
+                "upload_date": _ago(1), "creator": "Test Channel",
             },
             {
                 "platform": "youtube", "id": "unique1", "title": "MCP Protocol Tutorial",
                 "url": "https://youtube.com/watch?v=unique1", "duration_minutes": 30,
-                "upload_date": "20260528", "creator": "Test Channel",
+                "upload_date": _ago(1), "creator": "Test Channel",
             },
         ]):
             results = collector.collect()
@@ -355,7 +390,7 @@ def test_L6_creator_cap(temp_config):
         {
             "platform": "youtube", "id": f"v{i}", "title": f"AI Video {i}",
             "url": f"https://youtube.com/watch?v=v{i}", "duration_minutes": 10 + i,
-            "upload_date": "20260528", "creator": "Test Channel",
+            "upload_date": _ago(1), "creator": "Test Channel",
         }
         for i in range(5)
     ]):
@@ -371,45 +406,59 @@ def test_L6_creator_cap(temp_config):
 
 
 def test_L7_catalog_dedup(temp_config):
-    """L7: catalog.db 去重 — 已入库 URL 在最后阶段过滤。"""
-    with tempfile.TemporaryDirectory() as tmp:
-        db_path = Path(tmp) / "catalog.db"
-        import sqlite3
-        conn = sqlite3.connect(str(db_path))
-        conn.execute("CREATE TABLE IF NOT EXISTS items (url TEXT)")
-        conn.execute("INSERT INTO items (url) VALUES (?)", ("https://youtube.com/watch?v=ingested1",))
-        conn.commit()
-        conn.close()
+    """L7: 去重库兜底 — L1 之后新入库的 URL 在最后阶段仍被过滤。
 
-        db = CatalogDBAdapter(db_path)
-        temp_config.video_sources_path.parent.mkdir(parents=True, exist_ok=True)
-        sources = json.loads(temp_config.video_sources_path.read_text())
-        sources["settings"]["skip_relevance_filter"] = True
-        sources["settings"]["dedup_strategy"] = "none"
-        sources["settings"]["coldstart"] = True  # 禁用 backfill
-        sources["settings"]["coldstart_max_per_day"] = 5
-        temp_config.video_sources_path.write_text(json.dumps(sources))
+    2026-07-26 改写（缺陷 #2）：同 L1，原测试自建 catalog.db + 显式注入 db，
+    覆盖的是生产不可达路径。现在用生产默认注入，并在 L1 通过之后才登记该 URL
+    （模拟"同一天另一个进程刚发布了它"），这样断言真正落在 L7 兜底层。
+    """
+    temp_config.video_sources_path.parent.mkdir(parents=True, exist_ok=True)
+    sources = json.loads(temp_config.video_sources_path.read_text())
+    sources["settings"]["skip_relevance_filter"] = True
+    sources["settings"]["dedup_strategy"] = "none"
+    sources["settings"]["coldstart"] = True  # 禁用 backfill
+    sources["settings"]["coldstart_max_per_day"] = 5
+    temp_config.video_sources_path.write_text(json.dumps(sources))
 
-        collector = VideoCollector(temp_config, db=db)
+    collector = VideoCollector(temp_config)
+    today = datetime.now().strftime("%Y%m%d")
+    videos = [
+        {
+            "platform": "youtube", "id": "ingested1", "title": "Already Ingested",
+            "url": "https://youtube.com/watch?v=ingested1", "duration_minutes": 15,
+            "upload_date": today, "creator": "Test Channel",
+        },
+        {
+            "platform": "youtube", "id": "new1", "title": "New AI Video",
+            "url": "https://youtube.com/watch?v=new1", "duration_minutes": 20,
+            "upload_date": today, "creator": "Test Channel",
+        },
+    ]
 
-        with mock.patch.object(collector, "_detect_yt_videos", return_value=[
-            {
-                "platform": "youtube", "id": "ingested1", "title": "Already Ingested",
-                "url": "https://youtube.com/watch?v=ingested1", "duration_minutes": 15,
-                "upload_date": "20260528", "creator": "Test Channel",
-            },
-            {
-                "platform": "youtube", "id": "new1", "title": "New AI Video",
-                "url": "https://youtube.com/watch?v=new1", "duration_minutes": 20,
-                "upload_date": "20260528", "creator": "Test Channel",
-            },
-        ]):
+    ingested_url = "https://youtube.com/watch?v=ingested1"
+
+    def _register_then_passthrough(candidates):
+        """在 L1 放行之后、L7 之前登记 ingested1 —— 只有 L7 兜底能拦住它。
+
+        钩在 `_dedup_by_identity`（L1 之后、处理之前）而不是 `_process_video`：
+        挂在 `_process_video` 里的话，去重未接线时 `mark_ingested` 抛的
+        AttributeError 会被 collect() 的 per-video except 吞掉，视频同样不出现在
+        结果里 —— 测试会因为错误的原因通过（vacuous pass）。
+        """
+        collector.mark_ingested({
+            "url": ingested_url, "platform": "youtube", "title": "Already Ingested",
+        })
+        return candidates
+
+    with mock.patch.object(collector, "_detect_yt_videos", return_value=videos):
+        with mock.patch.object(
+            collector, "_dedup_by_identity", side_effect=_register_then_passthrough
+        ):
             results = collector.collect()
 
-        # L7 dedup: only new1 should survive
-        assert len(results) >= 1
-        ids = [r["video"]["id"] for r in results]
-        assert "new1" in ids
+    ids = [r["video"]["id"] for r in results]
+    assert collector.db.is_ingested(ingested_url) is True
+    assert ids == ["new1"], f"L7 兜底未生效（已入库视频仍进入研究阶段）: {ids}"
 
 
 # ---------------------------------------------------------------------------
@@ -479,7 +528,7 @@ def test_collect_runs(temp_config):
         {
             "platform": "youtube", "id": "test1", "title": "AI Agents Tutorial",
             "url": "https://youtube.com/watch?v=test1", "duration_minutes": 15,
-            "upload_date": "20260528", "creator": "Test Channel",
+            "upload_date": _ago(1), "creator": "Test Channel",
         },
     ]):
         results = collector.collect()

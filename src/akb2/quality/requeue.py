@@ -90,7 +90,11 @@ def run_requeue(
         return 1
 
     raw_dir = Path(vault_root) / "raw"
-    ledger_path = Path(vault_root) / "staging" / "quality-ledger.jsonl"
+    # 与 runner / promote 共用同一份账本；写到 vault 旧账本会让 requeue 事件
+    # runner 看不到 → 手动重排队静默失效（F26 通路失灵）。
+    from src.akb2.quality.promote import _resolve_ledger_path
+
+    ledger_path = _resolve_ledger_path(Path(vault_root), "quality-ledger.jsonl")
     if not raw_dir.is_dir() or not ledger_path.exists():
         print(
             f"ERROR: raw 目录或账本不存在(raw={raw_dir}, ledger={ledger_path})"

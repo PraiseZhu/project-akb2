@@ -415,11 +415,14 @@ def _mock_enrich(url):
     }
 
 
-def _mock_synth(repos):
+def _mock_synth(repos, api_key=None, *, mock=False):
+    # 必须是中文：schema 的 summary/use_case 带 pattern "[一-鿿]"（至少一个 CJK
+    # 字符），英文占位文本会被 render 阶段的 schema 校验判为 schema_validation_failed，
+    # 于是这些用例断言的 SC-1/SC-3 行为（L2 补位、部分产出）根本走不到。
     return {"top_repos": [
         {**r,
-         "summary": "This is a test AI repository for machine learning workflows and testing.",
-         "use_case": "Use when building AI pipelines for testing purposes only."}
+         "summary": "这是一个用于测试的 AI 仓库，覆盖机器学习工作流与流水线校验。",
+         "use_case": "正向场景：搭建 AI 流水线时使用。反向场景：生产环境不要直接依赖。"}
         for r in repos
     ]}
 

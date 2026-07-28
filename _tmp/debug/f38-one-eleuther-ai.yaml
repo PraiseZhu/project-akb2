@@ -1,9 +1,0 @@
-sources:
-- slug: eleuther-ai
-  domain: blog.eleuther.ai
-  feed_url: https://blog.eleuther.ai/index.xml
-  listing_url: https://blog.eleuther.ai
-  rate_limit: 3600
-  status: trial
-  category: authority
-  notes: EleutherAI — 开源 LLM 研究/可解释性深文

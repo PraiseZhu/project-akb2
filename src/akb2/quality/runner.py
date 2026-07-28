@@ -16,11 +16,13 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import re
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -38,7 +40,13 @@ AVOID_WINDOW_MINUTES: int = 15  # 避让窗口 ± 分钟
 WEEKLY_SPOT_CHECK_DAY: int = 6  # 周日 (0=Mon, 6=Sun)
 SPOT_CHECK_SAMPLE_SIZE: int = 3  # 周抽检样本数
 SPOT_CHECK_PASS_THRESHOLD: float = 0.8  # 达标率阈值
-MAX_PROCESSING_LOCK_AGE_SEC: int = 3600  # 锁文件最大年龄（超时自动清理）
+MAX_PROCESSING_LOCK_AGE_SEC: int = 3600  # 跨机锁最大年龄（超龄视为对方崩溃残留）
+
+# 处理锁（缺陷 #11b）：锁文件名 + 本机 hostname + 本进程持有的 fd。
+# flock 绑定 file description，必须把句柄留在进程里，否则 GC 关闭 fd 即丢锁。
+PROCESSING_LOCK_NAME: str = "processing.lock"
+_HOSTNAME: str = socket.gethostname()
+_PROCESSING_LOCK_FD: Any | None = None
 
 # F46 needs_repair 驻留通路预算（宪法 P1 有界）：
 #   repair 不收敛(内容性,非 infra/floor) → 驻留(非 abort),低频重掷 grader+repair,
@@ -126,7 +134,12 @@ class RunnerConfig:
 
     def __post_init__(self) -> None:
         if not self.lock_dir:
-            self.lock_dir = os.path.join(self.staging_dir, "locks")
+            # 缺陷 #11a：锁默认落机器本地状态根，绝不落 staging（在 Syncthing
+            # 同步范围内 → 两台机器互删/互抢锁）。测试与部署可用 AKB2_STATE_ROOT
+            # 覆盖，或显式传 lock_dir。
+            from src.akb2.common.state_paths import get_lock_dir
+
+            self.lock_dir = str(get_lock_dir())
 
 
 def _now() -> datetime:
@@ -701,45 +714,163 @@ def _scan_queue(config: RunnerConfig) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _acquire_processing_lock(config: RunnerConfig) -> bool:
-    """获取处理锁（排他）。
+def _lock_file_path(config: RunnerConfig) -> Path:
+    """处理锁文件路径。"""
+    return Path(config.lock_dir) / PROCESSING_LOCK_NAME
 
-    使用文件锁确保同一时刻仅 1 篇在处理。
-    返回 True 表示成功获取锁。
-    """
-    lock_dir = Path(config.lock_dir)
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    lock_file = lock_dir / "processing.lock"
 
-    # 检查已有锁是否过期
-    if lock_file.exists():
-        try:
-            lock_age = time.time() - lock_file.stat().st_mtime
-            if lock_age > MAX_PROCESSING_LOCK_AGE_SEC:
-                lock_file.unlink(missing_ok=True)
-            else:
-                return False
-        except OSError:
-            return False
-
-    # 尝试创建锁文件
+def _read_lock_holder(lock_file: Path) -> dict | None:
+    """读锁文件里记录的持有者（不可读/非法 JSON → None）。"""
     try:
-        lock_file.write_text(
-            json.dumps({
-                "pid": os.getpid(),
-                "ts": _now().isoformat(),
-            }),
-            encoding="utf-8",
-        )
-        return True
+        raw = lock_file.read_text(encoding="utf-8")
     except OSError:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _acquire_processing_lock(config: RunnerConfig) -> bool:
+    """获取处理锁（原子、跨进程排他，并对跨机持有者可见）。
+
+    机制（复用 promotion/promote.py `_acquire_promotion_lock`、video/collector.py
+    `_save_pending` 的 fcntl.flock 范式，不另发明写法）：
+
+    1. `open("a+")` 拿到独立 file description，`flock(LOCK_EX|LOCK_NB)` 原子抢占。
+       抢不到 → 本机另有活着的 runner → False。进程崩溃时内核自动释放 flock，
+       所以不再需要靠 mtime 猜死锁（旧实现的 check-then-write 有竞态：两个进程
+       都能通过"文件不存在"检查再各自写入）。
+    2. flock 抢到后再看锁内容：若记录的 host 不是本机、状态仍是 held 且未超龄
+       → 锁目录被两台机器共享（例如仍指向同步目录），另一台可能正在处理 → 让出。
+       flock 不跨机生效，hostname 是这里唯一可比的跨机证据（pid 跨机无意义）。
+    3. 写入 `{host, pid, ts, state: "held"}`，release 据此只释放自己的锁。
+
+    Returns:
+        True 表示成功获取锁（fd 存于模块级 `_PROCESSING_LOCK_FD`，须调用
+        `_release_processing_lock` 释放）。
+    """
+    global _PROCESSING_LOCK_FD
+
+    if _PROCESSING_LOCK_FD is not None:
+        # 本进程已持锁：不重入（否则同一进程的第二个 fd 会被 flock 拒绝或自锁）
         return False
+
+    lock_dir = Path(config.lock_dir)
+    try:
+        lock_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"[runner] 锁目录不可用: {lock_dir} — {exc}", file=sys.stderr)
+        return False
+
+    lock_file = _lock_file_path(config)
+    try:
+        fd = open(lock_file, "a+", encoding="utf-8")
+    except OSError as exc:
+        print(f"[runner] 锁文件不可打开: {lock_file} — {exc}", file=sys.stderr)
+        return False
+
+    try:
+        fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fd.close()
+        return False  # 本机另有 runner 正持锁
+
+    # flock 到手，再判跨机持有者（flock 不跨机）
+    holder = _read_lock_holder(lock_file)
+    if holder and holder.get("state") == "held":
+        holder_host = str(holder.get("host", ""))
+        if holder_host and holder_host != _HOSTNAME:
+            try:
+                age = time.time() - lock_file.stat().st_mtime
+            except OSError:
+                age = 0.0
+            if age <= MAX_PROCESSING_LOCK_AGE_SEC:
+                print(
+                    f"[runner] 处理锁由另一台机器持有（host={holder_host} "
+                    f"pid={holder.get('pid')} age={int(age)}s），让出本轮。"
+                    f"锁目录 {lock_dir} 疑似跨机共享 —— flock 不跨机生效",
+                    file=sys.stderr,
+                )
+                fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+                fd.close()
+                return False
+            print(
+                f"[runner] 回收跨机超龄锁（host={holder_host} age={int(age)}s）",
+                file=sys.stderr,
+            )
+
+    try:
+        fd.seek(0)
+        fd.truncate()
+        fd.write(json.dumps({
+            "host": _HOSTNAME,
+            "pid": os.getpid(),
+            "ts": _now().isoformat(),
+            "state": "held",
+        }))
+        fd.flush()
+        os.fsync(fd.fileno())
+    except OSError as exc:
+        print(f"[runner] 锁内容写入失败: {exc}", file=sys.stderr)
+        fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+        fd.close()
+        return False
+
+    _PROCESSING_LOCK_FD = fd
+    return True
 
 
 def _release_processing_lock(config: RunnerConfig) -> None:
-    """释放处理锁。"""
-    lock_file = Path(config.lock_dir) / "processing.lock"
-    lock_file.unlink(missing_ok=True)
+    """释放处理锁——只释放本进程持有的那把。
+
+    与旧实现的区别：旧版无条件 `unlink`，另一台机器（或另一个进程）可以删掉
+    正在被持有的锁。现在：
+
+    - 没持锁 → 什么都不删（打印一行，fail-visible）。
+    - 持锁 → 锁内容标记 `state=released` 而**不 unlink**：unlink 会让已 open 同
+      一 inode 的等待者与后来者分别 flock 成功（经典 unlink 竞态），改标记即可。
+    """
+    global _PROCESSING_LOCK_FD
+
+    fd = _PROCESSING_LOCK_FD
+    lock_file = _lock_file_path(config)
+    if fd is None:
+        if lock_file.exists():
+            print(
+                f"[runner] 未持有处理锁，跳过释放（不删他人锁 {lock_file}）",
+                file=sys.stderr,
+            )
+        return
+
+    try:
+        holder = _read_lock_holder(lock_file)
+        if holder is not None and (
+            holder.get("host") != _HOSTNAME or holder.get("pid") != os.getpid()
+        ):
+            print(
+                f"[runner] 锁内容已被他人改写（{holder}），只释放本地 fd，不动锁文件",
+                file=sys.stderr,
+            )
+        else:
+            fd.seek(0)
+            fd.truncate()
+            fd.write(json.dumps({
+                "host": _HOSTNAME,
+                "pid": os.getpid(),
+                "ts": _now().isoformat(),
+                "state": "released",
+            }))
+            fd.flush()
+    except OSError as exc:
+        print(f"[runner] 锁释放标记写入失败: {exc}", file=sys.stderr)
+    finally:
+        try:
+            fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+        finally:
+            fd.close()
+            _PROCESSING_LOCK_FD = None
 
 
 # ---------------------------------------------------------------------------
@@ -2937,12 +3068,34 @@ def main(argv: list[str] | None = None) -> int:
         os.environ.get("AKB2_POLL_INTERVAL", str(POLL_INTERVAL_SECONDS))
     )
 
+    # 缺陷 #11a：账本与失败账本是**机器本地状态**，不能落 staging（在 Syncthing
+    # 同步范围内 → 两台机器各自 read-modify-write 同一份 → .sync-conflict 分叉丢行）。
+    # 旧位置存在而新位置缺失时由 resolve_state_file 复制继承（旧文件保留不删），
+    # 否则本机会把已入库的文章全量重跑。
+    try:
+        from src.akb2.common.state_paths import LEDGER_SUBDIR, resolve_state_file
+
+        ledger_path = str(resolve_state_file(
+            "quality-ledger.jsonl",
+            subdir=LEDGER_SUBDIR,
+            legacy_path=os.path.join(staging_dir, "quality-ledger.jsonl"),
+        ))
+        failures_path = str(resolve_state_file(
+            "failures.jsonl",
+            subdir=LEDGER_SUBDIR,
+            legacy_path=os.path.join(staging_dir, "failures.jsonl"),
+        ))
+    except (RuntimeError, OSError) as exc:
+        # fail-closed：状态根不可用时不退回同步目录（那会再次分叉丢数据）
+        print(f"ERROR: 无法解析机器本地状态根: {exc}", file=sys.stderr)
+        return 1
+
     config = RunnerConfig(
         raw_dir=raw_dir,
-        ledger_path=os.path.join(staging_dir, "quality-ledger.jsonl"),
+        ledger_path=ledger_path,
         staging_dir=staging_dir,
         vault_root=vault_root,
-        failures_path=os.path.join(staging_dir, "failures.jsonl"),
+        failures_path=failures_path,
         grader_result_dir=os.path.join(staging_dir, "grader-results"),
         poll_interval_seconds=poll_interval,
         auto_promote=auto_promote,

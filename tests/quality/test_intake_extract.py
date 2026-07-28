@@ -14,9 +14,13 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
+
+import pytest
 
 from src.akb2.quality.intake.extract import (
     MIN_CONTENT_LENGTH,
@@ -39,6 +43,45 @@ _FEED_CTX = ExtractionContext(
     feed_published="2026-06-12",
     url="https://example.com/article",
 )
+
+# ---------------------------------------------------------------------------
+# 外部依赖门控：真实 defuddle CLI
+# ---------------------------------------------------------------------------
+# 本文件有 5 项测试断言 **真实** defuddle CLI 的输出（title 不是硬编码桩、正文是
+# markdown 不含 HTML 标签、word_count 与正文一致）。这些断言的全部价值就在于"真跑"
+# —— mock 掉 defuddle 等于删掉它们的覆盖。所以缺 CLI 时既不能放宽断言，也不能让
+# CI 静默跳过（变绿而覆盖归零，是本仓栽过两次的模式）。
+#
+# 契约（与 .github/workflows/ci.yml 的 tests job 及
+# docs/runbooks/intake-tools-setup.md §6.6 逐字对齐）：
+#   AKB2_REQUIRE_DEFUDDLE == "1" → 缺 CLI 即 **失败**（CI 用，禁止 skip）
+#   未设 / 非 "1"                → 缺 CLI 则 skip（本地开发不被外部 Node 依赖挡住）
+
+REQUIRE_DEFUDDLE_ENV = "AKB2_REQUIRE_DEFUDDLE"
+DEFUDDLE_INSTALL_DOC = "docs/runbooks/intake-tools-setup.md §6"
+
+
+def require_defuddle_cli() -> str:
+    """返回 PATH 上 defuddle 的路径；缺失时按上述契约 fail（CI）或 skip（本地）。"""
+    path = shutil.which("defuddle")
+    if path:
+        return path
+    if os.environ.get(REQUIRE_DEFUDDLE_ENV) == "1":
+        pytest.fail(
+            f"defuddle CLI 不在 PATH 上，而 {REQUIRE_DEFUDDLE_ENV}=1 要求它必须存在。"
+            "CI 必须装 defuddle，见 .github/workflows/ci.yml —— tests job 的三步："
+            "actions/setup-node（Node 24）→ `npm install -g defuddle-cli@0.7.0` →"
+            "「Verify defuddle CLI on PATH」。本项断言真实抽取输出，缺 CLI 时不得 skip："
+            "跳过会让 CI 变绿而这条链路的覆盖归零。",
+            pytrace=False,
+        )
+    pytest.skip(
+        f"本地未装 defuddle；装法见 {DEFUDDLE_INSTALL_DOC}"
+        "（`npm install -g defuddle-cli@0.7.0`，注意 §6.3 的包身份陷阱：不要按"
+        " `--version` 输出去装 `defuddle@0.1.0`，那个包没有 bin）。"
+        f"CI 侧设 {REQUIRE_DEFUDDLE_ENV}=1，缺失即失败而非跳过。"
+    )
+
 
 # ---------------------------------------------------------------------------
 # 辅助检测函数
@@ -92,6 +135,7 @@ class TestExtractDecisionTree:
         self, sample_article_html: str, temp_failures_path: Path
     ):
         """defuddle 成功抽取完整文章。"""
+        require_defuddle_cli()
         ctx = ExtractionContext(
             source_slug="test-source",
             source_publisher="Test Publisher",
@@ -312,7 +356,15 @@ class TestBatchExtract:
     def test_batch_extract_multiple_urls(
         self, sample_article_html: str, temp_failures_path: Path
     ):
-        """批量抽取多个 URL。"""
+        """批量抽取多个 URL。
+
+        外部依赖只有一个：defuddle CLI。html 由 html_map 注入（不走 HTTP fetcher），
+        非反爬页 → 决策树分支 2 defuddle 命中即 return，Scrapling 分支永不进入。
+        CI 日志里那条 ``Scrapling browser returned empty`` 是"defuddle 缺失后降级到
+        分支 3"的下游症状，不是本例的第二个外部依赖 —— 下方 method 断言把这个前提
+        钉住：一旦它靠 Scrapling（真网/浏览器）过关，这条测试立刻红。
+        """
+        require_defuddle_cli()
         urls = [
             "https://example.com/a",
             "https://example.com/b",
@@ -338,6 +390,9 @@ class TestBatchExtract:
         assert len(results) == 2
         assert results["https://example.com/a"].extraction_success
         assert results["https://example.com/b"].extraction_success
+        # 成功必须来自 defuddle 分支（见 docstring：钉住"唯一外部依赖"这个前提）
+        for url in urls:
+            assert results[url].method == ExtractMethod.DEFUDDLE
 
 
 # ---------------------------------------------------------------------------
@@ -362,6 +417,7 @@ class TestExtractViaDefuddle:
 
     def test_returns_markdown_content_without_html_tags(self, sample_article_html: str):
         """content 字段不含 HTML 标签（defuddle --markdown 输出纯 markdown）。"""
+        require_defuddle_cli()
         from src.akb2.quality.intake.extract import _extract_via_defuddle
 
         result = _extract_via_defuddle("https://example.com/article", sample_article_html)
@@ -375,6 +431,7 @@ class TestExtractViaDefuddle:
 
     def test_title_is_not_hardcoded_stub(self, sample_article_html: str):
         """title 是从文档实际提取的，不是写死的占位字符串。"""
+        require_defuddle_cli()
         from src.akb2.quality.intake.extract import _extract_via_defuddle
 
         result = _extract_via_defuddle("https://example.com/article", sample_article_html)
@@ -385,6 +442,7 @@ class TestExtractViaDefuddle:
 
     def test_word_count_based_on_markdown_body(self, sample_article_html: str):
         """word_count 基于 markdown 正文计算（不是 HTML 源字数）。"""
+        require_defuddle_cli()
         from src.akb2.quality.intake.extract import _count_words, _extract_via_defuddle
 
         result = _extract_via_defuddle("https://example.com/article", sample_article_html)
