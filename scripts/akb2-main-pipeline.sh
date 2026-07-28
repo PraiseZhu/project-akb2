@@ -35,11 +35,17 @@ case "$STATE_ROOT" in
         exit 1
         ;;
 esac
-LOCK_FILE="${AKB2_LOCK_FILE:-$STATE_ROOT/locks/runner.lock}"
 # 迁移期兜底:锁位置从仓库换到状态根的那一刻,旧位置可能还有一个活着的 daemon
 # 持锁(实测 2026-07-25 起的常驻进程锁就在 staging/locks/runner.lock)。新位置查不到
 # 它 → 会再起第二个 daemon。所以旧锁仍要判活一次,活着就让位。
-LEGACY_LOCK_FILE="${AKB2_LEGACY_LOCK_FILE:-$PROJECT_ROOT/staging/locks/runner.lock}"
+# 显式给了 AKB2_LOCK_FILE = 调用方自己指定了锁位置,不套用默认迁移语义。
+if [ -n "${AKB2_LOCK_FILE:-}" ]; then
+    LOCK_FILE="$AKB2_LOCK_FILE"
+    LEGACY_LOCK_FILE=""
+else
+    LOCK_FILE="$STATE_ROOT/locks/runner.lock"
+    LEGACY_LOCK_FILE="${AKB2_LEGACY_LOCK_FILE:-$PROJECT_ROOT/staging/locks/runner.lock}"
+fi
 
 # --- Env 加载 / 网关变量归一化 ---
 # launchd 不继承交互 shell 环境；runner 自己加载只含 key/base/model 的用户 env。
@@ -108,7 +114,7 @@ fi
 mkdir -p "$(dirname "$LOCK_FILE")"
 
 # 迁移期:旧位置(仓库内)若还有活着的 daemon,让位并明示(不删旧锁,那是它的)
-if [ "$LEGACY_LOCK_FILE" != "$LOCK_FILE" ] && [ -f "$LEGACY_LOCK_FILE" ]; then
+if [ -n "$LEGACY_LOCK_FILE" ] && [ "$LEGACY_LOCK_FILE" != "$LOCK_FILE" ] && [ -f "$LEGACY_LOCK_FILE" ]; then
     LEGACY_PID="$(cat "$LEGACY_LOCK_FILE" 2>/dev/null || echo '')"
     if [ -n "$LEGACY_PID" ] && kill -0 "$LEGACY_PID" 2>/dev/null; then
         echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] WARN: runner 仍持有迁移前的旧锁 $LEGACY_LOCK_FILE (PID=$LEGACY_PID), exiting" >&2

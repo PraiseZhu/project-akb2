@@ -450,7 +450,7 @@ class VideoCollector:
         把本地日起点换算成 UTC 时刻再做区间查询。
         """
         quota = self._nlm_daily_quota()
-        since = local_day_start_utc_iso()
+        since = datetime.now().date().isoformat()  # MUTATION
         used = self.db.count_ingested_since(since)
         if used:
             logger.info(
