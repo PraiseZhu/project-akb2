@@ -1,9 +1,0 @@
-sources:
-- slug: jason-liu
-  domain: jxnl.co
-  feed_url: https://jxnl.co/feed_rss_created.xml
-  listing_url: https://jxnl.co/writing
-  rate_limit: 3600
-  status: trial
-  category: supplementary
-  notes: Jason Liu — RAG/结构化输出/LLM 工程实践(instructor 作者)

@@ -1,9 +1,0 @@
-sources:
-- slug: sshh-blog
-  domain: blog.sshh.io
-  feed_url: https://blog.sshh.io/feed
-  listing_url: https://blog.sshh.io
-  rate_limit: 3600
-  status: trial
-  category: supplementary
-  notes: Shrivu Shankar — LLM/Agent 工程实践深文

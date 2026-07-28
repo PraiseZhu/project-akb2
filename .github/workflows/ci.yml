@@ -11,9 +11,9 @@ permissions:
 jobs:
   ruff:
     runs-on: ubuntu-latest
-    # 存量 lint 先非阻断:只报告、不挡合并。
-    # 待 ruff-cleanup 清零后,删掉 continue-on-error 即变硬闸。
-    continue-on-error: true
+    # 2026-07-28 摘除 continue-on-error：`ruff check src tests` 本地已全绿，
+    # 且历史证明该开关会让 run conclusion 与 job 结论脱钩（job 失败 run 仍报
+    # success，"CI success" 信息量为 0）。此后 ruff 为硬闸。
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6

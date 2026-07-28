@@ -88,3 +88,6 @@ evals/main-pipeline-quality/fixtures/raw-html/*
 !evals/main-pipeline-quality/fixtures/raw-html/crewai.html
 !evals/main-pipeline-quality/fixtures/raw-html/aider.html
 !evals/main-pipeline-quality/fixtures/raw-html/mcp.html
+
+# 临时调试产物（项目规范：projects/<P>/_tmp/debug/，不入 git）
+_tmp/

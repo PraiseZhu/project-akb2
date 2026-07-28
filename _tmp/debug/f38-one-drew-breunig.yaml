@@ -1,9 +1,0 @@
-sources:
-- slug: drew-breunig
-  domain: dbreunig.com
-  feed_url: https://www.dbreunig.com/feed.xml
-  listing_url: https://www.dbreunig.com
-  rate_limit: 3600
-  status: trial
-  category: supplementary
-  notes: Drew Breunig — context engineering 专题深文(taxonomy 直接命中)
