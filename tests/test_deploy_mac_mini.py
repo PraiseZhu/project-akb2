@@ -103,6 +103,11 @@ def _run_deploy_dry_run(
     env = os.environ.copy()
     env["HOME"] = str(home)
     env["PATH"] = f"{fake_bin}:/usr/bin:/bin"
+    if not include_defuddle:
+        # PATH 已收窄到 fake_bin + 系统目录,本机/CI 真装的 defuddle(npm 全局 bin)不该落进来。
+        # 万一 npm prefix 就是 /usr,这里要给出明确原因,而不是让下游断言报一句莫名的失败。
+        leaked = shutil.which("defuddle", path=env["PATH"])
+        assert leaked is None, f"fixture 期望 defuddle 缺失,但 PATH 上仍能解析到:{leaked}"
     return subprocess.run(
         ["bash", "scripts/deploy-mac-mini.sh", "--dry-run", "--vault-root", str(vault_root)],
         cwd=work,

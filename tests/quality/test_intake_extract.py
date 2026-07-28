@@ -442,6 +442,7 @@ class TestExtractViaDefuddle:
 
     def test_word_count_based_on_markdown_body(self, sample_article_html: str):
         """word_count 基于 markdown 正文计算（不是 HTML 源字数）。"""
+        require_defuddle_cli()
         from src.akb2.quality.intake.extract import _count_words, _extract_via_defuddle
 
         result = _extract_via_defuddle("https://example.com/article", sample_article_html)
