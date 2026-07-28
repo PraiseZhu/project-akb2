@@ -39,6 +39,10 @@ LAUNCH_AGENTS="$HOME/Library/LaunchAgents"
 LABEL="com.akb2.main-pipeline"
 RUNNER_LOG="$REPO_ROOT/logs/akb2-quality-runner.log"
 UID_N="$(id -u)"
+# 机器本地状态根(锁/账本/游标):REPO_ROOT 在 ~/AI-Agent(Syncthing folder)内,
+# 锁目录不能建在仓库里,否则两台机器互看/互删对方的锁。解析顺序与
+# scripts/akb2-main-pipeline.sh、src/akb2/common/state_paths.get_state_root() 一致。
+STATE_ROOT="${AKB2_STATE_ROOT:-$HOME/Library/Application Support/akb2}"
 
 DRY_RUN=0
 SKIP_VERIFY=0
@@ -235,12 +239,17 @@ if [[ "$FAIL_COUNT" -eq 0 && -n "${PY:-}" ]]; then
   fi
 fi
 
-# B9 logs + staging/locks 目录
-if [[ "$DRY_RUN" -eq 0 ]]; then
-  mkdir -p "$REPO_ROOT/logs" "$REPO_ROOT/staging/locks" && ok "B9 logs/ + staging/locks/ 就绪"
-else
-  info "B9 dry-run:将创建 logs/ + staging/locks/"
-fi
+# B9 logs + 机器本地锁目录(不在仓库内,见 STATE_ROOT 说明)
+case "$STATE_ROOT" in
+  "$HOME/AI-Agent"|"$HOME/AI-Agent"/*|"$HOME/Library/Mobile Documents"/*|/Volumes/AKB2/*)
+    fail "B9 AKB2_STATE_ROOT=$STATE_ROOT 在跨机同步范围内(状态会被 Syncthing 分叉丢失)" ;;
+  *)
+    if [[ "$DRY_RUN" -eq 0 ]]; then
+      mkdir -p "$REPO_ROOT/logs" "$STATE_ROOT/locks" && ok "B9 logs/ + $STATE_ROOT/locks/ 就绪"
+    else
+      info "B9 dry-run:将创建 logs/ + $STATE_ROOT/locks/"
+    fi ;;
+esac
 
 abort_if_failed
 

@@ -9,6 +9,9 @@ twitter-cli 每次调用都打 "Failed to init ClientTransaction" 并让 GraphQL
 1. 连续命中同一全局签名达阈值 → 立刻中止，不再遍历剩余账号（省时间、不触限流）
 2. 上游故障导致的 0 产量 → 显式失败，**不降级 fixture**（不把工具坏了伪装成没素材）
 3. 归因不得指向 curator 配置
+
+分工提示（2026-07-28 追加 preflight 探针后）：**第 1 个账号就命中**的场景由探针
+接管（回归在 `test_intake_preflight.py`）；本文件的连击护栏专管「跑到中途才坏」。
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ from types import SimpleNamespace
 import pytest
 
 from akb2.briefing.intake import account_collector as ac
+from akb2.briefing.intake import l0_collector as l0
 from akb2.briefing.intake.l0_collector import (
     UPSTREAM_FATAL_FAILFAST_STREAK,
     UpstreamCollectorBroken,
@@ -31,6 +35,13 @@ _FATAL_STDERR = (
     "'NoneType' object has no attribute 'group'"
 )
 _TRANSIENT_STDERR = "WARNING twitter_cli.client: Rate limited (429), retrying in 5.2s"
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_diagnosis(monkeypatch):
+    """成因归因里的两个辅助探测钉死：本文件断言的是中止行为，不是本机安装状态。"""
+    monkeypatch.setattr(l0, "_login_state", lambda: ("authenticated", "stub"))
+    monkeypatch.setattr(l0, "_patch_state", lambda: ("present", "stub"))
 
 
 @pytest.fixture
@@ -66,22 +77,42 @@ def test_match_upstream_fatal_only_matches_global_signature():
 def test_failfast_stops_after_streak_instead_of_sweeping_all_accounts(
     many_handles, monkeypatch, capsys
 ):
-    """核心：不再遍历 47 个账号。缺陷版会跑满 47 个。"""
+    """核心：不再遍历 47 个账号。缺陷版会跑满 47 个。
+
+    第一个账号刻意给成功，把 preflight 探针放过去，专测「中途才坏」的连击护栏：
+    探针之后再连续 STREAK 次命中同一签名就必须止损。
+    """
+    ok_payload = (
+        '{"ok": true, "data": [{"id": "1", "text": "hi", '
+        '"author": {"screenName": "a"}, "createdAtISO": "2026-07-28T00:00:00Z"}]}'
+    )
     calls: list[str] = []
-    monkeypatch.setattr(subprocess, "run", _stub_run(calls, stderr=_FATAL_STDERR))
+
+    def _run(cmd, **kwargs):
+        handle = _handle_from_cmd(cmd)
+        calls.append(handle)
+        if handle == many_handles[0]:
+            return SimpleNamespace(returncode=0, stdout=ok_payload, stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr=_FATAL_STDERR)
+
+    monkeypatch.setattr(subprocess, "run", _run)
     collector = ac.AccountCollector(pacing_sec=0.0)
 
     with pytest.raises(UpstreamCollectorBroken) as exc:
         collector._fetch_tier_raw("en")
 
-    assert len(calls) == UPSTREAM_FATAL_FAILFAST_STREAK, (
-        f"应在连续 {UPSTREAM_FATAL_FAILFAST_STREAK} 次命中后中止，"
-        f"实际调用了 {len(calls)} 个账号"
+    expected = ac.PREFLIGHT_PROBE_ACCOUNTS + UPSTREAM_FATAL_FAILFAST_STREAK
+    assert len(calls) == expected, (
+        f"探针放行后应在连续 {UPSTREAM_FATAL_FAILFAST_STREAK} 次命中时中止"
+        f"（共 {expected} 次账号调用），实际调用了 {len(calls)} 个账号"
     )
     assert len(calls) < len(many_handles)
     assert "Failed to init ClientTransaction" in str(exc.value)
-    # 报错必须点明「不是配置/登录问题」，否则运维又被指错方向
-    assert "登录态与账号配置均非成因" in str(exc.value)
+    # 报错必须点明「不是 curator 配置问题」，否则运维又被指错方向
+    assert "curator 账号配置非成因" in str(exc.value)
+    # 成因判定（登录态 / 补丁在位性 / 下一步）必须随异常一起送到运维眼前
+    assert "成因判定" in str(exc.value)
+    assert "下一步" in str(exc.value)
 
 
 def test_transient_per_account_failure_does_not_trigger_failfast(

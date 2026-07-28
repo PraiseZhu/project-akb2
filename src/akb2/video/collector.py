@@ -45,6 +45,8 @@ from src.akb2.video.dedup_store import (
     video_identity,
 )
 from src.akb2.video.llm_adapter import LLMAdapter, extract_json_from_llm_response
+from src.akb2.video.published_index import PublishedIdentityIndex
+from src.akb2.video.url_expand import ShortLinkExpander
 
 logger = logging.getLogger("akb2.video.collector")
 
@@ -57,10 +59,22 @@ class VideoCollector:
         config: VideoConfig | None = None,
         db: VideoDedupStore | None = None,
         llm_adapter: LLMAdapter | None = None,
+        published_index: PublishedIdentityIndex | None = None,
+        shortlink_expander: ShortLinkExpander | None = None,
     ):
         self.config = config or VideoConfig()
         # db 不传就自己建：生产入口从不传 db 正是 L1/L7 空转的根因（缺陷 #2）。
         self.db = db if db is not None else VideoDedupStore(self.config.dedup_db_path)
+        # 已发布产出的身份索引：账本之外的第二个真值来源（残余风险「视频存量覆盖」）。
+        # 账本可能被清空 / 损坏 / 误标 seeded，而 vault 里的 608 份产出还在——
+        # L1 同时查这两处，历史视频才不会在账本失守时被整批重跑（每个重烧一次
+        # NLM 深研 + 两次 LLM）。索引有界且按实例缓存，不逐候选重扫。
+        self.published_index = published_index or PublishedIdentityIndex(
+            self.config.promotion_target_path
+        )
+        # 短链展开器（残余风险 2）：`b23.tv/<code>` 在 L1 之前展开成完整 bilibili URL，
+        # 否则它的 sha256 兜底身份与账本里的 `bilibili:BV...` 对不上，去重整体失效。
+        self.shortlink_expander = shortlink_expander or ShortLinkExpander()
         self._llm_adapter = llm_adapter
         # 单轮发布日期补取预算（有界，宪法 P1）与因日期/身份未知被拒收的计数
         self._date_backfill_used = 0
@@ -227,6 +241,16 @@ class VideoCollector:
                 "上游元数据缺失，检查 yt-dlp 输出字段",
                 self._url_missing_rejected, len(results),
             )
+        expander = self.shortlink_expander
+        if expander.failures or expander.budget_exhausted:
+            # 未展开的短链身份会与展开后的完整链接分裂 → 同一视频可能被研究两次。
+            # 只是多烧额度（不丢内容），但不得静默（宪法 P4）。
+            logger.warning(
+                "[短链] 本轮展开 %d 次（成功 %d，失败 %d，预算耗尽跳过 %d）——"
+                "未展开的短链与完整链接是两个身份，去重对它们无效",
+                expander.expansions_used, expander.expanded_ok,
+                expander.failures, expander.budget_exhausted,
+            )
         return results
 
     # ------------------------------------------------------------------
@@ -278,6 +302,10 @@ class VideoCollector:
                     v.get("platform", "?"), v.get("title", "?"),
                 )
                 continue
+            # L0.5: 短链展开（残余风险 2）—— 必须在 L1 之前，否则 `b23.tv/<code>`
+            # 落 sha256 兜底身份，与账本里展开后的 `bilibili:BV...` 对不上，去重失效。
+            # 只对已知短链域名发网络请求，每候选一次，预算有界。
+            v["url"] = self.shortlink_expander.expand(v["url"])
             # L1: URL 去重
             if self._is_video_ingested(v["url"]):
                 continue
@@ -627,7 +655,15 @@ class VideoCollector:
     # ------------------------------------------------------------------
 
     def _is_video_ingested(self, url: str) -> bool:
-        """L1: 该视频身份是否已在去重库中（在花任何 LLM/NLM 额度之前）。
+        """L1: 该视频是否已处理过（在花任何 LLM/NLM 额度之前）。
+
+        两个真值来源，任一命中即跳过：
+
+        1. 去重账本（机器本地 sqlite）——快，但是单点：`AKB2_STATE_ROOT` 被改指向
+           空目录、sqlite 损坏被重建、`seeded_from:` 标记误置成已 seed 而表是空的，
+           都会让它整体失守；
+        2. 已发布产出的身份索引（vault 只读扫描）——真值就是产出本身，与命名规则
+           无关，所以覆盖 608 份旧命名历史产出（残余风险「视频存量覆盖」）。
 
         fail-closed：去重库缺失或不可用时 **抛异常**，不再 `return False`
         —— 原来的静默放行正是重复产出（实测 608 份产出只对应 230 个视频身份，
@@ -642,7 +678,17 @@ class VideoCollector:
             # 无 url = 无稳定身份。原实现 warning 后 return False（放行）——
             # 无身份候选既去不了重也登记不了，放行等于每轮重跑。调用方必须显式拒收。
             raise ValueError("候选缺 url，无稳定身份：拒绝在无去重保护下继续")
-        return self.db.is_ingested(url)
+        if self.db.is_ingested(url):
+            return True
+        existing = self.published_index.lookup(url)
+        if existing:
+            logger.warning(
+                "[L1] 账本无记录但历史产出已存在（账本可能失守：状态根被改/库被重建/"
+                "seed 标记误置）→ 跳过以免重烧额度: %s → 《%s》",
+                url, existing,
+            )
+            return True
+        return False
 
     def _l7_catalog_dedup(self, results: list[dict]) -> tuple[list[dict], int]:
         """L7: 去重库 URL 去重（L1 之后的兜底，过滤本轮内已入库视频）。

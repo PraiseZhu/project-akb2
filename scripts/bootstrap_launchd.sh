@@ -2,25 +2,77 @@
 # bootstrap_launchd.sh — idempotent launchd bootstrap
 # Removes old registration then bootstraps new one.
 # Dynamically replaces plist placeholders with current PROJECT_ROOT.
+#
+# 用法:
+#   bash scripts/bootstrap_launchd.sh                        # 渲染 + 注册 + 验证
+#   bash scripts/bootstrap_launchd.sh --render-only <out>     # 只渲染到 <out>，不碰 launchctl
+#   bash scripts/bootstrap_launchd.sh --plist-src <template>  # 换模板（默认 briefing）
+#
+# 占位符: __AKB2_REPO_ROOT__ / __AKB2_VAULT_ROOT__ / __AKB2_STATE_ROOT__
+#   __AKB2_STATE_ROOT__ = 机器本地状态根，用于把**游标/账本类状态**（intake
+#   --state-file、失败账本等）挪出仓库：PROJECT_ROOT 在 ~/AI-Agent(Syncthing folder)
+#   内，状态放仓库会被跨机同步分叉（reports/intake/ 下已有两个
+#   sweep-probe-result.sync-conflict-* 实证）。解析顺序与 python 侧
+#   src/akb2/common/state_paths.get_state_root() 一致:
+#   AKB2_STATE_ROOT > $HOME/Library/Application Support/akb2
 set -euo pipefail
 
 PLIST_LABEL="com.akb2.briefing"
 
-echo "=== Bootstrapping $PLIST_LABEL ==="
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VAULT_ROOT="${VAULT_ROOT:-/Volumes/AKB2/Obsidian}"
+STATE_ROOT="${AKB2_STATE_ROOT:-$HOME/Library/Application Support/akb2}"
 PLIST_SRC="$SCRIPT_DIR/../launchd/com.akb2.briefing.plist"
+RENDER_ONLY_OUT=""
+
+# 参数解析必须在任何 launchctl 之前：早期版本没有解析，未知参数被静默忽略后脚本
+# 仍会 bootout/bootstrap 真服务（实测把 com.akb2.briefing 卸掉过）。
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --render-only) RENDER_ONLY_OUT="${2:-}"; shift 2 ;;
+        --plist-src)   PLIST_SRC="${2:-}"; shift 2 ;;
+        -h|--help)     grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "ERROR: 未知参数: $1（用 --help 看用法）" >&2; exit 2 ;;
+    esac
+done
+
+# fail-closed：状态根落在跨机同步范围内 → 拒绝渲染（与 python 侧同语义）
+case "$STATE_ROOT" in
+    "$HOME/AI-Agent"|"$HOME/AI-Agent"/*|"$HOME/Library/Mobile Documents"/*|/Volumes/AKB2/*)
+        echo "ERROR: AKB2_STATE_ROOT=$STATE_ROOT 在跨机同步范围内；状态放同步目录会被 Syncthing 分叉丢数据" >&2
+        exit 2
+        ;;
+esac
+
+if [ -n "$RENDER_ONLY_OUT" ]; then
+    echo "=== Rendering $PLIST_LABEL (render-only, 不注册) ==="
+else
+    echo "=== Bootstrapping $PLIST_LABEL ==="
+fi
+
+if [ ! -f "$PLIST_SRC" ]; then
+    echo "ERROR: plist 模板不存在: $PLIST_SRC" >&2
+    exit 2
+fi
 
 # Generate temp plist with dynamic paths (avoid hardcoded paths)
 PLIST_TMP="$(mktemp -t com.akb2.briefing.XXXXXX.plist)"
 sed \
   -e "s|__AKB2_REPO_ROOT__|$PROJECT_ROOT|g" \
   -e "s|__AKB2_VAULT_ROOT__|$VAULT_ROOT|g" \
+  -e "s|__AKB2_STATE_ROOT__|$STATE_ROOT|g" \
   "$PLIST_SRC" > "$PLIST_TMP"
 echo "  Generated plist with repo root: $PROJECT_ROOT"
 echo "  Vault root: $VAULT_ROOT"
+echo "  State root: $STATE_ROOT"
+
+# --render-only: 交付渲染结果后退出，绝不碰 launchctl（供人工核对将要注册的路径）
+if [ -n "$RENDER_ONLY_OUT" ]; then
+    mv "$PLIST_TMP" "$RENDER_ONLY_OUT"
+    echo "  Rendered → $RENDER_ONLY_OUT (未注册任何服务)"
+    exit 0
+fi
 
 # Idempotent: remove old registration (ignore errors)
 launchctl bootout "gui/$(id -u)/$PLIST_LABEL" 2>/dev/null || true

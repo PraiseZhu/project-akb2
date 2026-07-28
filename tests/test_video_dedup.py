@@ -141,7 +141,13 @@ def test_identity_ignores_title_entirely():
         ("https://vimeo.com/12345?utm_source=newsletter&utm_medium=email",
          "https://vimeo.com/12345"),
         ("https://vimeo.com/12345?fbclid=abc123", "https://vimeo.com/12345"),
+        # 播放位置类参数（时间戳）：同一个视频页，剥掉才不会分裂身份
         ("https://vimeo.com/12345?t=120", "https://vimeo.com/12345"),
+        ("https://vimeo.com/12345?start=90", "https://vimeo.com/12345"),
+        ("https://vimeo.com/12345?end=200", "https://vimeo.com/12345"),
+        ("https://vimeo.com/12345?time_continue=3", "https://vimeo.com/12345"),
+        ("https://vimeo.com/12345?start=90&end=200&utm_source=x",
+         "https://vimeo.com/12345"),
         # 有意义的参数保留，但顺序无关
         ("https://vimeo.com/12345?a=1&b=2", "https://vimeo.com/12345?b=2&a=1"),
         # bilibili 短链未展开时也走兜底，跟踪参数同样要剥
@@ -159,10 +165,23 @@ def test_identity_fallback_strips_tracking_params(decorated: str, plain: str):
 
 
 def test_identity_fallback_keeps_content_selecting_params():
-    """只剥来源/播放位置类参数：能选内容的参数必须仍然区分身份（不得过度合并）。"""
+    """只剥来源/播放位置类参数：能选内容的参数必须仍然区分身份（不得过度合并）。
+
+    这条是"剥参数"的反向护栏，取舍不对称：少剥只多烧一次额度；多剥会把两个**真不同**
+    的 URL 并成一个身份 → 新视频被误判已入库、内容永久不产出。所以任何可能选择内容
+    的键（分 p、页码、资源 id、视频 id、查询词）都必须保持区分。
+    """
     base = "https://example.com/watch"
     assert video_identity(f"{base}?id=1") != video_identity(f"{base}?id=2")
     assert video_identity(f"{base}?p=2") != video_identity(base)
+    # 逐个钉住：这些键不得进 _TRACKING_QUERY_KEYS
+    for key in ("id", "p", "page", "v", "q", "ep_id", "cid", "list"):
+        assert video_identity(f"{base}?{key}=1") != video_identity(f"{base}?{key}=2"), (
+            f"参数 {key} 被当成跟踪参数剥掉了 → 两个不同视频会撞成一个身份（丢内容）"
+        )
+        assert video_identity(f"{base}?{key}=1") != video_identity(base), (
+            f"参数 {key} 被剥掉 → 带该参数与不带该参数的不同资源撞成一个身份"
+        )
 
 
 def test_identity_rejects_empty_url():
@@ -345,6 +364,90 @@ def test_seed_recognizes_third_key_shapes(tmp_path):
     assert store.is_ingested("https://www.bilibili.com/video/BV1iVoVBgERD") is True
     assert store.is_ingested("https://www.bilibili.com/video/BV1Ji9aB4Eu2") is True
     assert store.is_ingested("https://www.youtube.com/watch?v=YHk45NEpspE") is True
+
+
+# 真实 vault 里**所有**承载视频链接的 frontmatter 键（2026-07-28 只读复核，
+# `/Volumes/AKB2/.../AI TRENDS/Video` 608 份 md，按"值能解析出平台原生 id"统计）：
+#   source_url 325 份 → 68 身份 | video_url 173 → 172 | url 51 → 2
+#   original_url 1 → 0 | video_source 1 → 1 | x_url 1 → 0 | original_talk_url 1 → 1
+#   seed 1 → 1        ← 上一轮的"7 种键"清单里没有它，_is_url_key 也不认
+# 复现命令见 `test_seed_covers_every_url_key_in_real_vault`（integration）。
+_REAL_VAULT_VIDEO_URL_KEYS = (
+    "source_url", "video_url", "url", "video_source", "original_talk_url", "seed",
+)
+
+
+def test_seed_recognizes_every_url_key_shape_observed_in_vault(tmp_path):
+    """实测键分布里**每一个**承载视频链接的键都必须被回填（覆盖率 = 100%）。
+
+    上一轮把判定从"只认 source_url"扩成"键名含 url + {video_source}"，但真实目录里
+    还有一个 `seed:` 键（1 份笔记，`seed: https://www.youtube.com/watch?v=3DlXq9nsQOE`）
+    既不含 "url" 也不在补集里 → 该身份漏认。可观测后果：账本里 230 个身份，而目录里
+    实际有 231 个 —— 漏的那个视频会被重跑一次（重烧 NLM 深研 + 两次 LLM）。
+    """
+    published = tmp_path / "Video"
+    published.mkdir()
+    # 每个键一份笔记、各带一个互不相同的真实身份
+    ids = {key: f"vid{idx:08d}" for idx, key in enumerate(_REAL_VAULT_VIDEO_URL_KEYS)}
+    for key, vid in ids.items():
+        (published / f"{key}-note.md").write_text(
+            f"---\ntype: deep-research\n{key}: https://www.youtube.com/watch?v={vid}\n---\n# n",
+            encoding="utf-8",
+        )
+    store = VideoDedupStore(tmp_path / "dedup.sqlite")
+
+    outcome = store.seed_from_published(published)
+
+    missed = [
+        key for key, vid in ids.items()
+        if not store.is_ingested(f"https://www.youtube.com/watch?v={vid}")
+    ]
+    assert missed == [], f"这些键承载的历史身份没进账本 → 对应视频会被重跑: {missed}"
+    assert outcome.seeded == len(ids)
+    assert outcome.coverage == 1.0
+
+
+@pytest.mark.integration
+def test_seed_covers_every_url_key_in_real_vault():
+    """真机只读：真实已发布目录里**按值**找到的平台身份必须 100% 被键名判定认到。
+
+    这条是"键名清单是否已经追上真实数据"的判别 —— 键名判定（生产用的
+    `extract_video_identities`）与值判定（遍历所有 frontmatter 标量键、只看值能否
+    解析出平台 id）两个集合必须相等。差集非空 = 又出现了没被认的新键名。
+    只读，不写、不改 vault。
+    """
+    published = Path(
+        "/Volumes/AKB2/Obsidian/Praise Space/AKB2.0/AI TRENDS/Video"
+    )
+    if not published.is_dir():
+        pytest.skip("AKB2 卷未挂载")
+
+    from src.akb2.video.dedup_store import (
+        _FRONTMATTER_SCALAR_RE,
+        DEDUP_SEED_HEAD_BYTES,
+        _frontmatter_block,
+        extract_video_identities,
+    )
+
+    by_key: set[str] = set()
+    by_value: dict[str, str] = {}
+    for md in sorted(published.glob("*.md")):
+        head = md.read_text(encoding="utf-8", errors="replace")[:DEDUP_SEED_HEAD_BYTES]
+        by_key |= set(extract_video_identities(head))
+        for match in _FRONTMATTER_SCALAR_RE.finditer(_frontmatter_block(head)):
+            value = match.group("value").strip().strip("\"'")
+            try:
+                identity = video_identity(value)
+            except ValueError:
+                continue
+            if not identity.startswith("sha256:"):
+                by_value.setdefault(identity, match.group("key"))
+
+    missed = {i: by_value[i] for i in set(by_value) - by_key}
+    assert not missed, (
+        f"这些平台身份在 frontmatter 里有值但键名判定不认（identity → 键名）: {missed}"
+    )
+    assert len(by_key) >= 231, f"实测下界 231 个身份，实得 {len(by_key)}"
 
 
 def test_seed_does_not_ingest_non_video_frontmatter_urls(tmp_path):

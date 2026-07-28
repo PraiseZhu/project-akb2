@@ -28,6 +28,7 @@ from src.akb2.video.extractor import Extractor
 from src.akb2.video.llm_adapter import DeepSeekAdapter
 from src.akb2.video.reasoner import ConceptStore, Reasoner
 from src.akb2.video.researcher import VideoResearcher
+from src.akb2.video.url_expand import ShortLinkExpander
 
 logger = logging.getLogger("akb2.video")
 
@@ -229,6 +230,12 @@ def _run_full(config: VideoConfig, dry_run: bool) -> int:
 def _run_single_source(config: VideoConfig, url: str, dry_run: bool) -> int:
     """对单个视频 URL 跑全链路。"""
     try:
+        # 短链展开（残余风险 2）：`--source` 是人手粘贴链接的入口，而 bilibili 的分享
+        # 按钮给的就是 `https://b23.tv/<code>` —— 不展开则身份走 sha256 兜底，与账本里
+        # 展开后的 `bilibili:BV...` 对不上，下面的 `is_ingested` 查不到 → 已研究过的
+        # 视频照样重烧一次 NLM 深研。展开在采集阶段做，`video_identity` 保持纯函数。
+        url = ShortLinkExpander().expand(url)
+
         # 构造最小 video_result
         video_result = {
             "video": {

@@ -79,7 +79,7 @@ DEDUP_SEED_HISTORICAL_SENTINEL = "1970-01-01T00:00:00+00:00"
 
 # frontmatter 里承载视频 URL 的键名判定（缺陷 V-1）。
 #
-# 实测 `/Volumes/AKB2/.../AI TRENDS/Video`（608 份 md，只读统计，2026-07-26 复核）：
+# 实测 `/Volumes/AKB2/.../AI TRENDS/Video`（608 份 md，只读统计，2026-07-28 复核）：
 #   source_url:         325 份 →  68 个平台身份（其中仅 14 个与 video_url 重叠）
 #   video_url:          173 份 → 172 个平台身份
 #   url:                 51 份 →   2 个平台身份
@@ -87,12 +87,20 @@ DEDUP_SEED_HISTORICAL_SENTINEL = "1970-01-01T00:00:00+00:00"
 #   video_source:         1 份 →   1 个平台身份
 #   x_url:                1 份 →   0 个平台身份（值不是视频链接）
 #   original_talk_url:    1 份 →   1 个平台身份
-#   union                            230 个平台身份
+#   seed:                 1 份 →   1 个平台身份（2026-07-28 新发现，见下）
+#   union                            231 个平台身份
 # 原实现只认 `^source_url:` → 只覆盖 68 个，漏掉 162 个（漏的比覆盖的多一倍多）。
 # 所以判定不写死键名清单，而是按"键名含 url" + 一个显式补充集合，
 # 让将来新出现的键名自动被覆盖（漏认的代价是重复烧 NLM 配额，
 # 多认的代价只是同目录里的一条链接被当成已研究 —— 不对称，取宽）。
-_SEED_EXTRA_URL_KEYS = frozenset({"video_source"})
+#
+# 2026-07-28 复核补 `seed`：上一轮声称"从 1 种键扩到 7 种"，但按**值**（而不是键名）
+# 重扫真实目录发现第 8 种键 —— `seed: https://www.youtube.com/watch?v=3DlXq9nsQOE`
+# （《Harness Engineering 深度评估 - 研究报告 2026-04-21.md》，该笔记的产出正是从这个
+# 视频来的）。键名既不含 "url" 也不在补集里 → 该身份漏认，账本 230 个身份 vs 目录实际
+# 231 个。判别命令写成了测试：`test_seed_covers_every_url_key_in_real_vault`
+# （integration，只读扫真实目录，按值找的身份集合必须被键名判定全覆盖）。
+_SEED_EXTRA_URL_KEYS = frozenset({"video_source", "seed"})
 
 # frontmatter 里的标量键行：`key: value`（value 不含空白，即单个 URL）
 _FRONTMATTER_SCALAR_RE = re.compile(
@@ -218,11 +226,20 @@ _BILI_ID_RE = re.compile(r"^(BV[0-9A-Za-z]{8,12}|av\d+)$")
 # 取舍是不对称的：**少剥**只多烧一次额度，**多剥**会把两个真不同的 URL 并成一个
 # 身份、让新视频被误判已入库（丢内容）。所以只列语义上确定"只标记来源/播放位置"
 # 的键，不含任何可能选择内容的键（如 `id` / `p` / `page` / `q` / `source`）。
+#
+# 2026-07-28 复核补 `start` / `end` / `time_continue`：`t` / `start_time` / `timestamp`
+# 上一轮已剥（`?t=120` 现在不分裂身份，见参数化测试），但同为"播放位置"的另外三种写法
+# 还在分裂 —— YouTube 的 `?start=`/`?end=`（嵌入播放器起止秒）与 `?time_continue=`
+# （续播位置）都只指定从哪一秒放，不选择内容。反向护栏见
+# `test_identity_fallback_keeps_content_selecting_params`：`id`/`p`/`page`/`v`/`q`/
+# `ep_id`/`cid`/`list` 逐个钉住"不得被剥"（剥了会把两个真不同的 URL 并成一个身份 →
+# 新视频被误判已入库 = 丢内容，比多烧一次额度严重得多）。
 _TRACKING_QUERY_PREFIXES: tuple[str, ...] = ("utm_", "spm_", "share_", "from_")
 _TRACKING_QUERY_KEYS = frozenset({
     "spm", "fbclid", "gclid", "msclkid", "igshid", "si", "feature",
     "ref", "referrer", "referer", "from", "vd_source", "unique_k",
     "buvid", "seid", "t", "start_time", "timestamp",
+    "start", "end", "time_continue",
 })
 
 

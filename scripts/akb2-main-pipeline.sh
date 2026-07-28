@@ -21,8 +21,25 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 LOG_DIR="${AKB2_LOG_DIR:-$PROJECT_ROOT/logs}"
 RUNNER_LOG="${AKB2_RUNNER_LOG:-$LOG_DIR/akb2-quality-runner.log}"
-LOCK_FILE="${AKB2_LOCK_FILE:-$PROJECT_ROOT/staging/locks/runner.lock}"
 ENV_FILE="${AKB2_ENV_FILE:-$HOME/.config/akb2/github-briefing.env}"
+
+# --- 机器本地状态根 ---
+# daemon 单实例锁必须落机器本地状态根，不能落仓库:PROJECT_ROOT 在 ~/AI-Agent
+# (Syncthing folder,~/AI-Agent/.stfolder 实证)内,锁放 $PROJECT_ROOT/staging/locks
+# 会被跨机同步 → 两台机器互看/互删对方的锁 PID 文件,`kill -0` 判活对另一台的 PID
+# 毫无意义。解析顺序与 python 侧 src/akb2/common/state_paths.get_state_root() 一致。
+STATE_ROOT="${AKB2_STATE_ROOT:-$HOME/Library/Application Support/akb2}"
+case "$STATE_ROOT" in
+    "$HOME/AI-Agent"|"$HOME/AI-Agent"/*|"$HOME/Library/Mobile Documents"/*|/Volumes/AKB2/*)
+        echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] FATAL: AKB2_STATE_ROOT=$STATE_ROOT 在跨机同步范围内(状态会被 Syncthing 分叉丢失)" >&2
+        exit 1
+        ;;
+esac
+LOCK_FILE="${AKB2_LOCK_FILE:-$STATE_ROOT/locks/runner.lock}"
+# 迁移期兜底:锁位置从仓库换到状态根的那一刻,旧位置可能还有一个活着的 daemon
+# 持锁(实测 2026-07-25 起的常驻进程锁就在 staging/locks/runner.lock)。新位置查不到
+# 它 → 会再起第二个 daemon。所以旧锁仍要判活一次,活着就让位。
+LEGACY_LOCK_FILE="${AKB2_LEGACY_LOCK_FILE:-$PROJECT_ROOT/staging/locks/runner.lock}"
 
 # --- Env 加载 / 网关变量归一化 ---
 # launchd 不继承交互 shell 环境；runner 自己加载只含 key/base/model 的用户 env。
@@ -90,6 +107,15 @@ fi
 # --- 单实例锁 ---
 mkdir -p "$(dirname "$LOCK_FILE")"
 
+# 迁移期:旧位置(仓库内)若还有活着的 daemon,让位并明示(不删旧锁,那是它的)
+if [ "$LEGACY_LOCK_FILE" != "$LOCK_FILE" ] && [ -f "$LEGACY_LOCK_FILE" ]; then
+    LEGACY_PID="$(cat "$LEGACY_LOCK_FILE" 2>/dev/null || echo '')"
+    if [ -n "$LEGACY_PID" ] && kill -0 "$LEGACY_PID" 2>/dev/null; then
+        echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] WARN: runner 仍持有迁移前的旧锁 $LEGACY_LOCK_FILE (PID=$LEGACY_PID), exiting" >&2
+        exit 0
+    fi
+fi
+
 if [ -f "$LOCK_FILE" ]; then
     LOCK_PID="$(cat "$LOCK_FILE" 2>/dev/null || echo '')"
     if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
@@ -108,6 +134,7 @@ mkdir -p "$LOG_DIR"
 exec >> "$RUNNER_LOG" 2>&1
 
 echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] runner starting: PID=$$ PYTHON=$PYTHON_BIN ($PY_VERSION)"
+echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] runner lock: $LOCK_FILE (state_root=$STATE_ROOT)"
 if [ -f "$ENV_FILE" ]; then
     ENV_STATUS="loaded"
 else
