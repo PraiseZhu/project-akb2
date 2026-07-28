@@ -29,6 +29,11 @@ _DIAG_FILES: dict[str, tuple[str, ...]] = {
         "briefing-failed.json",
         "briefing-skipped.json",
     ),
+    # 视频链路（2026-07-28 事故：0 产出 + exit 0 + 无告警出口）。写入侧见
+    # `akb2.video.blocked`；status=ok 时不写 `reason`，所以恢复后这里自然返回 None。
+    "video": (
+        "logs/video-blocked.json",
+    ),
 }
 
 

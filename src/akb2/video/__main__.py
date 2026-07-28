@@ -21,6 +21,7 @@ from src.akb2.video.assembler import (
     GateRejected,
     PromotionTargetNotFound,
 )
+from src.akb2.video.blocked import write_zero_yield_diagnostic
 from src.akb2.video.collector import VideoCollector
 from src.akb2.video.config import VideoConfig
 from src.akb2.video.dedup_store import VideoDedupStore
@@ -224,10 +225,33 @@ def _run_full(config: VideoConfig, dry_run: bool) -> int:
         results = assembler.run_pipeline(
             collector, researcher, extractor, reasoner, dry_run=dry_run,
         )
-        return _report_results(results)
+        rc = _report_results(results)
+        # 0 产出归因 + 诊断落盘（宪法 P4）：`_report_results([])` 返回 0，
+        # launchd 只看到"正常退出"—— 2026-07-28 的 109 个候选全灭就是这样静默过去的。
+        # dry-run 不写诊断（它不代表生产产出能力）。
+        if not dry_run:
+            verdict = _write_collect_diagnostic(collector, results)
+            if verdict is not None and verdict.is_blocked and rc == 0:
+                # blocked 必须让 launchd 的 LastExitStatus 非 0；
+                # "窗口内确实没有新视频"（zero_yield）仍然是正常退出。
+                return 1
+        return rc
     except Exception as e:
         logger.error(f"全链路失败: {e}")
         return 1
+
+
+def _write_collect_diagnostic(collector: VideoCollector, results: list[dict]):
+    """把采集漏斗计数归因并落盘；诊断本身绝不让主链路失败。"""
+    stats = getattr(collector, "stats", None)
+    if stats is None:
+        return None
+    published = sum(1 for r in results if r.get("status") == "ok")
+    try:
+        return write_zero_yield_diagnostic(stats.as_dict(), published)
+    except Exception as exc:  # noqa: BLE001 — 诊断失败不得掩盖主链路结论
+        logger.error("0 产出诊断写入异常（主链路结论不受影响）: %s", exc)
+        return None
 
 
 def _run_single_source(config: VideoConfig, url: str, dry_run: bool) -> int:
