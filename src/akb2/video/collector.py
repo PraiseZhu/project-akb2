@@ -26,11 +26,13 @@ import logging
 import re
 import subprocess
 import time
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from src.akb2.video.config import VideoConfig
 from src.akb2.video.constants import (
+    VIDEO_APPROX_DATE_MARGIN_DAYS,
     VIDEO_BUDGET_SECONDS,
     VIDEO_DATE_BACKFILL_SLEEP_SEC,
     VIDEO_DAYS_LOOKBACK,
@@ -38,6 +40,7 @@ from src.akb2.video.constants import (
     VIDEO_MAX_DURATION_MIN,
     VIDEO_MIN_DURATION_MIN,
     VIDEO_NLM_DAILY_QUOTA,
+    VIDEO_YT_LIST_EXTRACTOR_ARGS,
 )
 from src.akb2.video.dedup_store import (
     VideoDedupStore,
@@ -45,8 +48,44 @@ from src.akb2.video.dedup_store import (
     video_identity,
 )
 from src.akb2.video.llm_adapter import LLMAdapter, extract_json_from_llm_response
+from src.akb2.video.published_index import PublishedIdentityIndex
+from src.akb2.video.url_expand import ShortLinkExpander
 
 logger = logging.getLogger("akb2.video.collector")
+
+
+@dataclass
+class CollectStats:
+    """单轮采集的分层漏斗计数 —— "0 产出"必须能被归因（宪法 P4）。
+
+    2026-07-28 事故：视频链路产出 0 个，launchd 退出码正常，无任何告警出口；
+    日志里 109 行"拒收"要人工 grep 才看得出采集能力已经整体失效。计数在这里
+    结构化留存，由 `blocked.write_zero_yield_diagnostic` 落盘成机读诊断。
+    """
+
+    sources_enabled: int = 0
+    raw_listed: int = 0            # 列表阶段返回的原始条目数
+    dropped_no_url: int = 0        # L0 无 url
+    dropped_no_title: int = 0      # bilibili 2 阶段补全后仍无 title（上游元数据坏）
+    dropped_dedup: int = 0         # L1 已入库（账本 或 已发布产出索引）
+    dropped_duration: int = 0      # L3 时长
+    dropped_keyword: int = 0       # L4 creator 关键词
+    dropped_relevance: int = 0     # L4.5 全局 AI 相关性
+    dropped_out_of_window: int = 0  # L2 精确日期超窗（含 start_date）
+    rejected_date_prefilter: int = 0  # L2a 近似日期已超窗，直接拒（零网络成本）
+    rejected_date_unknown: int = 0    # L2b 精确日期取不到 → fail-closed 拒收
+    date_backfill_used: int = 0
+    date_backfill_ok: int = 0
+    date_backfill_failed: int = 0
+    date_backfill_budget: int = VIDEO_MAX_DATE_BACKFILL_PER_RUN
+    date_backfill_budget_exhausted: bool = False
+    candidates_after_filters: int = 0  # 进入研究阶段前的候选数
+    elapsed_sec: int = 0
+    budget_sec: int = VIDEO_BUDGET_SECONDS
+    creator_errors: list[str] = field(default_factory=list)
+
+    def as_dict(self) -> dict:
+        return asdict(self)
 
 
 class VideoCollector:
@@ -57,15 +96,29 @@ class VideoCollector:
         config: VideoConfig | None = None,
         db: VideoDedupStore | None = None,
         llm_adapter: LLMAdapter | None = None,
+        published_index: PublishedIdentityIndex | None = None,
+        shortlink_expander: ShortLinkExpander | None = None,
     ):
         self.config = config or VideoConfig()
         # db 不传就自己建：生产入口从不传 db 正是 L1/L7 空转的根因（缺陷 #2）。
         self.db = db if db is not None else VideoDedupStore(self.config.dedup_db_path)
+        # 已发布产出的身份索引：账本之外的第二个真值来源（残余风险「视频存量覆盖」）。
+        # 账本可能被清空 / 损坏 / 误标 seeded，而 vault 里的 608 份产出还在——
+        # L1 同时查这两处，历史视频才不会在账本失守时被整批重跑（每个重烧一次
+        # NLM 深研 + 两次 LLM）。索引有界且按实例缓存，不逐候选重扫。
+        self.published_index = published_index or PublishedIdentityIndex(
+            self.config.promotion_target_path
+        )
+        # 短链展开器（残余风险 2）：`b23.tv/<code>` 在 L1 之前展开成完整 bilibili URL，
+        # 否则它的 sha256 兜底身份与账本里的 `bilibili:BV...` 对不上，去重整体失效。
+        self.shortlink_expander = shortlink_expander or ShortLinkExpander()
         self._llm_adapter = llm_adapter
         # 单轮发布日期补取预算（有界，宪法 P1）与因日期/身份未知被拒收的计数
         self._date_backfill_used = 0
         self._date_unknown_rejected = 0
         self._url_missing_rejected = 0
+        # 单轮分层漏斗计数（宪法 P4：0 产出必须可归因）
+        self.stats = CollectStats()
 
         # 加载视频源配置
         self._video_config = self._load_video_config()
@@ -116,10 +169,12 @@ class VideoCollector:
         self._date_backfill_used = 0
         self._date_unknown_rejected = 0
         self._url_missing_rejected = 0
+        self.stats = CollectStats()
         results: list[dict] = []
         is_coldstart = self._settings.get("coldstart", False)
 
         creators = [c for c in self._video_config.get("creators", []) if c.get("enabled", False)]
+        self.stats.sources_enabled = len(creators)
         if not creators:
             logger.info("无视频源配置，跳过视频采集")
             return results
@@ -145,6 +200,7 @@ class VideoCollector:
                 logger.info(f"[{creator['name']}] 检测到 {len(new_videos)} 个新视频")
             except Exception as e:
                 logger.error(f"[{creator['name']}] 视频检测失败: {e}")
+                self.stats.creator_errors.append(f"{creator['name']}: {e}")
                 continue
 
             # L6: per-creator cap
@@ -156,6 +212,7 @@ class VideoCollector:
                 all_candidates.append({"video": video, "creator": creator})
 
         logger.info(f"候选视频总数（8 层过滤后）: {len(all_candidates)}")
+        self.stats.candidates_after_filters = len(all_candidates)
 
         # 3. L5: LLM 话题聚类去重
         if self._settings.get("dedup_strategy") == "llm_cluster" and len(all_candidates) > 1:
@@ -212,7 +269,22 @@ class VideoCollector:
                 logger.info(f"[L7] URL 去重: 过滤 {skipped_count} 个已入库视频")
 
         elapsed = int(time.time() - budget_start)
+        self.stats.elapsed_sec = elapsed
         logger.info(f"视频采集完成: {len(results)} 个视频, {elapsed}s / {VIDEO_BUDGET_SECONDS}s")
+        # 分层漏斗一行留档：0 产出时"卡在哪一层"必须不靠 grep 就能看出（宪法 P4）。
+        logger.info(
+            "[漏斗] 源 %d | 列表 %d → 去重 -%d → 时长 -%d → 关键词 -%d → 相关性 -%d "
+            "→ 近似日期超窗 -%d → 精确日期超窗 -%d → 日期未知拒收 -%d "
+            "→ 候选 %d → 产出 %d（日期补取 %d/%d，成功 %d 失败 %d）",
+            self.stats.sources_enabled, self.stats.raw_listed,
+            self.stats.dropped_dedup, self.stats.dropped_duration,
+            self.stats.dropped_keyword, self.stats.dropped_relevance,
+            self.stats.rejected_date_prefilter, self.stats.dropped_out_of_window,
+            self.stats.rejected_date_unknown, self.stats.candidates_after_filters,
+            len(results), self.stats.date_backfill_used,
+            self.stats.date_backfill_budget, self.stats.date_backfill_ok,
+            self.stats.date_backfill_failed,
+        )
         # "0 个新视频" 与 "全被时间闸拒收（cookies 失效 / yt-dlp 取不到日期）"必须可区分
         # （宪法 P4）：否则采集能力整体失效会长期伪装成"今天没有新视频"。
         if self._date_unknown_rejected:
@@ -221,11 +293,31 @@ class VideoCollector:
                 "若持续为 0 产出，请检查 yt-dlp cookies 与日期补取是否可用",
                 self._date_unknown_rejected, len(results),
             )
+        if self.stats.date_backfill_budget_exhausted:
+            # 预算撞顶不等于"没有新视频"：撞顶时后续候选一律日期未知 → 全拒。
+            # 排序靠后的 creator 会整批消失，且现象与"今天没更新"完全一样。
+            logger.warning(
+                "[时间闸] 发布日期补取预算 %d 本轮已撞顶（实际用 %d，耗时 %ds / %ds）——"
+                "撞顶后的候选一律按日期未知拒收，排序靠后的源会整批消失；"
+                "请检查列表阶段是否返回近似日期（%s）",
+                self.stats.date_backfill_budget, self.stats.date_backfill_used,
+                elapsed, VIDEO_BUDGET_SECONDS, VIDEO_YT_LIST_EXTRACTOR_ARGS,
+            )
         if self._url_missing_rejected:
             logger.warning(
                 "[身份闸] 本轮 %d 个候选因缺 url（无稳定身份）被拒收（产出 %d 个）——"
                 "上游元数据缺失，检查 yt-dlp 输出字段",
                 self._url_missing_rejected, len(results),
+            )
+        expander = self.shortlink_expander
+        if expander.failures or expander.budget_exhausted:
+            # 未展开的短链身份会与展开后的完整链接分裂 → 同一视频可能被研究两次。
+            # 只是多烧额度（不丢内容），但不得静默（宪法 P4）。
+            logger.warning(
+                "[短链] 本轮展开 %d 次（成功 %d，失败 %d，预算耗尽跳过 %d）——"
+                "未展开的短链与完整链接是两个身份，去重对它们无效",
+                expander.expansions_used, expander.expanded_ok,
+                expander.failures, expander.budget_exhausted,
             )
         return results
 
@@ -240,6 +332,15 @@ class VideoCollector:
         `--flat-playlist` 对 YouTube 从不返回 `upload_date`（实测：608 份产出里只有
         1 份 frontmatter 带 `published_at`），原实现 `if upload_date:` 守卫让空值直接跳过两道闸
         —— 2025 年的老视频因此永驻候选集。现在缺日期先补取，补不到就拒收。
+
+        **过滤顺序（2026-07-28 事故修复）**：时间闸是整条链上唯一要花 per-video
+        网络调用的一层（`_fill_upload_date`），却排在时长/关键词/相关性三道**纯本地**
+        过滤之前 —— 于是 40 次补取预算被大量注定要被本地过滤丢掉的候选吃光。
+        实测当天真实漏斗：列表 326 → L1 去重后 222（全部要补日期，预算只有 40）
+        → 时长 215 → **相关性 18** → 窗内 9。即 92% 的补取花在 L4.5 会免费丢掉的
+        候选上，而排序靠后的源一个日期都拿不到，109 个候选全被"日期未知"拒收。
+        现在纯本地的三层先跑，时间闸最后跑：补取需求从 222 降到 18，稳稳落在预算内。
+        层号（L1/L2/L3…）保持原编号不变，变的只是执行顺序。
         """
         platform = creator["platform"]
         days = self._settings.get("days_lookback", VIDEO_DAYS_LOOKBACK)
@@ -265,50 +366,35 @@ class VideoCollector:
                 )
         lookback_cutoff = datetime.now() - timedelta(days=days)
 
+        self.stats.raw_listed += len(videos)
         for v in videos:
             # L0: 无 url 拒收 —— 没有 url 就没有稳定身份，去重、账本、研究全都做不了。
-            # 原实现在 `_is_video_ingested` 里打 warning 后 `return False` 放行，
+            # 原实现在 `is_ingested_url` 里打 warning 后 `return False` 放行，
             # fail-closed 在这条缝上是开的（无身份候选一路走到研究，且永远无法登记
             # → 每轮重跑）。
             if not v.get("url"):
                 self._url_missing_rejected += 1
+                self.stats.dropped_no_url += 1
                 logger.warning(
                     "[身份闸] 拒收（候选缺 url，无稳定身份 → 无法去重也无法登记）: "
                     "[%s] %s",
                     v.get("platform", "?"), v.get("title", "?"),
                 )
                 continue
+            # L0.5: 短链展开（残余风险 2）—— 必须在 L1 之前，否则 `b23.tv/<code>`
+            # 落 sha256 兜底身份，与账本里展开后的 `bilibili:BV...` 对不上，去重失效。
+            # 只对已知短链域名发网络请求，每候选一次，预算有界。
+            v["url"] = self.shortlink_expander.expand(v["url"])
             # L1: URL 去重
-            if self._is_video_ingested(v["url"]):
+            if self.is_ingested_url(v["url"]):
+                self.stats.dropped_dedup += 1
                 continue
-            # L2: 时间闸 — 缺发布日期先补取，仍缺则拒收（不静默放行）
-            if not v.get("upload_date"):
-                self._fill_upload_date(v)
-            upload_dt = self._parse_upload_date(v.get("upload_date", ""))
-            if upload_dt is None:
-                self._date_unknown_rejected += 1
-                logger.warning(
-                    "[时间闸] 拒收（无法确定发布日期，fail-closed）: [%s] %s — %s",
-                    v.get("platform", "?"), v.get("title", "?"), v.get("url", "?"),
-                )
-                continue
-            if upload_dt < lookback_cutoff:
-                logger.info(
-                    "[时间闸] 超出回溯窗口 %d 天 (%s): %s",
-                    days, v["upload_date"], v.get("title", "?"),
-                )
-                continue
-            if start_date_cutoff and upload_dt < start_date_cutoff:
-                logger.info(
-                    "[时间闸] 早于 start_date %s (%s): %s",
-                    start_date_str, v["upload_date"], v.get("title", "?"),
-                )
-                continue
-            # L3: 时长过滤
+            # L3: 时长过滤（纯本地，零成本 → 排在花网络调用的时间闸之前）
             duration = v.get("duration_minutes", 0)
             max_dur = self._settings.get("max_video_duration_minutes", VIDEO_MAX_DURATION_MIN)
             min_dur = self._settings.get("min_video_duration_minutes", VIDEO_MIN_DURATION_MIN)
             if max_dur > 0 and duration > max_dur:
+                self.stats.dropped_duration += 1
                 logger.info(f"跳过过长视频 ({duration}min): {v['title']}")
                 continue
             if duration == 0:
@@ -317,20 +403,89 @@ class VideoCollector:
                     f"[{v.get('platform', '?')}] {v['title']}"
                 )
             elif duration < min_dur:
+                self.stats.dropped_duration += 1
                 logger.info(f"跳过过短视频 ({duration:.1f}min): {v['title']}")
                 continue
-            # L4: 关键词过滤（默认跳过 — 已启用的博主本身即内容筛选）
+            # L4: 关键词过滤（纯本地；默认跳过 — 已启用的博主本身即内容筛选）
             if not self._settings.get("skip_keyword_filter", True):
                 keywords = creator.get("keywords", [])
                 if keywords and not any(kw.lower() in v["title"].lower() for kw in keywords):
+                    self.stats.dropped_keyword += 1
                     logger.info(f"跳过不匹配关键词的视频: {v['title']}")
                     continue
-            # L4.5: 全局关键词相关性过滤（默认启用）
+            # L4.5: 全局关键词相关性过滤（纯本地正则，默认启用；实测 215 → 18 的
+            # 主力过滤层 —— 放在时间闸之后就等于把 92% 的补取预算烧在必被它丢掉的
+            # 候选上，正是 2026-07-28 全灭的直接机制）
             if not self._settings.get("skip_relevance_filter", False):
                 if not self._is_ai_relevant(v["title"]):
+                    self.stats.dropped_relevance += 1
                     continue
+            # L2: 时间闸（本层最贵 —— 唯一可能发 per-video 网络请求的一层，放最后）
+            if not self._pass_time_gate(v, days, lookback_cutoff,
+                                        start_date_cutoff, start_date_str):
+                continue
             filtered.append(v)
         return filtered
+
+    def _pass_time_gate(
+        self,
+        v: dict,
+        days: int,
+        lookback_cutoff: datetime,
+        start_date_cutoff: datetime | None,
+        start_date_str: str,
+    ) -> bool:
+        """L2 时间闸：近似日期免费预筛 → 精确日期补取 → fail-closed 判定。
+
+        准入只认精确 `upload_date`：近似日期（`upload_date_approx`）是真实发布时间的
+        **上界**，只能用来"确定性排除"（approx 已超窗 ⇒ 真实必然超窗），不能用来放行
+        （approx 在窗内不代表真实在窗内）。这条不对称性就是为什么近似值永远不写进
+        `upload_date`（宪法 P3：不为了有产出放宽时间闸）。
+        """
+        # L2a: 近似日期预筛 —— 零网络成本，把注定超窗的候选挡在补取之前。
+        if not v.get("upload_date"):
+            approx = self._parse_upload_date(v.get("upload_date_approx", ""))
+            if approx is not None:
+                margin = timedelta(days=VIDEO_APPROX_DATE_MARGIN_DAYS)
+                floor = lookback_cutoff
+                if start_date_cutoff and start_date_cutoff > floor:
+                    floor = start_date_cutoff
+                if approx < floor - margin:
+                    self.stats.rejected_date_prefilter += 1
+                    logger.info(
+                        "[时间闸] 近似日期 %s 已早于窗口下界 %s（含 %d 天边距），"
+                        "免补取直接排除: %s",
+                        v["upload_date_approx"], floor.strftime("%Y%m%d"),
+                        VIDEO_APPROX_DATE_MARGIN_DAYS, v.get("title", "?"),
+                    )
+                    return False
+        # L2b: 缺发布日期先补取，仍缺则拒收（不静默放行）
+        if not v.get("upload_date"):
+            self._fill_upload_date(v)
+        upload_dt = self._parse_upload_date(v.get("upload_date", ""))
+        if upload_dt is None:
+            self._date_unknown_rejected += 1
+            self.stats.rejected_date_unknown += 1
+            logger.warning(
+                "[时间闸] 拒收（无法确定发布日期，fail-closed）: [%s] %s — %s",
+                v.get("platform", "?"), v.get("title", "?"), v.get("url", "?"),
+            )
+            return False
+        if upload_dt < lookback_cutoff:
+            self.stats.dropped_out_of_window += 1
+            logger.info(
+                "[时间闸] 超出回溯窗口 %d 天 (%s): %s",
+                days, v["upload_date"], v.get("title", "?"),
+            )
+            return False
+        if start_date_cutoff and upload_dt < start_date_cutoff:
+            self.stats.dropped_out_of_window += 1
+            logger.info(
+                "[时间闸] 早于 start_date %s (%s): %s",
+                start_date_str, v["upload_date"], v.get("title", "?"),
+            )
+            return False
+        return True
 
     # ------------------------------------------------------------------
     # 时间闸辅助（缺陷 #12）
@@ -359,6 +514,7 @@ class VideoCollector:
         if not url:
             return
         if self._date_backfill_used >= VIDEO_MAX_DATE_BACKFILL_PER_RUN:
+            self.stats.date_backfill_budget_exhausted = True
             logger.warning(
                 "[时间闸] 发布日期补取预算耗尽 (%d)，%s 保持日期未知（将被拒收）",
                 VIDEO_MAX_DATE_BACKFILL_PER_RUN, video.get("title", url),
@@ -366,6 +522,7 @@ class VideoCollector:
             return
 
         self._date_backfill_used += 1
+        self.stats.date_backfill_used = self._date_backfill_used
         try:
             detail = subprocess.run(
                 [self.config.ytdlp_bin] + self._ytdlp_base_args +
@@ -373,25 +530,36 @@ class VideoCollector:
                 capture_output=True, text=True, timeout=30,
             )
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+            self.stats.date_backfill_failed += 1
             logger.warning("[时间闸] 发布日期补取失败 %s: %s", url, exc)
             return
 
         if detail.returncode != 0 or not detail.stdout.strip():
+            self.stats.date_backfill_failed += 1
+            # 实测（2026-07-28）：连发 per-video `--dump-json` 会被 YouTube 判机器人
+            # （"Sign in to confirm you're not a bot"），即使带 cookies 也一样 →
+            # rc!=0 且无输出。这是本层最可能的真实失败形态，运维要看得懂。
             logger.warning(
-                "[时间闸] 发布日期补取无输出 %s (rc=%s)", url, detail.returncode
+                "[时间闸] 发布日期补取无输出 %s (rc=%s) —— 常见真因：平台限频"
+                "（\"Sign in to confirm you're not a bot\"）或 cookies 失效；"
+                "stderr 尾部: %s",
+                url, detail.returncode, (detail.stderr or "").strip()[-300:],
             )
             return
         try:
             info = json.loads(detail.stdout.strip().split("\n")[0])
         except (json.JSONDecodeError, IndexError) as exc:
+            self.stats.date_backfill_failed += 1
             logger.warning("[时间闸] 发布日期补取响应不可解析 %s: %s", url, exc)
             return
 
         upload_date = (info.get("upload_date") or "").strip()
         if upload_date:
             video["upload_date"] = upload_date
+            self.stats.date_backfill_ok += 1
             logger.info("[时间闸] 补取到发布日期 %s: %s", upload_date, url)
         else:
+            self.stats.date_backfill_failed += 1
             logger.warning("[时间闸] 平台未返回发布日期: %s", url)
 
         time.sleep(VIDEO_DATE_BACKFILL_SLEEP_SEC)
@@ -569,20 +737,31 @@ class VideoCollector:
             videos = [v for v in videos if v["title"].strip()]
             dropped = before - len(videos)
             if dropped:
+                self.stats.dropped_no_title += dropped
                 logger.info(f"[{creator['name']}] 补全后仍无 title，丢弃 {dropped} 个")
 
         return videos
 
     def _detect_yt_videos(self, creator: dict, days: int) -> list[dict]:
-        """通过 yt-dlp 获取 YouTube 频道近期视频列表。"""
+        """通过 yt-dlp 获取 YouTube 频道近期视频列表。
+
+        `--extractor-args youtubetab:approximate_date`（2026-07-28 事故修复）让这一次
+        列表调用顺带返回**近似**发布日期，零额外网络成本。它落在 `upload_date_approx`
+        而**不是** `upload_date`：近似值只用于 L2a 的确定性排除（它是真实日期的上界），
+        准入判定仍然只认 per-video 补取来的精确日期。见 `constants` 里的推导。
+
+        `days` 保留在签名里与 `_detect_bili_videos` 对齐，但本函数不再自行按日期
+        截断：列表日期是近似值，精确判定统一在 `_pass_time_gate` 一处做，避免两处
+        时间闸口径分裂（一处按近似值放行、一处按精确值拒收会非常难排查）。
+        """
         channel_url = creator["channel_url"]
-        cutoff = datetime.now() - timedelta(days=days)
 
         try:
             result = subprocess.run(
                 [self.config.ytdlp_bin] + self._ytdlp_base_args +
                 ["--flat-playlist", "--dump-json",
                  "--playlist-end", "20",
+                 "--extractor-args", VIDEO_YT_LIST_EXTRACTOR_ARGS,
                  f"{channel_url}/videos"],
                 capture_output=True, text=True, timeout=120,
             )
@@ -591,6 +770,7 @@ class VideoCollector:
             return []
 
         videos: list[dict] = []
+        approx_seen = 0
         for line in result.stdout.strip().split("\n"):
             if not line.strip():
                 continue
@@ -598,14 +778,11 @@ class VideoCollector:
                 info = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            upload_date = info.get("upload_date", "")
-            if upload_date:
-                try:
-                    dt = datetime.strptime(upload_date, "%Y%m%d")
-                    if dt < cutoff:
-                        continue
-                except ValueError:
-                    pass
+            # 列表阶段自带的日期一律按"近似"处理：开了 approximate_date 之后
+            # `upload_date` 就是从"3 days ago"折算的近似值，不能当精确日期用。
+            approx_date = (info.get("upload_date") or "").strip()
+            if approx_date:
+                approx_seen += 1
             duration_s = info.get("duration") or 0
             videos.append({
                 "platform": "youtube",
@@ -617,17 +794,35 @@ class VideoCollector:
                     or f"https://www.youtube.com/watch?v={info.get('id', '')}"
                 ),
                 "duration_minutes": duration_s / 60,
-                "upload_date": upload_date,
+                "upload_date": "",
+                "upload_date_approx": approx_date,
                 "creator": creator["name"],
             })
+        if videos and not approx_seen:
+            # 近似日期整批缺失 = 每个候选都要走 per-video 补取（预算 40 撞顶的老路）。
+            # 不静默（宪法 P4）：这条 warning 就是"链路即将退化回 0 产出"的早期信号。
+            logger.warning(
+                "[时间闸] %s: 列表阶段 %d 条全无近似日期（extractor-args=%s 未生效？）"
+                "—— 每个候选都将占用 per-video 补取预算 %d",
+                creator["name"], len(videos), VIDEO_YT_LIST_EXTRACTOR_ARGS,
+                VIDEO_MAX_DATE_BACKFILL_PER_RUN,
+            )
         return videos
 
     # ------------------------------------------------------------------
     # L1 / L7: 入库去重
     # ------------------------------------------------------------------
 
-    def _is_video_ingested(self, url: str) -> bool:
-        """L1: 该视频身份是否已在去重库中（在花任何 LLM/NLM 额度之前）。
+    def is_ingested_url(self, url: str) -> bool:
+        """L1: 该视频是否已处理过（在花任何 LLM/NLM 额度之前）。
+
+        两个真值来源，任一命中即跳过：
+
+        1. 去重账本（机器本地 sqlite）——快，但是单点：`AKB2_STATE_ROOT` 被改指向
+           空目录、sqlite 损坏被重建、`seeded_from:` 标记误置成已 seed 而表是空的，
+           都会让它整体失守；
+        2. 已发布产出的身份索引（vault 只读扫描）——真值就是产出本身，与命名规则
+           无关，所以覆盖 608 份旧命名历史产出（残余风险「视频存量覆盖」）。
 
         fail-closed：去重库缺失或不可用时 **抛异常**，不再 `return False`
         —— 原来的静默放行正是重复产出（实测 608 份产出只对应 230 个视频身份，
@@ -642,7 +837,17 @@ class VideoCollector:
             # 无 url = 无稳定身份。原实现 warning 后 return False（放行）——
             # 无身份候选既去不了重也登记不了，放行等于每轮重跑。调用方必须显式拒收。
             raise ValueError("候选缺 url，无稳定身份：拒绝在无去重保护下继续")
-        return self.db.is_ingested(url)
+        if self.db.is_ingested(url):
+            return True
+        existing = self.published_index.lookup(url)
+        if existing:
+            logger.warning(
+                "[L1] 账本无记录但历史产出已存在（账本可能失守：状态根被改/库被重建/"
+                "seed 标记误置）→ 跳过以免重烧额度: %s → 《%s》",
+                url, existing,
+            )
+            return True
+        return False
 
     def _l7_catalog_dedup(self, results: list[dict]) -> tuple[list[dict], int]:
         """L7: 去重库 URL 去重（L1 之后的兜底，过滤本轮内已入库视频）。
@@ -660,7 +865,7 @@ class VideoCollector:
                 )
                 skipped_count += 1
                 continue
-            if self._is_video_ingested(url):
+            if self.is_ingested_url(url):
                 logger.info(f"[L7] 已入库，跳过: {r['video'].get('title', url)}")
                 skipped_count += 1
             else:

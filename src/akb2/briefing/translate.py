@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 
@@ -465,6 +466,155 @@ def _extract_tweet_item(payload: dict, idx: int) -> dict | None:
 _TWEET_TIMEOUT_CAP = 120
 
 
+# ---------------------------------------------------------------------------
+# 译前/译后配对样本落盘（解锁 audit fail 级检查的误报率测量）
+#
+# 为什么采样点只能在这里：audit 的 4 个 fail 级确定性检查（number_mismatch /
+# url_missing / handle_missing / metric_fabricated）都必须拿「英文原文 ↔ 中文译文」
+# 配对才能判定，而 vault 里只有中文成品 —— 没有配对语料时误报率不是"还没测"，是
+# **没有可测的对象**。translate 阶段是全链路唯一同时持有 synth_en 与 synth_zh 的
+# 位置，故在此把配对落盘成可复算语料，评测由 `evals/audit-fidelity-fp/run.py` 离线跑。
+#
+# 硬约束：
+#   - 落盘位置只能是机器本地状态根（`akb2.common.state_paths`），**绝不写 vault**
+#     （宪法原则 5：禁止向 vault 写工程产物）；状态根本身已 fail-closed 拒绝同步路径。
+#   - 采样必须有界（原则 1）：单次运行条数上限 + 目录字节上限 + 评测侧保留天数。
+#   - 落盘失败必须可见（原则 4）：stderr 告警 + 在返回值上留标记，不静默 pass。
+#   - 只存审计需要的字段（en / zh / field / date / captured_at），不存整份 payload。
+# ---------------------------------------------------------------------------
+
+# 开关：设为 0/false/no/off 关闭采样。**默认开启** —— 关掉等于让"fail 级检查误报率
+# 不可测"这条风险永久留在原地，而采样对象是已经在内存里的同一份文本，增量成本只有
+# 一次本地 JSONL 追加（无额外 LLM 调用、无网络）。
+FIDELITY_SAMPLE_ENV = "AKB2_FIDELITY_SAMPLE"
+FIDELITY_SAMPLE_SUBDIR = "fidelity-samples"
+# 单次运行落盘条数上限。取值依据：受检字段 = 1 个 executive_summary + 每主题 2 个
+# （topic/summary）+ 展示推文，展示集合上界 = 被引用推文 + 孤儿 top-K
+# （_ORPHAN_TOP_K 默认 5）；实测 26.5 个受检配对/篇（60 篇已发布简报共 1587 个，复现
+# 命令见 audit._check_numbers_detailed docstring），40 留余量。
+# 超过即停止写入并点名（不静默截断）。
+FIDELITY_SAMPLE_MAX_PAIRS_PER_RUN = 40
+# 采样目录字节上限：达到即停止写入（可见告警）。按每配对 ~1.5KB、每天 ~30 条估算，
+# 32MB ≈ 700+ 天用量，正常保留期内不会触达；触达说明有异常增长，停写而非静默膨胀。
+FIDELITY_SAMPLE_MAX_DIR_BYTES = 32 * 1024 * 1024
+# 保留天数：本模块**不自动删除**任何样本文件（自动删本机状态的风险高于收益），
+# 过期样本由评测侧按本常量排除并在报告里显式计数（`pairs_expired_excluded`）；
+# 磁盘上界由 FIDELITY_SAMPLE_MAX_DIR_BYTES 硬保证，不依赖删除。
+FIDELITY_SAMPLE_RETENTION_DAYS = 30
+
+_SAMPLE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _fidelity_sample_enabled() -> bool:
+    raw = os.environ.get(FIDELITY_SAMPLE_ENV)
+    if raw is None or not raw.strip():
+        return True
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def fidelity_sample_dir():
+    """配对样本目录（机器本地状态根下，不建目录）。"""
+    from akb2.common.state_paths import get_state_root
+
+    return get_state_root() / FIDELITY_SAMPLE_SUBDIR
+
+
+def _sample_dir_bytes(sample_dir) -> int:
+    """采样目录已用字节（只数本模块写的 *.jsonl）。"""
+    total = 0
+    if not sample_dir.is_dir():
+        return 0
+    for path in sample_dir.glob("*.jsonl"):
+        try:
+            total += path.stat().st_size
+        except OSError as exc:  # 不静默：漏算会让字节预算失效
+            sys.stderr.write(
+                f"WARNING [translate]: 采样目录用量统计跳过 {path}: {exc}\n"
+            )
+    return total
+
+
+def dump_fidelity_pairs(synth_en: dict, synth_zh: dict, *, date: str | None = None) -> dict:
+    """把 (en, zh) 配对样本追加落盘，返回状态 dict。
+
+    配对集合直接来自 `audit._translation_pairs` —— 与 fail 级检查**同一个**取字段
+    函数，否则语料与被测判据会各走一套口径，评测结论对不上生产。
+
+    Returns:
+        dict: `{"status": "written"|"empty"|"disabled"|"skipped"|"failed", ...}`
+            written 带 `pairs` / `truncated` / `path`；skipped 带 `reason`；
+            failed 带 `reason`。
+
+    Note:
+        采样是可观测性副作用，绝不能让它把日报主链路打挂，故整体包 except；
+        但每条失败都写 stderr 并由返回值上浮（原则 4 失败可见），不是静默兜底。
+    """
+    if not _fidelity_sample_enabled():
+        return {"status": "disabled"}
+    try:
+        from akb2.briefing.audit import _translation_pairs
+        from akb2.common.state_paths import is_synced_path, state_file_path
+
+        resolved = str(date or synth_zh.get("date") or synth_en.get("date") or "").strip()
+        if not _SAMPLE_DATE_RE.match(resolved):
+            resolved = time.strftime("%Y-%m-%d", time.gmtime())
+        target = state_file_path(f"{resolved}.jsonl", subdir=FIDELITY_SAMPLE_SUBDIR)
+        if is_synced_path(target):
+            # get_state_root 已 fail-closed，这里是第二道：宁可不采样也绝不写进同步/vault
+            raise RuntimeError(f"配对样本目标 {target} 落在跨机同步范围内，拒绝写入")
+
+        pairs = [
+            p for p in _translation_pairs(synth_zh, synth_en)
+            # en == zh 的配对在构造上不可能触发 fail 级判据（数字/URL/@handle 必然
+            # 逐字保留），落盘它们只会把"恒等回放同义反复"重新造进语料里
+            if p.get("en") and p.get("zh") and p["en"] != p["zh"]
+        ]
+        truncated = max(0, len(pairs) - FIDELITY_SAMPLE_MAX_PAIRS_PER_RUN)
+        kept = pairs[:FIDELITY_SAMPLE_MAX_PAIRS_PER_RUN]
+        if not kept:
+            return {"status": "empty", "pairs": 0, "path": str(target)}
+
+        dir_bytes = _sample_dir_bytes(target.parent)
+        if dir_bytes >= FIDELITY_SAMPLE_MAX_DIR_BYTES:
+            sys.stderr.write(
+                f"WARNING [translate]: 配对样本目录已用 {dir_bytes} 字节 ≥ 上限 "
+                f"{FIDELITY_SAMPLE_MAX_DIR_BYTES}，本次不落盘（{len(kept)} 个配对丢失）；"
+                f"请人工清理 {target.parent}\n"
+            )
+            return {
+                "status": "skipped", "reason": "dir_budget",
+                "dir_bytes": dir_bytes, "dropped": len(kept),
+            }
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        captured_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        with target.open("a", encoding="utf-8") as fh:
+            for pair in kept:
+                fh.write(json.dumps({
+                    "date": resolved,
+                    "field": pair["field"],
+                    "en": pair["en"],
+                    "zh": pair["zh"],
+                    "captured_at": captured_at,
+                }, ensure_ascii=False) + "\n")
+        if truncated:
+            sys.stderr.write(
+                f"WARNING [translate]: 配对样本触达单次上限 "
+                f"{FIDELITY_SAMPLE_MAX_PAIRS_PER_RUN}，{truncated} 个配对未落盘"
+                f"（fidelity_sample_truncated）\n"
+            )
+        return {
+            "status": "written", "pairs": len(kept),
+            "truncated": truncated, "path": str(target),
+        }
+    except Exception as exc:
+        sys.stderr.write(
+            f"WARNING [translate]: 配对样本落盘失败（{type(exc).__name__}: {exc}）；"
+            "本次运行不产生可测语料（fidelity_sample_failed）\n"
+        )
+        return {"status": "failed", "reason": f"{type(exc).__name__}: {exc}"}
+
+
 def translate_briefing(
     synth: dict,
     *,
@@ -551,6 +701,14 @@ def translate_briefing(
             f"WARNING [translate]: {len(failed_fields)} item(s) left untranslated: "
             f"{failed_fields} (translate_degraded=True).\n"
         )
+
+    # 配对样本落盘（异常路径才打标记，正常路径不给产出层加噪声；标记语义与
+    # translate_budget_exhausted 一致：只在"该有的东西没到位"时出现）
+    sample = dump_fidelity_pairs(synth, result)
+    if sample["status"] in {"failed", "skipped"}:
+        result["fidelity_sample_failed"] = sample.get("reason") or sample["status"]
+    elif sample.get("truncated"):
+        result["fidelity_sample_truncated"] = sample["truncated"]
     return result
 
 

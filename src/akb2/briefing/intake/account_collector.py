@@ -5,12 +5,16 @@ CLI: python -m akb2.briefing.intake.account_collector [--output <path>]
 
 真实抓取链路（替代 l0_collector 的泛关键词搜索，解决内容噪音）：
   对 config/curator-accounts.yaml 的 fetch_tier.<tier> 每个账号执行：
-    twitter search "" --from <h> -t latest --exclude retweets --exclude replies
-                  --since <s> --until <u> -n <cap> --json
-  聚合所有账号结果 + 按 id 去重。
+    twitter user-posts <h> -n <cap*2> --json
+  RT / 回复 / 日期窗过滤在 raw 层 `_post_filter` 完成（user-posts 无服务端过滤），
+  再聚合所有账号结果 + 按 id 去重。
 
+  - **开跑前 preflight 探针**（`PREFLIGHT_PROBE_ACCOUNTS`）：第一个账号即命中上游
+    全局故障签名 → 立刻 `UpstreamCollectorBroken`，剩余账号不再遍历；探针就是第一个
+    正式账号的抓取，正常路径不多付一次调用
   - 单个账号失败/0 条 → 跳过（warn），不影响其他账号
-  - 全部账号 0 条 → 降级 fixture，标 _fallback_used
+  - 全部账号 0 条**且本轮未见全局故障** → 降级 fixture，标 _fallback_used；
+    见过全局故障则显式失败（`_raise_if_upstream_fatal_seen`），绝不降级
   - 账号间 pacing（默认 3s）规避限流（实测 ~34 账号触 429，en 层 19 个安全）
 
 默认单 tier=en（19 账号，向后兼容）。P2-1：`--merge`（或 env AKB2_FETCH_MERGE=1）
@@ -30,11 +34,16 @@ import yaml
 from .base import REPO_ROOT
 from .l0_collector import (
     FIXTURE_PATH,
+    HARD_FAILURE_BAD_OUTPUT,
+    HARD_FAILURE_TIMEOUT,
+    PATCH_RUNBOOK,
     TWITTER_BIN,
     TWITTER_TIMEOUT_SEC,
     UPSTREAM_FATAL_FAILFAST_STREAK,
+    UPSTREAM_HARD_FAILURE_FAILFAST_STREAK,
     UpstreamCollectorBroken,
     _twitter_cli_to_akb2,
+    diagnose_upstream_fatal,
     match_upstream_fatal,
 )
 
@@ -45,6 +54,14 @@ _DEFAULT_CAP = 10           # 每账号最多取最新 N 条
 _DEFAULT_PACING_SEC = 3.0   # 账号间停顿，规避限流
 _DEFAULT_SUPPLEMENT_THRESHOLD = 30  # en 层低于此数时从 reserve_tier 补抓
 _DEFAULT_MAX_RESERVE_ACCOUNTS = 10  # reserve 最多抓多少个账号（限流防护）
+
+# 开跑前 preflight 探针的预算：遍历整个 tier 之前先看这么多个账号的结果。
+# 取 1 是因为这类故障（ClientTransaction 初始化失败 / 补丁被 uv upgrade 冲掉）
+# 对每个账号逐字复现 —— 第 1 个账号的结果已经是判据。
+# 探针**不额外消耗配额**：它就是第一个正式账号的抓取，成功时结果照常进聚合，
+# 正常路径的总调用次数与没有探针时完全一致（回归见 tests/briefing/
+# test_intake_preflight.py::test_preflight_adds_no_extra_call_when_upstream_healthy）。
+PREFLIGHT_PROBE_ACCOUNTS = 1
 
 
 def _load_fetch_tier(tier: str = _DEFAULT_TIER) -> list[str]:
@@ -99,6 +116,14 @@ class AccountCollector:
         self._upstream_fatal_streak: int = 0
         self._upstream_fatal_sig: str | None = None
         self._upstream_fatal_sample: str = ""
+        # **最近一次** _fetch_one 是否命中全局签名（每次调用开头清零）。
+        # preflight 判据必须只看探针自己这一次的结果 —— 用 upstream_fatal_seen
+        # （整轮粘滞）会让 en 层早先的一次抖动误杀 zh 层的探针。
+        self._last_fatal_sig: str | None = None
+        # 无签名硬失败（超时 / 输出非 JSON）的连击 —— 与签名连击分开计数，
+        # 因为这两类失败不产生 stderr 签名，而 429 限流必须继续遍历。
+        self._hard_failure_streak: int = 0
+        self._hard_failure_kind: str | None = None
         # 整轮是否见过全局故障（即使未达 fail-fast 阈值）—— 用于区分
         # 「上游工具坏了」与「curator 配置里 zh 账号不对」两类完全不同的 0 产量。
         self.upstream_fatal_seen: str | None = None
@@ -128,9 +153,13 @@ class AccountCollector:
         """抓单个账号；失败/0 条返回 []（不抛、不降级，由调用方聚合处理）。
 
         2026-07-28 端点切换：`search "" --from <h>` → `user-posts <h>`。
-        X 轮换了 SearchTimeline 的 persisted queryId，search 端点恒 404
-        （UserTweets / UserByScreenName 等端点均正常）。user-posts 不支持
-        --exclude / --since / --until，三类过滤移到 `_post_filter`（raw 层）：
+        当时 search 端点连续 404（疑似 SearchTimeline persisted queryId 轮换），
+        UserTweets / UserByScreenName 等端点正常。
+        ⚠ 同日 16:29 复测 `twitter search "" --from karpathy -n 1 --json` 已恢复
+        `ok: true`，即"search 恒 404"这条结论**不再成立**（成因未定）。保留
+        user-posts 不是因为 search 坏了，而是它才是"按账号取时间线"的对应端点。
+        user-posts 不支持 --exclude / --since / --until，三类过滤移到
+        `_post_filter`（raw 层）：
         RT 用 isRetweet 字段、回复用 text 前缀、日期窗用 createdAtISO。
         抓取量放大到 cap*2 再截断，补偿过滤损耗（有界：至多 2 倍）。
         """
@@ -139,6 +168,7 @@ class AccountCollector:
             "-n", str(self.per_account_cap * 2),
             "--json",
         ]
+        self._last_fatal_sig = None
 
         try:
             result = subprocess.run(
@@ -146,6 +176,9 @@ class AccountCollector:
             )
         except subprocess.TimeoutExpired:
             sys.stderr.write(f"WARNING: @{handle} timeout ({TWITTER_TIMEOUT_SEC}s) — skip\n")
+            # 超时不产生任何 stderr 签名 → 若不在这里计数，签名护栏与 preflight
+            # 都不会开火，47 账号跑满赔 2820s（2026-07-28 对抗复核实测）。
+            self._note_hard_failure(HARD_FAILURE_TIMEOUT)
             return []
 
         if result.returncode != 0:
@@ -159,6 +192,8 @@ class AccountCollector:
             payload = json.loads(result.stdout)
         except json.JSONDecodeError:
             sys.stderr.write(f"WARNING: @{handle} output not JSON — skip\n")
+            # 同上：stdout 不可解析也不产生签名，需独立计数。
+            self._note_hard_failure(HARD_FAILURE_BAD_OUTPUT)
             return []
         if not payload.get("ok"):
             sys.stderr.write(f"WARNING: @{handle} payload.ok=false — skip\n")
@@ -174,7 +209,48 @@ class AccountCollector:
             # 有账号真的取到了内容 → 上游没坏，连击归零（防单账号私密/限流误判为全局故障）
             self._upstream_fatal_streak = 0
             self._upstream_fatal_sig = None
+            self._hard_failure_streak = 0
+            self._hard_failure_kind = None
         return tweets
+
+    def _raise_broken(self, sig: str, count: int, sample: str = "") -> None:
+        """统一抛点：保证每次中止都带上成因归因。
+
+        四个抛点原本各写一遍 `diagnosis=diagnose_upstream_fatal(sig)`，第五个抛点
+        忘写就会让异常照抛而运维少一段成因（静默降级的信息损失）。
+        """
+        raise UpstreamCollectorBroken(
+            sig, count, sample, diagnosis=diagnose_upstream_fatal(sig)
+        )
+
+    def _note_hard_failure(self, kind: str) -> None:
+        """记录一次**无签名硬失败**（超时 / 输出非 JSON）并维护连击。
+
+        与 `_note_upstream_failure` 分开的理由：那条靠 stderr 里的已登记签名判定，
+        而这两类失败根本不产生签名。合并进同一计数会让「429 限流」也被算进去，
+        而限流必须继续遍历（账号间 pacing 就是为它设计的）。
+
+        **刻意不写 `_last_fatal_sig`**：preflight 探针预算是 1 个账号，若单次超时
+        就中止整轮，一次网络抖动 = 当天无日报。超时只走连击（阈值 3）。
+        """
+        if kind == self._hard_failure_kind:
+            self._hard_failure_streak += 1
+        else:
+            self._hard_failure_kind = kind
+            self._hard_failure_streak = 1
+
+    def _abort_if_hard_failures_streak(self) -> None:
+        """连续无签名硬失败达阈值 → 中止整轮（不降级 fixture）。"""
+        if (
+            self._hard_failure_kind
+            and self._hard_failure_streak >= UPSTREAM_HARD_FAILURE_FAILFAST_STREAK
+        ):
+            sys.stderr.write(
+                f"ERROR [account_collector]: {self._hard_failure_kind} 连续 "
+                f"{self._hard_failure_streak} 个账号，中止本轮 —— 剩余账号不再遍历"
+                f"（每个超时账号赔 {TWITTER_TIMEOUT_SEC}s，跑满会推进 429）\n"
+            )
+            self._raise_broken(self._hard_failure_kind, self._hard_failure_streak, "")
 
     def _post_filter(
         self,
@@ -238,6 +314,7 @@ class AccountCollector:
             self._upstream_fatal_sig = sig
             self._upstream_fatal_streak = 1
         self.upstream_fatal_seen = sig
+        self._last_fatal_sig = sig
         self._upstream_fatal_sample = text[:300].replace("\n", " | ")
 
     def _abort_if_upstream_broken(self) -> None:
@@ -246,11 +323,41 @@ class AccountCollector:
             self._upstream_fatal_sig
             and self._upstream_fatal_streak >= UPSTREAM_FATAL_FAILFAST_STREAK
         ):
-            raise UpstreamCollectorBroken(
+            self._raise_broken(
                 self._upstream_fatal_sig,
                 self._upstream_fatal_streak,
                 self._upstream_fatal_sample,
             )
+
+    def _abort_if_broken(self) -> None:
+        """两类连击护栏的统一入口（签名连击优先，顺序与合并前一致）。
+
+        合并前两个 abort 在 `_fetch_tier_raw` 的两个位置恒成对出现 —— 本轮加第二类
+        连击就要改 2 处，加第三类会再漏一处。收口成一个入口后新增护栏只改这里。
+        """
+        self._abort_if_upstream_broken()
+        self._abort_if_hard_failures_streak()
+
+    def _abort_if_preflight_failed(self, tier: str, handle: str) -> None:
+        """开跑前探针：前 PREFLIGHT_PROBE_ACCOUNTS 个账号命中全局签名即中止整轮。
+
+        与 `_abort_if_upstream_broken`（连击 3）的分工：连击护栏是「跑着跑着坏了」
+        的兜底；探针是「开跑前就知道」—— 本地补丁被 `uv tool upgrade twitter-cli`
+        冲掉这类故障对每个账号逐字复现，没必要再赔 2 个账号的超时。
+
+        判据只用**探针这一次调用**返回的全局故障签名（可观测行为）；补丁在位性、
+        登录态只进归因文案，不参与是否中止的决定。
+        """
+        if not self._last_fatal_sig:
+            return
+        sys.stderr.write(
+            f"ERROR [account_collector]: preflight 探针（tier={tier} @{handle}，预算 "
+            f"{PREFLIGHT_PROBE_ACCOUNTS} 账号）命中上游全局故障签名，中止本轮 —— "
+            "剩余账号不再遍历\n"
+        )
+        self._raise_broken(
+            self._last_fatal_sig, PREFLIGHT_PROBE_ACCOUNTS, self._upstream_fatal_sample
+        )
 
     def _fetch_tier_raw(
         self,
@@ -277,11 +384,15 @@ class AccountCollector:
         seen: set[str] = set()
         aggregated: list[dict] = []
         ok_accounts = 0
+        # 前 PREFLIGHT_PROBE_ACCOUNTS 个账号同时充当 preflight 探针：抓取照常进聚合，
+        # 但一命中全局签名就立刻中止，不遍历剩下 46 个账号（也就不会被推进 429）。
         for i, handle in enumerate(handles):
             if i > 0 and self.pacing_sec > 0:
                 time.sleep(self.pacing_sec)  # 限流防护
             tweets = self._fetch_one(handle, since_date, until_date)
-            self._abort_if_upstream_broken()
+            if i < PREFLIGHT_PROBE_ACCOUNTS:
+                self._abort_if_preflight_failed(tier, handle)
+            self._abort_if_broken()
             if tweets:
                 ok_accounts += 1
             for t in tweets:
@@ -315,7 +426,7 @@ class AccountCollector:
                     if reserve_used > 0 and self.pacing_sec > 0:
                         time.sleep(self.pacing_sec)
                     new_tweets = self._fetch_one(rh, since_date, until_date)
-                    self._abort_if_upstream_broken()
+                    self._abort_if_broken()
                     reserve_used += 1
                     for t in new_tweets:
                         tid = str(t.get("id", ""))
@@ -358,6 +469,7 @@ class AccountCollector:
                 self.upstream_fatal_seen,
                 max(self._upstream_fatal_streak, 1),
                 self._upstream_fatal_sample,
+                diagnosis=diagnose_upstream_fatal(self.upstream_fatal_seen),
             )
 
     def collect_merged(
@@ -470,8 +582,8 @@ def main():
         sys.stderr.write(
             f"ERROR [account_collector]: {exc}\n"
             f"ERROR [account_collector]: 排障入口 —— 先跑 `twitter status`（登录态）"
-            f"与 `twitter search \"\" --from karpathy -n 1 --json`（采集能力）；"
-            f"两者结论不同即为上游工具故障，不是配置或登录问题\n"
+            f"与 `twitter user-posts karpathy -n 2 --json`（生产端点的采集能力）；"
+            f"完整自检清单见 {PATCH_RUNBOOK} 的「自检」一节\n"
         )
         if exc.sample:
             sys.stderr.write(f"ERROR [account_collector]: 上游原始输出: {exc.sample}\n")

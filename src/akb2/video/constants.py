@@ -33,3 +33,65 @@ VIDEO_MAX_DATE_BACKFILL_PER_RUN = 40
 
 # 补取发布日期时的请求间隔（秒），避免触发平台限频
 VIDEO_DATE_BACKFILL_SLEEP_SEC = 1.2
+
+# ---------------------------------------------------------------------------
+# YouTube 列表阶段近似发布日期（2026-07-28 事故：109 个候选全灭）
+#
+# `--flat-playlist` 对 YouTube 频道**从不**返回 upload_date（实测 yt-dlp 2026.06.09：
+# upload_date / timestamp / release_timestamp 三个字段全 None）→ 每个 YouTube 候选
+# 都要一次 per-video `--dump-json` 才能拿到日期，需求量 = 候选总数（实测 222），
+# 而补取预算是 40 → 结构上必然大面积拒收。
+#
+# `youtubetab:approximate_date` 让列表调用顺带返回近似日期（同一次网络调用，零额外
+# 成本）：yt-dlp 把频道页的相对文案（"3 days ago"）按 `now - delta` 折算成 timestamp。
+# 相对文案向下截断（"3 days ago" 覆盖 3d0h–3d23h），所以近似值是真实发布时间的
+# **上界**：approx >= true 恒成立（实测 5/5 样本 approx 比 exact 晚 1–2 天）。
+#
+# 上界性质给出一条免费且 fail-closed 安全的预筛：approx < cutoff ⇒ true < cutoff，
+# 即"近似日期都已超窗"的候选可以直接拒，不用花任何 per-video 调用。反向不成立
+# （approx 在窗内不代表 true 在窗内），所以**准入仍然只认精确日期**——近似值永远
+# 不写进 `upload_date`，不参与准入判定（宪法 P3，不为了有产出放宽时间闸）。
+VIDEO_YT_LIST_EXTRACTOR_ARGS = "youtubetab:approximate_date"
+
+# 近似日期预筛的安全边距（天）：只有 approx 比窗口下界还早这么多天才敢直接拒。
+# 上界性质是从 yt-dlp 实现推出的（`_parse_time_text` → `now - relative_delta`），
+# 但相对文案本地化、时区折算都可能引入小时级偏移，留 2 天缓冲；代价只是多几次
+# 精确补取，收益是绝不会因预筛误杀一个真正在窗内的新视频。
+VIDEO_APPROX_DATE_MARGIN_DAYS = 2
+
+# 连续多少轮 0 产出后，把"今天没有新视频"升级为 blocked（采集能力疑似整体失效）。
+# 有界升级（宪法 P1/P4）：21 个源 + 14 天回溯窗口下，连续 3 轮真零的概率极低，
+# 更可能是 cookies 失效 / 平台限频 / 列表解析坏了。
+VIDEO_MAX_CONSECUTIVE_ZERO_RUNS = 3
+
+# ---------------------------------------------------------------------------
+# 已发布产出的身份索引（残余风险「视频存量覆盖」：608 份历史产出全是旧命名，
+# 文件名层的 fail-closed 对它们恒不命中；见 published_index.py 模块 docstring）
+# ---------------------------------------------------------------------------
+
+# 单次索引最多扫描的 markdown 份数（有界，宪法 P1）。目录现状 608 份，留足余量；
+# 超过即不完整并打 ERROR，不静默截断。
+PUBLISHED_INDEX_MAX_FILES = 5000
+
+# 每份产出读取的字节上限（只要 frontmatter，正文不需要）
+PUBLISHED_INDEX_HEAD_BYTES = 4000
+
+# 索引缓存有效期（秒）：一次采集轮的总预算是 VIDEO_BUDGET_SECONDS=900s，取 600s
+# 使单轮内最多重建一次；本进程自己发布的产出走 `mark_published()` 增量并入，
+# 不依赖 TTL 过期。禁止的形态是"每个候选全目录重扫 608 份"。
+PUBLISHED_INDEX_TTL_SEC = 600.0
+
+# ---------------------------------------------------------------------------
+# 短链展开（残余风险 2：b23.tv/<code> 解析不到 BV 号 → 与展开后的完整 URL 分裂成
+# 两个身份）。展开只在**采集阶段**做（有网络、每个候选一次），`video_identity`
+# 保持纯函数。
+# ---------------------------------------------------------------------------
+
+# 单次展开的网络超时（秒）
+VIDEO_SHORTLINK_TIMEOUT_SEC = 5.0
+
+# 单个短链最多跟随的重定向跳数（有界，防重定向环）
+VIDEO_SHORTLINK_MAX_HOPS = 3
+
+# 单轮最多展开多少个短链（有界预算，宪法 P1）
+VIDEO_SHORTLINK_MAX_PER_RUN = 40

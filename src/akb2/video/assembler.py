@@ -22,6 +22,7 @@ from pathlib import Path
 from src.akb2.video.config import VideoConfig
 from src.akb2.video.dedup_store import VideoDedupStoreError, video_identity
 from src.akb2.video.extractor import ExtractedFields
+from src.akb2.video.published_index import PublishedIdentityIndex
 from src.akb2.video.reasoner import ReasonedLinks
 from src.akb2.video.researcher import ResearchOutput
 
@@ -35,6 +36,16 @@ logger = logging.getLogger("akb2.video.assembler")
 
 class CandidateTargetExists(Exception):
     """candidate 文件已存在（slug/date 冲突）。"""
+
+
+class PublishedIdentityExists(CandidateTargetExists):
+    """已发布目录里已存在**同身份**产出（与文件名无关的第二道防线）。
+
+    继承 `CandidateTargetExists` 是为了让既有捕获点（`run_pipeline` 的 except 元组、
+    `__main__` 的三处 `except CandidateTargetExists`）自动接住，不必逐处改签名；
+    单独成类则让调用方/日志能区分"文件名撞了"与"身份撞了"（后者说明历史产出用的是
+    旧命名，文件名层根本抓不到）。
+    """
 
 
 class GateRejected(Exception):
@@ -53,8 +64,17 @@ class PromotionTargetNotFound(Exception):
 class Assembler:
     """Candidate 组装器 — 唯一 durable write 所有者。"""
 
-    def __init__(self, config: VideoConfig | None = None):
+    def __init__(
+        self,
+        config: VideoConfig | None = None,
+        published_index: PublishedIdentityIndex | None = None,
+    ):
         self.config = config or VideoConfig()
+        # 身份层第二道防线（残余风险「视频存量覆盖」）：文件名判定对 608 份旧命名
+        # 历史产出恒不命中，这里改按 `video_identity` 判定。索引按实例缓存、有界。
+        self.published_index = published_index or PublishedIdentityIndex(
+            self.config.promotion_target_path
+        )
 
     def assemble(
         self,
@@ -139,10 +159,16 @@ class Assembler:
             正式发布路径（AI TRENDS/Video/video-{slug}.md，**不含日期**）。
 
         Raises:
+            PublishedIdentityExists: 已发布目录里已有**同身份**产出（旧命名也算）。
             CandidateTargetExists: staging 或正式路径同名已存在。
             GateRejected: gate 判 reject 或 parse_error（永久拒绝）。
             PromotionTargetNotFound: promotion 目标路径不存在。
         """
+        # 身份层 fail-closed（残余风险「视频存量覆盖」）：在写任何文件之前，按
+        # `video_identity` 查一次"已发布目录里是否已有同身份产出"。文件名层
+        # (`promotion_path.exists()`) 只认新命名，对 608 份旧命名历史产出恒不命中。
+        self._reject_if_identity_published(candidate_md)
+
         date = date_str or datetime.now().strftime("%Y-%m-%d")
         slug = slug or self._make_slug(candidate_md)
         staging = staging_dir or self.config.staging_dir
@@ -210,7 +236,45 @@ class Assembler:
 
         logger.info(f"已发布到 AI TRENDS/Video: {promotion_path}")
 
+        # 增量并入身份索引：同一轮里该视频的其他 URL 形态（youtu.be / watch?v=&t=）
+        # 立刻被身份层挡住，且不必为一条记录重扫整个目录。
+        source_url = self._extract_source_url(candidate_md)
+        if source_url:
+            self.published_index.mark_published(source_url, promotion_path)
+
         return promotion_path
+
+    # ------------------------------------------------------------------
+    # 身份层第二道防线
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_source_url(candidate_md: str) -> str:
+        """从 candidate frontmatter 取 `source_url:`（`assemble()` 恒写这一行）。"""
+        match = re.search(r"^source_url:\s*(.+)$", candidate_md, re.MULTILINE)
+        return match.group(1).strip().strip("\"'") if match else ""
+
+    def _reject_if_identity_published(self, candidate_md: str) -> None:
+        """已发布目录里已有同身份产出 → 拒绝落地（fail-closed，宪法 P3）。
+
+        Raises:
+            PublishedIdentityExists: 命中历史产出（点名出处笔记，便于人工核对）。
+        """
+        source_url = self._extract_source_url(candidate_md)
+        if not source_url:
+            # 上游（collector L0/L7、`_dedup_by_identity`）已按 fail-closed 拒收无 url
+            # 候选，这里能拿不到 url 说明 candidate 不是本链路产的；不阻断，但要可见。
+            logger.warning(
+                "candidate 缺 source_url，身份层防线本次不生效（只剩文件名层 + 账本）"
+            )
+            return
+        existing = self.published_index.lookup(source_url)
+        if existing:
+            raise PublishedIdentityExists(
+                f"已发布目录已存在同身份产出: {video_identity(source_url)} "
+                f"→ 《{existing}》（fail-closed，不重复产出；历史产出用旧命名，"
+                "文件名层抓不到）"
+            )
 
     # ------------------------------------------------------------------
     # Frontmatter 构建

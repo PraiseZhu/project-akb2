@@ -9,7 +9,16 @@
 - **模式**：batch — 10 个 repo 一次 LLM 调用（节省 token，相比 per-repo 省 10×）
 - **input tokens 上限**：12,000（SC-6 强卡）
 - **temperature**：0.3（事实型摘要不需要发散）
-- **max_output_tokens**：4,000（10 × 400 tokens 平均）
+- **max_output_tokens**：14,000 —— 按「schema 会**接受**的最长产出都不许被截断」推导，
+  不是按平均值。推导过程见 `synthesis.py` 常量区（10 条 × 1000 字符/条 + 信封，
+  × 1.1 token/字符 + 2600 reasoning 余量）。
+  **它是上限不是花费**：实际按生成量计费，真实产出约 390 字符/条 ≈ 4,000 tokens。
+  - 旧值 4,000（按「10 × 400 tokens 平均」定）在 2026-07-21/24/27 连续三天撞顶，
+    真实需求（典型产出 ~3,900 字符 → ~6,900 tokens）本就高于旧上限；
+    layer1 博主精选路径因 grounding 更厚、产出更长而**系统性**被截断，
+    而 layer2 热榜兜底产出更短、恰好过关 —— 于是每次都降级成热榜。
+  - 单次条数上限 10（`MAX_REPOS_PER_CALL`）与本预算绑定；超过即拒绝调用，
+    不允许「先撞顶再报 JSON 错」。
 
 ## Prompt 完整模板
 
@@ -64,7 +73,9 @@
 | 错误 | 行为 |
 |------|------|
 | API 调用失败 | retry 3 次（退避 5s/15s/45s），仍失败 → 写 `briefing-failed.json` |
-| 输出 JSON 解析失败 | retry 1 次（追加 "前次输出不是合法 JSON，重新输出" prompt），仍失败 → 写 `briefing-failed.json` |
+| **输出被 max_tokens 截断**（`finish_reason == "length"`） | **不 retry**，抛 `SynthesisTruncatedError` 说明「撞输出预算上限」并写 `briefing-failed.json`。同请求配同上限重跑必然截在同一处（宪法 P2 收敛优先于重跑），旧实现在这里白烧一次调用，把 synthesize 从 ~51-90s 拖到 103-156s |
+| 输出 JSON 解析失败 | retry 1 次（追加 "前次输出不是合法 JSON，重新输出" prompt），仍失败 → 写 `briefing-failed.json`。**先判截断再判格式** —— 否则预算不足会被报成 `Unterminated string ...`，归因错位（2026-07 生产 3 次） |
+| 单次 repo 数 > 10 | 调用前直接 abort（输出预算按 10 条推导，超出必然截断） |
 | 输出条数 ≠ 10 | abort，不写 vault |
 | use_case 长度 < 30 或 > 300 | abort（pipeline 入口已通过 schema validator 卡） |
 | repo_url 与输入不匹配 | abort（防 LLM 编造 repo） |

@@ -25,9 +25,49 @@ _GATEWAY_BASE = (
 ).rstrip("/")
 DEEPSEEK_API_URL = f"{_GATEWAY_BASE}/v1/chat/completions"
 MAX_INPUT_TOKENS = 12000
-MAX_OUTPUT_TOKENS = 4000
 RETRY_BACKOFF = [5, 15, 45]
 MAX_RETRIES = 3
+
+# ── 输出预算（宪法 P4「预算显式」+ P1「有界自动化」）─────────────────────────────
+# 2026-07-21/24/27 三次生产失败（logs/github-briefing-stdout.log:421/457/493）的真因
+# 是这个预算不够：旧值 4000 是按「10 × 400 tokens 平均」定的，用平均值当上限，既没有
+# worst-case 余量，也没给 deepseek-v4-pro 默认产出的 reasoning_content 留位置。撞顶后
+# 半截 JSON 直送 json.loads，被报成 "Unterminated string ..."——预算问题伪装成语法问题。
+#
+# 重新推导（原则：schema 会**接受**的最长产出都不许被截断，不按平均值定上限）
+#   单条字符上限 1000 = summary maxLength 500 + use_case maxLength 300
+#                     + repo_url ~120 + JSON 键/引号/逗号/缩进 ~80
+#     500/300 取自 schemas/github_briefing_v1.json —— 那是 vault 写入闸的硬上限，
+#     闸门放行的长度就必须生成得出来，否则又是「产出合法却被截断」。
+#   条数上限 10 —— pipeline `scored[:10]` + schema top_repos maxItems=10 双重硬卡；
+#     与候选池无关（candidate_pool_size=61 是博主数，不是条目数），不会随池子增长。
+#   信封 ~200 字符 = 数组括号 + 模型偶发的 ```json 围栏（围栏被 _extract_json 剥掉，
+#     但生成时照样烧 output token）。
+#   token/字符 1.1 —— 三次截断给的实测锚点是「每交付 1 字符烧 1.08~1.61 token」
+#     （4000÷3707、4000÷3453、4000÷2490）；比值里偏高的部分是 reasoning 的**固定**
+#     开销而非按字符线性增长，故把固定开销单列，字符换算取 1.1。
+#   reasoning 余量 2600 —— repair.py:76 已实测 deepseek-v4-pro 即使 reasoning_effort=None
+#     也照样产 reasoning_content，且它与 content 共用 max_tokens；2600 ≈ 上述锚点中
+#     反推的最大固定开销（4000 − 2490×0.6）。
+# → (10 × 1000 + 200) × 1.1 + 2600 = 13,820 → 取 14000（编译期常量，仍然有界）
+#
+# 注意：这是**上限**不是花费，实际只按生成量计费；真实产出约 390 字符/条（≈4000 tokens
+# 总量，见 backstop 成功记录），新上限只在极端长产出时才起作用。
+MAX_REPOS_PER_CALL = 10
+OUTPUT_CHARS_PER_REPO = 1000
+OUTPUT_CHARS_ENVELOPE = 200
+OUTPUT_TOKENS_PER_CHAR = 1.1
+REASONING_TOKENS_HEADROOM = 2600
+MAX_OUTPUT_TOKENS = 14000
+
+
+class SynthesisTruncatedError(RuntimeError):
+    """LLM 输出撞 max_tokens 上限被截断 —— 预算问题，不是 JSON 格式问题。
+
+    单列一个类型而不是复用 JSONDecodeError/ValueError，是为了让「预算撞顶」这条真因
+    在日志里自证，并且**绕开** synthesize() 里的 JSON 重试分支：同一请求配同一上限
+    重跑必然截在同一处，重试只是白烧一次调用（生产实测每次失败因此翻倍到 103-156s）。
+    """
 
 
 def _load_prompt_template() -> str:
@@ -172,6 +212,36 @@ def _call_deepseek(prompt: str, api_key: str | None = None,
     return None
 
 
+def _content_or_raise(response: dict, *, repo_count: int) -> str:
+    """取出 message.content；`finish_reason == "length"` 即预算撞顶，按真因抛错。
+
+    OpenAI 兼容格式（AI Gateway / DeepSeek 都是）把停止原因放在
+    `choices[0].finish_reason`，`"length"` 就是「被 max_tokens 截断」的官方信号。
+    旧实现从不读它（本次修复前全仓 grep finish_reason 零命中），把半截 JSON 直送 json.loads，
+    于是「预算不够」在日志里显示成 `Unterminated string starting at: line 50 ...`，
+    归因完全错位 —— 违反宪法 P4「预算显式 / 失败可见」。
+
+    `finish_reason` 缺失（None）时不判截断：部分网关不回该字段，不能因为字段缺失
+    就把正常产出判成失败。
+    """
+    choice = response["choices"][0]
+    content = choice["message"]["content"]
+    if choice.get("finish_reason") != "length":
+        return content
+
+    usage = response.get("usage") or {}
+    completion_tokens = usage.get("completion_tokens")
+    consumed = f"，实际消耗 {completion_tokens} completion tokens" if completion_tokens else ""
+    raise SynthesisTruncatedError(
+        f"LLM 输出撞 max_tokens 上限被截断（finish_reason=length，"
+        f"上限 MAX_OUTPUT_TOKENS={MAX_OUTPUT_TOKENS}{consumed}）——"
+        f"这不是 JSON 格式问题，是输出预算不够；本次 {repo_count} 个 repo，"
+        f"只拿到 {len(content or '')} 字符的半截产出。"
+        f"处置：加大 MAX_OUTPUT_TOKENS 或减少单次 repo 数；不重试同一请求"
+        f"（同上限重跑必然截在同一处）。"
+    )
+
+
 def _load_item_schema() -> dict:
     with open(ITEM_SCHEMA_PATH) as f:
         return json.load(f)
@@ -254,11 +324,23 @@ def synthesize(repos: list[dict[str, Any]], api_key: str | None = None,
     if input_tokens > MAX_INPUT_TOKENS:
         raise ValueError(f"Prompt too large: {input_tokens} tokens > {MAX_INPUT_TOKENS} max")
 
+    # 输出预算是按 MAX_REPOS_PER_CALL 条推导的（见常量区）。条数一旦超过推导前提，
+    # 撞顶就从「可能」变成「必然」——在这里响亮地拒掉，而不是等模型截断后在 vault 侧
+    # 表现为整份简报消失。pipeline 侧 `scored[:10]` 让这条在生产不可能触发，
+    # 它防的是以后有人把 top-N 调大却忘了同步预算。
+    if len(repos) > MAX_REPOS_PER_CALL:
+        raise ValueError(
+            f"单次 synthesize 最多 {MAX_REPOS_PER_CALL} 个 repo，收到 {len(repos)} 个 → 拒绝调用："
+            f"输出预算 MAX_OUTPUT_TOKENS={MAX_OUTPUT_TOKENS} 是按 {MAX_REPOS_PER_CALL} 条推导的，"
+            f"超出即必然撞顶被截断。要提高条数必须同步重算输出预算。"
+        )
+
     response = _call_deepseek(prompt, api_key, allow_mock=mock)
     if response is None:
         raise RuntimeError("DeepSeek API returned no response")
 
-    content = response["choices"][0]["message"]["content"]
+    # 先判截断再解析：撞顶的半截 JSON 必须报成预算问题，且不进下面的 JSON 重试分支。
+    content = _content_or_raise(response, repo_count=len(repos))
     try:
         summaries = json.loads(_extract_json(content))
     except json.JSONDecodeError as e:
@@ -267,7 +349,7 @@ def synthesize(repos: list[dict[str, Any]], api_key: str | None = None,
         response = _call_deepseek(retry_prompt, api_key, allow_mock=mock)
         if response is None:
             raise RuntimeError("DeepSeek retry also failed") from e
-        content = response["choices"][0]["message"]["content"]
+        content = _content_or_raise(response, repo_count=len(repos))
         summaries = json.loads(_extract_json(content))
 
     _validate_items(summaries)

@@ -26,7 +26,7 @@ import socket
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -47,6 +47,29 @@ MAX_PROCESSING_LOCK_AGE_SEC: int = 3600  # 跨机锁最大年龄（超龄视为�
 PROCESSING_LOCK_NAME: str = "processing.lock"
 _HOSTNAME: str = socket.gethostname()
 _PROCESSING_LOCK_FD: Any | None = None
+
+# ---------------------------------------------------------------------------
+# 跨机队列分片（缺陷 #11c：处理锁不跨机，raw 队列却在同步 vault 内）
+# ---------------------------------------------------------------------------
+# `_acquire_processing_lock` 用 fcntl.flock + 机器本地锁目录：单机内真互斥，
+# **跨机零作用**（flock 是内核 inode 级语义，锁目录本身也各机独立）。而 raw 队列
+# 目录仍在 Syncthing 同步的 vault（`<vault>/raw`）、账本已改成机器本地 → 两台机器
+# 各自都把同一篇 raw 看成"未处理"，会同时全链处理它（重复 LLM 花费 + 双写 vault）。
+# `docs/mac-mini-deployment-notes.md` 指导第二台机器装同一套 plist、指向同一个
+# Syncthing vault，所以这是可达路径而非假设。
+#
+# 不往同步目录写任何状态的前提下，唯一能做到"跨机不重复"的手段是**静态分片**：
+# 分片键取 raw **文件名**（跨机稳定；不用绝对路径，两机挂载点不同就会分叉），
+# 每台机器只处理自己那几片。分片集合来自机器本地 env（plist / wrapper 各机独立
+# 配置），不需要任何共享可写介质，因此不会重演 star_history 被同步覆盖丢 690 行。
+RUNNER_SHARD_COUNT: int = 16
+RUNNER_SHARDS_ENV: str = "AKB2_RUNNER_SHARDS"
+RUNNER_SHARD_TAKEOVER_ENV: str = "AKB2_RUNNER_SHARD_TAKEOVER"
+RUNNER_REQUIRE_SHARDING_ENV: str = "AKB2_RUNNER_REQUIRE_SHARDING"
+# 外机分片项接管阈值（宪法 P1 有界）：raw 文件 mtime 超过该年龄仍未被任何机器处理，
+# 视为该分片所属机器长期离线，允许本机接管——否则单机故障会永久占住那些工作项。
+# 阈值远大于单篇处理耗时（分钟级）+ Syncthing 同步延迟，避免抢正在被处理的项。
+SHARD_TAKEOVER_AFTER_SEC: int = 6 * 3600
 
 # F46 needs_repair 驻留通路预算（宪法 P1 有界）：
 #   repair 不收敛(内容性,非 infra/floor) → 驻留(非 abort),低频重掷 grader+repair,
@@ -110,6 +133,107 @@ def _install_signal_handlers() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 跨机队列分片解析
+# ---------------------------------------------------------------------------
+
+
+def _parse_shard_spec(
+    spec: str, count: int = RUNNER_SHARD_COUNT
+) -> frozenset[int] | None:
+    """解析分片配置串 → 本机拥有的分片集合；None 表示独占全部（单机形态）。
+
+    支持 ``""`` / ``"all"``（全部）、``"3"``、``"0-7"``、``"0,3,5-6"``。
+
+    Raises:
+        ValueError: 语法非法或分片号越界。**不静默退化成"全部"**——那会悄悄恢复
+            跨机重复处理，而运维以为分片已生效（宪法 P3 fail-closed / P4 可见）。
+    """
+    cleaned = spec.strip().lower()
+    if not cleaned or cleaned == "all":
+        return None
+
+    owned: set[int] = set()
+    for part in (p.strip() for p in cleaned.split(",")):
+        if not part:
+            continue
+        try:
+            if "-" in part:
+                lo_str, _, hi_str = part.partition("-")
+                lo, hi = int(lo_str), int(hi_str)
+                if lo > hi:
+                    raise ValueError(f"区间倒序: {part}")
+                shard_range: range | list[int] = range(lo, hi + 1)
+            else:
+                shard_range = [int(part)]
+        except ValueError as exc:
+            raise ValueError(
+                f"{RUNNER_SHARDS_ENV} 非法: {spec!r}（{exc}）；"
+                f"合法写法: all / 3 / 0-7 / 0,3,5-6，分片号 0..{count - 1}"
+            ) from exc
+        for shard in shard_range:
+            if not 0 <= shard < count:
+                raise ValueError(
+                    f"{RUNNER_SHARDS_ENV} 非法: {spec!r}（分片号 {shard} 越界，"
+                    f"合法范围 0..{count - 1}）"
+                )
+            owned.add(shard)
+
+    if not owned:
+        raise ValueError(f"{RUNNER_SHARDS_ENV} 非法: {spec!r}（解析出空分片集合）")
+    return frozenset(owned)
+
+
+def _shard_key(raw_path: str) -> str:
+    """raw 的跨机分片键 = 文件名里的 `article_id` 段。
+
+    raw 文件名形态是 `<source_slug>--<article_id>--raw--<date>.md`，其中
+    `article_id` 由 `quality.intake.models.compute_article_id(url)` 从 URL 派生，
+    因此**同一篇文章跨机、跨日都是同一个值**。
+
+    为什么不用绝对路径：两台机器的 vault 挂载点可能不同，按路径哈希会让同一篇
+    分到不同片，分片互斥立即失效。
+
+    为什么不用整个文件名（本轮修正）：文件名带 `<date>` 段，同一篇文章隔天被
+    重新抓一次就会产生 `…--a1b2c3d4e5f6--raw--2026-07-27.md` 与
+    `…--2026-07-28.md` 两个名字 → 实测分别落 shard 2 与 shard 15 → 两台机器
+    可能各占一片、同一内容仍被双跑，恰好是分片要防的那件事。
+
+    取不到 `article_id` 段时回退整个文件名并**明示**（不静默按某个默认片走，
+    否则所有异常命名会挤到同一片上）。
+    """
+    name = Path(raw_path).name
+    # `article_id` = `--raw--` 左侧的最后一段。不能按固定下标取（不同 source_slug
+    # 自身可能含 `--`），也不能整段左侧都拿（那样 slug 变了分片就变）。
+    head, sep, _ = name.partition("--raw--")
+    if sep and head:
+        return head.rsplit("--", 1)[-1]
+    print(
+        f"[runner] raw 文件名不含 `--raw--` 段，分片键回退为整个文件名"
+        f"（跨日重抓时会分到不同片）: {name}",
+        file=sys.stderr,
+    )
+    return name
+
+
+def _shard_of(raw_path: str, count: int = RUNNER_SHARD_COUNT) -> int:
+    """raw 的分片号（键见 `_shard_key`）。"""
+    digest = hashlib.sha256(_shard_key(raw_path).encode("utf-8")).hexdigest()
+    return int(digest[:8], 16) % count
+
+
+def _raw_item_age_sec(raw_path: str) -> float:
+    """raw 文件滞留时长（秒）。取不到 mtime 时按 0（=不接管）并明示，不静默当超龄。"""
+    try:
+        return max(0.0, time.time() - Path(raw_path).stat().st_mtime)
+    except OSError as exc:
+        print(
+            f"[runner] 无法读取 raw mtime，按未超龄处理（不接管）: {raw_path} — {exc}",
+            file=sys.stderr,
+        )
+        return 0.0
+
+
+# ---------------------------------------------------------------------------
 # 配置类
 # ---------------------------------------------------------------------------
 
@@ -131,8 +255,22 @@ class RunnerConfig:
     auto_promote: bool = False
     lock_dir: str = ""
     golden_sample_path: str = ""  # 权威黄金样张(喂 repair 爬坡);空则不喂
+    # 跨机队列分片（缺陷 #11c）。空 → 读 env AKB2_RUNNER_SHARDS；env 也空 → 独占
+    # 全部分片（单机形态，向后兼容）。shard_takeover=None → 读 env（默认关）。
+    shard_spec: str = ""
+    shard_takeover: bool | None = None
+    owned_shards: frozenset[int] | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
+        if not self.shard_spec:
+            self.shard_spec = os.environ.get(RUNNER_SHARDS_ENV, "").strip()
+        # 非法配置直接抛（fail-closed，宪法 P3）：静默退化成"独占全部分片"会悄悄
+        # 恢复跨机重复处理，且运维以为分片已生效。
+        self.owned_shards = _parse_shard_spec(self.shard_spec)
+        if self.shard_takeover is None:
+            self.shard_takeover = (
+                os.environ.get(RUNNER_SHARD_TAKEOVER_ENV, "0") == "1"
+            )
         if not self.lock_dir:
             # 缺陷 #11a：锁默认落机器本地状态根，绝不落 staging（在 Syncthing
             # 同步范围内 → 两台机器互删/互抢锁）。测试与部署可用 AKB2_STATE_ROOT
@@ -688,25 +826,100 @@ def _scan_residency(config: RunnerConfig) -> list[str]:
 
 
 def _scan_queue(config: RunnerConfig) -> list[str]:
-    """扫描 raw 目录，返回未处理的 raw 文件路径列表。
+    """扫描 raw 目录，返回本机应处理的未处理 raw 文件路径列表。
 
     raw 有而账本未标记 finalize/abort = 待处理。
+
+    跨机分片（缺陷 #11c）：`config.owned_shards` 非 None 时只取属于本机分片的
+    raw；外机分片的项默认跳过，仅在显式开启接管（`AKB2_RUNNER_SHARD_TAKEOVER=1`）
+    且该 raw 滞留超过 `SHARD_TAKEOVER_AFTER_SEC` 时接管（每次接管打印一行，
+    宪法 P4 可见）。
     """
     raw_dir = Path(config.raw_dir)
     if not raw_dir.exists():
         return []
 
+    owned = config.owned_shards
     queue: list[str] = []
     for fpath in sorted(raw_dir.glob("*.md")):
         # 只匹配 --raw-- 模式的文件名
         if "--raw--" not in fpath.name:
             continue
         raw_path_str = str(fpath)
+        # 分片过滤必须在 `_is_processed` **之前**：`_shard_of` 是纯字符串 sha256
+        # （零 I/O，4369 项实测 0.0088s），而 `_is_processed` 每项都要读一遍全账本
+        # 并逐行解析 JSON（19.4MB / 25583 行）。
+        # 实测 A/B（raw 4369 项、owned=0-7）：过滤在后 379.3s / 全账本扫 4369 次；
+        # 过滤在前 189.0s / 扫 2168 次 —— 省 190.3s 每轮，队列逐项一致。
+        # 接管分支的 `stat` 判龄同样比全账本读取便宜，故也放在前面；接管日志
+        # 仍在确认该项未处理之后才打，日志行与过滤在后时完全一致。
+        takeover_note: str | None = None
+        if owned is not None:
+            shard = _shard_of(raw_path_str)
+            if shard not in owned:
+                if not config.shard_takeover:
+                    continue
+                age = _raw_item_age_sec(raw_path_str)
+                if age < SHARD_TAKEOVER_AFTER_SEC:
+                    continue
+                takeover_note = (
+                    f"[runner] 接管外机分片项: shard={shard} 不属本机 "
+                    f"{sorted(owned)}，但已滞留 {int(age)}s "
+                    f"(> {SHARD_TAKEOVER_AFTER_SEC}s) — {fpath.name}"
+                )
         content_hash = _compute_raw_hash(raw_path_str)
-        if not _is_processed(content_hash, config.ledger_path):
-            queue.append(raw_path_str)
+        if _is_processed(content_hash, config.ledger_path):
+            continue
+        if takeover_note:
+            print(takeover_note, file=sys.stderr)
+        queue.append(raw_path_str)
 
     return queue
+
+
+def _check_cross_machine_safety(config: RunnerConfig) -> bool:
+    """启动时跨机安全检测（缺陷 #11c）。返回 False = fail-closed 拒绝启动。
+
+    处理锁只在单机内互斥（flock 语义 + 机器本地锁目录），raw 队列却在跨机同步的
+    vault 内。可观测的危险组合是「队列在同步范围 **且** 未配分片」：那时是否重复
+    处理完全取决于运维有没有真的只开一台机器，机制上无保障。
+
+    - 已配分片 → 打印本机分片与接管状态（运维可核对两机是否互不相交）
+    - 队列不在同步范围 → 无跨机暴露，静默通过
+    - 危险组合 → 打印告警；`AKB2_RUNNER_REQUIRE_SHARDING=1` 时拒绝启动
+      （默认只告警：现网单机形态若默认阻断会直接停掉在跑的主链路）
+    """
+    from src.akb2.common.state_paths import is_synced_path
+
+    if config.owned_shards is not None:
+        print(
+            f"[runner] 跨机分片: 本机拥有 shard {sorted(config.owned_shards)} / "
+            f"{RUNNER_SHARD_COUNT}，外机分片接管="
+            f"{'ON' if config.shard_takeover else 'OFF'}"
+            f"（阈值 {SHARD_TAKEOVER_AFTER_SEC}s）",
+            file=sys.stderr,
+        )
+        return True
+
+    if not is_synced_path(config.raw_dir):
+        return True
+
+    print(
+        f"[runner] 跨机风险: raw 队列 {config.raw_dir} 在跨机同步范围内，"
+        f"而本机未配置队列分片（{RUNNER_SHARDS_ENV} 未设）。处理锁 flock 不跨机"
+        f"生效、账本也是机器本地，第二台机器同时启用 runner 会重复处理同一篇。"
+        f"要么保证同一时刻只有一台机器跑 runner，要么给每台机器设互不相交的 "
+        f"{RUNNER_SHARDS_ENV}（例：A=0-7，B=8-15）",
+        file=sys.stderr,
+    )
+    if os.environ.get(RUNNER_REQUIRE_SHARDING_ENV, "0") == "1":
+        print(
+            f"[runner] FATAL: {RUNNER_REQUIRE_SHARDING_ENV}=1 → 拒绝在无分片配置下"
+            f"启动（fail-closed）",
+            file=sys.stderr,
+        )
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -3100,6 +3313,10 @@ def main(argv: list[str] | None = None) -> int:
         poll_interval_seconds=poll_interval,
         auto_promote=auto_promote,
     )
+
+    # 缺陷 #11c：跨机安全检测（队列在同步范围 + 未配分片 → 告警/严格模式拒启）
+    if not _check_cross_machine_safety(config):
+        return 1
 
     # --spot-check: 仅运行周抽检
     if args.spot_check:
