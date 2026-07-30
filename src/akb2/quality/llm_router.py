@@ -152,6 +152,84 @@ def _filter_extra_body_for_model(
     return filtered or None
 
 
+# F54: 上游 2026-07-23T03:24Z 起下掉 OpenAI 风格 json_schema。生产网关
+# (https://llm-proxy.tapsvc.com/v1, 模型 deepseek/deepseek-v4-pro)实测 2026-07-30:
+#   response_format={"type":"json_schema"} → 400 "This response_format type is
+#   unavailable now" / {"type":"json_object"} → 通 / 不带 response_format → 通。
+# 准入四判定(topic_relevance/how_tendency/novelty/content_lane)全部走
+# route_llm(response_schema=...) → 全 400 → fail-closed 全拒 → 2026-07-24T17:40Z 起
+# 零入库(账本实锤连续 6 天 finalize=0),且 abort 落账写成"准入未通过: topic_relevance,
+# ..."把 API 故障伪装成内容质量拒绝(违宪法 P4 失败可见)。
+#
+# 降级策略选「deepseek 族静态降级」而非「捕获 400 后动态降级」,理由:
+#   1. 上游是能力下架、不是瞬时抖动 —— 每次请求先撞一次 400 再降级是确定性浪费
+#      (与 F20/F18 "400 不可重试立即 break" 同结论);
+#   2. 静态降级是纯函数决策,build_outbound_payload 可直接断言"payload 不含
+#      json_schema",动态降级只能靠 mock 异常路径间接复现,回归防线更弱;
+#   3. json_object 是 DeepSeek 官方 JSON Output 正式能力(route_deepseek_json_object
+#      已在用),不引入新的不确定性。
+# 不复用 route_deepseek_json_object:那是 distill 的独立入口(AKB2_DISTILL_DEEPSEEK_
+# JSON_MODE=1 专用),硬编 deepseek-v4-pro 族、不透传 timeout/max_tokens/extra_body/
+# reasoning_effort、也不做 schema 校验。route_llm 要保住这些参数语义,借道过去会静默
+# 丢参数(比重复几行 response_format 构造危险得多)。两者形状像、职责不同,不合并。
+# gpt-5.4 / gemini 族路径一字不动(其 json_schema 仍可用)。
+_JSON_SCHEMA_UNSUPPORTED_FAMILY_PREFIXES: tuple[str, ...] = ("deepseek",)
+
+# 降级后 schema 不再由端点强制 → 写进 prompt + 本地 jsonschema 兜底。
+# 文案含 "JSON" 字样:DeepSeek JSON Output 模式要求 prompt 出现 json 提示词。
+SCHEMA_PROMPT_HEADER: str = (
+    "【输出格式硬约束】只输出一个 JSON object，不要 Markdown 代码围栏，不要任何解释文字。"
+    "该 JSON 必须严格符合下面的 JSON Schema（字段名/类型/枚举值/required 一致；"
+    "additionalProperties 为 false 时不得输出多余字段）："
+)
+
+
+def _family_supports_json_schema(model_family: str) -> bool:
+    """该模型族端点是否仍支持 OpenAI 风格 response_format=json_schema。
+
+    False → 走 json_object + prompt 内嵌 schema + 本地 jsonschema 校验的降级路径。
+    """
+    return not any(
+        model_family.startswith(prefix)
+        for prefix in _JSON_SCHEMA_UNSUPPORTED_FAMILY_PREFIXES
+    )
+
+
+def build_schema_prompt_messages(
+    messages: list[dict[str, Any]], response_schema: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """json_object 降级路径：把 schema 约束追加进 prompt。
+
+    返回新列表，不修改调用方传入的 messages（准入/提炼都复用同一 messages 构造，
+    原地 append 会在重试时累积多份 schema 指令）。
+    """
+    instruction = (
+        f"{SCHEMA_PROMPT_HEADER}\n"
+        f"{json.dumps(response_schema, ensure_ascii=False, sort_keys=True)}"
+    )
+    return [*messages, {"role": "system", "content": instruction}]
+
+
+def validate_response_against_schema(
+    content: Any, response_schema: dict[str, Any]
+) -> None:
+    """json_object 降级路径的本地 jsonschema 校验（替代端点侧 strict schema）。
+
+    Raises:
+        LLMProviderError: content 不符合 schema。抛出后由调用方按原有失败路径处理
+            —— distill 的有界重试循环重抽、admission 的 ``except RuntimeError``
+            fail-closed —— fail-closed 语义不变，且失败原因显式可见（宪法 P4）。
+    """
+    import jsonschema
+
+    try:
+        jsonschema.validate(content, response_schema)
+    except jsonschema.ValidationError as exc:
+        raise LLMProviderError(
+            f"json_object 降级路径本地 schema 校验失败: {exc.message}"
+        ) from exc
+
+
 def _normalise_openai_base_url(base_url: str) -> str:
     """归一化 OpenAI-compatible base URL，兼容 env 里带或不带 /v1。"""
     cleaned = base_url.strip().rstrip("/")
@@ -538,9 +616,18 @@ def route_llm(
         max_retries=actual_max_retries,
     )
 
+    # F54: deepseek 族静态降级——json_schema 已被上游下掉(400),改 json_object +
+    # prompt 内嵌 schema + 本地 jsonschema 校验。
+    if response_schema is not None and not _family_supports_json_schema(model_family):
+        degrade_to_json_object = True
+        outbound_messages = build_schema_prompt_messages(messages, response_schema)
+    else:
+        degrade_to_json_object = False
+        outbound_messages = messages
+
     kwargs: dict[str, Any] = {
         "model": config["model_id"],
-        "messages": messages,
+        "messages": outbound_messages,
     }
 
     # Backward compatible default: legacy DeepSeek calls keep Think Max unless
@@ -563,14 +650,18 @@ def route_llm(
 
     # 结构化输出（OpenAI 兼容端）
     if response_schema is not None:
-        kwargs["response_format"] = {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "response",
-                "schema": response_schema,
-                "strict": strict_schema,
-            },
-        }
+        if degrade_to_json_object:
+            # F54: schema 约束已进 prompt(outbound_messages),端点只保 JSON 语法
+            kwargs["response_format"] = {"type": "json_object"}
+        else:
+            kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "response",
+                    "schema": response_schema,
+                    "strict": strict_schema,
+                },
+            }
 
     try:
         response = client.chat.completions.create(**kwargs)
@@ -590,9 +681,18 @@ def route_llm(
     if response_schema is not None:
         try:
             content = json.loads(raw)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as exc:
+            if degrade_to_json_object:
+                # F54: 降级路径端点不再强制 schema,语法失败必须显式抛(宪法 P4),
+                # 由 distill 有界重试 / admission fail-closed 接管;不静默回原文。
+                raise LLMProviderError(
+                    f"json_object 降级路径返回不是合法 JSON: {model_family}"
+                ) from exc
             # 结构化输出模式下不强解析，返回原始字符串
             content = raw
+        else:
+            if degrade_to_json_object:
+                validate_response_against_schema(content, response_schema)
 
     return LLMResponse(
         content=content,
@@ -616,11 +716,20 @@ def build_outbound_payload(
     用于 fixture 测试中验证 reasoning_effort / extra_body 字段存在 + 按模型族过滤。
     F20: extra_body 经 _filter_extra_body_for_model 过滤后透传(测试可断言 gpt-5.4 不含
     enable_thinking / deepseek 保持现状)。
+    F54: deepseek 族 response_schema 请求降级为 json_object + schema 进 prompt
+    (测试可断言 payload 不含 json_schema、messages 携 schema 约束)。
     """
     config = _validate_model_family(model_family)
+    if response_schema is not None and not _family_supports_json_schema(model_family):
+        degrade_to_json_object = True
+        outbound_messages = build_schema_prompt_messages(messages, response_schema)
+    else:
+        degrade_to_json_object = False
+        outbound_messages = messages
+
     payload: dict[str, Any] = {
         "model": config["model_id"],
-        "messages": messages,
+        "messages": outbound_messages,
     }
 
     if reasoning_effort == _DEFAULT_REASONING_EFFORT:
@@ -633,13 +742,16 @@ def build_outbound_payload(
         payload["extra_body"] = _filter_extra_body_for_model(model_family, extra_body)
 
     if response_schema is not None:
-        payload["response_format"] = {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "response",
-                "schema": response_schema,
-                "strict": strict_schema,
-            },
-        }
+        if degrade_to_json_object:
+            payload["response_format"] = {"type": "json_object"}
+        else:
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "response",
+                    "schema": response_schema,
+                    "strict": strict_schema,
+                },
+            }
 
     return payload
