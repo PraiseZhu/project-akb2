@@ -15,10 +15,36 @@ STAGED=$(git diff --cached --name-only --diff-filter=ACM)
 FAIL=0
 LOCK=$(git rev-parse --show-toplevel)
 
+# 跨平台文件字节数（BSD `stat -f %z` / GNU `stat -c %s`，按 uname 分支——
+# 同 akb2-watchdog.sh 的既有做法）。
+#
+# 原写法 `stat -f %z … 2>/dev/null || echo 0` 在 Linux 上不是"取不到就当 0"，
+# 而是更坏：GNU stat 的 `-f` 是 **filesystem 模式**，`%z` 被当成文件名报错，
+# 同时目标文件被当成查询对象输出整段文件系统信息 → SZ 拿到多行文本 →
+# `[[ $SZ -gt … ]]` 算术比较失效 → **大文件闸门整体静默放行**（违宪法 P4）。
+#
+# 取不到大小时返回 1 而不是 0：调用方必须 fail-closed 拦住，
+# 不能因为"量不出来"就放行（宪法 P3）。
+file_size_bytes() {
+  local f="$1" sz
+  if [ "$(uname -s)" = "Darwin" ]; then
+    sz=$(stat -f %z "$f" 2>/dev/null) || sz=""
+  else
+    sz=$(stat -c %s "$f" 2>/dev/null) || sz=""
+  fi
+  [[ "$sz" =~ ^[0-9]+$ ]] || return 1
+  printf '%s' "$sz"
+}
+
 # === 1. 大文件检查（>1MB） ===
 while IFS= read -r f; do
   [[ -f "$LOCK/$f" ]] || continue
-  SZ=$(stat -f %z "$LOCK/$f" 2>/dev/null || echo 0)
+  if ! SZ=$(file_size_bytes "$LOCK/$f"); then
+    echo -e "${RED}[拦截]${NC} 无法读取文件大小（stat 失败，无法判定是否超限）: $f"
+    echo -e "       → 大文件闸门不能在量不出大小时放行；请检查文件可读性"
+    FAIL=1
+    continue
+  fi
   if [[ $SZ -gt 1048576 ]]; then
     HUMAN=$(awk "BEGIN{printf \"%.1fM\", $SZ/1048576}")
     echo -e "${RED}[拦截]${NC} 大文件 ($HUMAN): $f"
