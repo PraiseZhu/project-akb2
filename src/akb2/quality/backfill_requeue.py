@@ -125,6 +125,16 @@ class ApplyResult:
 # ---------------------------------------------------------------------------
 
 
+def _details_dict(entry: dict) -> dict:
+    """取 details 且保证是 dict —— 账本行由多个模块写入,不能假定形状。
+
+    非 dict(历史行/损坏行写成字符串或数组)时返回 {}:一个要扫 26k 行生产账本
+    的 CLI 不该因为一行形状异常就 AttributeError 崩掉整次 backfill。
+    """
+    details = entry.get("details")
+    return details if isinstance(details, dict) else {}
+
+
 def _details_text(entry: dict) -> str:
     """把 details 序列化成可搜索文本(指纹可能藏在任意嵌套字段的 reason 里)。"""
     return json.dumps(entry.get("details", {}), ensure_ascii=False)
@@ -143,10 +153,7 @@ def _is_backfill_requeue(entry: dict) -> bool:
     """该事件是否为本 CLI 写入的 requeue(按 reason 前缀识别)。"""
     if entry.get("event") != "requeue":
         return False
-    reason = entry.get("details", {})
-    if not isinstance(reason, dict):
-        return False
-    return str(reason.get("reason", "")).startswith(BACKFILL_REASON_PREFIX)
+    return str(_details_dict(entry).get("reason", "")).startswith(BACKFILL_REASON_PREFIX)
 
 
 def _is_processed(events: list[tuple[int, str, bool]]) -> bool:
@@ -204,7 +211,7 @@ def scan_ledger(ledger_path: str | Path, pattern: str = DEFAULT_PATTERN) -> Scan
             events[content_hash].append((lineno, event, _is_backfill_requeue(entry)))
 
             if event == "intake_raw":
-                raw_path = str(entry.get("details", {}).get("raw_path", ""))
+                raw_path = str(_details_dict(entry).get("raw_path", ""))
                 if raw_path:
                     raw_names[content_hash] = Path(raw_path).name
             elif event == "abort":
@@ -364,7 +371,8 @@ def _print_report(
     except OSError as exc:
         print(f"账本更新时间: 未知（{exc}）", file=sys.stderr)
     print(f"指纹: {pattern!r}")
-    print(f"账本有效行: {result.total_lines}")
+    # 非空行(含无法解析的行);损坏行数单独在下方告警,不混入这个计数的语义
+    print(f"账本非空行: {result.total_lines}")
     print(f"命中候选(可 requeue): {len(result.candidates)}")
 
     by_day: collections.Counter[str] = collections.Counter(
@@ -494,7 +502,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         ledger_path = resolve_ledger_path(args.ledger)
-    except RuntimeError as exc:
+    except (RuntimeError, OSError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 

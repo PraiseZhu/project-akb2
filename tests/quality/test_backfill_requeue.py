@@ -124,6 +124,22 @@ class TestScanFiltering:
         assert result.corrupt_lines == [2]
         assert len(result.candidates) == 1
 
+    def test_non_dict_details_does_not_crash(self, tmp_path: Path) -> None:
+        """账本行由多个模块写入；details 形状异常不得让整次 backfill 崩掉。"""
+        led = _write_ledger(
+            tmp_path / "l.jsonl",
+            [
+                {"loop_id": "loop1", "node": "intake_raw", "event": "intake_raw",
+                 "content_hash": "h1", "ts": "2026-07-23T02:00:00Z", "details": "字符串不是 dict"},
+                {"loop_id": "loop1", "node": "requeue", "event": "requeue",
+                 "content_hash": "h1", "ts": "2026-07-23T02:30:00Z", "details": []},
+                _infra_abort("h1", "2026-07-23T03:00:00Z"),
+            ],
+        )
+        result = scan_ledger(led)
+        assert [c.content_hash for c in result.candidates] == ["h1"]
+        assert result.candidates[0].raw_filename == ""
+
     def test_candidates_sorted_by_first_hit(self, tmp_path: Path) -> None:
         led = _write_ledger(
             tmp_path / "l.jsonl",
@@ -216,6 +232,38 @@ class TestScanExclusions:
              _ev("needs_repair", "h1", "2026-07-23T04:00:00Z")],
         )
         assert [c.content_hash for c in scan_ledger(led).candidates] == ["h1"]
+
+
+class TestProcessedSemanticsMatchRunner:
+    """本模块复刻了 runner._is_processed（为避免每 hash 重扫账本）。
+
+    复刻会漂移：runner 改语义而这边不改 → 排除规则静默失准。这些用例把两份实现
+    在同一批序列上钉成等价，runner 一改就红。
+    """
+
+    SEQUENCES = [
+        ["intake_raw"],
+        ["abort"],
+        ["finalize"],
+        ["abort", "requeue"],
+        ["abort", "requeue", "abort"],
+        ["needs_repair"],
+        ["abort", "needs_repair"],
+        ["needs_repair", "requeue"],
+        ["intake_raw", "admission", "distill_extract"],
+        ["finalize", "requeue", "needs_repair"],
+    ]
+
+    def test_equivalent_to_runner_is_processed(self, tmp_path: Path) -> None:
+        for index, sequence in enumerate(self.SEQUENCES):
+            led = _write_ledger(
+                tmp_path / f"l{index}.jsonl", [_ev(ev, "h1") for ev in sequence]
+            )
+            mine = backfill_mod._is_processed(
+                [(line, ev, False) for line, ev in enumerate(sequence, start=1)]
+            )
+            theirs = _is_processed("h1", str(led))
+            assert mine is theirs, f"序列 {sequence} 判定分歧: 本模块={mine} runner={theirs}"
 
 
 class TestCliDryRun:
