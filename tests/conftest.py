@@ -45,17 +45,27 @@ def run_script(tmp_path):
     The script receives ``HOME=<tmp_path/home>`` in its environment, so all
     ``~/.codex/skills`` and ``~/Library/...`` paths redirect into the temp tree.
     Production paths on the real filesystem are never touched.
+
+    ``env`` merges extra variables on top of the inherited environment — used by
+    the backstop tests to redirect logs away from the repo ``logs/`` directory.
     """
     root = Path(__file__).parent.parent.resolve()
 
-    def _run(script_rel: str, args: list[str] | None = None, home: Path | None = None) -> subprocess.CompletedProcess:
+    def _run(
+        script_rel: str,
+        args: list[str] | None = None,
+        home: Path | None = None,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess:
         script = root / script_rel
-        env = os.environ.copy()
+        run_env = os.environ.copy()
         if home is not None:
-            env["HOME"] = str(home)
+            run_env["HOME"] = str(home)
+        if env:
+            run_env.update(env)
         return subprocess.run(
             [str(script)] + (args or []),
-            env=env,
+            env=run_env,
             capture_output=True,
             text=True,
         )
