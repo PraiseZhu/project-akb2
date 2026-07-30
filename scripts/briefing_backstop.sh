@@ -138,7 +138,7 @@ PUBLISHED_READ_ERROR=""
 VERDICT_ERR_FILE=""
 trap '[[ -n "$VERDICT_ERR_FILE" ]] && rm -f "$VERDICT_ERR_FILE"' EXIT
 resolve_published_state() {
-  local f="$1" attempt=1 out rc err_file
+  local f="$1" attempt=1 out rc err_file tmp_base
   PUBLISHED_STATUS=""; PUBLISHED_VERDICT=""; PUBLISHED_READ_ERROR=""
 
   if [[ ! -f "$f" ]]; then
@@ -146,7 +146,14 @@ resolve_published_state() {
     return 0
   fi
 
-  err_file="$(mktemp -t akb2-backstop-read)"
+  # mktemp 必须用**纯模板参数**（模板自带 XXXXXX），两端通用：
+  #   BSD/macOS  `mktemp -t <prefix>`  → 自动补随机后缀，模板可不带 X
+  #   GNU/Linux  `mktemp -t <prefix>`  → 把它当模板，缺 XXXXXX 直接 rc=1
+  #                                       "mktemp: too few X's in template"
+  # CI（ubuntu-latest）实证过后者：err_file 取不到 → set -e 掀掉整个函数 →
+  # tests/briefing 8 条连带失败。本机 macOS 全绿测不出这个差异。
+  tmp_base="${TMPDIR:-/tmp}"
+  err_file="$(mktemp "${tmp_base%/}/akb2-backstop-read.XXXXXX")"
   VERDICT_ERR_FILE="$err_file"      # 供 EXIT trap 兜底清理（中途 set -e 退出时）
   while (( attempt <= VERDICT_READ_ATTEMPT_BUDGET )); do
     set +e
