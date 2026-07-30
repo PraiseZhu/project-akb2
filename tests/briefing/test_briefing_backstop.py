@@ -433,46 +433,9 @@ def test_single_terminal_state_per_run(run_script, tmp_path):
 # XXXXXX 直接 rc=1「mktemp: too few X's in template」→ err_file 取不到 →
 # set -e 掀掉整个 resolve_published_state → tests/briefing 连带失败。
 # 本机 macOS 全绿测不出，必须靠静态守卫锁死这一类。
-
-BACKSTOP_SCRIPTS = [
-    PROJECT_ROOT / "scripts" / "briefing_backstop.sh",
-    PROJECT_ROOT / "scripts" / "github_briefing_backstop.sh",
-]
-
-# (正则, 说明) —— 只收「两端语义不同且会硬失败」的构造。
-# 形如 stat -f/-c 这种已被 `uname -s` 分支正确保护的用法不在此列（见 akb2-watchdog.sh）。
-BSD_ONLY_PATTERNS = [
-    (r"mktemp\s+(-[a-zA-Z]+\s+)*-t\s+[^\s]", "mktemp -t <prefix>：GNU 要求模板含 XXXXXX，应改纯模板参数"),
-    (r"\bstat\s+-f\s+%", "stat -f %…：BSD 专用，GNU 是 stat -c %…（需按 uname 分支）"),
-    (r"\bdate\s+-v", "date -v：BSD 专用，GNU 是 date -d"),
-    (r"\bdate\s+-j", "date -j：BSD 专用"),
-    (r"sed\s+-i\s+''", "sed -i '' ：BSD 专用，GNU 是 sed -i"),
-    (r"\breadlink\s+-f\b", "readlink -f：旧版 macOS 无此选项"),
-    (r"\bsed\s+-i\s+-e", "sed -i -e：BSD 会把下一个参数当备份后缀"),
-]
-
-
-@pytest.mark.parametrize("script", BACKSTOP_SCRIPTS, ids=lambda p: p.name)
-def test_no_bsd_only_syntax_in_backstop_scripts(script):
-    """守卫: backstop 脚本不得含 BSD-only 语法 —— CI 在 ubuntu-latest 上跑它们。"""
-    hits = []
-    for lineno, line in enumerate(script.read_text(encoding="utf-8").splitlines(), 1):
-        code = line.split("#", 1)[0]          # 跳过注释（注释里会引用这些写法作说明）
-        if not code.strip():
-            continue
-        for pattern, why in BSD_ONLY_PATTERNS:
-            if re.search(pattern, code):
-                hits.append(f"{script.name}:{lineno}: {code.strip()}  ← {why}")
-    assert not hits, "发现 BSD-only 语法（CI ubuntu 会失败）:\n" + "\n".join(hits)
-
-
-@pytest.mark.parametrize("script", BACKSTOP_SCRIPTS, ids=lambda p: p.name)
-def test_mktemp_templates_contain_xxxxxx(script):
-    """守卫: 任何 mktemp 调用的模板必须自带 XXXXXX（GNU 硬要求）。"""
-    for lineno, line in enumerate(script.read_text(encoding="utf-8").splitlines(), 1):
-        code = line.split("#", 1)[0]
-        if "mktemp" not in code:
-            continue
-        assert "XXXXXX" in code, (
-            f"{script.name}:{lineno} 的 mktemp 模板缺 XXXXXX，GNU mktemp 会 rc=1: {code.strip()}"
-        )
+#
+# 守卫已上移到 `tests/test_shell_portability.py`，扫 `scripts/*.sh` 全量（本处
+# 两个 backstop 脚本仍在覆盖范围内，且那里有非空过断言钉住这一点）。原先只
+# parametrize 两个脚本的版本抓不到别处的同类问题 —— 实际漏掉了
+# `akb-pre-commit.sh` 的 `stat -f %z`。不在此处保留平行副本：两套同职责守卫
+# 比一套差（宪法「convention beats novelty」同理）。
