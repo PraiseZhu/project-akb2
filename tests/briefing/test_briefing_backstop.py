@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import tempfile
 from datetime import date
 from pathlib import Path
+
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BACKSTOP_SH = PROJECT_ROOT / "scripts" / "briefing_backstop.sh"
@@ -324,6 +327,9 @@ def test_unreadable_file_reported_as_read_failure_not_parse_failure(run_script, 
     vault = tmp_path / "vault"
     target = _write_today_briefing(vault, "---\naudit_verdict: pass\n---\n# briefing\n")
     target.chmod(0o000)
+    if os.access(target, os.R_OK):  # root / 特殊挂载下 chmod 000 拦不住读取
+        target.chmod(0o644)
+        pytest.skip("当前用户仍可读 chmod 000 文件（root?），无法构造读盘失败")
     try:
         result, log = _run_via_fixture(run_script, vault, tmp_path)
     finally:
@@ -332,8 +338,13 @@ def test_unreadable_file_reported_as_read_failure_not_parse_failure(run_script, 
     content = log.read_text(encoding="utf-8")
     assert "读盘失败" in content, f"读盘失败必须显式归因:\n{content}"
     assert "无法解析 audit_verdict" not in content, "读盘失败不得冒名成解析失败"
-    # 真实错误必须可见（宪法 P4），不得只留一个空括号
-    assert "err=" in content and "can't open" in content
+    # 真实错误必须可见（宪法 P4），不得只留一个空 err=""。
+    # 断言不绑 awk 方言文案（BSD "can't open" / gawk+mawk "cannot open"），
+    # 只要求真实错误里带上出问题的文件名。
+    errs = re.findall(r'err="([^"]*)"', content)
+    assert errs, f"必须落 err= 字段:\n{content}"
+    assert all(e.strip() for e in errs), f"err= 不得为空:\n{content}"
+    assert any("Daily Briefing.md" in e for e in errs), f"err= 须指名文件:\n{content}"
     # 重试次数有界且落日志（宪法 P1）
     assert "attempt=1/" in content and "attempt=3/" in content
     assert "attempt=4/" not in content

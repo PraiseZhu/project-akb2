@@ -164,7 +164,9 @@ resolve_published_state() {
       rm -f "$err_file"
       return 0
     fi
-    PUBLISHED_READ_ERROR="$(tr '\n' ' ' < "$err_file" | sed -E 's/[[:space:]]+$//')"
+    # 折成单行并把内嵌双引号换成单引号：err="..." 这个字段必须保持可机读，
+    # 而各家 awk 的报错文案差异很大（BSD 裸路径 / gawk 反引号 / mawk 双引号包路径）。
+    PUBLISHED_READ_ERROR="$(tr '\n"' " '" < "$err_file" | sed -E 's/[[:space:]]+$//')"
     log "warn — 读取 audit_verdict 失败 attempt=$attempt/$VERDICT_READ_ATTEMPT_BUDGET rc=$rc err=\"$PUBLISHED_READ_ERROR\" ($DATE)"
     attempt=$(( attempt + 1 ))
     if (( attempt <= VERDICT_READ_ATTEMPT_BUDGET )); then
