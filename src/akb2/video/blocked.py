@@ -26,6 +26,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from src.akb2.video.constants import VIDEO_MAX_CONSECUTIVE_ZERO_RUNS
+from src.akb2.video.external_credentials import (
+    CREDENTIAL_NLM_AUTH,
+    CREDENTIAL_YTDLP_COOKIES,
+    STATUS_DEAD,
+    CredentialHealth,
+)
 
 logger = logging.getLogger("akb2.video.blocked")
 
@@ -75,17 +81,103 @@ def _previous_zero_runs(path: Path) -> int:
         return 0
 
 
-def classify(stats: dict, published: int, previous_zero_runs: int = 0) -> ZeroYieldVerdict:
+def _credential_root_cause(
+    stats: dict, health: CredentialHealth | None
+) -> tuple[str, str] | None:
+    """凭证根因归因：**探测结论 + 对应的运行时症状同时成立**才定论。
+
+    只看探测会把"cookies 没显式配但今天确实没新视频"误报成凭证故障；只看症状就是
+    2026-07-30 当天的现状 —— 三处凭证症状被拆成三条分散 WARNING，落盘 reason 只剩
+    最末一层的 `date_unresolvable`。两者取交集才既不误报也不漏报。
+
+    两档置信度，机读可分：
+      `credential_expired`  —— 至少一项凭证被探测**判死**（二进制缺失 / cookie 文件
+                               不存在 / NLM auth 过期）且症状吻合。确证。
+      `credential_suspect`  —— 只有兜底配置（无显式 cookies，靠 `--cookies-from-browser`）
+                               且症状吻合。推断，不谎称确证。
+
+    NLM 只认 `dead`：它的 `degraded` 是网络 transient（researcher 会转 pending 重试），
+    不是凭证失效，算进来就是把网络抖动误报成"登录态没了"。
+
+    Returns: `(reason, detail)`，或 None 表示凭证不构成本轮真因。
+    """
+    if health is None:
+        return None
+
+    raw = int(stats.get("raw_listed", 0))
+    sources = int(stats.get("sources_enabled", 0))
+    backfill_failed = int(stats.get("date_backfill_failed", 0))
+    date_unknown = int(stats.get("rejected_date_unknown", 0))
+    candidates = int(stats.get("candidates_after_filters", 0))
+
+    findings: list[tuple[str, str, str]] = []  # (status, 归因说明, 修复命令)
+
+    cookies = health.get(CREDENTIAL_YTDLP_COOKIES)
+    if cookies is not None and not cookies.is_ok:
+        # cookies 的症状：列表整体拿不到东西，或日期补取成批失败（bot-check 的形态）
+        if raw == 0:
+            # `creator_errors` 必须带上：本分支抢在 `list_stage_empty` 之前返回，
+            # 不带就等于把那条分支原有的异常线索整段吞掉（诊断能力反而变差）。
+            errors = list(stats.get("creator_errors", []) or [])
+            symptom = (
+                f"{sources} 个源的列表阶段全部返回 0 条；creator 异常: {errors[:5] or '无'}"
+            )
+        elif backfill_failed > 0:
+            symptom = (
+                f"日期补取失败 {backfill_failed} 次 → 按日期未知拒收 {date_unknown} 个候选"
+            )
+        else:
+            symptom = ""
+        if symptom:
+            findings.append(
+                (cookies.status, f"yt-dlp cookies（{cookies.detail}）→ {symptom}",
+                 str(cookies.fix_command))
+            )
+
+    nlm = health.get(CREDENTIAL_NLM_AUTH)
+    if nlm is not None and nlm.status == STATUS_DEAD and candidates > 0:
+        findings.append(
+            (nlm.status, f"NLM 登录态（{nlm.detail}）→ {candidates} 个候选进入研究阶段但 0 产出",
+             str(nlm.fix_command))
+        )
+
+    if not findings:
+        return None
+
+    confirmed = any(status == STATUS_DEAD for status, _, _ in findings)
+    reason = "credential_expired" if confirmed else "credential_suspect"
+    head = (
+        "外部凭证失效（探测判死）"
+        if confirmed
+        else "外部凭证高度疑似失效（只有兜底配置 + 症状吻合）"
+    )
+    body = "；".join(desc for _, desc, _ in findings)
+    fixes = " / ".join(dict.fromkeys(fix for _, _, fix in findings if fix))
+    detail = f"{head}：{body}。修复：{fixes}"
+    return reason, detail
+
+
+def classify(
+    stats: dict,
+    published: int,
+    previous_zero_runs: int = 0,
+    credential_health: CredentialHealth | None = None,
+) -> ZeroYieldVerdict:
     """把分层漏斗计数归因成一句真因。
 
     归因顺序 = 按"能力失效"的确定性从高到低排，第一条命中即返回：先看采集能力本身
-    有没有坏（无源 / 列表全空 / 补取预算撞顶 / 补取全失败 / 上游元数据坏），再退到
-    "确实没有符合条件的新视频"。顺序倒过来会把真故障归成"没新视频"。
+    有没有坏（无源 / 凭证失效 / 列表全空 / 补取预算撞顶 / 补取全失败 / 上游元数据坏），
+    再退到"确实没有符合条件的新视频"。顺序倒过来会把真故障归成"没新视频"。
+
+    **凭证判定排在其余能力故障之前**：`list_stage_empty` / `date_backfill_all_failed` /
+    `date_unresolvable` 都只是"取数坏了"的症状，凭证失效是它们共同的上游根因。先报
+    症状就等于让运维自己去猜该跑 `nlm login` 还是重导 cookies。
 
     Args:
         stats: `CollectStats.as_dict()`
         published: 本轮实际发布的产出数
         previous_zero_runs: 上一份诊断记录的连续 0 产出轮数
+        credential_health: 启动凭证预检结论；None = 未探测（归因退回改动前行为）
     """
     if published > 0:
         return ZeroYieldVerdict(STATUS_OK, "", "", 0)
@@ -108,6 +200,15 @@ def classify(stats: dict, published: int, previous_zero_runs: int = 0) -> ZeroYi
             "video_sources.json 里没有 enabled 的 creator，采集不可能有产出",
             zero_runs,
         )
+    # 凭证归因是附加能力，不得把归因主体拖下水：它异常时退回原有的漏斗归因，
+    # 而不是让 classify 抛出去、连诊断文件都写不成（那就又静默一轮）。
+    try:
+        credential = _credential_root_cause(stats, credential_health)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("凭证根因归因异常，退回漏斗归因: %s", exc)
+        credential = None
+    if credential is not None:
+        return ZeroYieldVerdict(STATUS_BLOCKED, credential[0], credential[1], zero_runs)
     if no_title > 0 and no_title >= raw:
         # `raw_listed` 只统计带 title 活下来的条目，所以"丢弃数 >= 存活数"意味着
         # 至少一半列表条目连标题都拿不到 —— 坏的不只是日期，是整个元数据获取。
@@ -178,10 +279,34 @@ def classify(stats: dict, published: int, previous_zero_runs: int = 0) -> ZeroYi
     )
 
 
+#: 由凭证归因产生的 reason（读取侧可据此判断"该跑修复命令"）
+CREDENTIAL_REASONS = frozenset({"credential_expired", "credential_suspect"})
+
+
+def _should_record_credential_health(
+    health: CredentialHealth | None, verdict: ZeroYieldVerdict
+) -> bool:
+    """`credential_health` 块的落盘条件 —— 只在它是信号的时候写，其余时候不制造噪音。
+
+    - 凭证健康 → 不写（每轮贴一遍"一切正常"没有信息量）；
+    - 探测判死（`dead`）→ 一律写，即便本轮还有产出：凭证死了就是硬故障，提前告警
+      才有意义；
+    - 只是 `degraded`（无显式 cookies 的浏览器兜底 —— 本机的**默认**形态）→ 只在归因
+      真的落到凭证上时才写。否则"今天窗口内确实没有新视频"这种完全正常的一天也会挂
+      一个凭证告警，运维会被引去查一个不存在的故障；预算撞顶同理（那不是 cookies 的错）。
+    """
+    if health is None or health.is_healthy:
+        return False
+    if health.overall == STATUS_DEAD:
+        return True
+    return verdict.reason in CREDENTIAL_REASONS
+
+
 def write_zero_yield_diagnostic(
     stats: dict,
     published: int,
     repo_root: Path | None = None,
+    credential_health: CredentialHealth | None = None,
 ) -> ZeroYieldVerdict:
     """归因 + 落盘 `logs/video-blocked.json`，返回结论供调用方决定退出码。
 
@@ -189,7 +314,7 @@ def write_zero_yield_diagnostic(
     今天的告警上。落盘失败只记 ERROR，绝不让诊断本身把主链路搞挂。
     """
     path = _diag_path(repo_root)
-    verdict = classify(stats, published, _previous_zero_runs(path))
+    verdict = classify(stats, published, _previous_zero_runs(path), credential_health)
     now = datetime.now(UTC)
     payload: dict = {
         "status": verdict.status,
@@ -199,6 +324,14 @@ def write_zero_yield_diagnostic(
         "consecutive_zero_runs": verdict.consecutive_zero_runs,
         "funnel": stats,
     }
+    # 凭证块紧跟 funnel：读取侧拿到 reason 之后紧接着就能拿到"跑哪条命令能修"。
+    # 附加块绝不能连坐主体：它序列化失败时只丢自己，漏斗诊断照常落盘（否则又变成
+    # "整份诊断没写出来"的静默失败）。
+    if _should_record_credential_health(credential_health, verdict):
+        try:
+            payload["credential_health"] = credential_health.as_dict()  # type: ignore[union-attr]
+        except Exception as exc:  # noqa: BLE001
+            logger.error("凭证健康块序列化失败，已跳过该块（漏斗诊断不受影响）: %s", exc)
     # status=ok 不写 reason/detail：读取侧靠 `reason` 非空判断"有真因可播报"，
     # 留着上一轮的 reason 会让恢复之后的告警继续引用旧故障。
     if verdict.reason:

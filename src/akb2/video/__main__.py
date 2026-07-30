@@ -25,6 +25,11 @@ from src.akb2.video.blocked import write_zero_yield_diagnostic
 from src.akb2.video.collector import VideoCollector
 from src.akb2.video.config import VideoConfig
 from src.akb2.video.dedup_store import VideoDedupStore
+from src.akb2.video.external_credentials import (
+    STATUS_DEAD,
+    CredentialHealth,
+    probe_credentials,
+)
 from src.akb2.video.extractor import Extractor
 from src.akb2.video.llm_adapter import DeepSeekAdapter
 from src.akb2.video.reasoner import ConceptStore, Reasoner
@@ -222,6 +227,10 @@ def _run_full(config: VideoConfig, dry_run: bool) -> int:
         # 状态不通 —— collector 那份永远收不到 assembler 的 mark_published()。
         assembler = Assembler(config, published_index=getattr(collector, "published_index", None))
 
+        # 凭证预检：只在会落盘诊断的路径上做（dry-run 不写诊断，也不该为它多打一次
+        # nlm CLI）。放在 run_pipeline 之前 —— 采集要跑近一分钟，凭证状态先见于日志。
+        credential_health = None if dry_run else _probe_credentials(config, collector, researcher)
+
         results = assembler.run_pipeline(
             collector, researcher, extractor, reasoner, dry_run=dry_run,
         )
@@ -230,7 +239,7 @@ def _run_full(config: VideoConfig, dry_run: bool) -> int:
         # launchd 只看到"正常退出"—— 2026-07-28 的 109 个候选全灭就是这样静默过去的。
         # dry-run 不写诊断（它不代表生产产出能力）。
         if not dry_run:
-            verdict = _write_collect_diagnostic(collector, results)
+            verdict = _write_collect_diagnostic(collector, results, credential_health)
             if verdict is not None and verdict.is_blocked and rc == 0:
                 # blocked 必须让 launchd 的 LastExitStatus 非 0；
                 # "窗口内确实没有新视频"（zero_yield）仍然是正常退出。
@@ -241,14 +250,55 @@ def _run_full(config: VideoConfig, dry_run: bool) -> int:
         return 1
 
 
-def _write_collect_diagnostic(collector: VideoCollector, results: list[dict]):
+def _probe_credentials(
+    config: VideoConfig,
+    collector: VideoCollector,
+    researcher: VideoResearcher,
+) -> CredentialHealth | None:
+    """链路启动前的凭证健康预检（yt-dlp cookies + NLM 登录态）。
+
+    **只观测，不改控制流**：凭证死了链路照常跑（NLM 死了走字幕降级、cookies 弱了照样
+    试）—— fail-fast 会把"降级还能出东西"的那部分产出一起掐掉，不是本次要的语义。
+    唯一产物是 `logs/video-blocked.json` 里的 `credential_health` 归因块，让 0 产出的
+    共同根因（2026-07-30：三处症状同一个凭证根因）一次说清。
+
+    预检本身绝不让主链路失败：探测异常返回 None，归因退回改动前行为。
+    """
+    try:
+        health = probe_credentials(
+            ytdlp_bin=config.ytdlp_bin,
+            cookie_source=getattr(collector, "cookie_source", ""),
+            nlm_profile=config.nlm_profile,
+            nlm_health_check=researcher.nlm_auth_status,
+        )
+    except Exception as exc:  # noqa: BLE001 — 预检失败不得掩盖主链路结论
+        logger.error("凭证健康预检异常（主链路结论不受影响）: %s", exc)
+        return None
+
+    if health.is_healthy:
+        logger.info("凭证预检: 全部正常（yt-dlp cookies / NLM 登录态）")
+        return health
+    for item in health.unhealthy:
+        log = logger.error if item.status == STATUS_DEAD else logger.warning
+        log("凭证预检 [%s] %s: %s —— 修复: %s",
+            item.status, item.name, item.detail, item.fix_command)
+    return health
+
+
+def _write_collect_diagnostic(
+    collector: VideoCollector,
+    results: list[dict],
+    credential_health: CredentialHealth | None = None,
+):
     """把采集漏斗计数归因并落盘；诊断本身绝不让主链路失败。"""
     stats = getattr(collector, "stats", None)
     if stats is None:
         return None
     published = sum(1 for r in results if r.get("status") == "ok")
     try:
-        return write_zero_yield_diagnostic(stats.as_dict(), published)
+        return write_zero_yield_diagnostic(
+            stats.as_dict(), published, credential_health=credential_health
+        )
     except Exception as exc:  # noqa: BLE001 — 诊断失败不得掩盖主链路结论
         logger.error("0 产出诊断写入异常（主链路结论不受影响）: %s", exc)
         return None
