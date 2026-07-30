@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  AKB2 入库断流哨兵 — 每日 2 次检查「近 48h 有进料但零入库」，命中即飞书告警
+
+  ==== 本文件当前状态：模板，尚未注册 ====
+  ⚠️ 宪法「新增自动化触发器必须人工确认」——本 plist 只是文件，**未 bootstrap、未加载**。
+     `launchctl list | grep com.akb2.inflow-sentinel` 应为空。
+     另含 __AKB2_REPO_ROOT__ / __AKB2_HOME__ 占位符，直接 load 会加载未渲染路径。
+
+  ==== 安装（由人工执行，确认后再跑）====
+  REPO_ROOT="$HOME/AI-Agent/Claude/projects/Project AKB2"
+  # 1) 先手动 dry-run 验证判定与文案（不发送）
+  bash "$REPO_ROOT/scripts/inflow_sentinel.sh" --dry-run
+  # 2) 渲染占位符 → ~/Library/LaunchAgents
+  sed -e "s|__AKB2_REPO_ROOT__|$REPO_ROOT|g" -e "s|__AKB2_HOME__|$HOME|g" \
+      "$REPO_ROOT/launchd/com.akb2.inflow-sentinel.plist" \
+      > "$HOME/Library/LaunchAgents/com.akb2.inflow-sentinel.plist"
+  # 3) 校验 XML + 无残留占位符
+  plutil -lint "$HOME/Library/LaunchAgents/com.akb2.inflow-sentinel.plist"
+  ! grep -q "__AKB2_" "$HOME/Library/LaunchAgents/com.akb2.inflow-sentinel.plist"
+  # 4) 加载
+  launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.akb2.inflow-sentinel.plist"
+  # 5) 首跑验证（RunAtLoad=false，不装载即自动跑）
+  launchctl kickstart -p "gui/$(id -u)/com.akb2.inflow-sentinel"
+
+  # 卸载：
+  launchctl bootout gui/$(id -u)/com.akb2.inflow-sentinel
+  # 查看状态：
+  launchctl list | grep com.akb2.inflow-sentinel
+
+  ==== 触发时间（本地时区 CST）====
+  每日 09:00 与 21:00，共 2 次。避开三条链路的 AVOID_WINDOW
+  （github_briefing 05:30 / briefing 07:30 / feishu-sync 10:00），
+  免得断流告警和简报推送在同一分钟撞飞书限流（9499）。
+
+  ==== 有界 / 幂等（宪法 P1）====
+  单次调用只做一次账本流式扫描 + 最多一条飞书私信，无循环、无重试放大。
+  同一断流窗口只告警一次（抑制状态 ~/Library/Application Support/akb2/
+  inflow-sentinel-state.json，机器本地、不进 Syncthing 同步区）。
+
+  ==== 凭证 ====
+  scripts/inflow_sentinel.sh 负责 source ~/.akb2-secrets.sh（FEISHU_*）。
+  plist 不含任何凭证。
+
+  ==== 失败可见（宪法 P4）====
+  飞书发送失败 → stderr 打印完整告警文案 + macOS 本地通知 + 退出码 1，
+  日志见 logs/inflow-sentinel.log。抑制状态只在发送成功后才写。
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.akb2.inflow-sentinel</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__AKB2_REPO_ROOT__/scripts/inflow_sentinel.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__AKB2_REPO_ROOT__</string>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key>
+            <integer>9</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>21</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+    </array>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>__AKB2_REPO_ROOT__/logs/inflow-sentinel.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__AKB2_REPO_ROOT__/logs/inflow-sentinel.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONPATH</key>
+        <string>__AKB2_REPO_ROOT__/src</string>
+        <key>PATH</key>
+        <string>__AKB2_HOME__/.pyenv/shims:__AKB2_HOME__/.pyenv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>
