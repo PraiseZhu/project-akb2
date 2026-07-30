@@ -29,13 +29,26 @@
     套在入库断流上属于错误归因(宪法 P4 要求失败可见,不是失败可见但说错地方)。
     飞书本身不可达时降级到 macOS 本地通知 + stderr + 退出码 1(不静默)。
 
-幂等抑制:
-    同一断流窗口只告警一次。"同一窗口"的身份 = `verdict + 参照事件时刻 + 窗口长度`
-    (`episode_key`):`stalled` 取账本里**最后一次 finalize** 的时刻(= 流水线上次
-    正常的时刻),`no_intake` 取最后一次 intake_raw 的时刻。只要没有新的 finalize
-    落账,就还是同一次断流 → 抑制;一旦恢复入库再断,参照时刻变了 → 重新告警。
+幂等抑制 + 有界重提:
+    "同一次断流"的身份 = `verdict + 参照事件时刻 + 窗口长度`(`episode_key`):
+    `stalled` 取账本里**最后一次 finalize** 的时刻(= 流水线上次正常的时刻),
+    `no_intake` 取最后一次 intake_raw 的时刻。只要没有新的 finalize 落账,就还是
+    同一次断流;一旦恢复入库再断,参照时刻变了 → 算新的一次。
+
+    同一次断流内的发送节奏(有界,宪法 P1):
+
+        首报 1 条 → 每满 `REALERT_INTERVAL_HOURS` 重提 1 条 → 最多重提
+        `REALERT_MAX` 次 → 封顶后彻底静默,直到本次断流结束(恢复入库或 verdict 切换)。
+
+    为什么要重提:本次事故持续 7 天。只发一条的话,那条被漏看就退回静默——重提是
+    哨兵存在意义的一部分。为什么要封顶:无上限重发就是告警轰炸,人会直接屏蔽通道。
+
     状态文件经 `common.state_paths` 落机器本地状态根(**不落 Syncthing 同步区**,
-    否则两台机器互相覆盖抑制状态 → 要么重复轰炸要么双双静默)。
+    否则两台机器互相覆盖抑制状态 → 要么重复轰炸要么双双静默),记录本次断流的
+    首报时刻、上次发送时刻与已重提次数。
+
+    `--force` 绕过抑制强制发送,但**不消耗重提配额、也不推移重提节奏**(它是人工
+    验证通路用的,不该改变自动告警的时序)。
 
 用法::
 
@@ -77,6 +90,22 @@ STATE_FILE_NAME: str = "inflow-sentinel-state.json"
 
 # 状态文件里保留的历史告警条数上限(有界,防无限增长)
 MAX_STATE_HISTORY: int = 20
+
+# 同一次断流内两次发送的最小间隔(小时)。首报之后每满这个间隔重提一次。
+REALERT_INTERVAL_HOURS: int = 72
+
+# 同一次断流内最多**重提**次数(不含首报)。总发送量上限 = 1 + REALERT_MAX。
+# 有界(宪法 P1):封顶后彻底静默,直到本次断流结束(恢复入库或 verdict 切换)。
+REALERT_MAX: int = 3
+
+# 发送决策类型
+ALERT_FIRST: str = "first"
+ALERT_REALERT: str = "realert"
+ALERT_FORCED: str = "forced"
+SUPPRESS_INTERVAL: str = "suppressed_interval"
+SUPPRESS_MAX: str = "suppressed_max"
+
+_SENDING_KINDS: frozenset[str] = frozenset({ALERT_FIRST, ALERT_REALERT, ALERT_FORCED})
 
 # 告警文案里最多列出的中止原因种类数
 MAX_ABORT_REASONS_REPORTED: int = 3
@@ -124,9 +153,10 @@ class InflowVerdict:
     last_intake_ts: datetime | None = None
     # 窗口内中止原因 top-N(reason, 次数)
     top_abort_reasons: list[tuple[str, int]] = field(default_factory=list)
-    # 数据质量:损坏行 / ts 不可解析行(计入告警文案,不静默)
+    # 数据质量:损坏行 / ts 不可解析行 / ts 在未来的行(计入告警文案,不静默)
     corrupt_lines: int = 0
     unparseable_ts: int = 0
+    future_ts: int = 0
 
     @property
     def intake_count(self) -> int:
@@ -230,6 +260,7 @@ def evaluate_ledger(
     last_intake_ts: datetime | None = None
     corrupt: list[int] = []
     unparseable_ts = 0
+    future_ts = 0
 
     path = Path(ledger_path)
     if path.exists():
@@ -251,6 +282,13 @@ def evaluate_ledger(
                 ts = _parse_ts(entry.get("ts"))
                 if ts is None:
                     unparseable_ts += 1
+                    continue
+
+                if ts > now:
+                    # 时钟偏移/手工编辑产生的未来事件:窗口是 [now-W, now],未来不在其中。
+                    # 若把它算进窗口,一条偏移到未来的 finalize 就能把真断流盖成
+                    # "healthy" —— 正是本哨兵要防的静默失败。计数后排除,不静默。
+                    future_ts += 1
                     continue
 
                 # 全账本范围:记录最后一次 finalize / intake(用于 episode_key 与文案)
@@ -282,6 +320,12 @@ def evaluate_ledger(
             "未参与断流判定(判定可能偏保守)",
             file=sys.stderr,
         )
+    if future_ts:
+        print(
+            f"[inflow_sentinel] 警告: {path} 有 {future_ts} 行 ts 在 {_fmt_ts(now)} 之后"
+            "(疑似时钟偏移),已排除在窗口外",
+            file=sys.stderr,
+        )
 
     intake = window_counts.get(EVENT_INTAKE, 0)
     finalize = window_counts.get(EVENT_FINALIZE, 0)
@@ -303,6 +347,7 @@ def evaluate_ledger(
         top_abort_reasons=abort_reasons.most_common(MAX_ABORT_REASONS_REPORTED),
         corrupt_lines=len(corrupt),
         unparseable_ts=unparseable_ts,
+        future_ts=future_ts,
     )
 
 
@@ -312,14 +357,28 @@ def evaluate_ledger(
 
 
 def _age_hours(verdict: InflowVerdict, ts: datetime | None) -> str:
+    """把时刻渲染成"绝对时刻(距今 Xh)"。
+
+    未来时刻不渲染成负数("距今 -317.0h" 是没人能读的垃圾),明确标成时钟偏移。
+    """
     if ts is None:
         return "从未发生"
     hours = (verdict.now - ts).total_seconds() / 3600
+    if hours < 0:
+        return f"{_fmt_ts(ts)}(在未来 {-hours:.1f}h,疑似时钟偏移)"
     return f"{_fmt_ts(ts)}(距今 {hours:.1f}h)"
 
 
-def build_alert_text(verdict: InflowVerdict) -> str:
-    """生成告警正文。healthy 判定不该走到这里(调用方先查 is_alerting)。"""
+def build_alert_text(
+    verdict: InflowVerdict, decision: AlertDecision | None = None
+) -> str:
+    """生成告警正文。healthy 判定不该走到这里(调用方先查 is_alerting)。
+
+    Args:
+        verdict: 断流判定。
+        decision: 发送决策;非首报时用于标注「第 N 次重提 / 首报时间」——收到第 3 条
+            同样内容的告警时,不标注就无法判断是新故障还是同一次的重提。
+    """
     if verdict.verdict == VERDICT_HEALTHY:
         raise ValueError("healthy 判定无告警文案(调用方应先检查 is_alerting)")
 
@@ -343,6 +402,18 @@ def build_alert_text(verdict: InflowVerdict) -> str:
             "(上游采集停摆 或 runner daemon 未在取件)"
         )
 
+    if decision is not None and decision.kind == ALERT_REALERT:
+        lines.append(
+            f"提醒: 第 {decision.realert_index}/{REALERT_MAX} 次重提"
+            f"(每 {REALERT_INTERVAL_HOURS}h 一次,满配额后静默)"
+        )
+        if decision.first_alerted_at is not None:
+            lines.append(f"首报时间: {_age_hours(verdict, decision.first_alerted_at)}")
+    elif decision is not None and decision.kind == ALERT_FORCED:
+        lines.append("提醒: 手动强制重发(--force,不计入重提配额)")
+        if decision.first_alerted_at is not None:
+            lines.append(f"首报时间: {_age_hours(verdict, decision.first_alerted_at)}")
+
     lines.append(f"窗口: {_fmt_ts(verdict.window_start)} → {_fmt_ts(verdict.now)}")
     lines.append(counts_line)
     lines.append(f"上次入库: {_age_hours(verdict, verdict.last_finalize_ts)}")
@@ -353,10 +424,11 @@ def build_alert_text(verdict: InflowVerdict) -> str:
         for idx, (reason, count) in enumerate(verdict.top_abort_reasons, start=1):
             lines.append(f"  {idx}. ×{count} {reason}")
 
-    if verdict.corrupt_lines or verdict.unparseable_ts:
+    if verdict.corrupt_lines or verdict.unparseable_ts or verdict.future_ts:
         lines.append(
             f"账本数据质量: 损坏行 {verdict.corrupt_lines} / "
-            f"ts 不可解析 {verdict.unparseable_ts}(未参与判定)"
+            f"ts 不可解析 {verdict.unparseable_ts} / "
+            f"ts 在未来 {verdict.future_ts}(均未参与判定)"
         )
 
     if verdict.verdict == VERDICT_STALLED:
@@ -410,27 +482,131 @@ def _save_state(path: Path, state: dict) -> None:
     os.replace(tmp, path)
 
 
-def is_suppressed(state: dict, verdict: InflowVerdict) -> bool:
-    """同一断流窗口是否已告警过。"""
+@dataclass
+class AlertDecision:
+    """本轮该不该发、发的是第几条(见模块 docstring 的「幂等抑制 + 有界重提」)。"""
+
+    kind: str
+    # 第几次**重提**(1..REALERT_MAX);首报为 0
+    realert_index: int
+    # 本次断流的首报时刻(首报时为 None——此刻就是首报)
+    first_alerted_at: datetime | None
+    # 人类可读的决策理由(进日志,宪法 P4 决策可见)
+    detail: str
+
+    @property
+    def should_send(self) -> bool:
+        return self.kind in _SENDING_KINDS
+
+
+def _prior_episode(state: dict, verdict: InflowVerdict) -> dict | None:
+    """取"同一次断流"的上次告警记录;episode 不同或无记录返回 None。"""
     last = state.get("last_alert")
     if not isinstance(last, dict):
-        return False
-    return last.get("episode_key") == verdict.episode_key
+        return None
+    return last if last.get("episode_key") == verdict.episode_key else None
 
 
-def record_alert(state: dict, verdict: InflowVerdict) -> dict:
-    """把本次告警写入状态(返回新 state,history 有界)。"""
-    entry = {
-        "episode_key": verdict.episode_key,
-        "verdict": verdict.verdict,
-        "window_hours": verdict.window_hours,
-        "alerted_at": _fmt_ts(verdict.now),
-        "intake_count": verdict.intake_count,
-        "finalize_count": verdict.finalize_count,
-    }
+def decide_alert(
+    state: dict, verdict: InflowVerdict, *, force: bool = False
+) -> AlertDecision:
+    """决定本轮发送行为(纯函数,不改 state、不发送)。
+
+    - 新的一次断流 → 首报。
+    - 同一次断流内:距上次发送 >= REALERT_INTERVAL_HOURS 且重提未封顶 → 重提;
+      否则抑制(间隔未到 / 已封顶)。
+    - `force` → 强制发送,但不消耗重提配额、不推移节奏(见模块 docstring)。
+    """
+    prior = _prior_episode(state, verdict)
+    if prior is None:
+        # force 落在新 episode 上就是首报本身,按首报正常记账
+        return AlertDecision(ALERT_FIRST, 0, None, "新的一次断流,首报")
+
+    first_at = _parse_ts(prior.get("first_alerted_at"))
+    raw_count = prior.get("realert_count")
+    count = raw_count if isinstance(raw_count, int) and raw_count >= 0 else 0
+    # 兼容早期状态格式(只有 alerted_at)：读不到 last_alerted_at 时回退
+    last_at = _parse_ts(prior.get("last_alerted_at")) or _parse_ts(prior.get("alerted_at"))
+
+    if force:
+        return AlertDecision(
+            ALERT_FORCED, count, first_at, "--force 强制重发(不消耗重提配额、不推移节奏)"
+        )
+
+    if count >= REALERT_MAX:
+        return AlertDecision(
+            SUPPRESS_MAX,
+            count,
+            first_at,
+            f"已重提 {count}/{REALERT_MAX} 次并封顶,静默至本次断流结束",
+        )
+
+    if last_at is None:
+        # 上次发送时刻不可解析 → 宁可多发一次也不漏报(与损坏状态同口径)
+        return AlertDecision(
+            ALERT_REALERT, count + 1, first_at, "上次发送时刻不可解析,按需重提"
+        )
+
+    elapsed_h = (verdict.now - last_at).total_seconds() / 3600
+    if elapsed_h >= REALERT_INTERVAL_HOURS:
+        return AlertDecision(
+            ALERT_REALERT,
+            count + 1,
+            first_at,
+            f"距上次告警 {elapsed_h:.1f}h ≥ {REALERT_INTERVAL_HOURS}h,第 "
+            f"{count + 1}/{REALERT_MAX} 次重提",
+        )
+    return AlertDecision(
+        SUPPRESS_INTERVAL,
+        count,
+        first_at,
+        f"距上次告警仅 {elapsed_h:.1f}h < {REALERT_INTERVAL_HOURS}h,抑制",
+    )
+
+
+def record_alert(
+    state: dict, verdict: InflowVerdict, decision: AlertDecision
+) -> dict:
+    """把本次发送写入状态(返回新 state,history 有界)。
+
+    `ALERT_FORCED` 刻意**不动** `last_alerted_at` 与 `realert_count`——否则手动
+    验证一次就会把自动重提的节奏往后推、或白吃掉一次配额。
+    """
+    prior = _prior_episode(state, verdict) or {}
+    now_ts = _fmt_ts(verdict.now)
+
+    if decision.kind == ALERT_FORCED:
+        entry = dict(prior)
+        forced = entry.get("forced_sends")
+        entry["forced_sends"] = (forced if isinstance(forced, int) else 0) + 1
+    else:
+        first_at = (
+            _fmt_ts(decision.first_alerted_at) if decision.first_alerted_at else now_ts
+        )
+        entry = {
+            "episode_key": verdict.episode_key,
+            "verdict": verdict.verdict,
+            "window_hours": verdict.window_hours,
+            "first_alerted_at": first_at,
+            "last_alerted_at": now_ts,
+            "realert_count": decision.realert_index,
+            "forced_sends": prior.get("forced_sends", 0)
+            if isinstance(prior.get("forced_sends"), int)
+            else 0,
+        }
+    entry["intake_count"] = verdict.intake_count
+    entry["finalize_count"] = verdict.finalize_count
+
     history = state.get("history")
     history = list(history) if isinstance(history, list) else []
-    history.append(entry)
+    history.append(
+        {
+            "episode_key": verdict.episode_key,
+            "kind": decision.kind,
+            "realert_index": decision.realert_index,
+            "sent_at": now_ts,
+        }
+    )
     return {"last_alert": entry, "history": history[-MAX_STATE_HISTORY:]}
 
 
@@ -490,8 +666,8 @@ def run_check(
     Args:
         ledger_path: quality-ledger.jsonl 路径。
         window_hours: 判定窗口。
-        dry_run: 只打印文案,不发送、不写抑制状态。
-        force: 忽略幂等抑制强制发送(手动验证用)。
+        dry_run: 只打印文案,不发送、不读写抑制状态。
+        force: 绕过抑制强制发送(手动验证用);不消耗重提配额、不推移重提节奏。
         state_path: 抑制状态文件;None → resolve_state_path()。
         now: 判定基准时刻(测试注入)。
         sender: 发送函数 `(text: str) -> None`;None → send_feishu_alert。
@@ -515,11 +691,10 @@ def run_check(
         print("[inflow_sentinel] 入库正常,不告警")
         return 0
 
-    text = build_alert_text(verdict)
-
     if dry_run:
+        # dry-run 不读写抑制状态:它是排查工具,不该因"看一眼"就改变自动告警节奏。
         print("[inflow_sentinel] --dry-run:以下文案不会发送")
-        print(text)
+        print(build_alert_text(verdict))
         print(f"[inflow_sentinel] episode_key={verdict.episode_key}")
         return 0
 
@@ -532,13 +707,15 @@ def run_check(
             return 1
 
     state = _load_state(state_path)
-    if not force and is_suppressed(state, verdict):
+    decision = decide_alert(state, verdict, force=force)
+    if not decision.should_send:
         print(
-            f"[inflow_sentinel] 同一断流窗口已告警过,抑制本次"
+            f"[inflow_sentinel] 抑制本次发送:{decision.detail}"
             f"(episode_key={verdict.episode_key});--force 可强制重发"
         )
         return 0
 
+    text = build_alert_text(verdict, decision)
     send = sender or send_feishu_alert
     try:
         send(text)
@@ -551,11 +728,14 @@ def run_check(
         _local_notify(text)
         return 1
 
-    print(f"[inflow_sentinel] 已发送飞书告警(episode_key={verdict.episode_key})")
+    print(
+        f"[inflow_sentinel] 已发送飞书告警(kind={decision.kind} "
+        f"episode_key={verdict.episode_key}):{decision.detail}"
+    )
     print(text)
 
     try:
-        _save_state(state_path, record_alert(state, verdict))
+        _save_state(state_path, record_alert(state, verdict, decision))
     except OSError as exc:
         # 告警已发出但抑制状态没落盘 → 下次会重复告警。明示,不静默。
         print(
@@ -592,7 +772,9 @@ def main(argv: list[str] | None = None) -> int:
         "--dry-run", action="store_true", help="只打印判定与文案,不发送、不写抑制状态"
     )
     parser.add_argument(
-        "--force", action="store_true", help="忽略幂等抑制强制发送(手动验证用)"
+        "--force",
+        action="store_true",
+        help="绕过抑制强制发送(手动验证用;不消耗重提配额、不推移重提节奏)",
     )
     parser.add_argument(
         "--state-file", default=None, help="抑制状态文件路径(默认经 common.state_paths 解析)"

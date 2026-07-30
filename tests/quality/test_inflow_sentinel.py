@@ -19,6 +19,8 @@ import pytest
 from akb2.quality.inflow_sentinel import (
     DEFAULT_WINDOW_HOURS,
     MAX_STATE_HISTORY,
+    REALERT_INTERVAL_HOURS,
+    REALERT_MAX,
     VERDICT_HEALTHY,
     VERDICT_NO_INTAKE,
     VERDICT_STALLED,
@@ -245,6 +247,34 @@ class TestDataQualityVisible:
         assert "损坏行 1" in text
         assert "ts 不可解析 1" in text
 
+    def test_future_finalize_cannot_mask_a_real_stall(self, tmp_path):
+        """时钟偏移到未来的 finalize 不得把真断流盖成 healthy —— 那正是要防的静默失败。"""
+        ledger = _write_ledger(
+            tmp_path / "l.jsonl",
+            [
+                _ev("intake_raw", _hours_ago(3)),
+                _ev("finalize", NOW + timedelta(hours=5)),
+            ],
+        )
+        v = evaluate_ledger(ledger, now=NOW)
+        assert v.verdict == VERDICT_STALLED
+        assert v.finalize_count == 0
+        assert v.future_ts == 1
+        # 未来事件也不该被当成"上次入库"（否则文案出现负数小时）
+        assert v.last_finalize_ts is None
+        text = build_alert_text(v)
+        assert "ts 在未来 1" in text
+        assert "距今 -" not in text
+
+    def test_future_timestamp_rendered_without_negative_hours(self, tmp_path):
+        """真要渲染未来时刻时,标成时钟偏移而不是"距今 -317.0h"这种读不懂的数。"""
+        ledger = _write_ledger(tmp_path / "l.jsonl", [_ev("intake_raw", _hours_ago(3))])
+        v = evaluate_ledger(ledger, now=NOW)
+        v.last_intake_ts = NOW + timedelta(hours=10)
+        text = build_alert_text(v)
+        assert "在未来 10.0h,疑似时钟偏移" in text
+        assert "距今 -" not in text
+
 
 # ---------------------------------------------------------------------------
 # 幂等抑制
@@ -357,6 +387,221 @@ class TestSuppression:
 
 
 # ---------------------------------------------------------------------------
+# 有界重提
+# ---------------------------------------------------------------------------
+
+
+def _ongoing_stall_ledger(path: Path) -> Path:
+    """持续断流的账本:一直有进料、始终无 finalize。
+
+    进料每 20h 一条(< 48h 窗口)保证每个检查点都判 stalled;`last_finalize_ts`
+    固定在 NOW-80h → episode_key 跨天不变,才能测"同一次断流"内的重提节奏。
+    """
+    events = [_ev("finalize", _hours_ago(80))]
+    events += [_ev("intake_raw", _hours_ago(3) + timedelta(hours=20 * k)) for k in range(17)]
+    return _write_ledger(path, events)
+
+
+class TestBoundedRealert:
+    def test_no_realert_before_interval(self, tmp_path):
+        """72h 内不重发——首报后每天两次的定时检查不得变成告警轰炸。"""
+        ledger = _ongoing_stall_ledger(tmp_path / "l.jsonl")
+        state = tmp_path / "state.json"
+        rec = _Recorder()
+        run_check(ledger_path=ledger, state_path=state, now=NOW, sender=rec)
+        assert len(rec.sent) == 1
+
+        for hours in (12, 36, REALERT_INTERVAL_HOURS - 1):
+            run_check(
+                ledger_path=ledger,
+                state_path=state,
+                now=NOW + timedelta(hours=hours),
+                sender=rec,
+            )
+            assert len(rec.sent) == 1, f"距首报 {hours}h 不该重发"
+
+    def test_realert_at_interval_boundary_and_counts_up(self, tmp_path):
+        """跨 72h 重发且计数 +1,文案标注第 N 次重提与首报时间。"""
+        ledger = _ongoing_stall_ledger(tmp_path / "l.jsonl")
+        state = tmp_path / "state.json"
+        rec = _Recorder()
+        run_check(ledger_path=ledger, state_path=state, now=NOW, sender=rec)
+        # 首报不带重提标注（否则读者分不清这是首报还是第 N 条）
+        assert "次重提" not in rec.sent[0]
+
+        run_check(
+            ledger_path=ledger,
+            state_path=state,
+            now=NOW + timedelta(hours=REALERT_INTERVAL_HOURS),
+            sender=rec,
+        )
+        assert len(rec.sent) == 2
+        assert f"第 1/{REALERT_MAX} 次重提" in rec.sent[1]
+        assert "首报时间: 2026-07-30T12:00:00Z(距今 72.0h)" in rec.sent[1]
+        saved = json.loads(state.read_text(encoding="utf-8"))
+        assert saved["last_alert"]["realert_count"] == 1
+        assert saved["last_alert"]["first_alerted_at"] == "2026-07-30T12:00:00Z"
+
+        # 第 2 次重提:节奏是"距上次发送"而非"距首报"
+        run_check(
+            ledger_path=ledger,
+            state_path=state,
+            now=NOW + timedelta(hours=REALERT_INTERVAL_HOURS * 2),
+            sender=rec,
+        )
+        assert len(rec.sent) == 3
+        assert f"第 2/{REALERT_MAX} 次重提" in rec.sent[2]
+
+    def test_realert_capped_then_permanently_silent(self, tmp_path, capsys):
+        """达 REALERT_MAX 次封顶后彻底静默,直到本次断流结束。"""
+        ledger = _ongoing_stall_ledger(tmp_path / "l.jsonl")
+        state = tmp_path / "state.json"
+        rec = _Recorder()
+        # 首报 + REALERT_MAX 次重提 = 1 + REALERT_MAX 条
+        for k in range(REALERT_MAX + 1):
+            run_check(
+                ledger_path=ledger,
+                state_path=state,
+                now=NOW + timedelta(hours=REALERT_INTERVAL_HOURS * k),
+                sender=rec,
+            )
+        assert len(rec.sent) == 1 + REALERT_MAX
+        assert f"第 {REALERT_MAX}/{REALERT_MAX} 次重提" in rec.sent[-1]
+
+        # 再过两个间隔都不该再发
+        for k in (REALERT_MAX + 1, REALERT_MAX + 2):
+            rc = run_check(
+                ledger_path=ledger,
+                state_path=state,
+                now=NOW + timedelta(hours=REALERT_INTERVAL_HOURS * k),
+                sender=rec,
+            )
+            assert rc == 0
+        assert len(rec.sent) == 1 + REALERT_MAX
+        assert "封顶" in capsys.readouterr().out
+
+    def test_episode_end_resets_realert_quota(self, tmp_path):
+        """断流结束(恢复入库)后再断 = 新一次,配额重置,首报重新可发。"""
+        ledger = tmp_path / "l.jsonl"
+        _ongoing_stall_ledger(ledger)
+        state = tmp_path / "state.json"
+        rec = _Recorder()
+        for k in range(REALERT_MAX + 1):
+            run_check(
+                ledger_path=ledger,
+                state_path=state,
+                now=NOW + timedelta(hours=REALERT_INTERVAL_HOURS * k),
+                sender=rec,
+            )
+        assert len(rec.sent) == 1 + REALERT_MAX
+        assert json.loads(state.read_text(encoding="utf-8"))["last_alert"][
+            "realert_count"
+        ] == REALERT_MAX
+
+        # 管线恢复:新 finalize 落账 → 健康,不发
+        recovered_at = NOW + timedelta(hours=400)
+        _write_ledger(
+            ledger,
+            [
+                _ev("intake_raw", NOW + timedelta(hours=395)),
+                _ev("finalize", recovered_at),
+            ],
+        )
+        run_check(
+            ledger_path=ledger,
+            state_path=state,
+            now=recovered_at + timedelta(hours=1),
+            sender=rec,
+        )
+        assert len(rec.sent) == 1 + REALERT_MAX
+
+        # 又断了 → 新 episode(锚点变成 recovered_at)→ 首报,配额从 0 起
+        _write_ledger(
+            ledger,
+            [
+                _ev("finalize", recovered_at),
+                _ev("intake_raw", recovered_at + timedelta(hours=100)),
+            ],
+        )
+        run_check(
+            ledger_path=ledger,
+            state_path=state,
+            now=recovered_at + timedelta(hours=120),
+            sender=rec,
+        )
+        assert len(rec.sent) == 2 + REALERT_MAX
+        saved = json.loads(state.read_text(encoding="utf-8"))
+        assert saved["last_alert"]["realert_count"] == 0
+        assert "次重提" not in rec.sent[-1]
+
+    def test_force_neither_consumes_quota_nor_shifts_cadence(self, tmp_path):
+        """--force 绕过抑制但不消耗配额、不推移节奏(它只是人工验通路)。"""
+        ledger = _ongoing_stall_ledger(tmp_path / "l.jsonl")
+        state = tmp_path / "state.json"
+        rec = _Recorder()
+        run_check(ledger_path=ledger, state_path=state, now=NOW, sender=rec)
+
+        # 首报后 10h 强制重发两次:能发出去,但配额与节奏不动
+        for hours in (10, 20):
+            run_check(
+                ledger_path=ledger,
+                state_path=state,
+                now=NOW + timedelta(hours=hours),
+                sender=rec,
+                force=True,
+            )
+        assert len(rec.sent) == 3
+        assert "手动强制重发" in rec.sent[1]
+        saved = json.loads(state.read_text(encoding="utf-8"))
+        assert saved["last_alert"]["realert_count"] == 0
+        assert saved["last_alert"]["forced_sends"] == 2
+        # 节奏没被推移:仍以首报时刻为基准,72h 处照常自动重提第 1 次
+        assert saved["last_alert"]["last_alerted_at"] == "2026-07-30T12:00:00Z"
+
+        run_check(
+            ledger_path=ledger,
+            state_path=state,
+            now=NOW + timedelta(hours=REALERT_INTERVAL_HOURS),
+            sender=rec,
+        )
+        assert len(rec.sent) == 4
+        assert f"第 1/{REALERT_MAX} 次重提" in rec.sent[3]
+
+    def test_legacy_state_without_realert_fields_still_suppresses(self, tmp_path):
+        """早期状态格式(只有 alerted_at)不得因缺字段退化成每次都发。"""
+        ledger = _ongoing_stall_ledger(tmp_path / "l.jsonl")
+        state = tmp_path / "state.json"
+        v = evaluate_ledger(ledger, now=NOW)
+        state.write_text(
+            json.dumps(
+                {
+                    "last_alert": {
+                        "episode_key": v.episode_key,
+                        "verdict": v.verdict,
+                        "window_hours": v.window_hours,
+                        "alerted_at": "2026-07-30T12:00:00Z",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        rec = _Recorder()
+        run_check(
+            ledger_path=ledger, state_path=state, now=NOW + timedelta(hours=10), sender=rec
+        )
+        assert rec.sent == []
+        # 跨过间隔后照常重提
+        run_check(
+            ledger_path=ledger,
+            state_path=state,
+            now=NOW + timedelta(hours=REALERT_INTERVAL_HOURS),
+            sender=rec,
+        )
+        assert len(rec.sent) == 1
+        assert f"第 1/{REALERT_MAX} 次重提" in rec.sent[0]
+
+
+# ---------------------------------------------------------------------------
 # 发送与退出码(fail-visible)
 # ---------------------------------------------------------------------------
 
@@ -406,7 +651,12 @@ class TestSendAndExitCode:
 
 class TestCli:
     def test_dry_run_cli_on_explicit_ledger(self, tmp_path, capsys):
-        ledger = _write_ledger(tmp_path / "l.jsonl", [_ev("intake_raw", _hours_ago(3))])
+        # main() 不注入 now → 必须用**真实时钟**造料。用固定 NOW 的话事件会落在
+        # 真实当下的未来,被未来事件过滤掉，判定退化成 no_intake（测试假绿）。
+        real_now = datetime.now(UTC)
+        ledger = _write_ledger(
+            tmp_path / "l.jsonl", [_ev("intake_raw", real_now - timedelta(hours=3))]
+        )
         rc = main(["--ledger", str(ledger), "--dry-run"])
         out = capsys.readouterr().out
         assert rc == 0
