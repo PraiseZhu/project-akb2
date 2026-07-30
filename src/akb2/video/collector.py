@@ -47,6 +47,13 @@ from src.akb2.video.dedup_store import (
     local_day_start_utc_iso,
     video_identity,
 )
+from src.akb2.video.external_credentials import (
+    SOURCE_BROWSER_FALLBACK,
+    SOURCE_CONFIG_FILE,
+    SOURCE_ENV_FILE_MISSING,
+    SOURCE_NONE,
+    resolve_cookie_config,
+)
 from src.akb2.video.llm_adapter import LLMAdapter, extract_json_from_llm_response
 from src.akb2.video.published_index import PublishedIdentityIndex
 from src.akb2.video.url_expand import ShortLinkExpander
@@ -124,7 +131,9 @@ class VideoCollector:
         self._video_config = self._load_video_config()
         self._settings = self._video_config.get("settings", {})
 
-        # yt-dlp 反爬配置
+        # yt-dlp 反爬配置。`cookie_source` 由 `_build_ytdlp_args` 落定，
+        # 是启动凭证预检的唯一真值来源（见 `external_credentials.probe_ytdlp_cookies`）。
+        self.cookie_source: str = SOURCE_NONE
         self._ytdlp_base_args: list[str] = self._build_ytdlp_args()
 
     # ------------------------------------------------------------------
@@ -140,11 +149,33 @@ class VideoCollector:
         return json.loads(path.read_text(encoding="utf-8"))
 
     def _build_ytdlp_args(self) -> list[str]:
-        """构建 yt-dlp 基础参数（cookies 优先）。"""
+        """构建 yt-dlp 基础参数（env 统一配置 > config 文件 > 浏览器兜底）。
+
+        env（`AKB2_YTDLP_COOKIES` / `AKB2_YTDLP_COOKIES_FROM_BROWSER`）优先，且与
+        researcher 的字幕降级路径共用同一份解析 —— 2026-07-30 事故里两条路径撞的是
+        同一堵 YouTube 机器人校验墙，凭证配置必须只有一个入口。
+
+        env 未配置时以下逻辑与改动前逐字一致（命令行不变）。同时记下 `cookie_source`
+        供启动预检归因：探测侧不重算"文件在不在"，避免两处口径分裂。
+        """
+        cookie_cfg = resolve_cookie_config()
+        if cookie_cfg.configured:
+            logger.info("yt-dlp cookies 来自环境变量: %s", cookie_cfg.detail)
+            self.cookie_source = cookie_cfg.source
+            return [*cookie_cfg.args, "--remote-components", "ejs:github"]
+        if cookie_cfg.source == SOURCE_ENV_FILE_MISSING:
+            # env 配了但文件不可用：resolve 已记 ERROR 且拒绝注入坏路径，
+            # 这里继续走下面的兜底，但把"配置写错了"留在 cookie_source 里播报。
+            self.cookie_source = SOURCE_ENV_FILE_MISSING
+        else:
+            self.cookie_source = SOURCE_NONE
+
         cookies_file_name = self._settings.get("ytdlp_cookies_file", "yt-cookies.txt")
         cookies_file_path = self.config.video_sources_path.parent / cookies_file_name
         if cookies_file_path.exists() and cookies_file_path.stat().st_size > 0:
             logger.info(f"yt-dlp 使用 cookies 文件: {cookies_file_path.name}")
+            if self.cookie_source == SOURCE_NONE:
+                self.cookie_source = SOURCE_CONFIG_FILE
             return [
                 "--cookies", str(cookies_file_path),
                 "--remote-components", "ejs:github",
@@ -154,6 +185,8 @@ class VideoCollector:
             f"yt-dlp 使用浏览器 cookies: {browser} "
             f"(若超时频繁，建议导出 cookies 文件到 {cookies_file_path})"
         )
+        if self.cookie_source == SOURCE_NONE:
+            self.cookie_source = SOURCE_BROWSER_FALLBACK
         return [
             "--cookies-from-browser", browser,
             "--remote-components", "ejs:github",

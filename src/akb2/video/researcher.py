@@ -30,6 +30,7 @@ from src.akb2.video.config import VideoConfig
 from src.akb2.video.constants import (
     VIDEO_NLM_MAX_WAIT,
 )
+from src.akb2.video.external_credentials import cookie_args
 from src.akb2.video.llm_adapter import LLMAdapter
 
 logger = logging.getLogger("akb2.video.researcher")
@@ -337,6 +338,13 @@ class VideoResearcher:
     # 健康检查
     # ------------------------------------------------------------------
 
+    def nlm_auth_status(self, profile: str | None = None) -> str:
+        """NLM 登录态探测的公开入口（启动凭证预检复用逐视频那套判定，不另写一份）。
+
+        Returns: `"ok"` / `"network_error"` / `"auth_expired"`（同 `_health_check`）。
+        """
+        return self._health_check(profile or self.config.nlm_profile)
+
     def _health_check(self, profile: str) -> str:
         """前置健康检查：区分 auth 状态与网络状态（逐视频，非整批）。
 
@@ -478,8 +486,12 @@ class VideoResearcher:
         """通过 yt-dlp 获取视频字幕/自动字幕。"""
         tmpdir = tempfile.mkdtemp(prefix="akb-transcript-")
         try:
+            # cookies 与 collector 共用同一份 env 配置（2026-07-30 事故：这条降级
+            # 路径过去完全不带 cookies，撞的是与日期补取同一堵 YouTube 机器人校验墙
+            # → all_research_failed 0/2）。env 未配置时返回 []，命令行与改动前一致。
             proc = subprocess.run(
                 [self.config.ytdlp_bin,
+                 *cookie_args(),
                  "--skip-download",
                  "--write-subs", "--write-auto-subs",
                  "--sub-lang", "en,zh-Hans,zh",
