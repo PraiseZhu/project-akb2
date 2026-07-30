@@ -411,12 +411,61 @@ _INFRA_ERROR_MARKERS: tuple[str, ...] = (
     "评分器双不可用",       # grader_all_down
     "调用超时",             # F51: LLM 调用超时 (Ns): <model>
     "extract_worker_timeout",  # F51: 抽取子进程超总时限
+    # F54: 上游 API 拒收类 400——文章同样未被任何质量判定否决(纯撞上游能力变更/
+    # 参数不兼容窗口)。实锤:DeepSeek 2026-07-23 下掉 json_schema → 准入四判定
+    # 全 400 → 连续 6 天零入库,而旧指纹只认宕机/超时,这批死亡永不重审。
+    "Error code: 400",     # openai SDK 400 原文前缀
+    "BadRequestError",     # openai.BadRequestError 类名
+    "response_format",     # 上游下掉的参数名(json_schema/json_object 类 400)
+    "This response_format type is unavailable",  # DeepSeek 2026-07-23 原文
 )
 
 
 def _is_infra_error(error_text: str) -> bool:
     t = str(error_text or "")
     return any(m in t for m in _INFRA_ERROR_MARKERS)
+
+
+# F54: abort 归因二值——落账显式区分"上游/传输故障"与"真实内容质量拒绝"。
+# 旧账本把"准入四判定 LLM 全 400"写成"准入未通过: topic_relevance, how_tendency,
+# novelty, content_lane",API 故障被伪装成内容拒绝,连续 6 天零入库无人察觉
+# (违宪法 P4 失败可见)。运维/calibration 据此字段直接分流,不再靠猜 reason 文本。
+FAILURE_KIND_INFRA: str = "infra"
+FAILURE_KIND_CONTENT: str = "content"
+
+
+def _classify_failure_kind(error_text: str) -> str:
+    """按基础设施指纹把 abort 归因为 infra / content 二值（与 F39 重审判据同源）。"""
+    return FAILURE_KIND_INFRA if _is_infra_error(error_text) else FAILURE_KIND_CONTENT
+
+
+def _admission_failure_probe(reason: str, checks: Any, lane_reason: str = "") -> str:
+    """拼装准入 abort 的基础设施探测文本（F54）。
+
+    准入整体 reason 只有判定名（"准入未通过: topic_relevance, ..."），底层 LLM 错误
+    原文（"判定调用失败: LLM API 错误 ... Error code: 400 ... This response_format
+    type is unavailable now"）只存在于逐项 check.reason 里。不并入探测文本，则上游
+    400 类死亡永远命中不了 `_is_infra_error`（F39 不重审、归因写成内容拒绝）。
+
+    checks 容错：真实路径是 list[AdmissionCheck]；测试 mock 可能给空列表或 dict。
+    """
+    parts: list[str] = [str(reason or "")]
+    for check in checks or []:
+        if isinstance(check, dict):
+            passed, name, detail = (
+                check.get("passed", True),
+                check.get("name", ""),
+                check.get("reason", ""),
+            )
+        else:
+            passed = getattr(check, "passed", True)
+            name = getattr(check, "name", "")
+            detail = getattr(check, "reason", "")
+        if passed is False and detail:
+            parts.append(f"{name}: {detail}")
+    if lane_reason:
+        parts.append(str(lane_reason))
+    return " | ".join(p for p in parts if p)
 
 
 def _maybe_auto_infra_requeue(
@@ -1419,6 +1468,10 @@ def _run_admission_segment(
                 "reason": "novelty_index_unavailable",
                 "index_status": index_status,
                 "raw_path": raw_path,
+                # F54: 索引空/读失败是本地数据面故障,不是内容质量拒绝。
+                # 注意:归因 infra 但不触发 F39 重审——索引没修好之前立刻重掷必再死,
+                # 重审预算该留给"重跑就能过"的上游抖动(判据见 _INFRA_ERROR_MARKERS)。
+                "failure_kind": FAILURE_KIND_INFRA,
             },
         )
         return (
@@ -2353,6 +2406,8 @@ def _run_pipeline_segments(
             "raw_path": raw_path,
             "existing_source_path": str(existing_source),
             "slug": _derive_raw_slug(raw_path),
+            # F54: 去重是真实内容判定(同源已入库),非上游故障
+            "failure_kind": FAILURE_KIND_CONTENT,
         }
         _log_event(config, "admission", "admission", content_hash, {
             "passed": False,
@@ -2385,11 +2440,18 @@ def _run_pipeline_segments(
         content_hash=content_hash,
     )
     passed, reason = admission_ret[0], admission_ret[1]
+    admission_checks = admission_ret[2] if len(admission_ret) > 2 else []
     content_lane = admission_ret[3] if len(admission_ret) > 3 else ""
     lane_reason = admission_ret[4] if len(admission_ret) > 4 else ""
     if not passed:
+        # F54: 归因 + 重审。探测串并入逐项 check.reason（底层 400/超时原文只在那里），
+        # 否则上游故障永远被写成内容拒绝、且 F39 不重审（连续 6 天零入库根因）。
+        admission_probe = _admission_failure_probe(reason, admission_checks, lane_reason)
         _log_event(config, "abort", "admission", content_hash,
-                   {"reason": reason, "content_lane": content_lane, "lane_reason": lane_reason})
+                   {"reason": reason, "content_lane": content_lane, "lane_reason": lane_reason,
+                    "failure_kind": _classify_failure_kind(admission_probe),
+                    "underlying_error": admission_probe[:400]})
+        _maybe_auto_infra_requeue(config, content_hash, admission_probe)
         # SC-6：reason 已带"准入未通过:"前缀（admission.py 拼装），此处幂等不再重复加，
         # 否则 factory.json failure_reason 出现"准入未通过: 准入未通过: ..."双前缀。
         error = reason if str(reason).startswith("准入未通过") else f"准入未通过: {reason}"
@@ -2433,15 +2495,6 @@ def _run_pipeline_segments(
     )
     if not success:
         failed_node = distill_meta.get("failed_node", "distill_extract")
-        details = _distill_abort_details(error_detail, failed_node)
-        details["retries_used"] = distill_meta.get("retries_used", 0)
-        details["maker_fallback_used"] = distill_meta.get("maker_fallback_used", False)
-        if distill_meta.get("maker_primary_error"):
-            details["maker_primary_error"] = distill_meta.get("maker_primary_error")
-        # §0.2/D9：fallback 失败路径透传 fallback_quality_basis（不靠 error string）
-        if distill_meta.get("fallback_quality_basis"):
-            details["fallback_quality_basis"] = distill_meta.get("fallback_quality_basis")
-        _log_event(config, "abort", failed_node, content_hash, details)
         # F39: 基础设施性死亡(LLM 宕机/超时)自动重审一次;内容性死因不触发。
         # F51: maker 超时后确定性兜底 fail-closed 时,error_detail 是"0 组件"
         # 内容样文本,infra 信号在 maker_primary_error 里——探测必须并入,
@@ -2451,6 +2504,17 @@ def _run_pipeline_segments(
             for x in (error_detail, distill_meta.get("maker_primary_error"))
             if x
         )
+        details = _distill_abort_details(error_detail, failed_node)
+        details["retries_used"] = distill_meta.get("retries_used", 0)
+        details["maker_fallback_used"] = distill_meta.get("maker_fallback_used", False)
+        if distill_meta.get("maker_primary_error"):
+            details["maker_primary_error"] = distill_meta.get("maker_primary_error")
+        # §0.2/D9：fallback 失败路径透传 fallback_quality_basis（不靠 error string）
+        if distill_meta.get("fallback_quality_basis"):
+            details["fallback_quality_basis"] = distill_meta.get("fallback_quality_basis")
+        # F54: 与重审判据同源的显式归因(infra/content),落账即可分流
+        details["failure_kind"] = _classify_failure_kind(infra_probe)
+        _log_event(config, "abort", failed_node, content_hash, details)
         _maybe_auto_infra_requeue(config, content_hash, infra_probe)
         return {
             "converged": False,
@@ -2573,6 +2637,8 @@ def _run_pipeline_segments(
                        {"error_class": error_class, "error": error_detail,
                         "repair_rounds": rounds,
                         "final_defects": final_defects_summary,
+                        # F54: 与 F39 重审判据同源的显式归因(infra/content)
+                        "failure_kind": _classify_failure_kind(str(error_detail)),
                         "repair_trace_paths": (
                             quality_meta.get("repair_trace_paths", []) if quality_meta else []
                         ),
