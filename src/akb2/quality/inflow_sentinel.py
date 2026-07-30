@@ -335,10 +335,12 @@ def build_alert_text(verdict: InflowVerdict) -> str:
         lines.append("🚨 AKB2 入库断流告警")
         lines.append(f"近 {verdict.window_hours}h 有进料但零入库(有进无出)")
     else:
-        lines.append("⚠️ AKB2 全链无活动告警")
+        # 措辞不能写成"账本零事件":本判定只要求 intake_raw==0 且 finalize==0,
+        # 窗口内完全可能还有在飞的 repair/grade 事件。说成"零事件"是假陈述。
+        lines.append("⚠️ AKB2 取件停滞告警")
         lines.append(
-            f"近 {verdict.window_hours}h 账本零事件"
-            "(上游采集停摆 或 runner daemon 未在消化队列)"
+            f"近 {verdict.window_hours}h 无新进料且零入库"
+            "(上游采集停摆 或 runner daemon 未在取件)"
         )
 
     lines.append(f"窗口: {_fmt_ts(verdict.window_start)} → {_fmt_ts(verdict.now)}")

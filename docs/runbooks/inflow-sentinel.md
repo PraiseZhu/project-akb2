@@ -18,7 +18,7 @@
 | 窗口内 intake_raw | 窗口内 finalize | verdict | 含义 | 排查入口 |
 |---|---|---|---|---|
 | > 0 | == 0 | `stalled` | **有进无出** = 入库断流 | `logs/akb2-quality-runner.log` |
-| == 0 | == 0 | `no_intake` | 全链零事件 = 采集停摆 **或** runner 死了 | `logs/intake.log` + `logs/akb2-quality-runner.log` |
+| == 0 | == 0 | `no_intake` | 无新进料且零入库 = 采集停摆 **或** runner 死了 | `logs/intake.log` + `logs/akb2-quality-runner.log` |
 | 任意 | > 0 | `healthy` | 有入库，不告警 | — |
 
 两种告警文案与排查入口不同，因为现场不同。注意 `intake_raw` 事件是 **runner** 落账的

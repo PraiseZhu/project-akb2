@@ -136,13 +136,29 @@ class TestVerdict:
 
         no_intake_text = build_alert_text(v)
         stalled_text = build_alert_text(stalled)
-        assert "全链无活动" in no_intake_text
+        assert "取件停滞" in no_intake_text
         assert "入库断流告警" in stalled_text
         # stalled 现场是 runner/LLM;零事件的两个可能现场都要给,否则把人引错方向
         assert "logs/akb2-quality-runner.log" in stalled_text
         assert "logs/intake.log" not in stalled_text
         assert "logs/intake.log" in no_intake_text
         assert "logs/akb2-quality-runner.log" in no_intake_text
+
+    def test_no_intake_text_does_not_claim_zero_events(self, tmp_path):
+        """窗口内还有在飞的 repair/grade 事件时,文案不得谎称"账本零事件"。"""
+        ledger = _write_ledger(
+            tmp_path / "l.jsonl",
+            [
+                _ev("intake_raw", _hours_ago(200)),
+                _ev("grade_llm", _hours_ago(6)),
+                _ev("repair_loop", _hours_ago(4)),
+            ],
+        )
+        v = evaluate_ledger(ledger, now=NOW)
+        assert v.verdict == VERDICT_NO_INTAKE
+        text = build_alert_text(v)
+        assert "零事件" not in text
+        assert "无新进料且零入库" in text
 
     def test_missing_ledger_reports_no_intake(self, tmp_path):
         """账本还不存在 → 无进料判定,不抛异常(首次部署形态)。"""
