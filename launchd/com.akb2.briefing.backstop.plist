@@ -13,6 +13,10 @@
     </array>
     <key>WorkingDirectory</key>
     <string>/Users/praise/AI-Agent/Claude/projects/Project AKB2/</string>
+    <!-- 结构性说明（2026-07-30）：下面第二个时段 12:05 晚于脚本默认 deadline 12:00，
+         该时段调用按设计只能巡检报告、无法真正补跑；当日简报已 pass 时 exit 0(skip)，
+         未达 pass 时照实 FAILED + exit 124。若要让第二次调用真能补跑，需人工决定是
+         把时段提前到 deadline 之前，还是把 deadline 往后放 —— 不由 agent 私改调度。 -->
     <key>StartCalendarInterval</key>
     <array>
         <dict>
