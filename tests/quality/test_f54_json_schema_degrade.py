@@ -467,6 +467,42 @@ class TestAdmissionAbortAttribution:
         requeues = [e for e in events if e["event"] == "requeue"]
         assert len(requeues) == 1, "上游故障死亡必须被 F39 重开，且只一次"
 
+    def test_underlying_error_keeps_infra_evidence_in_worst_ordering(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """最坏排序：前 3 条内容拒绝（各占满 150 字）+ 末条才是 400 故障。
+
+        落账 underlying_error 截断后仍须看得见故障原文——否则 failure_kind=infra
+        的证据被自己截掉，这个字段就白加了（宪法 P4）。
+        """
+        config = _pipeline_config(tmp_path)
+        _stub_pre_admission(monkeypatch)
+        long_content_reason = "内" * 150  # _validate_and_normalize 的 150 字上限
+        checks = [
+            AdmissionCheck("topic_relevance", False, long_content_reason),
+            AdmissionCheck("how_tendency", False, long_content_reason),
+            AdmissionCheck("mechanism_signal", False, long_content_reason),
+            AdmissionCheck("novelty", False, REAL_CHECK_REASON_400),
+        ]
+        monkeypatch.setattr(
+            runner,
+            "_run_admission_segment",
+            lambda *a, **k: (False, REAL_ADMISSION_REASON, checks, "", ""),
+        )
+
+        runner._run_pipeline_segments(
+            "raw/concept--raw--2026-07-24.md", "RAW BODY", config
+        )
+
+        details = _admission_abort_event(config.ledger_path)["details"]
+        assert details["failure_kind"] == FAILURE_KIND_INFRA
+        assert _is_infra_error(details["underlying_error"]), (
+            "截断后的落账文本必须仍带 infra 指纹，否则归因无从复核"
+        )
+        assert len(details["underlying_error"]) <= (
+            runner.ABORT_UNDERLYING_ERROR_MAX_CHARS
+        )
+
     def test_content_abort_marked_content_and_not_requeued(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

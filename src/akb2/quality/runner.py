@@ -439,6 +439,13 @@ def _classify_failure_kind(error_text: str) -> str:
     return FAILURE_KIND_INFRA if _is_infra_error(error_text) else FAILURE_KIND_CONTENT
 
 
+# 落账 underlying_error 的截断上限：必须大到能容下"前几条内容拒绝 + 靠后那条 API 故障
+# 原文"。内容型 reason 每条 ≤ ~170 字（_validate_and_normalize 截 150 + 判定名），
+# 准入最多 4 条判定 → 故障原文最迟在 ~700 字处出现。截太短会把 failure_kind=infra 的
+# 证据本身截掉，而这个字段存在的唯一目的就是让故障可见（宪法 P4）。
+ABORT_UNDERLYING_ERROR_MAX_CHARS: int = 1000
+
+
 def _admission_failure_probe(reason: str, checks: Any, lane_reason: str = "") -> str:
     """拼装准入 abort 的基础设施探测文本（F54）。
 
@@ -2450,7 +2457,7 @@ def _run_pipeline_segments(
         _log_event(config, "abort", "admission", content_hash,
                    {"reason": reason, "content_lane": content_lane, "lane_reason": lane_reason,
                     "failure_kind": _classify_failure_kind(admission_probe),
-                    "underlying_error": admission_probe[:400]})
+                    "underlying_error": admission_probe[:ABORT_UNDERLYING_ERROR_MAX_CHARS]})
         _maybe_auto_infra_requeue(config, content_hash, admission_probe)
         # SC-6：reason 已带"准入未通过:"前缀（admission.py 拼装），此处幂等不再重复加，
         # 否则 factory.json failure_reason 出现"准入未通过: 准入未通过: ..."双前缀。

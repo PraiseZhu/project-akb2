@@ -168,6 +168,10 @@ def _filter_extra_body_for_model(
 #      json_schema",动态降级只能靠 mock 异常路径间接复现,回归防线更弱;
 #   3. json_object 是 DeepSeek 官方 JSON Output 正式能力(route_deepseek_json_object
 #      已在用),不引入新的不确定性。
+# 不复用 route_deepseek_json_object:那是 distill 的独立入口(AKB2_DISTILL_DEEPSEEK_
+# JSON_MODE=1 专用),硬编 deepseek-v4-pro 族、不透传 timeout/max_tokens/extra_body/
+# reasoning_effort、也不做 schema 校验。route_llm 要保住这些参数语义,借道过去会静默
+# 丢参数(比重复几行 response_format 构造危险得多)。两者形状像、职责不同,不合并。
 # gpt-5.4 / gemini 族路径一字不动(其 json_schema 仍可用)。
 _JSON_SCHEMA_UNSUPPORTED_FAMILY_PREFIXES: tuple[str, ...] = ("deepseek",)
 
