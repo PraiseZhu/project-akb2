@@ -25,7 +25,11 @@ from src.akb2.video.blocked import write_zero_yield_diagnostic
 from src.akb2.video.collector import VideoCollector
 from src.akb2.video.config import VideoConfig
 from src.akb2.video.dedup_store import VideoDedupStore
-from src.akb2.video.external_credentials import CredentialHealth, probe_credentials
+from src.akb2.video.external_credentials import (
+    STATUS_DEAD,
+    CredentialHealth,
+    probe_credentials,
+)
 from src.akb2.video.extractor import Extractor
 from src.akb2.video.llm_adapter import DeepSeekAdapter
 from src.akb2.video.reasoner import ConceptStore, Reasoner
@@ -275,7 +279,7 @@ def _probe_credentials(
         logger.info("凭证预检: 全部正常（yt-dlp cookies / NLM 登录态）")
         return health
     for item in health.unhealthy:
-        log = logger.error if item.status == "dead" else logger.warning
+        log = logger.error if item.status == STATUS_DEAD else logger.warning
         log("凭证预检 [%s] %s: %s —— 修复: %s",
             item.status, item.name, item.detail, item.fix_command)
     return health

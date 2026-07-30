@@ -116,7 +116,12 @@ def _credential_root_cause(
     if cookies is not None and not cookies.is_ok:
         # cookies 的症状：列表整体拿不到东西，或日期补取成批失败（bot-check 的形态）
         if raw == 0:
-            symptom = f"{sources} 个源的列表阶段全部返回 0 条"
+            # `creator_errors` 必须带上：本分支抢在 `list_stage_empty` 之前返回，
+            # 不带就等于把那条分支原有的异常线索整段吞掉（诊断能力反而变差）。
+            errors = list(stats.get("creator_errors", []) or [])
+            symptom = (
+                f"{sources} 个源的列表阶段全部返回 0 条；creator 异常: {errors[:5] or '无'}"
+            )
         elif backfill_failed > 0:
             symptom = (
                 f"日期补取失败 {backfill_failed} 次 → 按日期未知拒收 {date_unknown} 个候选"
@@ -274,21 +279,27 @@ def classify(
     )
 
 
+#: 由凭证归因产生的 reason（读取侧可据此判断"该跑修复命令"）
+CREDENTIAL_REASONS = frozenset({"credential_expired", "credential_suspect"})
+
+
 def _should_record_credential_health(
-    health: CredentialHealth | None, published: int
+    health: CredentialHealth | None, verdict: ZeroYieldVerdict
 ) -> bool:
     """`credential_health` 块的落盘条件 —— 只在它是信号的时候写，其余时候不制造噪音。
 
-    - 凭证健康 → 不写（默认路径下每轮都贴一遍"一切正常"没有信息量）；
-    - 探测判死 → 一律写（即便本轮还有产出：凭证死了就是硬故障，提前告警才有意义）；
-    - 只是 degraded（无显式 cookies 的兜底状态，本机的默认形态）→ 仅 0 产出时写，
-      此时它是最可能的解释；有产出时它已被证明还能用，写了就是纯噪音。
+    - 凭证健康 → 不写（每轮贴一遍"一切正常"没有信息量）；
+    - 探测判死（`dead`）→ 一律写，即便本轮还有产出：凭证死了就是硬故障，提前告警
+      才有意义；
+    - 只是 `degraded`（无显式 cookies 的浏览器兜底 —— 本机的**默认**形态）→ 只在归因
+      真的落到凭证上时才写。否则"今天窗口内确实没有新视频"这种完全正常的一天也会挂
+      一个凭证告警，运维会被引去查一个不存在的故障；预算撞顶同理（那不是 cookies 的错）。
     """
     if health is None or health.is_healthy:
         return False
     if health.overall == STATUS_DEAD:
         return True
-    return published == 0
+    return verdict.reason in CREDENTIAL_REASONS
 
 
 def write_zero_yield_diagnostic(
@@ -316,7 +327,7 @@ def write_zero_yield_diagnostic(
     # 凭证块紧跟 funnel：读取侧拿到 reason 之后紧接着就能拿到"跑哪条命令能修"。
     # 附加块绝不能连坐主体：它序列化失败时只丢自己，漏斗诊断照常落盘（否则又变成
     # "整份诊断没写出来"的静默失败）。
-    if _should_record_credential_health(credential_health, published):
+    if _should_record_credential_health(credential_health, verdict):
         try:
             payload["credential_health"] = credential_health.as_dict()  # type: ignore[union-attr]
         except Exception as exc:  # noqa: BLE001

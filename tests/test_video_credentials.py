@@ -485,6 +485,45 @@ def test_degraded_credential_with_output_is_not_recorded(tmp_path):
     assert "credential_health" not in data
 
 
+def test_degraded_credential_not_recorded_on_genuine_empty_window(tmp_path):
+    """真·空窗日不该挂凭证告警 —— 浏览器兜底是本机默认形态，写了就是引人查假故障。"""
+    write_zero_yield_diagnostic(
+        _funnel(date_backfill_used=0, date_backfill_ok=0, date_backfill_failed=0,
+                rejected_date_unknown=0, dropped_relevance=246),
+        published=0, repo_root=tmp_path,
+        credential_health=_health(cookies_status=STATUS_DEGRADED),
+    )
+    data = json.loads((tmp_path / VIDEO_BLOCKED_REL_PATH).read_text(encoding="utf-8"))
+    assert data["reason"] == "no_candidates_in_window"
+    assert "credential_health" not in data
+
+
+def test_degraded_credential_not_recorded_when_budget_exhausted(tmp_path):
+    """预算撞顶不是 cookies 的错 —— 归因没落到凭证上就不挂凭证块。"""
+    write_zero_yield_diagnostic(
+        _funnel(date_backfill_failed=0, date_backfill_ok=0, date_backfill_used=40,
+                date_backfill_budget_exhausted=True),
+        published=0, repo_root=tmp_path,
+        credential_health=_health(cookies_status=STATUS_DEGRADED),
+    )
+    data = json.loads((tmp_path / VIDEO_BLOCKED_REL_PATH).read_text(encoding="utf-8"))
+    assert data["reason"] == "date_backfill_budget_exhausted"
+    assert "credential_health" not in data
+
+
+def test_credential_root_cause_keeps_creator_errors_evidence(tmp_path):
+    """凭证分支抢在 list_stage_empty 之前返回，不得吞掉后者原有的 creator 异常线索。"""
+    verdict = classify(
+        _funnel(raw_listed=0, date_backfill_used=0, date_backfill_failed=0,
+                rejected_date_unknown=0, candidates_after_filters=0,
+                creator_errors=["yt-test: HTTP 429", "bili-test: timeout"]),
+        published=0,
+        credential_health=_health(cookies_status=STATUS_DEAD),
+    )
+    assert verdict.reason == "credential_expired"
+    assert "HTTP 429" in verdict.detail
+
+
 def test_dead_credential_with_output_is_still_recorded(tmp_path):
     """探测判死是硬故障：即便本轮还有产出也要告警（提前发现才有意义）。"""
     write_zero_yield_diagnostic(
