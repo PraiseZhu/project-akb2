@@ -216,7 +216,7 @@ pdfminer.six==20251230
 pdfplumber==0.11.9
 pillow==12.2.0
 platformdirs==4.9.4
-playwright==1.60.0
+playwright==1.61.0
 playwright-stealth==2.0.2
 pluggy==1.6.0
 ply==3.11
