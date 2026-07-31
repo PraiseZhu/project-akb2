@@ -101,6 +101,12 @@ def main() -> int:
             result.data if isinstance(result.data, dict) else {},
             result.retries_used,
             result.error,
+            # F60(Sol 审 P1-3):主路径此前不带 diagnostics → F8-A/F8-C/F60 全部
+            # fail-visible 计数在生产(子进程模式)丢失,ledger 恒 0——P4 断链。
+            diagnostics=(
+                _diag if isinstance(_diag := getattr(result, "diagnostics", None), dict)
+                else None
+            ),
         )
     )
     return 0

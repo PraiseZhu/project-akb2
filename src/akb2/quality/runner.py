@@ -31,6 +31,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from src.akb2.quality import distill as _dst  # F60: 账本预算字段与 distill 常量同源
+
 # ---------------------------------------------------------------------------
 # 具名常量（宪法 P1/P4）
 # ---------------------------------------------------------------------------
@@ -89,15 +91,30 @@ NEEDS_REPAIR_SUBDIR: str = "needs-repair"  # 驻留 final_text 持久化子目�
 NEEDS_REPAIR_STALL_REQUEUE_MAX: int = 1  # 每篇一生最多 1 次止损升级(全链重掷)
 _NEEDS_REPAIR_STALL_REASON_PREFIX = "needs_repair_stall_redistill(F50)"
 
-DISTILL_TIMEOUT_S: float = 60.0
 DISTILL_MAX_RETRIES: int = 0
 # F10-D: A/B 双臂基建——env 覆盖模型族(与 distill.DISTILL_MODEL_FAMILY 同源,
 # ledger 记录实际使用的族,A/B 可追溯)。默认 deepseek-v4-pro 不变。
 DISTILL_MODEL_FAMILY: str = os.environ.get("AKB2_DISTILL_FAMILY", "deepseek-v4-pro")
-DISTILL_EXTRACT_WORKER_TIMEOUT_S: float = 210.0
+# F60 预算算术自洽化(与 distill.EXTRACT_SEGMENT_TIMEOUT_S=110 /
+# DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S=240 联动,守卫断言见
+# tests/quality/test_f60_grounding_gate.py):
+#   旧三层 60/180/210 在算术上不自洽——210s worker cap 只容 1.16 个 attempt,
+#   MAX_EXTRACT_RETRIES=3 从未真正可用;实测(2026-07-31,生产逼真形态)正经
+#   how_params 产出 ~90s,60s per-call 必掐 → 整 attempt 重试 → 210s 引爆,
+#   账本实证 infra 超时占 extract abort 83%。
+#   normal  = 2 × attempt(240) + 30 slack = 510
+#   long    = 510 + 120(长文两段各多 ~60s 生成) = 630
+# Sol 审 P1-4 修正:重试是**整 attempt 从 claims 重启**(外层 for 循环),不存在
+# "只重试单 segment"的路径;初版 380 连一次完整 retry 都盖不住,守卫测的是不存在
+# 的路径。契约取"至少一次完整重试可用":worker ≥ 2×attempt + slack。
+# MAX_EXTRACT_RETRIES=3 在 wall-clock 下仍非全额可用(3 次满额 attempt=720s),
+# 属显式取舍:第 2 attempt 起多为快速校验失败(实测 351s 内跑完 3 attempt),
+# 若后续实证需要更多,另案做"仅重试失败 segment"的细分调用(Sol 同向建议)。
+# 代价显式(宪法 P4):病理文章最坏占串行队列 510s(旧 210s);换 83% 杀伤面归零。
+DISTILL_EXTRACT_WORKER_TIMEOUT_S: float = 510.0
 DISTILL_EXTRACT_WORKER_LONG_DOC_WORDS: int = 3_000
-DISTILL_EXTRACT_WORKER_LONG_DOC_TIMEOUT_S: float = 360.0
-DISTILL_EXTRACT_WORKER_HARD_TIMEOUT_CAP_S: float = 360.0
+DISTILL_EXTRACT_WORKER_LONG_DOC_TIMEOUT_S: float = 630.0
+DISTILL_EXTRACT_WORKER_HARD_TIMEOUT_CAP_S: float = 630.0
 DISTILL_EXTRACT_WORKER_KILL_GRACE_S: float = 2.0
 # F2-B: traceability retake 子进程超时(distill 内部 60s + 子进程外层缓冲)
 TRACEABILITY_RETAKE_WORKER_TIMEOUT_S: float = 90.0
@@ -1191,30 +1208,54 @@ def _classify_distill_error(error_detail: str) -> str:
     return "extract_failed"
 
 
+def _extract_max_attempts(content_lane: str) -> int:
+    """F60 r3(Sol 终审):attempt 上限按车道求真——concept 有 F32 质量重试 +1
+    (校验重试 3 + 质量重试 1 = 4),procedural/未知车道 3。旧版恒写 3 会出现
+    retries_used=4 > extract_max_attempts=3 的账本自相矛盾。"""
+    extra = (
+        _dst.EXTRACT_QUALITY_RETRY_CONCEPT
+        if str(content_lane or "").strip().lower() == "concept"
+        else 0
+    )
+    return _dst.MAX_EXTRACT_RETRIES + extra
+
+
 def _distill_abort_details(
     error_detail: str,
     node: str,
+    worker_timeout_s: float | None = None,
+    content_lane: str = "",
 ) -> dict[str, Any]:
-    """distill abort 的统一 details。"""
-    return {
+    """distill abort 的统一 details。
+
+    Sol 审 r2/r3 P1-3:两层重试语义必须分列——provider_max_retries 是 SDK 层
+    (恒 0),extract_max_attempts 是外层 attempt 预算(lane 感知:concept=4 含
+    F32 质量重试,其余=3,见 _extract_max_attempts);旧字段名 max_retries=0
+    会让人误读成"无重试"。worker_timeout_s 是按文长解析后的实际子进程上限。
+    """
+    details = {
         "error": error_detail,
         "error_class": _classify_distill_error(error_detail),
         "model_family": DISTILL_MODEL_FAMILY,
-        "timeout_s": DISTILL_TIMEOUT_S,
-        "max_retries": DISTILL_MAX_RETRIES,
+        "segment_timeout_s": _dst.EXTRACT_SEGMENT_TIMEOUT_S,
+        "attempt_timeout_s": _dst.DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S,
+        "provider_max_retries": DISTILL_MAX_RETRIES,
+        "extract_max_attempts": _extract_max_attempts(content_lane),
         "retries_used": 0,
         "node": node,
     }
+    if worker_timeout_s is not None:
+        details["worker_timeout_s"] = worker_timeout_s
+    return details
 
 
 def _distill_extract_worker_timeout_s(raw_content: str) -> float:
     """Return the hard subprocess deadline for distill extract.
 
-    Long concept posts exercise two serial extract segments; each segment has a
-    60s model-call budget and the extract loop may retry up to three attempts.
-    Keep the default 210s for ordinary posts, but give long documents a bounded
-    360s worker envelope so retries can finish or fail explicitly before the
-    outer process killer fires.
+    F60 预算(与 distill.EXTRACT_SEGMENT_TIMEOUT_S=110 / ATTEMPT=240 同源算术):
+    普通文 510s(=2×attempt+30,至少一次完整 attempt 重试可用),长文(>3000 词)
+    630s。旧值 60/210/360 是 json_schema 时代校准,F54 降级后正经 segment 产出
+    ~90s,60s 必掐 → 210s 引爆(账本实证 infra 超时占 extract abort 83%)。
     """
     words = len(str(raw_content or "").split())
     if words > DISTILL_EXTRACT_WORKER_LONG_DOC_WORDS:
@@ -1810,6 +1851,16 @@ def _run_distill_segment(
             "components_filtered": extract_result.diagnostics.get(
                 "components_filtered", 0
             ),
+            # F60 fail-visible:锚定门三计数(门动了多少料必须进 ledger)
+            "components_evidence_unsupported": extract_result.diagnostics.get(
+                "components_evidence_unsupported", 0
+            ),
+            "components_evidence_relocated": extract_result.diagnostics.get(
+                "components_evidence_relocated", 0
+            ),
+            "edges_dropped_unsupported": extract_result.diagnostics.get(
+                "edges_dropped_unsupported", 0
+            ),
             # F53 fail-visible: raw frontmatter 降级提取标记(F52 降级路径生效)
             "frontmatter_degraded": compose_result.frontmatter_degraded,
         },
@@ -1896,11 +1947,16 @@ def _run_extract_claims_worker(raw_content: str, content_lane: str = "") -> Any:
     data = payload.get("data", {})
     if not isinstance(data, dict):
         data = {}
+    # F60(Sol 审 P1-3):透传 worker diagnostics,否则 distill_meta/ledger 恒 0
+    diagnostics = payload.get("diagnostics")
+    if not isinstance(diagnostics, dict):
+        diagnostics = {}
     return ExtractResult(
         success=bool(payload.get("success")),
         data=data,
         retries_used=int(payload.get("retries_used") or 0),
         error=str(payload.get("error") or ""),
+        diagnostics=diagnostics,
     )
 
 
@@ -2487,8 +2543,11 @@ def _run_pipeline_segments(
         {
             "status": "start",
             "model_family": DISTILL_MODEL_FAMILY,
-            "timeout_s": DISTILL_TIMEOUT_S,
-            "max_retries": DISTILL_MAX_RETRIES,
+            "segment_timeout_s": _dst.EXTRACT_SEGMENT_TIMEOUT_S,
+            "attempt_timeout_s": _dst.DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S,
+            "worker_timeout_s": _distill_extract_worker_timeout_s(raw_content),
+            "provider_max_retries": DISTILL_MAX_RETRIES,
+            "extract_max_attempts": _extract_max_attempts(content_lane),
             "content_lane": content_lane,
         },
     )
@@ -2511,7 +2570,11 @@ def _run_pipeline_segments(
             for x in (error_detail, distill_meta.get("maker_primary_error"))
             if x
         )
-        details = _distill_abort_details(error_detail, failed_node)
+        details = _distill_abort_details(
+            error_detail, failed_node,
+            worker_timeout_s=_distill_extract_worker_timeout_s(raw_content),
+            content_lane=content_lane,
+        )
         details["retries_used"] = distill_meta.get("retries_used", 0)
         details["maker_fallback_used"] = distill_meta.get("maker_fallback_used", False)
         if distill_meta.get("maker_primary_error"):
@@ -2541,8 +2604,11 @@ def _run_pipeline_segments(
     _log_event(config, "distill_extract", "distill_extract", content_hash,
                {"status": "success",
                 "model_family": DISTILL_MODEL_FAMILY,
-               "timeout_s": DISTILL_TIMEOUT_S,
-               "max_retries": DISTILL_MAX_RETRIES,
+                "segment_timeout_s": _dst.EXTRACT_SEGMENT_TIMEOUT_S,
+                "attempt_timeout_s": _dst.DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S,
+                "worker_timeout_s": _distill_extract_worker_timeout_s(raw_content),
+                "provider_max_retries": DISTILL_MAX_RETRIES,
+                "extract_max_attempts": _extract_max_attempts(content_lane),
                "retries_used": distill_meta.get("retries_used", 0),
                 "maker_fallback_used": distill_meta.get("maker_fallback_used", False),
                 # F8-A fail-visible:组件 evidence 回填计数(确认 F6-D 触发 + 残留 unlocated)
@@ -2551,6 +2617,15 @@ def _run_pipeline_segments(
                 ),
                 "components_evidence_unlocated": distill_meta.get(
                     "components_evidence_unlocated", 0
+                ),
+                "components_evidence_unsupported": distill_meta.get(
+                    "components_evidence_unsupported", 0
+                ),
+                "components_evidence_relocated": distill_meta.get(
+                    "components_evidence_relocated", 0
+                ),
+                "edges_dropped_unsupported": distill_meta.get(
+                    "edges_dropped_unsupported", 0
                 ),
                 # F8-C fail-visible:组件表垃圾条目过滤计数
                 "components_filtered": distill_meta.get("components_filtered", 0),

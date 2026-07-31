@@ -355,7 +355,9 @@ class TestRunnerLifelineSegments:
         ]
         assert distill_starts
         assert aborts
-        assert aborts[-1]["details"]["max_retries"] == 0
+        # F60 r2(Sol 审 P1-3):两层重试分列——provider(SDK)=0 / outer attempts=3
+        assert aborts[-1]["details"]["provider_max_retries"] == 0
+        assert aborts[-1]["details"]["extract_max_attempts"] == 3
         assert aborts[-1]["details"]["retries_used"] == 3
         assert not any(r.get("event") in {"grade_llm", "promote", "finalize"} for r in rows)
 
@@ -457,10 +459,13 @@ class TestRunnerLifelineSegments:
         """长文 worker 总时限按词数分级，且硬顶有界。"""
         from src.akb2.quality import runner as runner_mod
 
-        assert runner_mod.DISTILL_EXTRACT_WORKER_TIMEOUT_S == 210.0
+        # F60 预算算术自洽化(Sol 审 P1-4 修正):重试=整 attempt 重启,契约为
+        # "至少一次完整重试":normal=2×attempt(240)+30=510;long=+120。
+        # 层间关系由 test_f60_grounding_gate.TestBudgetArithmetic 守卫。
+        assert runner_mod.DISTILL_EXTRACT_WORKER_TIMEOUT_S == 510.0
         assert runner_mod.DISTILL_EXTRACT_WORKER_LONG_DOC_WORDS == 3_000
-        assert runner_mod.DISTILL_EXTRACT_WORKER_LONG_DOC_TIMEOUT_S == 360.0
-        assert runner_mod.DISTILL_EXTRACT_WORKER_HARD_TIMEOUT_CAP_S == 360.0
+        assert runner_mod.DISTILL_EXTRACT_WORKER_LONG_DOC_TIMEOUT_S == 630.0
+        assert runner_mod.DISTILL_EXTRACT_WORKER_HARD_TIMEOUT_CAP_S == 630.0
         assert (
             runner_mod._distill_extract_worker_timeout_s("word " * 3_000)
             == runner_mod.DISTILL_EXTRACT_WORKER_TIMEOUT_S
