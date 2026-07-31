@@ -299,7 +299,7 @@ scrapling==0.4.8
 semchunk==3.2.5
 sentence-transformers==5.2.3
 sentencepiece==0.2.1
-setuptools==82.0.0
+setuptools==83.0.0
 sgmllib3k==1.0.0
 shapely==2.1.2
 shellingham==1.5.4
