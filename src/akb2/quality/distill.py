@@ -4172,18 +4172,48 @@ _GROUNDING_STOPWORDS: frozenset[str] = frozenset({
 _GATE_ELIGIBLE_EDGE_KINDS: tuple[str, str] = ("source_causal", "llm_evidence")
 
 
+def _naive_singular(t: str) -> str:
+    """F60: 朴素单数化(两侧一致施加,求匹配一致性而非词形学正确)。
+
+    Sol 审 P1-2 反例:裸 strip-s 把 Policies→policie / policy→policy 拆成两个
+    token,同词误判不相干。规则序:ies→y;(s|x|z|ch|sh)es→去 es;尾 s→去 s。
+    """
+    if t.endswith("ies") and len(t) > 4:
+        return t[:-3] + "y"
+    if t.endswith("es") and len(t) > 4 and (
+        t[-3] in "sxz" or t.endswith(("ches", "shes"))
+    ):
+        return t[:-2]
+    if t.endswith("s") and len(t) > 3:
+        return t[:-1]
+    return t
+
+
 def _grounding_tokens(text: str) -> set[str]:
     """F60: 词面 token 集(小写/去停用词/朴素单数化;CJK 逐字)。"""
     toks: set[str] = set()
     for t in re.findall(r"[A-Za-z0-9]+", str(text or "").lower()):
         if len(t) < 3 or t in _GROUNDING_STOPWORDS:
             continue
-        if len(t) > 3 and t.endswith("s"):
-            t = t[:-1]
-        toks.add(t)
+        toks.add(_naive_singular(t))
     for ch in re.findall(r"[一-鿿]", str(text or "")):
         toks.add(ch)
     return toks
+
+
+def _component_name_variants(comp: dict[str, Any]) -> list[str]:
+    """F60: 组件命名变体 = name + aliases + name 中括号内容(缩写惯例)。
+
+    Sol 审 P1-2 反例:"GitHub Enterprise Server (GHES)" 正文只写 GHES 时,
+    全名 token 命中比例 1/4 会被误杀——括号内容按命名惯例就是别名,单列成变体。
+    """
+    name = str(comp.get("name", ""))
+    variants = [name]
+    aliases = comp.get("aliases") or []
+    if isinstance(aliases, list):
+        variants.extend(str(a) for a in aliases)
+    variants.extend(re.findall(r"\(([^)]{2,60})\)", name))
+    return variants
 
 
 def _evidence_supports_component(comp: dict[str, Any]) -> bool:
@@ -4195,13 +4225,9 @@ def _evidence_supports_component(comp: dict[str, Any]) -> bool:
     es = str(comp.get("evidence_sentence", "")).strip()
     if not es:
         return True
-    names = [str(comp.get("name", ""))]
-    aliases = comp.get("aliases") or []
-    if isinstance(aliases, list):
-        names.extend(str(a) for a in aliases)
     ev_toks = _grounding_tokens(es)
     judged = False
-    for n in names:
+    for n in _component_name_variants(comp):
         nt = _grounding_tokens(n)
         if not nt:
             continue
@@ -4211,8 +4237,27 @@ def _evidence_supports_component(comp: dict[str, Any]) -> bool:
     return not judged
 
 
-def _edge_evidence_mentions_endpoint(edge: dict[str, Any]) -> bool:
-    """F60: eligible 边的 evidence 句是否至少提及 from/to 一端。
+def _component_variants_by_name(data: dict[str, Any]) -> dict[str, list[str]]:
+    """F60: canonical name(小写) → 命名变体表(name+aliases+括号缩写)。
+
+    Sol 审 P1-2:F8-D 把边端点归一成 canonical name **在本门之前**跑,evidence
+    句里写的往往是 alias——边门不看 aliases 会把真边(实测 head 上
+    Bot Service(alias)→Archive(alias))误丢。变体表让边门与组件门同一命名口径。
+    """
+    out: dict[str, list[str]] = {}
+    for comp in data.get("mechanism_components", []) or []:
+        if not isinstance(comp, dict):
+            continue
+        name = str(comp.get("name", "")).strip()
+        if name:
+            out[name.lower()] = _component_name_variants(comp)
+    return out
+
+
+def _edge_evidence_mentions_endpoint(
+    edge: dict[str, Any], variants_by_name: dict[str, list[str]] | None = None
+) -> bool:
+    """F60: eligible 边的 evidence 句是否至少提及 from/to 一端(含别名变体)。
 
     空 evidence 返 True(空证据的 eligible 边由 F4 D1 判,不归本门);
     端点无有效 token 也返 True(无从判定,不误杀)。
@@ -4221,14 +4266,20 @@ def _edge_evidence_mentions_endpoint(edge: dict[str, Any]) -> bool:
     if not ev:
         return True
     ev_toks = _grounding_tokens(ev)
+    vmap = variants_by_name or {}
     judged = False
     for endpoint in (edge.get("from"), edge.get("to")):
-        et = _grounding_tokens(str(endpoint or ""))
-        if not et:
-            continue
-        judged = True
-        if len(et & ev_toks) / len(et) >= GROUNDING_MIN_NAME_OVERLAP:
-            return True
+        ep = str(endpoint or "").strip()
+        variants = vmap.get(ep.lower(), [ep]) if ep else []
+        # 端点自身的括号缩写也算(端点可能未在组件表,如已被剔组件)
+        variants = list(variants) + re.findall(r"\(([^)]{2,60})\)", ep)
+        for v in variants:
+            et = _grounding_tokens(v)
+            if not et:
+                continue
+            judged = True
+            if len(et & ev_toks) / len(et) >= GROUNDING_MIN_NAME_OVERLAP:
+                return True
     return not judged
 
 
@@ -4256,14 +4307,20 @@ def _gate_component_evidence_support(
                 anchor_positions,
                 first_anchor_pos,
             )
+        # Sol 审 P1-1:重定位结果必须复验后置条件——_find_backfill_sentence 的
+        # pass-2 可凭单个通用 token(如 model)命中不相干句;不复验会把 relocated
+        # 记成功、原 H3 缺陷原样流向下游。复验不过按未定位处理。
         if found is not None:
-            comp["evidence_sentence"], comp["evidence_anchor"] = found
-            diag["relocated"] += 1
-        else:
-            # 宁缺勿假(F35 同哲学):证据不相干且重定位失败 → 清空,concept 车道
-            # 由 F35 剔除、组件<3 由 F32 质量重试接手;不留假证据活到 grader。
-            comp["evidence_sentence"] = ""
-            comp["evidence_anchor"] = ""
+            candidate = dict(comp)
+            candidate["evidence_sentence"], candidate["evidence_anchor"] = found
+            if _evidence_supports_component(candidate):
+                comp["evidence_sentence"], comp["evidence_anchor"] = found
+                diag["relocated"] += 1
+                continue
+        # 宁缺勿假(F35 同哲学):证据不相干且重定位失败/复验不过 → 清空,
+        # concept 车道由 F35 剔除、组件<3 由 F32 质量重试接手;不留假证据活到 grader。
+        comp["evidence_sentence"] = ""
+        comp["evidence_anchor"] = ""
     return diag
 
 
@@ -4272,13 +4329,14 @@ def _gate_edge_evidence_support(data: dict[str, Any]) -> int:
     edges = data.get("causal_edges", []) or []
     if not edges:
         return 0
+    vmap = _component_variants_by_name(data)
     kept: list[Any] = []
     dropped = 0
     for e in edges:
         if (
             isinstance(e, dict)
             and str(e.get("edge_kind", "")).strip() in _GATE_ELIGIBLE_EDGE_KINDS
-            and not _edge_evidence_mentions_endpoint(e)
+            and not _edge_evidence_mentions_endpoint(e, vmap)
         ):
             dropped += 1
             continue

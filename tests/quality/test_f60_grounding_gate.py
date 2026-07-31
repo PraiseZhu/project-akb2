@@ -17,6 +17,8 @@ F60 两刀:
 
 from __future__ import annotations
 
+import json
+
 from src.akb2.quality import runner as runner_mod
 from src.akb2.quality.distill import (
     DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S,
@@ -67,10 +69,12 @@ class TestBudgetArithmetic:
         # attempt 须容纳 claims+how_params 两次满额调用 + 归一化余量
         assert DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S >= 2 * EXTRACT_SEGMENT_TIMEOUT_S + 10
 
-    def test_worker_covers_attempt_plus_one_segment_retry(self):
+    def test_worker_covers_one_full_retry_attempt(self):
+        # Sol 审 P1-4 修正:重试是整 attempt 从 claims 重启(不存在单 segment 重试
+        # 路径),契约取"至少一次完整重试可用" → worker ≥ 2×attempt + slack。
         assert (
             runner_mod.DISTILL_EXTRACT_WORKER_TIMEOUT_S
-            >= DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S + EXTRACT_SEGMENT_TIMEOUT_S + 20
+            >= 2 * DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S + 20
         )
 
     def test_long_doc_and_hard_cap_not_below_normal(self):
@@ -312,3 +316,103 @@ class TestThresholdSanity:
     def test_threshold_is_conservative(self):
         # 阈值必须 ≤ 0.5:门只拦确定性驴唇不对马嘴,语义裁决归 grader(P7)
         assert 0 < GROUNDING_MIN_NAME_OVERLAP <= 0.5
+
+
+# ---------------------------------------------------------------------------
+# Sol 独立审核(PR #68 review r1)反例收编——每条都是审出的真实误杀/漏判面
+# ---------------------------------------------------------------------------
+
+
+class TestSolReviewCounterexamples:
+    def test_paren_acronym_not_killed(self):
+        # P1-2: 正文只写缩写 GHES,全名 token 比例 1/4 曾被误杀;括号内容按命名惯例即别名
+        c = _comp(
+            "GitHub Enterprise Server (GHES)",
+            "GHES requires a dedicated runner group for policy enforcement.",
+        )
+        assert _evidence_supports_component(c)
+
+    def test_ies_plural_not_killed(self):
+        # P1-2: Policies vs policy——裸 strip-s 拆成 policie/policy 两个 token 曾误杀
+        c = _comp("Retention Policies", "Each retention policy defines a purge window.")
+        assert _evidence_supports_component(c)
+
+    def test_relocation_rechecks_postcondition(self):
+        # P1-1: pass-2 单个通用 token(model)可命中不相干句;复验不过必须清空,
+        # 不得记 relocated 成功放行原 H3 缺陷
+        raw = """---
+title: fixture
+---
+§A_INTRO
+The model registry stores checkpoints for later deployment runs.
+§B_MECH
+Nothing else relevant appears in this document body here.
+"""
+        data = {
+            "mechanism_components": [
+                _comp("Model Runtime Harmonizer", _BOT_SERVICE_SENTENCE, "§A_INTRO")
+            ],
+            "causal_edges": [],
+        }
+        diag = _gate_component_evidence_support(data, raw)
+        c = data["mechanism_components"][0]
+        assert diag == {"unsupported": 1, "relocated": 0}, (
+            "重定位句仅词面撞上通用 token,复验必须拒绝"
+        )
+        assert c["evidence_sentence"] == "" and c["evidence_anchor"] == ""
+
+    def test_edge_alias_endpoint_not_dropped(self):
+        # P1-2: F8-D 先把端点归一成 canonical name,evidence 里写的是 alias;
+        # 边门必须按组件变体表判,否则真边被丢
+        data = {
+            "mechanism_components": [
+                {
+                    "name": "Session Coordination Layer",
+                    "role": "r",
+                    "aliases": ["Bot Service"],
+                    "evidence_anchor": "§A_INTRO",
+                    "evidence_sentence": _BOT_SERVICE_SENTENCE,
+                },
+            ],
+            "causal_edges": [
+                {
+                    "from": "Session Coordination Layer", "to": "Unrelated Thing",
+                    "relation": "manages", "edge_kind": "source_causal",
+                    "evidence": _BOT_SERVICE_SENTENCE, "evidence_anchor": "§A_INTRO",
+                },
+                {
+                    "from": "Alpha Nine", "to": "Beta Ten",
+                    "relation": "feeds", "edge_kind": "source_causal",
+                    "evidence": _BOT_SERVICE_SENTENCE, "evidence_anchor": "§A_INTRO",
+                },
+            ],
+        }
+        dropped = _gate_edge_evidence_support(data)
+        kept_from = [e["from"] for e in data["causal_edges"]]
+        assert "Session Coordination Layer" in kept_from, "alias 命中的真边不得丢"
+        assert dropped == 1 and "Alpha Nine" not in kept_from
+
+
+class TestWorkerDiagnosticsRoundtrip:
+    def test_worker_payload_carries_diagnostics(self, monkeypatch, capsys):
+        # P1-3: 主路径 payload 不带 diagnostics → F8/F60 计数生产恒 0(P4 断链)
+        import io
+        import sys as _sys
+
+        from src.akb2.quality import distill_worker
+        from src.akb2.quality.distill import ExtractResult
+
+        fake = ExtractResult(
+            success=True, data={"claims": []}, retries_used=1, error="",
+            diagnostics={"components_evidence_unsupported": 2,
+                         "edges_dropped_unsupported": 1},
+        )
+        monkeypatch.setattr(distill_worker, "extract_claims", lambda *a, **k: fake)
+        monkeypatch.setattr(
+            _sys, "stdin",
+            io.StringIO(json.dumps({"raw_content": "x", "content_lane": "concept"})),
+        )
+        assert distill_worker.main() == 0
+        payload = json.loads(capsys.readouterr().out.strip())
+        assert payload["diagnostics"]["components_evidence_unsupported"] == 2
+        assert payload["diagnostics"]["edges_dropped_unsupported"] == 1

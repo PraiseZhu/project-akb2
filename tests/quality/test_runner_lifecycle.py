@@ -457,13 +457,13 @@ class TestRunnerLifelineSegments:
         """长文 worker 总时限按词数分级，且硬顶有界。"""
         from src.akb2.quality import runner as runner_mod
 
-        # F60 预算算术自洽化:normal=attempt(240)+segment 重试(110)+30=380;
-        # long=+120。层间关系由 test_f60_grounding_gate.TestBudgetArithmetic 守卫,
-        # 本处钉具名档位存在且为该轮实测校准值。
-        assert runner_mod.DISTILL_EXTRACT_WORKER_TIMEOUT_S == 380.0
+        # F60 预算算术自洽化(Sol 审 P1-4 修正):重试=整 attempt 重启,契约为
+        # "至少一次完整重试":normal=2×attempt(240)+30=510;long=+120。
+        # 层间关系由 test_f60_grounding_gate.TestBudgetArithmetic 守卫。
+        assert runner_mod.DISTILL_EXTRACT_WORKER_TIMEOUT_S == 510.0
         assert runner_mod.DISTILL_EXTRACT_WORKER_LONG_DOC_WORDS == 3_000
-        assert runner_mod.DISTILL_EXTRACT_WORKER_LONG_DOC_TIMEOUT_S == 500.0
-        assert runner_mod.DISTILL_EXTRACT_WORKER_HARD_TIMEOUT_CAP_S == 500.0
+        assert runner_mod.DISTILL_EXTRACT_WORKER_LONG_DOC_TIMEOUT_S == 630.0
+        assert runner_mod.DISTILL_EXTRACT_WORKER_HARD_TIMEOUT_CAP_S == 630.0
         assert (
             runner_mod._distill_extract_worker_timeout_s("word " * 3_000)
             == runner_mod.DISTILL_EXTRACT_WORKER_TIMEOUT_S
