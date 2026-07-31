@@ -84,7 +84,19 @@ RELATED_CONCEPTS_MIN: int = 2
 DISTILL_MODEL_FAMILY: str = os.environ.get("AKB2_DISTILL_FAMILY", "deepseek-v4-pro")
 DISTILL_TIMEOUT_S: float = 60.0
 DISTILL_MAX_RETRIES: int = 0
-DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S: float = 180.0
+# F60 预算算术自洽化(2026-07-31 真机实测,生产逼真形态:json_object 降级 +
+# enable_thinking=False,448 词小文,llm-proxy 网关):
+#   claims 32.1s/47.9s;how_params 正经产出 89.4s(快返 23.6s 的样本是 86 字符
+#   退化空产出,会被校验打回重试)。旧 per-call 60s 是 json_schema 时代(服务端
+#   约束解码)校准的,F54 降级后正经 how_params 产出系统性超 60s → 每次在 59.9s
+#   被掐死 → 外层整 attempt 重试 → 210s worker cap 引爆,账本实证 infra 超时占
+#   extract abort 从历史 42% 涨到 83%。
+# 三层预算算术(必须自洽,tests/quality/test_f60_grounding_gate.py 有守卫断言):
+#   per-call  EXTRACT_SEGMENT_TIMEOUT_S = 110  (实测 p95≈90 + 余量)
+#   attempt   = 2 segment × 110 + 20 归一化/校验 = 240
+#   worker    = attempt + 1 segment 重试 + 30 = 380 (runner.py 同步修改)
+EXTRACT_SEGMENT_TIMEOUT_S: float = 110.0
+DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S: float = 240.0
 DISTILL_DISABLE_THINKING: bool = True
 # Step-7: 语义型 How 抖动兜底。how_params segment（LLM 自由文本 how_steps，
 # 非 must_cover 代码直出）多取取交集，抵抗单次 LLM 抖动。有界：SEMANTIC_RETAKE_MAX 次。
@@ -752,6 +764,16 @@ def extract_claims(
                 "components_filtered": _norm_diag.get("components_filtered", 0),
                 "components_dropped_unlocated": _norm_diag.get(
                     "components_dropped_unlocated", 0
+                ),
+                # F60 锚定门诊断(fail-visible:门动了多少料必须可见)
+                "components_evidence_unsupported": _norm_diag.get(
+                    "components_evidence_unsupported", 0
+                ),
+                "components_evidence_relocated": _norm_diag.get(
+                    "components_evidence_relocated", 0
+                ),
+                "edges_dropped_unsupported": _norm_diag.get(
+                    "edges_dropped_unsupported", 0
                 ),
             },
         )
@@ -2684,7 +2706,7 @@ def _extract_segment_once(
         response = route_deepseek_beta_tool(
             messages,
             schema,
-            timeout_s=DISTILL_TIMEOUT_S,
+            timeout_s=EXTRACT_SEGMENT_TIMEOUT_S,  # F60: 实测 90s 正经产出,60s 预算掐死主因
             max_retries=DISTILL_MAX_RETRIES,
             tool_name=f"akb2_extract_{segment_name}",
         )
@@ -2693,7 +2715,7 @@ def _extract_segment_once(
 
         response = route_deepseek_json_object(
             messages,
-            timeout_s=DISTILL_TIMEOUT_S,
+            timeout_s=EXTRACT_SEGMENT_TIMEOUT_S,  # F60: 实测 90s 正经产出,60s 预算掐死主因
             max_retries=DISTILL_MAX_RETRIES,
         )
     else:
@@ -2701,7 +2723,7 @@ def _extract_segment_once(
             DISTILL_MODEL_FAMILY,
             messages,
             response_schema=schema,
-            timeout_s=DISTILL_TIMEOUT_S,
+            timeout_s=EXTRACT_SEGMENT_TIMEOUT_S,  # F60: 实测 90s 正经产出,60s 预算掐死主因
             max_retries=DISTILL_MAX_RETRIES,
             reasoning_effort=None,
             strict_schema=True,
@@ -4125,6 +4147,147 @@ def _backfill_component_evidence(
     return diag
 
 
+# ---------------------------------------------------------------------------
+# F60: 抽取期语义锚定门(evidence 是否词面支撑组件命名)
+# ---------------------------------------------------------------------------
+# 背景(2026-07-31 账本取证):F8-A 回填/F35 剔除保证了 evidence **存在且在 raw 中**,
+# 但 grader H3 主死因是更细一层——"锚点存在但证据句不支撑组件命名"(评分直通率
+# 3~10%;needs_repair 驻留 358 篇仅 6% 生还;final_defects 高度同质,如组件
+# "Model Context Protocol (MCP) tools" 的 evidence_sentence 实际在讲 Bot Service)。
+# 该缺陷类此前只有最贵的 GPT-5.4 grader 在判,判完 repair 又缝补不了(要重新定位
+# 证据,不是改文案)。本门把其中**词面可判**的子集左移到抽取期:
+#   组件:name(+aliases) token 在 evidence_sentence 命中比例 < 阈值 → 先用 F8-A
+#   回填搜索重定位(免费/确定性);仍找不到 → 清空 evidence,交给既有 F35(concept
+#   无证据组件剔除)与 F32(组件<3 质量重试)——不新增死刑路径,复用既有闸门与预算。
+#   eligible 边:evidence 句两个端点都不提及 → 丢边(F6-A 同风格),F4 地板照旧。
+# 边界:同义改写/语义方向错误不在词面射程,仍归 grader(P7 异族裁决不变);
+# 阈值保守(1/3)+"无有效 token 不误杀",本门只拦确定性驴唇不对马嘴。
+GROUNDING_MIN_NAME_OVERLAP: float = 0.34  # name token 命中比例下限(≥1/3)
+_GROUNDING_STOPWORDS: frozenset[str] = frozenset({
+    "the", "and", "for", "with", "from", "into", "that", "this",
+    "pattern", "based", "using", "via",
+})
+# F60 边门只裁 eligible 两类(与 F4 D1 口径一致);inferred_from_structure 弱边
+# 本就不计 F4,留给 grader。
+_GATE_ELIGIBLE_EDGE_KINDS: tuple[str, str] = ("source_causal", "llm_evidence")
+
+
+def _grounding_tokens(text: str) -> set[str]:
+    """F60: 词面 token 集(小写/去停用词/朴素单数化;CJK 逐字)。"""
+    toks: set[str] = set()
+    for t in re.findall(r"[A-Za-z0-9]+", str(text or "").lower()):
+        if len(t) < 3 or t in _GROUNDING_STOPWORDS:
+            continue
+        if len(t) > 3 and t.endswith("s"):
+            t = t[:-1]
+        toks.add(t)
+    for ch in re.findall(r"[一-鿿]", str(text or "")):
+        toks.add(ch)
+    return toks
+
+
+def _evidence_supports_component(comp: dict[str, Any]) -> bool:
+    """F60: evidence_sentence 是否词面提及组件(name 或任一 alias 命中比例达标)。
+
+    空 evidence 返 True——存在性问题归 F8-A 回填/F35 剔除管,本门只判
+    "有证据但内容不相干"。name 无有效 token(全停用词/超短)也返 True,不误杀。
+    """
+    es = str(comp.get("evidence_sentence", "")).strip()
+    if not es:
+        return True
+    names = [str(comp.get("name", ""))]
+    aliases = comp.get("aliases") or []
+    if isinstance(aliases, list):
+        names.extend(str(a) for a in aliases)
+    ev_toks = _grounding_tokens(es)
+    judged = False
+    for n in names:
+        nt = _grounding_tokens(n)
+        if not nt:
+            continue
+        judged = True
+        if len(nt & ev_toks) / len(nt) >= GROUNDING_MIN_NAME_OVERLAP:
+            return True
+    return not judged
+
+
+def _edge_evidence_mentions_endpoint(edge: dict[str, Any]) -> bool:
+    """F60: eligible 边的 evidence 句是否至少提及 from/to 一端。
+
+    空 evidence 返 True(空证据的 eligible 边由 F4 D1 判,不归本门);
+    端点无有效 token 也返 True(无从判定,不误杀)。
+    """
+    ev = str(edge.get("evidence", "")).strip()
+    if not ev:
+        return True
+    ev_toks = _grounding_tokens(ev)
+    judged = False
+    for endpoint in (edge.get("from"), edge.get("to")):
+        et = _grounding_tokens(str(endpoint or ""))
+        if not et:
+            continue
+        judged = True
+        if len(et & ev_toks) / len(et) >= GROUNDING_MIN_NAME_OVERLAP:
+            return True
+    return not judged
+
+
+def _gate_component_evidence_support(
+    data: dict[str, Any], raw_content: str
+) -> dict[str, int]:
+    """F60 组件门:不支撑 → F8-A 搜索重定位 → 仍无 → 清空 evidence(交 F35/F32)。"""
+    diag = {"unsupported": 0, "relocated": 0}
+    comps = data.get("mechanism_components", []) or []
+    if not comps:
+        return diag
+    anchor_positions = _raw_anchor_positions(raw_content)
+    first_anchor_pos = min((p for _, p in anchor_positions), default=-1)
+    for comp in comps:
+        if not isinstance(comp, dict) or _evidence_supports_component(comp):
+            continue
+        diag["unsupported"] += 1
+        name = str(comp.get("name", "")).strip()
+        found = None
+        if name and anchor_positions:
+            found = _find_backfill_sentence(
+                raw_content,
+                _generate_backfill_search_terms(name, tokens=False),
+                _generate_backfill_search_terms(name, tokens=True),
+                anchor_positions,
+                first_anchor_pos,
+            )
+        if found is not None:
+            comp["evidence_sentence"], comp["evidence_anchor"] = found
+            diag["relocated"] += 1
+        else:
+            # 宁缺勿假(F35 同哲学):证据不相干且重定位失败 → 清空,concept 车道
+            # 由 F35 剔除、组件<3 由 F32 质量重试接手;不留假证据活到 grader。
+            comp["evidence_sentence"] = ""
+            comp["evidence_anchor"] = ""
+    return diag
+
+
+def _gate_edge_evidence_support(data: dict[str, Any]) -> int:
+    """F60 边门:eligible 边 evidence 两端点都不提及 → 丢边。Returns 丢弃数。"""
+    edges = data.get("causal_edges", []) or []
+    if not edges:
+        return 0
+    kept: list[Any] = []
+    dropped = 0
+    for e in edges:
+        if (
+            isinstance(e, dict)
+            and str(e.get("edge_kind", "")).strip() in _GATE_ELIGIBLE_EDGE_KINDS
+            and not _edge_evidence_mentions_endpoint(e)
+        ):
+            dropped += 1
+            continue
+        kept.append(e)
+    if dropped:
+        data["causal_edges"] = kept
+    return dropped
+
+
 def _normalize_extract_payload(
     data: dict[str, Any], raw_content: str | None, content_lane: str = "",
     *, is_fallback: bool = False,
@@ -4177,6 +4340,18 @@ def _normalize_extract_payload(
     bf = _backfill_component_evidence(data, raw_content)
     diag["components_evidence_backfilled"] = bf.get("backfilled", 0)
     diag["components_evidence_unlocated"] = bf.get("unlocated", 0)
+    # 7.5 F60 语义锚定门:evidence 存在但词面不支撑组件命名 → 重定位/清空;
+    # eligible 边 evidence 不提及任一端点 → 丢边。fallback 跳过(det 组件/边的
+    # evidence 按构造来自 raw 命中行,词面必然支撑,误杀反而会弄死 fallback,
+    # 与 F3-B/F35 的 fallback 豁免同理)。清空后的组件由下方 F35 按既有规则剔除。
+    diag["components_evidence_unsupported"] = 0
+    diag["components_evidence_relocated"] = 0
+    diag["edges_dropped_unsupported"] = 0
+    if not is_fallback:
+        _g60 = _gate_component_evidence_support(data, raw_content)
+        diag["components_evidence_unsupported"] = _g60["unsupported"]
+        diag["components_evidence_relocated"] = _g60["relocated"]
+        diag["edges_dropped_unsupported"] = _gate_edge_evidence_support(data)
     # 8. F3-B 编造命令剥离(how_steps command 不在 raw → 剥反引号)。
     # fallback 跳过(合成占位命令由 render-time _ground_how_step_commands_in_raw 处理)。
     if not is_fallback:

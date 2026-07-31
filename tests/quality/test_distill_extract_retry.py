@@ -18,7 +18,7 @@ import pytest
 from src.akb2.quality.distill import (
     _DISTILL_SEGMENT_SCHEMAS,
     DISTILL_MAX_RETRIES,
-    DISTILL_TIMEOUT_S,
+    EXTRACT_SEGMENT_TIMEOUT_S,
     MAX_EXTRACT_CHARS,
     MAX_EXTRACT_RETRIES,
     ExtractResult,
@@ -175,7 +175,7 @@ class TestExtractRetry:
     def test_extract_is_segmented_and_disables_deepseek_reasoning(
         self, sample_raw_content, extract_success_response
     ):
-        """DeepSeek distill 分段抽取必须 timeout=60/retry=0/reasoning_effort=None。"""
+        """DeepSeek distill 分段抽取必须 timeout=EXTRACT_SEGMENT_TIMEOUT_S/retry=0/reasoning=None。"""
         from tests.quality.conftest import make_mock_route_llm
 
         calls = []
@@ -203,7 +203,9 @@ class TestExtractRetry:
         }
         for call in calls:
             assert call["model_family"] == "deepseek-v4-pro"
-            assert call["kwargs"]["timeout_s"] == DISTILL_TIMEOUT_S
+            # F60: segment 调用切到 EXTRACT_SEGMENT_TIMEOUT_S(实测正经 how_params
+            # 产出 ~90s,旧 60s 预算是掐死主因;算术守卫见 test_f60_grounding_gate)
+            assert call["kwargs"]["timeout_s"] == EXTRACT_SEGMENT_TIMEOUT_S
             assert call["kwargs"]["max_retries"] == DISTILL_MAX_RETRIES
             assert call["kwargs"]["reasoning_effort"] is None
             assert call["kwargs"]["strict_schema"] is True

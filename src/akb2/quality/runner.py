@@ -94,10 +94,21 @@ DISTILL_MAX_RETRIES: int = 0
 # F10-D: A/B 双臂基建——env 覆盖模型族(与 distill.DISTILL_MODEL_FAMILY 同源,
 # ledger 记录实际使用的族,A/B 可追溯)。默认 deepseek-v4-pro 不变。
 DISTILL_MODEL_FAMILY: str = os.environ.get("AKB2_DISTILL_FAMILY", "deepseek-v4-pro")
-DISTILL_EXTRACT_WORKER_TIMEOUT_S: float = 210.0
+# F60 预算算术自洽化(与 distill.EXTRACT_SEGMENT_TIMEOUT_S=110 /
+# DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S=240 联动,守卫断言见
+# tests/quality/test_f60_grounding_gate.py):
+#   旧三层 60/180/210 在算术上不自洽——210s worker cap 只容 1.16 个 attempt,
+#   MAX_EXTRACT_RETRIES=3 从未真正可用;实测(2026-07-31,生产逼真形态)正经
+#   how_params 产出 ~90s,60s per-call 必掐 → 整 attempt 重试 → 210s 引爆,
+#   账本实证 infra 超时占 extract abort 83%。
+#   normal  = attempt(240) + 1 segment 重试(110) + 30 slack = 380
+#   long    = 380 + 120(长文两段各多 ~60s 生成) = 500
+# 代价显式(宪法 P4):病理文章最坏占用串行队列 380s(旧 210s);换来的是正经
+# 90s 产出不再被掐死——83% infra 杀伤面直接归零是净赚。
+DISTILL_EXTRACT_WORKER_TIMEOUT_S: float = 380.0
 DISTILL_EXTRACT_WORKER_LONG_DOC_WORDS: int = 3_000
-DISTILL_EXTRACT_WORKER_LONG_DOC_TIMEOUT_S: float = 360.0
-DISTILL_EXTRACT_WORKER_HARD_TIMEOUT_CAP_S: float = 360.0
+DISTILL_EXTRACT_WORKER_LONG_DOC_TIMEOUT_S: float = 500.0
+DISTILL_EXTRACT_WORKER_HARD_TIMEOUT_CAP_S: float = 500.0
 DISTILL_EXTRACT_WORKER_KILL_GRACE_S: float = 2.0
 # F2-B: traceability retake 子进程超时(distill 内部 60s + 子进程外层缓冲)
 TRACEABILITY_RETAKE_WORKER_TIMEOUT_S: float = 90.0
