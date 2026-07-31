@@ -4180,42 +4180,46 @@ _GROUNDING_STOPWORDS: frozenset[str] = frozenset({
 _GATE_ELIGIBLE_EDGE_KINDS: tuple[str, str] = ("source_causal", "llm_evidence")
 
 
-def _naive_singular(t: str) -> str:
-    """F60: 朴素单数化(两侧一致施加,求匹配一致性而非词形学正确)。
+def _token_forms(t: str) -> set[str]:
+    """F60 r4(Sol 终审②):token 候选词形集。
 
-    Sol 审 P1-2 两轮反例驱动:
-    r1: 裸 strip-s 把 Policies→policie / policy 拆成两个 token。
-    r2(r3 终审): 原形以 ss/us/is 结尾的词被 strip-s 破坏——process→proces
-    但 processes→process,同词永不相等;statuses/analyses 同型。
-    规则序:ies→y;yses→ysis;sses|uses→去es;(x|z|ch|sh)es→去es;
-    ss|us|is 原形不动;尾 s→去 s。
+    四轮反例(policy/process/status/analysis/bias/gas/use/house)证明「单一
+    canonical stem + 互斥特判」这条路修不完:任何 stem 规则对某些词对必然
+    只命中一侧。改为**双侧候选形集相交**判同词:每个 token 产全部合理候选形
+    (原形/去s/去es/ies→y/es→is),两 token 候选形有交集即同词。
+    forms 只扩匹配面(分子),不动分母(name token 数);误放行需两个不同词的
+    候选形恰好碰撞,风险远低于误杀。
     """
-    if len(t) <= 3:
-        return t
-    if t.endswith("ies") and len(t) > 4:
-        return t[:-3] + "y"
-    if t.endswith("yses"):
-        return t[:-2] + "is"  # analyses→analysis
-    if t.endswith(("sses", "uses")):
-        return t[:-2]  # processes→process / statuses→status
-    if t.endswith("es") and len(t) > 4 and (
-        t[-3] in "xz" or t.endswith(("ches", "shes"))
-    ):
-        return t[:-2]
-    if t.endswith(("ss", "us", "is")):
-        return t  # 原形(process/status/analysis)不得再剥
-    if t.endswith("s"):
-        return t[:-1]
-    return t
+    forms = {t}
+    if len(t) > 4 and t.endswith("ies"):
+        forms.add(t[:-3] + "y")
+    if len(t) > 3 and t.endswith("es"):
+        forms.add(t[:-2])
+        forms.add(t[:-2] + "is")  # analyses→analysis 类希腊复数
+    if len(t) > 3 and t.endswith("s"):
+        forms.add(t[:-1])
+    return forms
+
+
+def _forms_union(tokens: set[str]) -> set[str]:
+    """F60 r4: token 集 → 候选词形并集(证据侧一次展开,供比例匹配)。"""
+    out: set[str] = set()
+    for tok in tokens:
+        out |= _token_forms(tok)
+    return out
 
 
 def _grounding_tokens(text: str) -> set[str]:
-    """F60: 词面 token 集(小写/去停用词/朴素单数化;CJK 逐字)。"""
+    """F60: 词面 token 集(小写/去停用词,**保原形**;CJK 逐字)。
+
+    r4:单复数归并不再在 token 化时做(单 stem 必有反例),移到匹配层
+    (_token_forms 候选形相交,见 _variant_hit)。
+    """
     toks: set[str] = set()
     for t in re.findall(r"[A-Za-z0-9]+", str(text or "").lower()):
         if len(t) < 3 or t in _GROUNDING_STOPWORDS:
             continue
-        toks.add(_naive_singular(t))
+        toks.add(t)
     for ch in re.findall(r"[一-鿿]", str(text or "")):
         toks.add(ch)
     return toks
@@ -4257,13 +4261,14 @@ def _component_name_variants(comp: dict[str, Any]) -> list[str]:
     return variants
 
 
-def _variant_hit(variant: str, ev_toks: set[str], es_lower: str) -> tuple[bool, bool]:
-    """F60(r3): 单变体支撑判定,组件门与边门共用同一口径(Sol 终审 ③)。
+def _variant_hit(variant: str, ev_forms: set[str], es_lower: str) -> tuple[bool, bool]:
+    """F60(r3/r4): 单变体支撑判定,组件门与边门共用同一口径(Sol 终审 ③)。
 
     Returns (judged, hit):
     - acronym 形态:词界直查,命中 hit=True;不命中 judged=False(不可判,
       缩写↔展开全称词面判不了,不误杀——组件与边端点同规)。
-    - 普通变体:token 命中比例 ≥ 阈值判 hit;有有效 token 即 judged=True。
+    - 普通变体:name token 的候选词形与证据侧词形并集相交即计命中,
+      命中比例 ≥ 阈值判 hit;有有效 token 即 judged=True。分母=name token 数。
     """
     v = str(variant or "").strip()
     if not v:
@@ -4273,7 +4278,8 @@ def _variant_hit(variant: str, ev_toks: set[str], es_lower: str) -> tuple[bool, 
     nt = _grounding_tokens(v)
     if not nt:
         return (False, False)
-    return (True, len(nt & ev_toks) / len(nt) >= GROUNDING_MIN_NAME_OVERLAP)
+    matched = sum(1 for tok in nt if _token_forms(tok) & ev_forms)
+    return (True, matched / len(nt) >= GROUNDING_MIN_NAME_OVERLAP)
 
 
 def _evidence_supports_component(comp: dict[str, Any]) -> bool:
@@ -4285,11 +4291,11 @@ def _evidence_supports_component(comp: dict[str, Any]) -> bool:
     es = str(comp.get("evidence_sentence", "")).strip()
     if not es:
         return True
-    ev_toks = _grounding_tokens(es)
+    ev_forms = _forms_union(_grounding_tokens(es))
     es_lower = es.lower()
     judged = False
     for n in _component_name_variants(comp):
-        j, hit = _variant_hit(n, ev_toks, es_lower)
+        j, hit = _variant_hit(n, ev_forms, es_lower)
         if hit:
             return True
         judged = judged or j
@@ -4324,24 +4330,33 @@ def _edge_evidence_mentions_endpoint(
     ev = str(edge.get("evidence", "")).strip()
     if not ev:
         return True
-    ev_toks = _grounding_tokens(ev)
+    ev_forms = _forms_union(_grounding_tokens(ev))
     ev_lower = ev.lower()
     vmap = variants_by_name or {}
-    judged = False
+    # Sol r4 ③:三态必须**按端点聚合**——全局 OR 会把「A 端不可判 + B 端判失」
+    # 聚成"已判失"删边,而 A 端(如 GH-ESD 缩写 vs 展开全称证据)恰恰救不回来。
+    # 契约:任一端命中 → 留;任一端不可判 → 留(疑边归 grader);
+    # 仅当**所有存在端点均可判且均未命中** → 删。
+    any_unknown = False
+    any_judged = False
     for endpoint in (edge.get("from"), edge.get("to")):
         ep = str(endpoint or "").strip()
         if not ep:
             continue
-        # 组件表变体优先;端点不在表内(如已被剔组件)按同一受控规则临时展开。
-        # Sol 终审 ①③:不再裸追加任意括号内容;acronym 不可判豁免与组件门同规
-        # (GH-ESD 端点 + 展开全称证据 → 不可判,不丢边)。
         variants = vmap.get(ep.lower()) or _name_string_variants(ep)
+        ep_judged = False
         for v in variants:
-            j, hit = _variant_hit(v, ev_toks, ev_lower)
+            j, hit = _variant_hit(v, ev_forms, ev_lower)
             if hit:
                 return True
-            judged = judged or j
-    return not judged
+            ep_judged = ep_judged or j
+        if ep_judged:
+            any_judged = True
+        else:
+            any_unknown = True
+    if any_unknown or not any_judged:
+        return True
+    return False
 
 
 def _gate_component_evidence_support(

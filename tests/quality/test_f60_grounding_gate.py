@@ -98,14 +98,22 @@ class TestBudgetArithmetic:
 # ---------------------------------------------------------------------------
 
 
+def _tokens_compatible(a: str, b: str) -> bool:
+    """测试助手:两词是否被 forms 匹配层判为同词(r4 起匹配在 forms 层)。"""
+    from src.akb2.quality.distill import _forms_union, _token_forms
+
+    fa = _forms_union(_grounding_tokens(a))
+    return any(_token_forms(tok) & fa for tok in _grounding_tokens(b))
+
+
 class TestGroundingTokens:
     def test_stopwords_and_short_dropped(self):
         toks = _grounding_tokens("The pattern for MCP tools")
         assert "the" not in toks and "for" not in toks and "pattern" not in toks
-        assert "mcp" in toks and "tool" in toks  # 朴素单数化
+        assert "mcp" in toks and "tools" in toks  # r4: token 保原形,归并在 forms 层
 
-    def test_plural_naive_stemming(self):
-        assert _grounding_tokens("executors") == _grounding_tokens("executor")
+    def test_plural_matched_at_forms_layer(self):
+        assert _tokens_compatible("executors", "executor")
 
     def test_cjk_chars(self):
         assert "机" in _grounding_tokens("机制组件")
@@ -519,15 +527,24 @@ class TestSolReviewRound3:
         assert not _evidence_supports_component(c)
 
     def test_singular_pairs_consistent(self):
-        # r3 ②: 原形 ss/us/is 结尾不得再剥(process→proces 与 processes→process 永不相等)
+        # r3 ②+r4 ②: 单 stem 修不完的词对,forms 候选形相交必须全部判同词
         for plural, singular in (
             ("Processes", "process"),
             ("Statuses", "status"),
             ("Analyses", "analysis"),
+            # Sol r4 动态复现的四对
+            ("Biases", "bias"),
+            ("Gases", "gas"),
+            ("Uses", "use"),
+            ("Houses", "house"),
+            # 旧五对回归
+            ("policies", "policy"),
+            ("classes", "class"),
+            ("boxes", "box"),
+            ("tools", "tool"),
+            ("cases", "case"),
         ):
-            assert _grounding_tokens(plural) == _grounding_tokens(singular), (
-                plural, singular
-            )
+            assert _tokens_compatible(plural, singular), (plural, singular)
 
     def test_edge_acronym_endpoint_undecidable_not_dropped(self):
         # r3 ③: acronym 不可判豁免必须同样作用于边端点——GH-ESD 端点 + 展开全称
@@ -553,3 +570,47 @@ class TestSolReviewRound3:
         }
         assert _gate_edge_evidence_support(data) == 0
         assert len(data["causal_edges"]) == 1
+
+
+class TestSolReviewRound4:
+    def test_edge_unknown_endpoint_plus_missed_endpoint_kept(self):
+        # r4 ③: 「GH-ESD 端不可判 + 另一端判失」不得被全局 OR 聚成删——
+        # 任一端不可判即留边(疑边归 grader)。此测试特意让另一端 miss
+        # (r3 版测试的 Slice Verifier 被 slices 词形命中,没测到目标分支)。
+        data = {
+            "mechanism_components": [
+                {"name": "GH-ESD", "role": "r", "aliases": [],
+                 "evidence_anchor": "§A", "evidence_sentence": "x"},
+                {"name": "Decision Router", "role": "r", "aliases": [],
+                 "evidence_anchor": "§A", "evidence_sentence": "x"},
+            ],
+            "causal_edges": [
+                {
+                    "from": "GH-ESD", "to": "Decision Router",
+                    "relation": "feeds", "edge_kind": "source_causal",
+                    "evidence": (
+                        "Grounded Hypothesis-driven Error Slice Discovery emits "
+                        "candidate groups downstream."
+                    ),
+                    "evidence_anchor": "§A",
+                },
+            ],
+        }
+        assert _gate_edge_evidence_support(data) == 0
+        assert len(data["causal_edges"]) == 1
+
+    def test_edge_both_endpoints_judged_and_missed_dropped(self):
+        # r4 ③ 对照:两端均可判且均未命中 → 删(门的存在意义)
+        data = {
+            "mechanism_components": [],
+            "causal_edges": [
+                {
+                    "from": "Decision Router", "to": "Replay Buffer",
+                    "relation": "feeds", "edge_kind": "source_causal",
+                    "evidence": _BOT_SERVICE_SENTENCE,
+                    "evidence_anchor": "§A",
+                },
+            ],
+        }
+        assert _gate_edge_evidence_support(data) == 1
+        assert data["causal_edges"] == []

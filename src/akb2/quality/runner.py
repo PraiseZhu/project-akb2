@@ -1228,8 +1228,9 @@ def _distill_abort_details(
 ) -> dict[str, Any]:
     """distill abort 的统一 details。
 
-    Sol 审 r2 P1-3:两层重试语义必须分列——provider_max_retries 是 SDK 层
-    (恒 0),extract_max_attempts 是外层 attempt 预算(3);旧字段名 max_retries=0
+    Sol 审 r2/r3 P1-3:两层重试语义必须分列——provider_max_retries 是 SDK 层
+    (恒 0),extract_max_attempts 是外层 attempt 预算(lane 感知:concept=4 含
+    F32 质量重试,其余=3,见 _extract_max_attempts);旧字段名 max_retries=0
     会让人误读成"无重试"。worker_timeout_s 是按文长解析后的实际子进程上限。
     """
     details = {
