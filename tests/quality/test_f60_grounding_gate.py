@@ -496,3 +496,60 @@ GHES requires a dedicated runner group for policy enforcement decisions.
         assert d["extract_max_attempts"] == 3
         assert d["worker_timeout_s"] == 510.0
         assert "max_retries" not in d
+
+    def test_extract_max_attempts_lane_aware(self):
+        # r3 P1-3: concept 有 F32 质量重试 +1 → 4;恒写 3 会出现 used>max 矛盾
+        from src.akb2.quality.runner import _distill_abort_details, _extract_max_attempts
+
+        assert _extract_max_attempts("concept") == 4
+        assert _extract_max_attempts("procedural") == 3
+        assert _extract_max_attempts("") == 3
+        d = _distill_abort_details("x", "distill_extract", content_lane="concept")
+        assert d["extract_max_attempts"] == 4
+
+
+class TestSolReviewRound3:
+    def test_short_paren_name_not_leaked_by_paren_word(self):
+        # r3 ①: 非 acronym 括号必须从 base 剥除——"Cache (optional)" 的 token 集
+        # 不得含 optional,否则错证据只含 optional 即达 1/2 比例被放行
+        c = _comp(
+            "Cache (optional)",
+            "This optional flag toggles verbose logging output only.",
+        )
+        assert not _evidence_supports_component(c)
+
+    def test_singular_pairs_consistent(self):
+        # r3 ②: 原形 ss/us/is 结尾不得再剥(process→proces 与 processes→process 永不相等)
+        for plural, singular in (
+            ("Processes", "process"),
+            ("Statuses", "status"),
+            ("Analyses", "analysis"),
+        ):
+            assert _grounding_tokens(plural) == _grounding_tokens(singular), (
+                plural, singular
+            )
+
+    def test_edge_acronym_endpoint_undecidable_not_dropped(self):
+        # r3 ③: acronym 不可判豁免必须同样作用于边端点——GH-ESD 端点 + 展开全称
+        # 证据不得丢边(与组件门同规)
+        data = {
+            "mechanism_components": [
+                {
+                    "name": "GH-ESD", "role": "r", "aliases": [],
+                    "evidence_anchor": "§A", "evidence_sentence": "x",
+                },
+            ],
+            "causal_edges": [
+                {
+                    "from": "GH-ESD", "to": "Slice Verifier",
+                    "relation": "feeds", "edge_kind": "source_causal",
+                    "evidence": (
+                        "Grounded Hypothesis-driven Error Slice Discovery feeds "
+                        "candidate slices downstream."
+                    ),
+                    "evidence_anchor": "§A",
+                },
+            ],
+        }
+        assert _gate_edge_evidence_support(data) == 0
+        assert len(data["causal_edges"]) == 1

@@ -4183,16 +4183,28 @@ _GATE_ELIGIBLE_EDGE_KINDS: tuple[str, str] = ("source_causal", "llm_evidence")
 def _naive_singular(t: str) -> str:
     """F60: 朴素单数化(两侧一致施加,求匹配一致性而非词形学正确)。
 
-    Sol 审 P1-2 反例:裸 strip-s 把 Policies→policie / policy→policy 拆成两个
-    token,同词误判不相干。规则序:ies→y;(s|x|z|ch|sh)es→去 es;尾 s→去 s。
+    Sol 审 P1-2 两轮反例驱动:
+    r1: 裸 strip-s 把 Policies→policie / policy 拆成两个 token。
+    r2(r3 终审): 原形以 ss/us/is 结尾的词被 strip-s 破坏——process→proces
+    但 processes→process,同词永不相等;statuses/analyses 同型。
+    规则序:ies→y;yses→ysis;sses|uses→去es;(x|z|ch|sh)es→去es;
+    ss|us|is 原形不动;尾 s→去 s。
     """
+    if len(t) <= 3:
+        return t
     if t.endswith("ies") and len(t) > 4:
         return t[:-3] + "y"
+    if t.endswith("yses"):
+        return t[:-2] + "is"  # analyses→analysis
+    if t.endswith(("sses", "uses")):
+        return t[:-2]  # processes→process / statuses→status
     if t.endswith("es") and len(t) > 4 and (
-        t[-3] in "sxz" or t.endswith(("ches", "shes"))
+        t[-3] in "xz" or t.endswith(("ches", "shes"))
     ):
         return t[:-2]
-    if t.endswith("s") and len(t) > 3:
+    if t.endswith(("ss", "us", "is")):
+        return t  # 原形(process/status/analysis)不得再剥
+    if t.endswith("s"):
         return t[:-1]
     return t
 
@@ -4219,22 +4231,49 @@ def _is_acronym_like(text: str) -> bool:
     return bool(_ACRONYM_RE.fullmatch(str(text or "").strip()))
 
 
-def _component_name_variants(comp: dict[str, Any]) -> list[str]:
-    """F60: 组件命名变体 = name + aliases + name 中 acronym 形态的括号内容。
+def _name_string_variants(name: str) -> list[str]:
+    """F60(r3): 单个命名字符串 → 受控变体 = 剥括号的 base + acronym 括号内容。
 
-    Sol 审 P1-2 反例:"GitHub Enterprise Server (GHES)" 正文只写 GHES 时,
-    全名 token 命中比例 1/4 会被误杀——缩写括号按命名惯例就是别名,单列成变体;
-    说明性括号(optional/legacy mode)不入变体(r2 收紧,防反向漏判)。
+    Sol 终审 ①:非 acronym 括号内容必须**从 base 中剥除**而不只是不单列——
+    否则 "Cache (optional)" 的 token 集含 optional,错证据只含 optional 即达
+    1/2 比例被放行。base 剥全部括号;仅 acronym 形态括号单列为变体。
     """
-    name = str(comp.get("name", ""))
-    variants = [name]
-    aliases = comp.get("aliases") or []
-    if isinstance(aliases, list):
-        variants.extend(str(a) for a in aliases)
+    name = str(name or "")
+    base = re.sub(r"\([^)]*\)", " ", name).strip()
+    variants = [base or name]
     variants.extend(
         p for p in re.findall(r"\(([^)]{2,60})\)", name) if _is_acronym_like(p)
     )
     return variants
+
+
+def _component_name_variants(comp: dict[str, Any]) -> list[str]:
+    """F60: 组件命名变体 = name 变体(剥括号 base + acronym 括号) + aliases 各自变体。"""
+    variants = _name_string_variants(str(comp.get("name", "")))
+    aliases = comp.get("aliases") or []
+    if isinstance(aliases, list):
+        for a in aliases:
+            variants.extend(_name_string_variants(str(a)))
+    return variants
+
+
+def _variant_hit(variant: str, ev_toks: set[str], es_lower: str) -> tuple[bool, bool]:
+    """F60(r3): 单变体支撑判定,组件门与边门共用同一口径(Sol 终审 ③)。
+
+    Returns (judged, hit):
+    - acronym 形态:词界直查,命中 hit=True;不命中 judged=False(不可判,
+      缩写↔展开全称词面判不了,不误杀——组件与边端点同规)。
+    - 普通变体:token 命中比例 ≥ 阈值判 hit;有有效 token 即 judged=True。
+    """
+    v = str(variant or "").strip()
+    if not v:
+        return (False, False)
+    if _is_acronym_like(v):
+        return (False, bool(re.search(rf"\b{re.escape(v.lower())}\b", es_lower)))
+    nt = _grounding_tokens(v)
+    if not nt:
+        return (False, False)
+    return (True, len(nt & ev_toks) / len(nt) >= GROUNDING_MIN_NAME_OVERLAP)
 
 
 def _evidence_supports_component(comp: dict[str, Any]) -> bool:
@@ -4250,22 +4289,10 @@ def _evidence_supports_component(comp: dict[str, Any]) -> bool:
     es_lower = es.lower()
     judged = False
     for n in _component_name_variants(comp):
-        n = n.strip()
-        if not n:
-            continue
-        if _is_acronym_like(n):
-            # Sol 审 r2:缩写变体只做词界直查——命中即支撑;不命中**不判死**
-            # (缩写 ↔ 展开全称的映射词面判不了,如 GH-ESD vs 全称句,判"不可判"
-            # 交 grader,防确定性误杀)。缩写变体不置 judged。
-            if re.search(rf"\b{re.escape(n.lower())}\b", es_lower):
-                return True
-            continue
-        nt = _grounding_tokens(n)
-        if not nt:
-            continue
-        judged = True
-        if len(nt & ev_toks) / len(nt) >= GROUNDING_MIN_NAME_OVERLAP:
+        j, hit = _variant_hit(n, ev_toks, es_lower)
+        if hit:
             return True
+        judged = judged or j
     return not judged
 
 
@@ -4298,20 +4325,22 @@ def _edge_evidence_mentions_endpoint(
     if not ev:
         return True
     ev_toks = _grounding_tokens(ev)
+    ev_lower = ev.lower()
     vmap = variants_by_name or {}
     judged = False
     for endpoint in (edge.get("from"), edge.get("to")):
         ep = str(endpoint or "").strip()
-        variants = vmap.get(ep.lower(), [ep]) if ep else []
-        # 端点自身的括号缩写也算(端点可能未在组件表,如已被剔组件)
-        variants = list(variants) + re.findall(r"\(([^)]{2,60})\)", ep)
+        if not ep:
+            continue
+        # 组件表变体优先;端点不在表内(如已被剔组件)按同一受控规则临时展开。
+        # Sol 终审 ①③:不再裸追加任意括号内容;acronym 不可判豁免与组件门同规
+        # (GH-ESD 端点 + 展开全称证据 → 不可判,不丢边)。
+        variants = vmap.get(ep.lower()) or _name_string_variants(ep)
         for v in variants:
-            et = _grounding_tokens(v)
-            if not et:
-                continue
-            judged = True
-            if len(et & ev_toks) / len(et) >= GROUNDING_MIN_NAME_OVERLAP:
+            j, hit = _variant_hit(v, ev_toks, ev_lower)
+            if hit:
                 return True
+            judged = judged or j
     return not judged
 
 

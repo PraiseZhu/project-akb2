@@ -1208,10 +1208,23 @@ def _classify_distill_error(error_detail: str) -> str:
     return "extract_failed"
 
 
+def _extract_max_attempts(content_lane: str) -> int:
+    """F60 r3(Sol 终审):attempt 上限按车道求真——concept 有 F32 质量重试 +1
+    (校验重试 3 + 质量重试 1 = 4),procedural/未知车道 3。旧版恒写 3 会出现
+    retries_used=4 > extract_max_attempts=3 的账本自相矛盾。"""
+    extra = (
+        _dst.EXTRACT_QUALITY_RETRY_CONCEPT
+        if str(content_lane or "").strip().lower() == "concept"
+        else 0
+    )
+    return _dst.MAX_EXTRACT_RETRIES + extra
+
+
 def _distill_abort_details(
     error_detail: str,
     node: str,
     worker_timeout_s: float | None = None,
+    content_lane: str = "",
 ) -> dict[str, Any]:
     """distill abort 的统一 details。
 
@@ -1226,7 +1239,7 @@ def _distill_abort_details(
         "segment_timeout_s": _dst.EXTRACT_SEGMENT_TIMEOUT_S,
         "attempt_timeout_s": _dst.DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S,
         "provider_max_retries": DISTILL_MAX_RETRIES,
-        "extract_max_attempts": _dst.MAX_EXTRACT_RETRIES,
+        "extract_max_attempts": _extract_max_attempts(content_lane),
         "retries_used": 0,
         "node": node,
     }
@@ -2533,7 +2546,7 @@ def _run_pipeline_segments(
             "attempt_timeout_s": _dst.DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S,
             "worker_timeout_s": _distill_extract_worker_timeout_s(raw_content),
             "provider_max_retries": DISTILL_MAX_RETRIES,
-            "extract_max_attempts": _dst.MAX_EXTRACT_RETRIES,
+            "extract_max_attempts": _extract_max_attempts(content_lane),
             "content_lane": content_lane,
         },
     )
@@ -2559,6 +2572,7 @@ def _run_pipeline_segments(
         details = _distill_abort_details(
             error_detail, failed_node,
             worker_timeout_s=_distill_extract_worker_timeout_s(raw_content),
+            content_lane=content_lane,
         )
         details["retries_used"] = distill_meta.get("retries_used", 0)
         details["maker_fallback_used"] = distill_meta.get("maker_fallback_used", False)
@@ -2593,7 +2607,7 @@ def _run_pipeline_segments(
                 "attempt_timeout_s": _dst.DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S,
                 "worker_timeout_s": _distill_extract_worker_timeout_s(raw_content),
                 "provider_max_retries": DISTILL_MAX_RETRIES,
-                "extract_max_attempts": _dst.MAX_EXTRACT_RETRIES,
+                "extract_max_attempts": _extract_max_attempts(content_lane),
                "retries_used": distill_meta.get("retries_used", 0),
                 "maker_fallback_used": distill_meta.get("maker_fallback_used", False),
                 # F8-A fail-visible:组件 evidence 回填计数(确认 F6-D 触发 + 残留 unlocated)
