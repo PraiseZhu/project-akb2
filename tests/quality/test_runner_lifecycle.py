@@ -355,7 +355,9 @@ class TestRunnerLifelineSegments:
         ]
         assert distill_starts
         assert aborts
-        assert aborts[-1]["details"]["max_retries"] == 0
+        # F60 r2(Sol 审 P1-3):两层重试分列——provider(SDK)=0 / outer attempts=3
+        assert aborts[-1]["details"]["provider_max_retries"] == 0
+        assert aborts[-1]["details"]["extract_max_attempts"] == 3
         assert aborts[-1]["details"]["retries_used"] == 3
         assert not any(r.get("event") in {"grade_llm", "promote", "finalize"} for r in rows)
 

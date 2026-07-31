@@ -1211,28 +1211,37 @@ def _classify_distill_error(error_detail: str) -> str:
 def _distill_abort_details(
     error_detail: str,
     node: str,
+    worker_timeout_s: float | None = None,
 ) -> dict[str, Any]:
-    """distill abort 的统一 details。"""
-    return {
+    """distill abort 的统一 details。
+
+    Sol 审 r2 P1-3:两层重试语义必须分列——provider_max_retries 是 SDK 层
+    (恒 0),extract_max_attempts 是外层 attempt 预算(3);旧字段名 max_retries=0
+    会让人误读成"无重试"。worker_timeout_s 是按文长解析后的实际子进程上限。
+    """
+    details = {
         "error": error_detail,
         "error_class": _classify_distill_error(error_detail),
         "model_family": DISTILL_MODEL_FAMILY,
         "segment_timeout_s": _dst.EXTRACT_SEGMENT_TIMEOUT_S,
         "attempt_timeout_s": _dst.DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S,
-        "max_retries": DISTILL_MAX_RETRIES,
+        "provider_max_retries": DISTILL_MAX_RETRIES,
+        "extract_max_attempts": _dst.MAX_EXTRACT_RETRIES,
         "retries_used": 0,
         "node": node,
     }
+    if worker_timeout_s is not None:
+        details["worker_timeout_s"] = worker_timeout_s
+    return details
 
 
 def _distill_extract_worker_timeout_s(raw_content: str) -> float:
     """Return the hard subprocess deadline for distill extract.
 
-    Long concept posts exercise two serial extract segments; each segment has a
-    60s model-call budget and the extract loop may retry up to three attempts.
-    Keep the default 210s for ordinary posts, but give long documents a bounded
-    360s worker envelope so retries can finish or fail explicitly before the
-    outer process killer fires.
+    F60 预算(与 distill.EXTRACT_SEGMENT_TIMEOUT_S=110 / ATTEMPT=240 同源算术):
+    普通文 510s(=2×attempt+30,至少一次完整 attempt 重试可用),长文(>3000 词)
+    630s。旧值 60/210/360 是 json_schema 时代校准,F54 降级后正经 segment 产出
+    ~90s,60s 必掐 → 210s 引爆(账本实证 infra 超时占 extract abort 83%)。
     """
     words = len(str(raw_content or "").split())
     if words > DISTILL_EXTRACT_WORKER_LONG_DOC_WORDS:
@@ -2521,8 +2530,10 @@ def _run_pipeline_segments(
             "status": "start",
             "model_family": DISTILL_MODEL_FAMILY,
             "segment_timeout_s": _dst.EXTRACT_SEGMENT_TIMEOUT_S,
-        "attempt_timeout_s": _dst.DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S,
-            "max_retries": DISTILL_MAX_RETRIES,
+            "attempt_timeout_s": _dst.DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S,
+            "worker_timeout_s": _distill_extract_worker_timeout_s(raw_content),
+            "provider_max_retries": DISTILL_MAX_RETRIES,
+            "extract_max_attempts": _dst.MAX_EXTRACT_RETRIES,
             "content_lane": content_lane,
         },
     )
@@ -2545,7 +2556,10 @@ def _run_pipeline_segments(
             for x in (error_detail, distill_meta.get("maker_primary_error"))
             if x
         )
-        details = _distill_abort_details(error_detail, failed_node)
+        details = _distill_abort_details(
+            error_detail, failed_node,
+            worker_timeout_s=_distill_extract_worker_timeout_s(raw_content),
+        )
         details["retries_used"] = distill_meta.get("retries_used", 0)
         details["maker_fallback_used"] = distill_meta.get("maker_fallback_used", False)
         if distill_meta.get("maker_primary_error"):
@@ -2575,9 +2589,11 @@ def _run_pipeline_segments(
     _log_event(config, "distill_extract", "distill_extract", content_hash,
                {"status": "success",
                 "model_family": DISTILL_MODEL_FAMILY,
-               "segment_timeout_s": _dst.EXTRACT_SEGMENT_TIMEOUT_S,
-        "attempt_timeout_s": _dst.DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S,
-               "max_retries": DISTILL_MAX_RETRIES,
+                "segment_timeout_s": _dst.EXTRACT_SEGMENT_TIMEOUT_S,
+                "attempt_timeout_s": _dst.DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S,
+                "worker_timeout_s": _distill_extract_worker_timeout_s(raw_content),
+                "provider_max_retries": DISTILL_MAX_RETRIES,
+                "extract_max_attempts": _dst.MAX_EXTRACT_RETRIES,
                "retries_used": distill_meta.get("retries_used", 0),
                 "maker_fallback_used": distill_meta.get("maker_fallback_used", False),
                 # F8-A fail-visible:组件 evidence 回填计数(确认 F6-D 触发 + 残留 unlocated)

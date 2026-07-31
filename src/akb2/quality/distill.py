@@ -94,7 +94,8 @@ DISTILL_MAX_RETRIES: int = 0
 # 三层预算算术(必须自洽,tests/quality/test_f60_grounding_gate.py 有守卫断言):
 #   per-call  EXTRACT_SEGMENT_TIMEOUT_S = 110  (实测 p95≈90 + 余量)
 #   attempt   = 2 segment × 110 + 20 归一化/校验 = 240
-#   worker    = attempt + 1 segment 重试 + 30 = 380 (runner.py 同步修改)
+#   worker    = 2 × attempt + 30 = 510 (runner.py;Sol 审 P1-4:重试是整
+#               attempt 重启,契约取"至少一次完整重试可用")
 EXTRACT_SEGMENT_TIMEOUT_S: float = 110.0
 DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S: float = 240.0
 DISTILL_DISABLE_THINKING: bool = True
@@ -4056,11 +4057,16 @@ def _find_backfill_sentence(
     terms_token: list[str],
     anchor_positions: list[tuple[str, int]],
     first_anchor_pos: int,
+    *,
+    accept: Any = None,
 ) -> tuple[str, str] | None:
     """F8-A: 两遍(全名优先,再 token 兜底)在 raw 找组件证据句。
 
     行级迭代(跳标题/表格/代码栅栏/锚目录行);frontmatter(首声明锚前)跳过;
     anchor 空 continue 不 break(修旧版 frontmatter 命中即 break 致 Captain 空回填)。
+    accept(F60/Sol 审 r2 P1-1):可选句级谓词——pass-2 单 token 可撞泛词句
+    (如 model),首候选不合格必须**继续迭代**而不是放弃;None 保持 F8-A 原语义
+    (首命中即返,零行为变化)。
     Returns (sentence, anchor) 或 None。
     """
     for terms in (terms_full, terms_token):
@@ -4084,6 +4090,8 @@ def _find_backfill_sentence(
             anchor = _nearest_preceding_anchor(pos, anchor_positions)
             if not anchor:
                 continue  # 仍无锚(兜底,理论上首锚后总有),跳过
+            if accept is not None and not accept(stripped):
+                continue  # F60: 候选句不过谓词 → 继续找下一条,不在首候选放弃
             return stripped, anchor
     return None
 
@@ -4201,18 +4209,31 @@ def _grounding_tokens(text: str) -> set[str]:
     return toks
 
 
+# F60(Sol 审 r2):括号内容只有 acronym 形态才算别名——"(optional)"/"(legacy
+# mode)" 这类说明性括号若入变体,错证据只含 optional/legacy 即被放行(反向漏判)。
+_ACRONYM_RE = re.compile(r"[A-Z][A-Z0-9]{1,9}(?:-[A-Z0-9]{1,9})*")
+
+
+def _is_acronym_like(text: str) -> bool:
+    """F60: 是否缩写形态(全大写/数字,可含连字符,如 GHES / GH-ESD / MCP)。"""
+    return bool(_ACRONYM_RE.fullmatch(str(text or "").strip()))
+
+
 def _component_name_variants(comp: dict[str, Any]) -> list[str]:
-    """F60: 组件命名变体 = name + aliases + name 中括号内容(缩写惯例)。
+    """F60: 组件命名变体 = name + aliases + name 中 acronym 形态的括号内容。
 
     Sol 审 P1-2 反例:"GitHub Enterprise Server (GHES)" 正文只写 GHES 时,
-    全名 token 命中比例 1/4 会被误杀——括号内容按命名惯例就是别名,单列成变体。
+    全名 token 命中比例 1/4 会被误杀——缩写括号按命名惯例就是别名,单列成变体;
+    说明性括号(optional/legacy mode)不入变体(r2 收紧,防反向漏判)。
     """
     name = str(comp.get("name", ""))
     variants = [name]
     aliases = comp.get("aliases") or []
     if isinstance(aliases, list):
         variants.extend(str(a) for a in aliases)
-    variants.extend(re.findall(r"\(([^)]{2,60})\)", name))
+    variants.extend(
+        p for p in re.findall(r"\(([^)]{2,60})\)", name) if _is_acronym_like(p)
+    )
     return variants
 
 
@@ -4226,8 +4247,19 @@ def _evidence_supports_component(comp: dict[str, Any]) -> bool:
     if not es:
         return True
     ev_toks = _grounding_tokens(es)
+    es_lower = es.lower()
     judged = False
     for n in _component_name_variants(comp):
+        n = n.strip()
+        if not n:
+            continue
+        if _is_acronym_like(n):
+            # Sol 审 r2:缩写变体只做词界直查——命中即支撑;不命中**不判死**
+            # (缩写 ↔ 展开全称的映射词面判不了,如 GH-ESD vs 全称句,判"不可判"
+            # 交 grader,防确定性误杀)。缩写变体不置 judged。
+            if re.search(rf"\b{re.escape(n.lower())}\b", es_lower):
+                return True
+            continue
         nt = _grounding_tokens(n)
         if not nt:
             continue
@@ -4297,28 +4329,39 @@ def _gate_component_evidence_support(
         if not isinstance(comp, dict) or _evidence_supports_component(comp):
             continue
         diag["unsupported"] += 1
-        name = str(comp.get("name", "")).strip()
+        # Sol 审 P1-1(r2):重定位必须**谓词内嵌迭代**——pass-2 单个通用 token
+        # (如 model)可撞泛词句,若只复验首候选、失败即清空,raw 后面真正支撑的句子
+        # 就被跳过(r1 版实测复现)。谓词=该句作为 evidence 时组件支撑判定通过。
+        # 搜索词用与支撑判定同一套受控变体(name+aliases+acronym 括号;Sol 审 r2
+        # P1-2:wrong evidence + 正文只写缩写的场景,靠 name 词根本搜不到)。
         found = None
-        if name and anchor_positions:
+        if anchor_positions:
+            variants = [v for v in _component_name_variants(comp) if v.strip()]
+            terms_full: list[str] = []
+            terms_token: list[str] = []
+            for v in variants:
+                terms_full.extend(_generate_backfill_search_terms(v, tokens=False))
+                terms_token.extend(_generate_backfill_search_terms(v, tokens=True))
+
+            def _accept(sentence: str, _comp: dict[str, Any] = comp) -> bool:
+                candidate = dict(_comp)
+                candidate["evidence_sentence"] = sentence
+                return _evidence_supports_component(candidate)
+
             found = _find_backfill_sentence(
                 raw_content,
-                _generate_backfill_search_terms(name, tokens=False),
-                _generate_backfill_search_terms(name, tokens=True),
+                terms_full,
+                terms_token,
                 anchor_positions,
                 first_anchor_pos,
+                accept=_accept,
             )
-        # Sol 审 P1-1:重定位结果必须复验后置条件——_find_backfill_sentence 的
-        # pass-2 可凭单个通用 token(如 model)命中不相干句;不复验会把 relocated
-        # 记成功、原 H3 缺陷原样流向下游。复验不过按未定位处理。
         if found is not None:
-            candidate = dict(comp)
-            candidate["evidence_sentence"], candidate["evidence_anchor"] = found
-            if _evidence_supports_component(candidate):
-                comp["evidence_sentence"], comp["evidence_anchor"] = found
-                diag["relocated"] += 1
-                continue
-        # 宁缺勿假(F35 同哲学):证据不相干且重定位失败/复验不过 → 清空,
-        # concept 车道由 F35 剔除、组件<3 由 F32 质量重试接手;不留假证据活到 grader。
+            comp["evidence_sentence"], comp["evidence_anchor"] = found
+            diag["relocated"] += 1
+            continue
+        # 宁缺勿假(F35 同哲学):证据不相干且重定位失败 → 清空,concept 车道
+        # 由 F35 剔除、组件<3 由 F32 质量重试接手;不留假证据活到 grader。
         comp["evidence_sentence"] = ""
         comp["evidence_anchor"] = ""
     return diag

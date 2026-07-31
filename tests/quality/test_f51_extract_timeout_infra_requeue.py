@@ -96,7 +96,7 @@ class TestExtractAbortWiring:
         """收窄到 extract abort 段:grader 死亡现场(error_detail 本身即 infra
         文本)仍可用 str(error_detail),不在本断言范围。"""
         src = inspect.getsource(runner)
-        i = src.index("details = _distill_abort_details(error_detail, failed_node)")
+        i = src.index("details = _distill_abort_details(")
         blk = src[i:i + 1200]
         assert (
             "_maybe_auto_infra_requeue(config, content_hash, str(error_detail))"

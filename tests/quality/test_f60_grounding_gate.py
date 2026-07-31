@@ -11,8 +11,9 @@ F60 两刀:
     1. 词面锚定门左移进 _normalize_extract_payload(7.5 步):
        组件不支撑 → F8-A 搜索重定位 → 仍无 → 清空 evidence(交 F35/F32);
        eligible 边 evidence 两端点都不提及 → 丢边。
-    2. 三层抽取预算 60/180/210 → 110/240/380 算术自洽(实测正经 how_params
-       产出 ~90s,60s per-call 必掐 → 210s worker 引爆,infra 超时占 83%)。
+    2. 三层抽取预算 60/180/210 → 110/240/510(长文 630)算术自洽(实测正经
+       how_params 产出 ~90s,60s per-call 必掐 → 210s worker 引爆,infra 超时
+       占 83%;worker=2×attempt+30,契约=至少一次完整 attempt 重试可用)。
 """
 
 from __future__ import annotations
@@ -416,3 +417,82 @@ class TestWorkerDiagnosticsRoundtrip:
         payload = json.loads(capsys.readouterr().out.strip())
         assert payload["diagnostics"]["components_evidence_unsupported"] == 2
         assert payload["diagnostics"]["edges_dropped_unsupported"] == 1
+
+
+class TestSolReviewRound2:
+    def test_acronym_only_name_is_undecidable_not_killed(self):
+        # r2 P1-2: GH-ESD vs 展开全称——缩写↔全称映射词面判不了,判"不可判"交 grader
+        c = _comp(
+            "GH-ESD",
+            "We propose Grounded Hypothesis-driven Error Slice Discovery for models.",
+        )
+        assert _evidence_supports_component(c)
+
+    def test_acronym_direct_hit_supported(self):
+        c = _comp("GH-ESD", "GH-ESD constructs relational failure hypotheses.")
+        assert _evidence_supports_component(c)
+
+    def test_non_acronym_paren_not_treated_as_alias(self):
+        # r2 P1-2: "(optional)" 说明性括号不得作别名——否则错证据只含 optional 即放行
+        c = _comp(
+            "Cache Layer (optional)",
+            "This optional flag toggles verbose logging output only.",
+        )
+        assert not _evidence_supports_component(c)
+
+    def test_relocation_iterates_past_generic_hit(self):
+        # r2 P1-1: 首候选是泛词撞句(model),真支撑句在后面——必须继续迭代拿到后者
+        raw = """---
+title: fixture
+---
+§A_INTRO
+The model registry stores checkpoints for later deployment runs.
+§B_MECH
+The Model Runtime Harmonizer schedules every runtime shard deterministically.
+"""
+        data = {
+            "mechanism_components": [
+                _comp("Model Runtime Harmonizer", _BOT_SERVICE_SENTENCE, "§A_INTRO")
+            ],
+            "causal_edges": [],
+        }
+        diag = _gate_component_evidence_support(data, raw)
+        c = data["mechanism_components"][0]
+        assert diag == {"unsupported": 1, "relocated": 1}
+        assert "Harmonizer schedules" in c["evidence_sentence"]
+        assert c["evidence_anchor"] == "§B_MECH"
+
+    def test_relocation_searches_via_acronym_variant(self):
+        # r2 P1-2: wrong evidence + 正文只写 GHES——搜索必须用受控变体(含缩写)
+        raw = """---
+title: fixture
+---
+§A_INTRO
+Something entirely unrelated sits here to occupy the intro anchor block.
+§B_MECH
+GHES requires a dedicated runner group for policy enforcement decisions.
+"""
+        data = {
+            "mechanism_components": [
+                _comp(
+                    "GitHub Enterprise Server (GHES)",
+                    _BOT_SERVICE_SENTENCE,
+                    "§A_INTRO",
+                )
+            ],
+            "causal_edges": [],
+        }
+        diag = _gate_component_evidence_support(data, raw)
+        c = data["mechanism_components"][0]
+        assert diag == {"unsupported": 1, "relocated": 1}
+        assert c["evidence_sentence"].startswith("GHES requires")
+
+    def test_abort_details_budget_fields_truthful(self):
+        # r2 P1-3: 两层重试分列 + worker cap 真值入账本
+        from src.akb2.quality.runner import _distill_abort_details
+
+        d = _distill_abort_details("x", "distill_extract", worker_timeout_s=510.0)
+        assert d["provider_max_retries"] == 0
+        assert d["extract_max_attempts"] == 3
+        assert d["worker_timeout_s"] == 510.0
+        assert "max_retries" not in d
