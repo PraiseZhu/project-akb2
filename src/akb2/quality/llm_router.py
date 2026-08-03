@@ -24,7 +24,9 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -39,6 +41,43 @@ TIMEOUT_S: float = 120.0
 MAX_RETRIES: int = 2
 _DEFAULT_REASONING_EFFORT = "__default__"
 DEEPSEEK_BETA_BASE_URL = "https://api.deepseek.com/beta"
+QUALITY_LEDGER_FILE = "quality-ledger.jsonl"
+_BUDGET_ERROR_DATE_RE = re.compile(r"\bDate=(\d{4}-\d{2}-\d{2})\b", re.IGNORECASE)
+_BUDGET_ERROR_SPEND_RE = re.compile(r"\b(?:Spend|Spent)=(\d+(?:\.\d+)?)\b", re.IGNORECASE)
+_BUDGET_ERROR_CAP_RE = re.compile(
+    r"\b(?:DailyCap|TotalCap|Cap)=(\d+(?:\.\d+)?)\b", re.IGNORECASE
+)
+
+logger = logging.getLogger(__name__)
+
+try:  # pragma: no cover - runtime path
+    from src.akb2.common.budget_gate import (
+        BUDGET_EXCEEDED,
+        OTHER_ERROR,
+        PROVIDER_CODE_429,
+        RATE_LIMIT,
+        TOTAL_SCOPE,
+        UTC_DAILY_SCOPE,
+        BudgetDiagnostics,
+        query_budget_gate,
+        record_budget_event,
+    )
+    from src.akb2.common.state_paths import LEDGER_SUBDIR, resolve_state_file
+    from src.akb2.loops.ledger import append_event
+except ImportError:  # pragma: no cover - script runtime path
+    from akb2.common.budget_gate import (
+        BUDGET_EXCEEDED,
+        OTHER_ERROR,
+        PROVIDER_CODE_429,
+        RATE_LIMIT,
+        TOTAL_SCOPE,
+        UTC_DAILY_SCOPE,
+        BudgetDiagnostics,
+        query_budget_gate,
+        record_budget_event,
+    )
+    from akb2.common.state_paths import LEDGER_SUBDIR, resolve_state_file
+    from akb2.loops.ledger import append_event
 
 # ---------------------------------------------------------------------------
 # 模型家族 → 环境变量 / 端点映射
@@ -119,6 +158,108 @@ class LLMProviderError(RuntimeError):
 # ---------------------------------------------------------------------------
 # 内部辅助
 # ---------------------------------------------------------------------------
+
+
+def _extract_status_code(exc: Exception) -> int | None:
+    for attr in ("status_code", "status"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int):
+            return value
+    response = getattr(exc, "response", None)
+    if response is not None:
+        status_code = getattr(response, "status_code", None)
+        if isinstance(status_code, int):
+            return status_code
+    return None
+
+
+def _provider_error_text(exc: Exception) -> str:
+    body = getattr(exc, "body", None)
+    parts: list[str] = []
+    if isinstance(body, dict):
+        parts.append(json.dumps(body, ensure_ascii=False, sort_keys=True))
+    elif body:
+        parts.append(str(body))
+
+    message = getattr(exc, "message", None)
+    if message:
+        parts.append(str(message))
+    parts.append(str(exc))
+    return " | ".join(part for part in parts if part).strip()
+
+
+def _extract_float(pattern: re.Pattern[str], text: str) -> float | None:
+    match = pattern.search(text)
+    if match is None:
+        return None
+    return float(match.group(1))
+
+
+def _diagnostics_from_provider_error(exc: Exception) -> BudgetDiagnostics:
+    status_code = _extract_status_code(exc)
+    text = _provider_error_text(exc)
+    lowered = text.lower()
+    provider_code = PROVIDER_CODE_429 if status_code == 429 else ""
+
+    error_type = OTHER_ERROR
+    scope = ""
+    budget_date = ""
+
+    if status_code == 429:
+        if "budget" in lowered or "exceededbudget" in lowered:
+            error_type = BUDGET_EXCEEDED
+            if "utc daily cap" in lowered or "utc_daily" in lowered or "daily cap" in lowered:
+                scope = UTC_DAILY_SCOPE
+                match = _BUDGET_ERROR_DATE_RE.search(text)
+                if match is not None:
+                    budget_date = match.group(1)
+            elif "total cap" in lowered or "total budget" in lowered:
+                scope = TOTAL_SCOPE
+        elif "rate limit" in lowered or "too many requests" in lowered:
+            error_type = RATE_LIMIT
+
+    return BudgetDiagnostics(
+        error_type=error_type,
+        budget_scope=scope,
+        spend=_extract_float(_BUDGET_ERROR_SPEND_RE, text),
+        cap=_extract_float(_BUDGET_ERROR_CAP_RE, text),
+        budget_date=budget_date,
+        provider_code=provider_code,
+        raw_message=text,
+    )
+
+
+def _quality_ledger_path() -> str:
+    return str(resolve_state_file(QUALITY_LEDGER_FILE, subdir=LEDGER_SUBDIR))
+
+
+def _append_quality_budget_event(
+    *,
+    diagnostics: BudgetDiagnostics,
+    model_family: str,
+    consumer: str,
+) -> None:
+    if diagnostics.provider_code != PROVIDER_CODE_429:
+        return
+    try:
+        append_event(
+            _quality_ledger_path(),
+            {
+                "ts": dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "event": "llm_gateway_429",
+                "model_family": model_family,
+                "consumer": consumer,
+                "provider_code": diagnostics.provider_code,
+                "error_type": diagnostics.error_type,
+                "budget_scope": diagnostics.budget_scope,
+                "spend": diagnostics.spend,
+                "cap": diagnostics.cap,
+                "budget_date": diagnostics.budget_date,
+                "message": diagnostics.raw_message,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - diagnostics must not hide provider error
+        logger.warning("failed to append quality budget diagnostic: %s", exc)
 
 # F20: enable_thinking 是 DeepSeek/Qwen 系参数,gpt-5.4(Azure via litellm)/gemini 不认。
 # 无差别注入导致 gpt-5.4 端点 400 Unknown parameter(账本 169 条 distill_extract 7-03/7-04,
@@ -572,6 +713,7 @@ def route_llm(
     strict_schema: bool = True,
     max_tokens: int | None = None,
     extra_body: dict[str, Any] | None = None,
+    budget_consumer: str = "quality.llm_router",
 ) -> LLMResponse:
     """OpenAI 兼容端点路由入口。
 
@@ -588,6 +730,7 @@ def route_llm(
         extra_body: 透传到 OpenAI-compatible 端点的额外字段（如 DeepSeek 推理模型的
             ``{"enable_thinking": False}``，关闭思维链，让 token 预算落到 content 而非
             reasoning，避免 repair 重写被 reasoning 吃光 token / 拖超时）。None 时不发送。
+        budget_consumer: 预算闸/诊断里的调用方标签，默认统一记为 quality.llm_router。
 
     Returns:
         LLMResponse: 含 content / model_used / calls_used。
@@ -608,6 +751,10 @@ def route_llm(
 
     actual_timeout = TIMEOUT_S if timeout_s is None else timeout_s
     actual_max_retries = MAX_RETRIES if max_retries is None else max_retries
+
+    gate_decision = query_budget_gate(consumer=budget_consumer)
+    if not gate_decision.allowed:
+        raise LLMProviderError(gate_decision.shell_message())
 
     client = openai.OpenAI(
         api_key=api_key,
@@ -670,6 +817,14 @@ def route_llm(
             f"LLM 调用超时 ({actual_timeout}s): {model_family}"
         ) from exc
     except openai.APIError as exc:
+        diagnostics = _diagnostics_from_provider_error(exc)
+        if diagnostics.provider_code == PROVIDER_CODE_429:
+            _append_quality_budget_event(
+                diagnostics=diagnostics,
+                model_family=model_family,
+                consumer=budget_consumer,
+            )
+            record_budget_event(diagnostics, consumer=budget_consumer)
         raise LLMProviderError(
             f"LLM API 错误: {model_family} — {exc}"
         ) from exc

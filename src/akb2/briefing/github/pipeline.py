@@ -1,9 +1,15 @@
 """8-step pipeline: intake → aggregate → enrich → filter → score → synthesize → render → vault.
 
 Pipeline output contract (§step-4 PIPELINE_OUTPUT_CONTRACT):
-- VAULT_ROOT must be set, absolute path, or write briefing-skipped.json + exit 0
-- Only write .md + .json when top_repos == 10 AND schema validator PASS
-- Otherwise write briefing-skipped.json (exit 0)
+- VAULT_ROOT must be set and absolute; otherwise write briefing-skipped.json + exit≠0
+- Only write .md + .json when top_repos ≥ _MIN_REPOS_FOR_BRIEFING AND schema validator PASS
+- Otherwise write briefing-skipped.json / briefing-failed.json + exit≠0
+
+退出码不变式：**未交付即非零**（见 EXIT_* 常量注释里的 2026-06-26~29 事故）。
+本 docstring 早先写的 "exit 0" 是失效描述 —— 那正是 4 天零交付被监控读成成功的说法。
+诊断落盘不变式：每个未交付分支都写出当日诊断文件，含 `date`（本地日，与 vault 文件名
+同源）/ `stage` / `failure_class` / `reason` / `detail`，供飞书告警直接引用真因
+（见 FAILURE_* 常量注释里的 2026-08-03 告警事故）。
 """
 
 import json
@@ -49,6 +55,80 @@ _SCHEMA_REPO_FIELDS = {
 _MIN_REPOS_FOR_BRIEFING = 6
 # Ideal target for supplementation (SC-1: L2 supplement tries to reach this before falling back)
 _IDEAL_REPOS_FOR_BRIEFING = 10
+
+# ── 退出码（宪法 P4「失败可见」）───────────────────────────────────────────────
+# 不变式：**未交付即非零**。0 只在当日 briefing .md 真正落盘并复查存在后才返回。
+#
+# 事故背景（这条不变式为什么要具名固化）：2026-06-26~06-29 连续 4 天
+# logs/github-briefing-stderr.log 记 `exit=0`，同期 stdout 是
+# `SKIPPED (enrich_degraded: 18/18 enrich calls failed)`，而 vault
+# `AI TRENDS/GitHub/` 这 4 天零文件 —— 任何看退出码的监控（含 launchctl 的
+# LastExitStatus）都把 4 天零交付读成成功。同为 SKIPPED 类的
+# schema_validation_failed 当时却是 exit=1，同类分支退出码不一致。
+#
+# 保留码位（本模块**不得**占用，即使将来要细分 skip 原因）：
+#   124 = scripts/run_with_deadline.py 的 deadline 超时码
+#   125 = backstop 脚本的主动放弃码
+#
+# 为什么所有未交付分支共用同一个 1 而不各给一个数值：backstop
+# （`scripts/github_briefing_backstop.sh` 的 recovered 判据，搜
+# `SC-5: recovered 必须复查文件` 定位 —— 不写行号，那个文件本轮从 144 行长到 274 行，
+# 行号引用已经过期过一次）的判据是
+# `rc == 0 && 当日文件存在 → recovered`，否则 failed 并把 rc **原样 exit 出去**。
+# 给每个分支分配不同数值只会让这些数字漏进 backstop / launchd 的 LastExitStatus，
+# 而分支语义已由 briefing-skipped.json / briefing-failed.json 的 reason 字段承载。
+EXIT_DELIVERED = 0
+EXIT_NOT_DELIVERED = 1
+# 静态自证用（tests/briefing/github/test_pipeline_exit_codes.py 断言与保留码位无交集）
+EXIT_CODES = frozenset({EXIT_DELIVERED, EXIT_NOT_DELIVERED})
+RESERVED_EXIT_CODES = frozenset({124, 125})
+
+# ── synthesis 输出质量重生成预算（宪法 P1「有界自动化」+ P4「预算显式」）─────────
+# 归因（24 天内 6 次 exit=1 逐条查证）：5 次是 LLM **输出质量**问题 —— 3 次 JSON 写坏
+# （07-22/25/28 `Unterminated string starting at: line 44 column 16 …`）+ 2 次 schema
+# 校验不过（07-03/10 `'…' is too short`）；只有 1 次是 429 预算耗尽。而
+# synthesis.MAX_RETRIES=3 只覆盖 **HTTP 层**，这两类此前**零自动重试**：模型一次把
+# JSON 写坏 = 当天零交付。
+#
+# 预算取 2 次重生成（总计 ≤3 次 synthesize）。为什么不更多：每次重生成都重新烧一整轮
+# LLM 额度，而 synthesize 内部还自带 1 次 JSON 重试 → 最坏 6 次 LLM 调用。这是**显式
+# 代价不是隐藏成本**：配额正是这条链路的稀缺资源（08-02 即因 UTC 日配额打穿而零交付）。
+MAX_SYNTHESIS_REGENERATIONS = 2
+REGEN_REASON_JSON_TRUNCATED = "json_truncated"
+REGEN_REASON_SCHEMA_INVALID = "schema_invalid"
+
+# ── 诊断落盘：告警归因的唯一素材来源 ──────────────────────────────────────────
+# 事故（2026-08-03 早上）：飞书告警只说「github 缺失（期望路径: …）」，看不出真因是
+# 预算耗尽。排查一度以为「pipeline 失败时没留下诊断文件」——**不是**。
+# `briefing-failed.json` 确实写出来了，且含 429 原文：
+#   {"status":"failed","reason":"synthesis_failed: DeepSeek API failed after 3 retries:
+#     HTTP Error 429: Too Many Requests","generated_at":"2026-08-02T23:30:51+00:00"}
+# 卡住的是**日期键**：`feishu_sync/blocked.py:blocking_reason()` 要求诊断的日期 ==
+# 告警的日期，而 github 诊断此前**没有 `date` 字段**，读取侧只能退回
+# `generated_at[:10]` —— 那是 **UTC** 日。07:30 CST = 前一天 23:30 UTC，于是
+# UTC 日(08-02) ≠ 告警用的本地日(08-03) → 日期校验不过 → 返回 None → 告警退回
+# "文件缺失"。与 08-02 那次事故同源的 UTC/本地日偏移，只是这次咬在告警链路上。
+#
+# 修法：显式写 `date` = **本地抓取日**，与 vault 文件名同源（都用 `date.today()`），
+# 也就是告警拿去算 expected_path 的那把同一把尺子 —— 两侧同源才不会再错开。
+# 另外补 `stage` / `failure_class` / `detail`（可补救提示）与契约 2 的 provider 诊断，
+# 让告警能直接说"预算耗尽，等 UTC 日重置后重试"而不是"文件缺失"。
+FAILURE_STAGE_UNKNOWN = "unknown"
+FAILURE_STAGE_PREFLIGHT = "preflight"
+FAILURE_STAGE_INTAKE = "intake"
+FAILURE_STAGE_ENRICH = "enrich"
+FAILURE_STAGE_SYNTHESIZE = "synthesize"
+FAILURE_STAGE_VALIDATE = "validate"
+FAILURE_STAGE_WRITE_VAULT = "write_vault"
+
+FAILURE_CLASS_CONFIG = "config"                        # 部署/配置错，需人工
+FAILURE_CLASS_UPSTREAM_INTAKE = "upstream_intake"      # 上游素材不足，等下轮
+FAILURE_CLASS_ENRICH_DEGRADED = "enrich_degraded"      # GitHub API 限流/故障
+FAILURE_CLASS_LLM_PROVIDER = "llm_provider"            # 429 / 预算 / HTTP
+FAILURE_CLASS_LLM_OUTPUT_QUALITY = "llm_output_quality"  # JSON 写坏 / schema 不过
+FAILURE_CLASS_OUTPUT_BUDGET = "output_budget"          # finish_reason=length
+FAILURE_CLASS_VAULT_IO = "vault_io"                    # vault 未挂载/写盘失败
+FAILURE_CLASS_INTERNAL = "internal"
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
@@ -124,15 +204,18 @@ def _merge_canonical(existing: dict, incoming: dict) -> None:
 def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
     """Run the full GitHub briefing pipeline.
 
-    Returns 0 ONLY when the day's briefing .md is actually written to the vault
-    (delivered). Any skip / failure path returns non-zero (SC-4 fail-visible) —
-    exit code must reflect real delivery, never "0/missing product" 假成功.
-    Diagnostic briefing-skipped.json / briefing-failed.json 仍写出供 backstop 诊断。
+    Returns EXIT_DELIVERED (0) ONLY when the day's briefing .md is actually written
+    to the vault. Every skip / block / failure path returns EXIT_NOT_DELIVERED —
+    退出码必须反映真实交付，禁止 "0/无产物" 假成功（见 EXIT_* 常量注释里的
+    2026-06-26~29 四天零交付事故）。诊断 briefing-skipped.json / briefing-failed.json
+    仍写出供 backstop 归因。
     """
     vault_root = os.environ.get("VAULT_ROOT", "")
     if not vault_root or not vault_root.startswith("/"):
-        _write_skipped("vault_root_missing_or_relative", 0, "skip")
-        return 1
+        _write_skipped("vault_root_missing_or_relative", 0, "skip",
+                       stage=FAILURE_STAGE_PREFLIGHT,
+                       failure_class=FAILURE_CLASS_CONFIG)
+        return EXIT_NOT_DELIVERED
 
     vault = Path(vault_root)
 
@@ -151,8 +234,10 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
             "or genuinely no trending repos. Backstop should retry.\n"
         )
         _emit_sc7_metrics(_make_zero_sc7_metrics())
-        _write_skipped("no_candidates_after_intake", len(candidates), fallback_layer)
-        return 1
+        _write_skipped("no_candidates_after_intake", len(candidates), fallback_layer,
+                       stage=FAILURE_STAGE_INTAKE,
+                       failure_class=FAILURE_CLASS_UPSTREAM_INTAKE)
+        return EXIT_NOT_DELIVERED
 
     # Step 2-3: Aggregate by repo_url（mention_count 在此正确累加：collector 现按
     # per-handle 去重，跨博主同 repo 会保留多条 candidate）。
@@ -211,8 +296,10 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
         _write_skipped("too_few_aggregated_repos", len(aggregated), fallback_layer,
                        diag={"before_novelty": pre_novelty_count,
                              "novelty_dropped": pre_novelty_count - len(aggregated),
-                             "after_novelty": len(aggregated)})
-        return 1
+                             "after_novelty": len(aggregated)},
+                       stage=FAILURE_STAGE_INTAKE,
+                       failure_class=FAILURE_CLASS_UPSTREAM_INTAKE)
+        return EXIT_NOT_DELIVERED
 
     # Build tier_map from pool config
     tier_map = _load_tier_map()
@@ -273,8 +360,10 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
             f"enrich_degraded: {enrich_failed}/{enrich_attempted} "
             "enrich calls failed (rate-limit/network)",
             enrich_attempted, fallback_layer,
+            stage=FAILURE_STAGE_ENRICH,
+            failure_class=FAILURE_CLASS_ENRICH_DEGRADED,
         )
-        return 1
+        return EXIT_NOT_DELIVERED
 
     # 回填后的身份必须重新过 novelty：301 改名（codedrobe/codex-skill →
     # CodeDrobe/skills）时旧名不在账本里、新名可能已推过，只查旧名等于漏判。
@@ -345,66 +434,95 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
 
     if len(top10) < _MIN_REPOS_FOR_BRIEFING:
         _emit_sc7_metrics(_sc7_metrics)
-        _write_skipped("too_few_after_filter", len(top10), fallback_layer)
-        return 1
+        _write_skipped("too_few_after_filter", len(top10), fallback_layer,
+                       stage=FAILURE_STAGE_INTAKE,
+                       failure_class=FAILURE_CLASS_UPSTREAM_INTAKE)
+        return EXIT_NOT_DELIVERED
 
-    # Step 7: Synthesize
-    try:
-        with _StageTimer("synthesize"):
-            # mock=mock：synthesis 的占位产出是显式 opt-in（见 synthesize docstring）。
-            # 不透传时 `--mock` 自检链路在无 API key 环境下必然 fail-closed，
-            # 整条 mock E2E 死掉。
-            synthesis_result = synthesize(top10, mock=mock)
-            top10_with_summaries = synthesis_result["top_repos"]
-    except Exception as e:
-        _emit_sc7_metrics(_sc7_metrics)
-        _write_failed(f"synthesis_failed: {e}", fallback_layer=fallback_layer)
-        return 1
-
-    # Step 8: Render + validate + write vault
-    today_str = date.today().isoformat()
     # 文件名 = 抓取日（去掉旧的 +1 偏移，对齐 social briefing）
-    now_iso = datetime.now(UTC).isoformat()
+    today_str = date.today().isoformat()
 
-    # Inject engagement_raw before _clean_repo（必须在 clean 前，否则 engagement 字段被剥）
-    for r in top10_with_summaries:
-        r["engagement_raw"] = engagement_raw(r.get("engagement"))
+    # Step 7 + 8a: synthesize → 组装 → schema 校验，**输出质量类失败有界重生成**。
+    # 见 MAX_SYNTHESIS_REGENERATIONS 常量注释：JSON 写坏 + schema 不过合计占历史失败
+    # 5/6，而此前这两类零自动重试（MAX_RETRIES=3 只管 HTTP 层）。
+    # 重生成必须可见（宪法 P4）：每轮在 stdout 打 REGENERATE attempt=n/N reason=...；
+    # 预算耗尽后仍 fail-closed 不写 vault（宪法 P3），不为"有产出"而降级写入。
+    briefing: dict | None = None
+    regen_reason = ""
+    for regen in range(MAX_SYNTHESIS_REGENERATIONS + 1):
+        if regen > 0:
+            _ts_print(
+                f"REGENERATE attempt={regen}/{MAX_SYNTHESIS_REGENERATIONS} "
+                f"reason={regen_reason}"
+            )
+        try:
+            with _StageTimer("synthesize"):
+                # mock=mock：synthesis 的占位产出是显式 opt-in（见 synthesize docstring）。
+                # 不透传时 `--mock` 自检链路在无 API key 环境下必然 fail-closed，
+                # 整条 mock E2E 死掉。
+                synthesis_result = synthesize(top10, mock=mock)
+                top10_with_summaries = synthesis_result["top_repos"]
+        except Exception as e:
+            if _is_regenerable_synthesis_error(e) and regen < MAX_SYNTHESIS_REGENERATIONS:
+                regen_reason = REGEN_REASON_JSON_TRUNCATED
+                sys.stderr.write(
+                    f"WARNING [github-pipeline]: synthesis 输出不是合法 JSON（{e}）—— "
+                    "判为可重生成，触发下一轮\n"
+                )
+                continue
+            _emit_sc7_metrics(_sc7_metrics)
+            # 告警素材：failure_class 决定"能不能补跑"，provider_diagnosis 决定
+            # "是不是预算耗尽、要等到什么时候"（契约 2 字段，由 synthesis 层产出）
+            _write_failed(f"synthesis_failed: {e}", fallback_layer=fallback_layer,
+                          stage=FAILURE_STAGE_SYNTHESIZE,
+                          failure_class=_classify_synthesis_failure(e),
+                          provider_diagnosis=_provider_diagnosis(e))
+            return EXIT_NOT_DELIVERED
 
-    _warn_display_name_degraded(top10_with_summaries)
-
-    briefing = {
-        "schema_version": "v1",
-        "briefing_type": "github-curator",
-        "generated_at": now_iso,
-        "date": today_str,
-        "candidate_pool_size": _pool_size(),
-        "active_curators_today": list(set(c.mentioner for c in candidates)),
-        "fallback_layer_used": fallback_layer,
-        "top_repos": [_clean_repo(r) for r in top10_with_summaries],
-    }
-
-    # Validate schema
-    import tempfile
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tf:
-        json.dump(briefing, tf)
-        tf_path = tf.name
-    try:
-        errors = validate(tf_path)
-    finally:
-        Path(tf_path).unlink(missing_ok=True)
-
-    if errors:
-        _emit_sc7_metrics(_sc7_metrics)
-        _write_skipped(
-            f"schema_validation_failed: {errors}",
-            len(top10_with_summaries), fallback_layer,
+        # Step 8a: 组装 + schema 校验（每轮重新组装：产出换了，engagement_raw /
+        # 显示名降级告警都要按新产出重算）
+        candidate = _assemble_briefing(
+            top10_with_summaries, candidates, fallback_layer, today_str,
+            synthesis_model=synthesis_result.get("synthesis_model", ""),
         )
-        return 1
+        errors = _schema_errors(candidate)
+        if errors:
+            if regen < MAX_SYNTHESIS_REGENERATIONS:
+                regen_reason = REGEN_REASON_SCHEMA_INVALID
+                sys.stderr.write(
+                    f"WARNING [github-pipeline]: schema 校验不过（{errors}）—— "
+                    "判为可重生成，触发下一轮\n"
+                )
+                continue
+            _emit_sc7_metrics(_sc7_metrics)
+            _write_skipped(
+                f"schema_validation_failed: {errors}",
+                len(top10_with_summaries), fallback_layer,
+                stage=FAILURE_STAGE_VALIDATE,
+                failure_class=FAILURE_CLASS_LLM_OUTPUT_QUALITY,
+            )
+            return EXIT_NOT_DELIVERED
 
+        briefing = candidate
+        break
+
+    if briefing is None:
+        # 不可达：循环内每条失败路径都已 return。留一条 fail-closed 兜底，
+        # 而不是让 None 往下走成 TypeError（宁可可判读地拒绝，不要栈回溯）。
+        _emit_sc7_metrics(_sc7_metrics)
+        _write_failed("synthesis_regeneration_no_result",
+                      fallback_layer=fallback_layer,
+                      stage=FAILURE_STAGE_SYNTHESIZE,
+                      failure_class=FAILURE_CLASS_INTERNAL)
+        return EXIT_NOT_DELIVERED
+
+    # Step 8b: write vault
     if len(briefing["top_repos"]) < _MIN_REPOS_FOR_BRIEFING:
         _emit_sc7_metrics(_sc7_metrics)
-        _write_skipped("top_repos_below_min", len(briefing["top_repos"]), fallback_layer)
-        return 1
+        _write_skipped("top_repos_below_min", len(briefing["top_repos"]), fallback_layer,
+                       stage=FAILURE_STAGE_VALIDATE,
+                       failure_class=FAILURE_CLASS_UPSTREAM_INTAKE)
+        return EXIT_NOT_DELIVERED
 
     # Write vault
     with _StageTimer("write_vault"):
@@ -413,8 +531,11 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
             if mock:
                 vault.mkdir(parents=True, exist_ok=True)
             else:
-                _write_failed(f"vault_not_ready: {vault}", fallback_layer=fallback_layer)
-                return 1
+                _write_failed(f"vault_not_ready: {vault}",
+                              fallback_layer=fallback_layer,
+                              stage=FAILURE_STAGE_WRITE_VAULT,
+                              failure_class=FAILURE_CLASS_VAULT_IO)
+                return EXIT_NOT_DELIVERED
         out_dir.mkdir(parents=True, exist_ok=True)
         base_name = f"{today_str} GitHub Briefing"
         md_path = out_dir / f"{base_name}.md"
@@ -451,10 +572,97 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
     # SC-4: CLI 层最终交付断言 — 写盘后复查当日 md 真实存在，否则 fail-visible
     if not md_path.exists():
         _write_failed(f"vault_write_verified_missing: {md_path}",
-                      fallback_layer=fallback_layer)
-        return 1
+                      fallback_layer=fallback_layer,
+                      stage=FAILURE_STAGE_WRITE_VAULT,
+                      failure_class=FAILURE_CLASS_VAULT_IO)
+        return EXIT_NOT_DELIVERED
     _ts_print(f"briefing: WROTE {md_path}")
-    return 0
+    return EXIT_DELIVERED
+
+
+def _is_regenerable_synthesis_error(exc: BaseException) -> bool:
+    """该 synthesis 异常是否属于「换一次生成就可能好」的**输出质量**类失败。
+
+    只认 `json.JSONDecodeError`：这正是 07-22/25/28 三次生产失败逃出 `synthesize()`
+    的异常类型 —— synthesis.py 内部那次 JSON 重试之后的第二次 `json.loads` 不再被捕获，
+    于是原样冒泡，文本形如 `Unterminated string starting at: line 44 column 16 (char 2490)`。
+    模型这一轮把 JSON 写坏了，换一轮生成有实质胜率。
+
+    明确**排除**（重试无胜率，只白烧额度）：
+    - `SynthesisTruncatedError`（finish_reason=length，输出预算撞顶）—— 同上限重跑必然
+      截在同一处，该类型的 docstring 已论证过；它继承 RuntimeError 而非 JSONDecodeError，
+      靠类型即可分开，不需要匹配文本。
+    - 429 / 预算耗尽（`RuntimeError: DeepSeek API failed after 3 retries: HTTP Error 429`）
+      —— 重跑只会继续撞同一个已耗尽的配额；HTTP 层重试与模型族降级是 synthesis 层的
+      职责，不在 pipeline 层兜。
+    - 确定性参数错（空 grounding / prompt 过大 / repo 数超上限 / 条数不匹配）—— 输入
+      不变则必然复现，重试是纯浪费。
+    """
+    return isinstance(exc, json.JSONDecodeError)
+
+
+def _classify_synthesis_failure(exc: BaseException) -> str:
+    """synthesize 抛出的异常归到哪个 failure_class（告警据此说"能不能补跑"）。
+
+    分类依据是**类型 + 契约 2 的 error_type**，不匹配错误文本：
+    - `SynthesisTruncatedError` → 输出预算撞顶，补跑无用（`output_budget`）
+    - 带 `diagnosis` 的调用层错（429/HTTP）→ `llm_provider`，可补救性由预算 scope 决定
+    - `json.JSONDecodeError` → 产出质量（重生成已耗尽才会走到这）
+    - 其余 → internal（含确定性参数错，补跑无用）
+    """
+    from .synthesis import SynthesisTruncatedError  # 局部导入：避免加重模块导入图
+
+    if isinstance(exc, SynthesisTruncatedError):
+        return FAILURE_CLASS_OUTPUT_BUDGET
+    if isinstance(exc, json.JSONDecodeError):
+        return FAILURE_CLASS_LLM_OUTPUT_QUALITY
+    if _provider_diagnosis(exc) is not None:
+        return FAILURE_CLASS_LLM_PROVIDER
+    return FAILURE_CLASS_INTERNAL
+
+
+def _assemble_briefing(top10_with_summaries: list[dict], candidates: list,
+                       fallback_layer: str, today_str: str,
+                       synthesis_model: str = "") -> dict:
+    """把 synthesis 产出组装成待校验的 briefing dict（每轮重生成后重新调用）。
+
+    `synthesis_model` 记录实际产出的模型。主族预算耗尽后族降级时，这里落的是**备用族**模型
+    —— 宪法 P4「失败可见」：降级必须留在产物里。此前它只出现在 stdout 的
+    `SYNTHESIS_FALLBACK` 行，读简报的人（以及事后审计的人）看不出这份是谁产的。
+    """
+    # Inject engagement_raw before _clean_repo（必须在 clean 前，否则 engagement 字段被剥）
+    for r in top10_with_summaries:
+        r["engagement_raw"] = engagement_raw(r.get("engagement"))
+
+    _warn_display_name_degraded(top10_with_summaries)
+
+    briefing = {
+        "schema_version": "v1",
+        "briefing_type": "github-curator",
+        "generated_at": datetime.now(UTC).isoformat(),
+        "date": today_str,
+        "candidate_pool_size": _pool_size(),
+        "active_curators_today": list(set(c.mentioner for c in candidates)),
+        "fallback_layer_used": fallback_layer,
+        "top_repos": [_clean_repo(r) for r in top10_with_summaries],
+    }
+    # schema 里该字段是 minLength:1 的 optional —— 空值不写入，避免既有调用方
+    # （未传该参数者）产出一份 schema 不合法的 briefing。生产路径必然带真值。
+    if synthesis_model:
+        briefing["synthesis_model"] = synthesis_model
+    return briefing
+
+
+def _schema_errors(briefing: dict) -> list:
+    """对组装好的 briefing 跑 schema 校验（validator 只吃文件路径，故走临时文件）。"""
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tf:
+        json.dump(briefing, tf)
+        tf_path = tf.name
+    try:
+        return validate(tf_path)
+    finally:
+        Path(tf_path).unlink(missing_ok=True)
 
 
 def _aggregate(candidates: list) -> dict[str, dict]:
@@ -616,30 +824,131 @@ def _load_tier_map() -> dict[str, int]:
         return {}
 
 
-def _write_skipped(reason: str, candidates_count: int, fallback_layer: str,
-                   diag: dict | None = None) -> None:
-    now = datetime.now(UTC)
-    skipped = {
-        "status": "skipped",
-        "reason": reason,
-        "candidates_count": candidates_count,
-        "fallback_layer_used": fallback_layer,
-        "generated_at": now.isoformat(),
-    }
-    if diag:
-        skipped["diag"] = diag
-    (_PROJECT_ROOT / "briefing-skipped.json").write_text(json.dumps(skipped, indent=2))
-    _ts_print(f"briefing: SKIPPED ({reason})")
+def _provider_diagnosis(exc: BaseException) -> dict | None:
+    """从异常里取契约 2 的 provider 诊断字段（`error_type` / `budget_scope` / `spend` /
+    `cap` / `budget_date` / `provider_code`）。
+
+    鸭子类型消费 `synthesis.SynthesisAPIError.diagnosis.as_dict()`（字段名由
+    `common/http_retry.ProviderErrorDiagnosis` 定义，即契约 2 的权威形态）——
+    **不在本模块重新解析 429 文本**（宪法「约定优于新奇」：解析器已经有了，
+    再写一个就会有两套对不上的归因）。拿不到就返回 None，绝不让诊断落盘本身失败。
+    """
+    diagnosis = getattr(exc, "diagnosis", None)
+    as_dict = getattr(diagnosis, "as_dict", None)
+    if not callable(as_dict):
+        return None
+    try:
+        payload = as_dict()
+    except Exception:  # noqa: BLE001 — 诊断写盘绝不能因为归因取不到而失败
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
-def _write_failed(reason: str, fallback_layer: str = "skip") -> None:
-    failed = {
-        "status": "failed",
+def _remediation(failure_class: str, provider_diagnosis: dict | None) -> tuple[bool, str]:
+    """(是否可补救, 给告警看的一句话处置建议)。
+
+    这句话会被 `feishu_sync/blocked.py:blocking_reason()` 当作 `detail` 拼进告警文案
+    （形态 `status: reason（detail）`），所以必须是**可执行的下一步**，
+    不是"请检查日志"这类空话。
+    """
+    if failure_class == FAILURE_CLASS_LLM_PROVIDER and provider_diagnosis:
+        if provider_diagnosis.get("error_type") == "budget_exceeded":
+            scope = provider_diagnosis.get("budget_scope") or "unknown"
+            spend, cap = provider_diagnosis.get("spend"), provider_diagnosis.get("cap")
+            amount = f"（spend={spend} / cap={cap}）" if cap is not None else ""
+            if scope == "utc_daily":
+                day = provider_diagnosis.get("budget_date") or "当日"
+                return True, (
+                    f"共享 Gateway 账户的 UTC 日预算已打穿{amount}，"
+                    f"UTC {day} 内重跑必然再撞同一上限 —— 等 UTC 日预算重置后重试，"
+                    "或改用备用模型族（AKB2_LLM_FAMILY_FALLBACK=1）"
+                )
+            return True, (
+                f"共享 Gateway 账户的总预算已打穿{amount} —— "
+                "需 owner 调整额度后才能重跑，单纯补跑不会成功"
+            )
+        if provider_diagnosis.get("error_type") == "rate_limit":
+            return True, "provider 限流（非预算耗尽）—— 退避后重跑可能成功"
+    return {
+        FAILURE_CLASS_CONFIG: (False, "部署/配置错误，补跑不会成功，需人工修配置"),
+        FAILURE_CLASS_UPSTREAM_INTAKE: (True, "上游素材不足 —— 等下一轮采集或 backstop 补跑"),
+        FAILURE_CLASS_ENRICH_DEGRADED: (
+            True, "GitHub API 限流/网络故障导致 enrich 过半失败 —— 稍后补跑可能成功",
+        ),
+        FAILURE_CLASS_LLM_PROVIDER: (True, "LLM 调用层失败 —— 稍后补跑可能成功"),
+        FAILURE_CLASS_LLM_OUTPUT_QUALITY: (
+            True,
+            f"LLM 产出质量不过关，已在 pipeline 层重生成 "
+            f"{MAX_SYNTHESIS_REGENERATIONS} 次仍未收敛 —— 补跑可能成功",
+        ),
+        FAILURE_CLASS_OUTPUT_BUDGET: (
+            False,
+            "输出预算撞顶（finish_reason=length）—— 同上限重跑必然截在同一处，"
+            "需加大 MAX_OUTPUT_TOKENS 或减少单次 repo 数",
+        ),
+        FAILURE_CLASS_VAULT_IO: (False, "vault 未挂载或不可写 —— 先修挂载，补跑才有意义"),
+    }.get(failure_class, (False, "未分类失败 —— 需人工查 stdout/stderr 定位"))
+
+
+def _diag_payload(status: str, reason: str, fallback_layer: str,
+                  stage: str, failure_class: str,
+                  provider_diagnosis: dict | None) -> dict:
+    """两个诊断文件的共同骨架。
+
+    `date` 是这里最关键的一个字段（见模块 FAILURE_* 常量注释里的 2026-08-03 事故）：
+    用 `date.today()` 取**本地日**，与 vault 文件名 `f"{today_str} GitHub Briefing.md"`
+    同源，也就是告警算 expected_path 用的同一把尺子。不要改成 UTC 日 —— 那正是
+    告警此前对不上、只能报"文件缺失"的原因。
+    """
+    remediable, detail = _remediation(failure_class, provider_diagnosis)
+    payload = {
+        "status": status,
+        "date": date.today().isoformat(),
+        "stage": stage,
+        "failure_class": failure_class,
         "reason": reason,
+        "detail": detail,
+        "remediable": remediable,
         "fallback_layer_used": fallback_layer,
         "generated_at": datetime.now(UTC).isoformat(),
     }
-    (_PROJECT_ROOT / "briefing-failed.json").write_text(json.dumps(failed, indent=2))
+    if provider_diagnosis:
+        payload["provider_diagnosis"] = provider_diagnosis
+    return payload
+
+
+def _write_skipped(reason: str, candidates_count: int, fallback_layer: str,
+                   diag: dict | None = None, *,
+                   stage: str = FAILURE_STAGE_UNKNOWN,
+                   failure_class: str = FAILURE_CLASS_INTERNAL,
+                   provider_diagnosis: dict | None = None) -> None:
+    """写当日 skip 诊断。
+
+    stage / failure_class 有默认值（而非必填）是刻意的：这个函数只在**失败路径**上被
+    调用，忘传参数不该在最糟的时刻抛 TypeError 把诊断整份丢掉 —— 退化成
+    `unknown/internal` 仍然留下 reason 供归因。"每个调用点都显式传参"由测试静态守。
+    """
+    skipped = _diag_payload("skipped", reason, fallback_layer, stage, failure_class,
+                            provider_diagnosis)
+    skipped["candidates_count"] = candidates_count
+    if diag:
+        skipped["diag"] = diag
+    (_PROJECT_ROOT / "briefing-skipped.json").write_text(
+        json.dumps(skipped, indent=2, ensure_ascii=False)
+    )
+    _ts_print(f"briefing: SKIPPED ({reason})")
+
+
+def _write_failed(reason: str, fallback_layer: str = "skip", *,
+                  stage: str = FAILURE_STAGE_UNKNOWN,
+                  failure_class: str = FAILURE_CLASS_INTERNAL,
+                  provider_diagnosis: dict | None = None) -> None:
+    """写当日 failed 诊断（见 `_write_skipped` 关于默认值的说明）。"""
+    failed = _diag_payload("failed", reason, fallback_layer, stage, failure_class,
+                           provider_diagnosis)
+    (_PROJECT_ROOT / "briefing-failed.json").write_text(
+        json.dumps(failed, indent=2, ensure_ascii=False)
+    )
     print(f"briefing: FAILED ({reason})")
 
 
@@ -710,6 +1019,13 @@ def _render_markdown(briefing: dict) -> str:
         f"candidate_pool_size: {pool_size}",
         f"active_curators_today: {active}",
         f"generated_at: {briefing['generated_at']}",
+        # 降级可见性（宪法 P4）：主族预算耗尽后族降级时，这里显示的是备用族模型。
+        # 读简报的人与事后审计的人都能看出这份是谁产的，而不是只在 stdout 一闪而过。
+        *(
+            [f"synthesis_model: {briefing['synthesis_model']}"]
+            if briefing.get("synthesis_model")
+            else []
+        ),
         "tags:",
         "  - github",
         "  - ai-trends",

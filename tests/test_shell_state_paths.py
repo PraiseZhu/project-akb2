@@ -206,6 +206,18 @@ class TestBootstrapStateRootPlaceholder:
         env = os.environ.copy()
         env["HOME"] = str(home)
         env.pop("AKB2_STATE_ROOT", None)
+        # 2026-08-03(Lane 4 门生效后补):bootstrap_launchd.sh 现有两道 fail-closed 门排在渲染之前
+        #   - worktree 守卫:本机 checkout 就是 worktree,不放行会先被它拦下
+        #   - VAULT_ROOT 三门:门 3 拒绝落在 /var/folders 下的 VAULT_ROOT,而本仓标准测试命令
+        #     `VAULT_ROOT="$(mktemp -d)" pytest` 继承进来的正是这种值(注意:主仓同样会红,
+        #     不只是 worktree),tmp_path 在 macOS 上也落在 /var/folders
+        # 本 helper 要验的是 __AKB2_STATE_ROOT__ 的渲染结果,不是那两道门,故显式喂合规值。
+        # 放在 env.update(extra_env) **之前**,让调用方仍可按需覆写。
+        vault = tmp_path / "vault"
+        vault.mkdir(exist_ok=True)
+        env["VAULT_ROOT"] = str(vault)
+        env["AKB2_ALLOW_TMP_VAULT_ROOT"] = "1"
+        env["AKB2_ALLOW_WORKTREE_INSTALL"] = "1"
         env.update(extra_env or {})
         proc = subprocess.run(
             [
@@ -230,6 +242,8 @@ class TestBootstrapStateRootPlaceholder:
             "<string>__AKB2_STATE_ROOT__/intake/intake-state.jsonl</string>\n"
             "<string>__AKB2_REPO_ROOT__/config/main_sources.yaml</string>\n"
         )
+        # 两道 Lane 4 门（worktree 守卫 / VAULT_ROOT 三门）的合规值由 `_render` 统一喂，
+        # 不在这里重复一遍 —— 同一件事两处实现只会漂移。
         proc, out = self._render(tmp_path, template)
         assert proc.returncode == 0, f"{proc.stdout}\n{proc.stderr}"
         rendered = out.read_text(encoding="utf-8")

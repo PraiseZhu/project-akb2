@@ -3,7 +3,7 @@
 <!--
   feishu-briefing-sync 每日 10:00 调度（prod：发 XD WEB 群）。
   占位符 __AKB2_REPO_ROOT__ / __AKB2_VAULT_ROOT__ 在安装时替换为绝对路径。
-  注意：本 plist 仅在 merge 部署后才 launchctl load；dev 期手动跑 wrapper（默认 --target dm）。
+  注意：本 plist 仅在 merge 部署后才 launchctl load；dev 期手动跑 wrapper（默认 target=dm）。
 -->
 <plist version="1.0">
 <dict>
@@ -36,7 +36,7 @@
         <key>PYTHONPATH</key>
         <string>__AKB2_REPO_ROOT__/src</string>
         <key>PATH</key>
-        <string>/Users/praise/.pyenv/shims:/Users/praise/.pyenv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <string>__AKB2_HOME__/.pyenv/shims:__AKB2_HOME__/.pyenv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     </dict>
 </dict>
 </plist>

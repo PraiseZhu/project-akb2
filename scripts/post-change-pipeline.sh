@@ -193,7 +193,20 @@ else
   echo -e "${CYN}[$STEP INFO]${NC} verify-no-drift (drift in dry-run is expected if targets not yet synced)"
 fi
 
-# === Step 6: pytest smoke ===
+# === Step 6: verify-launchd-parity ===
+if [[ "$MODE" == "write" ]]; then
+  run_step "verify-launchd-parity" "$SCRIPT_DIR/verify-launchd-parity.sh"
+else
+  STEP=$((STEP + 1))
+  echo ""
+  echo -e "${CYN}[$STEP] verify-launchd-parity (informational in dry-run)${NC}"
+  echo "    cmd: $SCRIPT_DIR/verify-launchd-parity.sh"
+  echo ""
+  "$SCRIPT_DIR/verify-launchd-parity.sh" || true
+  echo -e "${CYN}[$STEP INFO]${NC} verify-launchd-parity (launchd drift in dry-run is reported, not enforced)"
+fi
+
+# === Step 7: pytest smoke ===
 STEP=$((STEP + 1))
 echo ""
 echo -e "${CYN}[$STEP] pytest smoke${NC}"

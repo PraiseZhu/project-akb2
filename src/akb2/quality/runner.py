@@ -38,6 +38,19 @@ from src.akb2.quality import distill as _dst  # F60: 账本预算字段与 disti
 # ---------------------------------------------------------------------------
 
 POLL_INTERVAL_SECONDS: int = 300  # 5 分钟轮询间隔
+# 日志时间戳格式（宪法 P4「失败可见」的可观测性前提）。
+# 修复背景：本 daemon 是唯一 24/7 常驻链路，而它的 826KB 日志此前**一行时间戳都没有**
+# （`grep -c 2026-08-02 logs/akb2-quality-runner.log` == 0），行格式只有
+# `[runner] 处理: <file>` / `[runner] 结果: <status> — <file>`。于是任何时间轴关联
+# （"05:30-06:00 窗口内 runner 的 LLM 调用密度是多少"）都做不成，排查只能改走
+# quality-ledger.jsonl 的间接证据。
+#
+# 格式选择：照抄 `scripts/akb2-main-pipeline.sh` 的 `date -u +%Y-%m-%dT%H:%M:%SZ`。
+# 那个 wrapper 写的是**同一个日志文件**（该文件已有 134 行这种前缀，如
+# `[2026-07-31T04:30:57Z] runner starting: ...`），照抄它才不会在同一文件里造出第二种
+# 格式；`src/akb2/briefing/github/pipeline.py:_ts_print` 也是同一形态。
+# 保留 `[runner]` 标签不动：既有运维习惯与脚本按它 grep。
+LOG_TS_FORMAT: str = "%Y-%m-%dT%H:%M:%SZ"
 AVOID_WINDOW_MINUTES: int = 15  # 避让窗口 ± 分钟
 WEEKLY_SPOT_CHECK_DAY: int = 6  # 周日 (0=Mon, 6=Sun)
 SPOT_CHECK_SAMPLE_SIZE: int = 3  # 周抽检样本数
@@ -138,12 +151,17 @@ AVOID_WINDOWS: list[tuple[int, int]] = [
 _shutdown_flag: bool = False
 
 
+def _log_ts() -> str:
+    """`[runner]` 日志行的时间戳前缀 — `[2026-08-03T04:30:57Z]`（见 LOG_TS_FORMAT）。"""
+    return f"[{datetime.now(UTC).strftime(LOG_TS_FORMAT)}]"
+
+
 def _install_signal_handlers() -> None:
     """安装 SIGTERM/SIGINT 信号处理器。"""
     def _handler(signum: int, frame: Any) -> None:
         global _shutdown_flag
         _shutdown_flag = True
-        print(f"[runner] 收到信号 {signum}，优雅退出中...", file=sys.stderr)
+        print(f"{_log_ts()} [runner] 收到信号 {signum}，优雅退出中...", file=sys.stderr)
 
     signal.signal(signal.SIGTERM, _handler)
     signal.signal(signal.SIGINT, _handler)
@@ -225,7 +243,7 @@ def _shard_key(raw_path: str) -> str:
     if sep and head:
         return head.rsplit("--", 1)[-1]
     print(
-        f"[runner] raw 文件名不含 `--raw--` 段，分片键回退为整个文件名"
+        f"{_log_ts()} [runner] raw 文件名不含 `--raw--` 段，分片键回退为整个文件名"
         f"（跨日重抓时会分到不同片）: {name}",
         file=sys.stderr,
     )
@@ -244,7 +262,7 @@ def _raw_item_age_sec(raw_path: str) -> float:
         return max(0.0, time.time() - Path(raw_path).stat().st_mtime)
     except OSError as exc:
         print(
-            f"[runner] 无法读取 raw mtime，按未超龄处理（不接管）: {raw_path} — {exc}",
+            f"{_log_ts()} [runner] 无法读取 raw mtime，按未超龄处理（不接管）: {raw_path} — {exc}",
             file=sys.stderr,
         )
         return 0.0
@@ -936,7 +954,7 @@ def _scan_queue(config: RunnerConfig) -> list[str]:
                 if age < SHARD_TAKEOVER_AFTER_SEC:
                     continue
                 takeover_note = (
-                    f"[runner] 接管外机分片项: shard={shard} 不属本机 "
+                    f"{_log_ts()} [runner] 接管外机分片项: shard={shard} 不属本机 "
                     f"{sorted(owned)}，但已滞留 {int(age)}s "
                     f"(> {SHARD_TAKEOVER_AFTER_SEC}s) — {fpath.name}"
                 )
@@ -966,7 +984,7 @@ def _check_cross_machine_safety(config: RunnerConfig) -> bool:
 
     if config.owned_shards is not None:
         print(
-            f"[runner] 跨机分片: 本机拥有 shard {sorted(config.owned_shards)} / "
+            f"{_log_ts()} [runner] 跨机分片: 本机拥有 shard {sorted(config.owned_shards)} / "
             f"{RUNNER_SHARD_COUNT}，外机分片接管="
             f"{'ON' if config.shard_takeover else 'OFF'}"
             f"（阈值 {SHARD_TAKEOVER_AFTER_SEC}s）",
@@ -978,7 +996,7 @@ def _check_cross_machine_safety(config: RunnerConfig) -> bool:
         return True
 
     print(
-        f"[runner] 跨机风险: raw 队列 {config.raw_dir} 在跨机同步范围内，"
+        f"{_log_ts()} [runner] 跨机风险: raw 队列 {config.raw_dir} 在跨机同步范围内，"
         f"而本机未配置队列分片（{RUNNER_SHARDS_ENV} 未设）。处理锁 flock 不跨机"
         f"生效、账本也是机器本地，第二台机器同时启用 runner 会重复处理同一篇。"
         f"要么保证同一时刻只有一台机器跑 runner，要么给每台机器设互不相交的 "
@@ -987,7 +1005,7 @@ def _check_cross_machine_safety(config: RunnerConfig) -> bool:
     )
     if os.environ.get(RUNNER_REQUIRE_SHARDING_ENV, "0") == "1":
         print(
-            f"[runner] FATAL: {RUNNER_REQUIRE_SHARDING_ENV}=1 → 拒绝在无分片配置下"
+            f"{_log_ts()} [runner] FATAL: {RUNNER_REQUIRE_SHARDING_ENV}=1 → 拒绝在无分片配置下"
             f"启动（fail-closed）",
             file=sys.stderr,
         )
@@ -1047,14 +1065,14 @@ def _acquire_processing_lock(config: RunnerConfig) -> bool:
     try:
         lock_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        print(f"[runner] 锁目录不可用: {lock_dir} — {exc}", file=sys.stderr)
+        print(f"{_log_ts()} [runner] 锁目录不可用: {lock_dir} — {exc}", file=sys.stderr)
         return False
 
     lock_file = _lock_file_path(config)
     try:
         fd = open(lock_file, "a+", encoding="utf-8")
     except OSError as exc:
-        print(f"[runner] 锁文件不可打开: {lock_file} — {exc}", file=sys.stderr)
+        print(f"{_log_ts()} [runner] 锁文件不可打开: {lock_file} — {exc}", file=sys.stderr)
         return False
 
     try:
@@ -1074,7 +1092,7 @@ def _acquire_processing_lock(config: RunnerConfig) -> bool:
                 age = 0.0
             if age <= MAX_PROCESSING_LOCK_AGE_SEC:
                 print(
-                    f"[runner] 处理锁由另一台机器持有（host={holder_host} "
+                    f"{_log_ts()} [runner] 处理锁由另一台机器持有（host={holder_host} "
                     f"pid={holder.get('pid')} age={int(age)}s），让出本轮。"
                     f"锁目录 {lock_dir} 疑似跨机共享 —— flock 不跨机生效",
                     file=sys.stderr,
@@ -1083,7 +1101,7 @@ def _acquire_processing_lock(config: RunnerConfig) -> bool:
                 fd.close()
                 return False
             print(
-                f"[runner] 回收跨机超龄锁（host={holder_host} age={int(age)}s）",
+                f"{_log_ts()} [runner] 回收跨机超龄锁（host={holder_host} age={int(age)}s）",
                 file=sys.stderr,
             )
 
@@ -1099,7 +1117,7 @@ def _acquire_processing_lock(config: RunnerConfig) -> bool:
         fd.flush()
         os.fsync(fd.fileno())
     except OSError as exc:
-        print(f"[runner] 锁内容写入失败: {exc}", file=sys.stderr)
+        print(f"{_log_ts()} [runner] 锁内容写入失败: {exc}", file=sys.stderr)
         fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
         fd.close()
         return False
@@ -1125,7 +1143,7 @@ def _release_processing_lock(config: RunnerConfig) -> None:
     if fd is None:
         if lock_file.exists():
             print(
-                f"[runner] 未持有处理锁，跳过释放（不删他人锁 {lock_file}）",
+                f"{_log_ts()} [runner] 未持有处理锁，跳过释放（不删他人锁 {lock_file}）",
                 file=sys.stderr,
             )
         return
@@ -1136,7 +1154,7 @@ def _release_processing_lock(config: RunnerConfig) -> None:
             holder.get("host") != _HOSTNAME or holder.get("pid") != os.getpid()
         ):
             print(
-                f"[runner] 锁内容已被他人改写（{holder}），只释放本地 fd，不动锁文件",
+                f"{_log_ts()} [runner] 锁内容已被他人改写（{holder}），只释放本地 fd，不动锁文件",
                 file=sys.stderr,
             )
         else:
@@ -1150,7 +1168,7 @@ def _release_processing_lock(config: RunnerConfig) -> None:
             }))
             fd.flush()
     except OSError as exc:
-        print(f"[runner] 锁释放标记写入失败: {exc}", file=sys.stderr)
+        print(f"{_log_ts()} [runner] 锁释放标记写入失败: {exc}", file=sys.stderr)
     finally:
         try:
             fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
@@ -3276,10 +3294,16 @@ def _run_main_loop(config: RunnerConfig) -> int:
     _install_signal_handlers()
     avoid_windows = list(AVOID_WINDOWS)
 
-    print(f"[runner] 启动: raw_dir={config.raw_dir}, poll={config.poll_interval_seconds}s",
-          file=sys.stderr)
-    print(f"[runner] auto_promote={'ON' if config.auto_promote else 'OFF (proposal mode)'}",
-          file=sys.stderr)
+    print(
+        f"{_log_ts()} [runner] 启动: raw_dir={config.raw_dir}, "
+        f"poll={config.poll_interval_seconds}s",
+        file=sys.stderr,
+    )
+    print(
+        f"{_log_ts()} [runner] "
+        f"auto_promote={'ON' if config.auto_promote else 'OFF (proposal mode)'}",
+        file=sys.stderr,
+    )
 
     last_spot_check_date: str = ""
 
@@ -3288,7 +3312,7 @@ def _run_main_loop(config: RunnerConfig) -> int:
         if _is_weekly_check_time():
             today = _now().strftime("%Y-%m-%d")
             if today != last_spot_check_date:
-                print("[runner] 触发周抽检...", file=sys.stderr)
+                print(f"{_log_ts()} [runner] 触发周抽检...", file=sys.stderr)
                 weekly_dir = Path(config.vault_root) / "reports" / "quality-loop"
                 _run_weekly_spot_check(config, str(weekly_dir))
                 last_spot_check_date = today
@@ -3307,15 +3331,18 @@ def _run_main_loop(config: RunnerConfig) -> int:
                 residency_results = _run_residency_cycle(config)
                 for r in residency_results:
                     status = r.get("final_status", "unknown")
-                    print(f"[runner] 驻留重掷: {status} — {r.get('content_hash','')[:12]}",
-                          file=sys.stderr)
+                    print(
+                        f"{_log_ts()} [runner] 驻留重掷: {status} — "
+                        f"{r.get('content_hash','')[:12]}",
+                        file=sys.stderr,
+                    )
             except Exception as exc:
                 # 主循环 7×24 生命线:驻留扫描异常不杀主循环
                 _log_event(
                     config, "abort", "needs_repair", "",
                     {"reason": "residency_scan_error", "error": str(exc)[:200]},
                 )
-                print(f"[runner] 驻留扫描异常: {exc}", file=sys.stderr)
+                print(f"{_log_ts()} [runner] 驻留扫描异常: {exc}", file=sys.stderr)
             time.sleep(config.poll_interval_seconds)
             continue
 
@@ -3327,21 +3354,24 @@ def _run_main_loop(config: RunnerConfig) -> int:
         try:
             # 串行处理队列中的每一篇（每次只取 1 篇）
             raw_path = queue[0]
-            print(f"[runner] 处理: {Path(raw_path).name}", file=sys.stderr)
+            print(f"{_log_ts()} [runner] 处理: {Path(raw_path).name}", file=sys.stderr)
             result = _process_one(raw_path, config)
 
             if result:
                 status = result.get("final_status", result.get("status", "unknown"))
-                print(f"[runner] 结果: {status} — {Path(raw_path).name}", file=sys.stderr)
+                print(
+                    f"{_log_ts()} [runner] 结果: {status} — {Path(raw_path).name}",
+                    file=sys.stderr,
+                )
         except Exception as exc:
-            print(f"[runner] 处理异常: {exc}", file=sys.stderr)
+            print(f"{_log_ts()} [runner] 处理异常: {exc}", file=sys.stderr)
         finally:
             _release_processing_lock(config)
 
         # 篇间短暂 sleep 防止紧循环
         time.sleep(5)
 
-    print("[runner] 优雅退出完成", file=sys.stderr)
+    print(f"{_log_ts()} [runner] 优雅退出完成", file=sys.stderr)
     return 0
 
 
@@ -3470,18 +3500,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.spot_check:
         weekly_dir = os.path.join(vault_root, "reports", "quality-loop")
         _run_weekly_spot_check(config, weekly_dir)
-        print("[runner] 周抽检完成", file=sys.stderr)
+        print(f"{_log_ts()} [runner] 周抽检完成", file=sys.stderr)
         return 0
 
     # --once: 处理一篇后退出
     if args.once:
         queue = _scan_queue(config)
         if not queue:
-            print("[runner] 队列为空，无需处理", file=sys.stderr)
+            print(f"{_log_ts()} [runner] 队列为空，无需处理", file=sys.stderr)
             return 0
         raw_path = queue[0]
         if not _acquire_processing_lock(config):
-            print("[runner] 无法获取处理锁", file=sys.stderr)
+            print(f"{_log_ts()} [runner] 无法获取处理锁", file=sys.stderr)
             return 1
         try:
             result = _process_one(raw_path, config)

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.akb2.video</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__AKB2_HOME__/.pyenv/shims/python3</string>
+        <string>-m</string>
+        <string>akb2.video</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>__AKB2_REPO_ROOT__</string>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>2</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>__AKB2_REPO_ROOT__/logs/video-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>__AKB2_REPO_ROOT__/logs/video-stderr.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONPATH</key>
+        <string>__AKB2_REPO_ROOT__/src</string>
+        <key>PATH</key>
+        <string>__AKB2_HOME__/.pyenv/shims:__AKB2_HOME__/.pyenv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>AKB2_ROOT</key>
+        <string>__AKB2_VAULT_ROOT__/Praise Space/AKB2.0</string>
+    </dict>
+</dict>
+</plist>

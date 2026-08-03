@@ -201,3 +201,68 @@ step-2 量规外置正当升级 `skillpack/quality/rubric/10-dimensions.md`（�
 | 修复触发条件 | rubric 版本升级时同步更新 `_KNOWN_RUBRIC_HASH`（这是 rubric 演进的必要配套，非真回归——hash 守护本就该随 rubric 合法升级刷新基准） |
 
 > 说明：这是**预期的、由计划明确要求的 rubric 升级**引起的 hash 漂移，不是判分行为回归——grader 的 10 维 pass/fail 与缺陷集对同稿件不变（step-2 SC-5 验证）。仅 md 文件字节 hash 因加注释 + 版本号变化。
+
+---
+
+## launchd_residuals_2026_08_03（lane-5：promote parity / launchd drift）
+
+### 来源不明的带外改写：main-pipeline autopromote 运行态
+
+| 项 | 值 |
+|----|----|
+| 发现日期 | `2026-08-03` |
+| 影响文件 | `~/Library/LaunchAgents/com.akb2.main-pipeline.plist` |
+| 运行态指纹 | `sha256=e35e04f704b22adfba9dc6fe1402b03a012597cbfb93071b1141d62c1492d71d`, `size=1433`, `mtime=2026-07-04 21:56:22` |
+| 证据备份 1 | `~/.com.akb2.main-pipeline.autopromote-bak.20260704-215514.plist`, `sha256=a9f14a9f1927a1203620da6dd6d9721db25c3ad237a20ad358d5a9917632a4df`, `size=4206`, `mtime=2026-07-04 21:55:14` |
+| 证据备份 2 | `~/.com.akb2.main-pipeline.autopromote-bak.20260704-215622.plist`, `sha256=a9f14a9f1927a1203620da6dd6d9721db25c3ad237a20ad358d5a9917632a4df`, `size=4206`, `mtime=2026-07-04 21:56:22` |
+| 结论 | `2026-07-04 21:55–21:56` 发生过一次来源不明的带外程序化改写；运行态 `AKB2_AUTO_PROMOTE=1` 与仓库模板 `=0` 漂移被 lane-5 parity 检测正式登记 |
+| 处理边界 | **不删除**两份 `.autopromote-bak` 备份；它们是审计证据 |
+
+### GitHub briefing 原 SC-8 已废弃
+
+| 项 | 值 |
+|----|----|
+| 原契约 | `plans/gd/2026-05-27-akb2-github-curator-mvp/master-plan.md` 的 `SC-8` 要求 `launchd/com.akb2.github_briefing.plist` 不含 `EnvironmentVariables` |
+| 现状 | 生产运行态依赖 plist 级 `PYTHONPATH` 与 `PATH`（含 `~/.local/bin`），wrapper 注入不足以覆盖 |
+| owner 方向 | `2026-08-03` lane-5 按 owner 既定方向将现状回灌入仓库模板，并保留 parity 检测对其余漂移的告警能力 |
+| 残留说明 | 旧 `SC-8` 不再作为现行验收线；后续若恢复 wrapper-only 注入，需要单独计划替换并重写验收 |
+
+### F58 已交付但未部署：inflow-sentinel pending human install
+
+| 项 | 值 |
+|----|----|
+| 交付提交 | `fc1d9f9817c842ee1fb550e0ef0747aa725c25be` |
+| 提交日期 | `2026-07-30` |
+| 当前状态 | `launchd/com.akb2.inflow-sentinel.plist` 已入仓，但 `~/Library/LaunchAgents/com.akb2.inflow-sentinel.plist` 尚不存在，`launchctl print gui/$(id -u)/com.akb2.inflow-sentinel` 不在册 |
+| 风险 | 入库断流告警能力仍为 0；pending 状态已由 `launchd/INSTALL-MANIFEST.yaml` 和 `scripts/verify-launchd-parity.sh` 显式报出，不再静默 |
+| 后续动作 | 保持人工确认注册的宪法边界；待 owner/人工批准后再安装，不由 agent 私自 bootstrap |
+
+---
+
+## llm_resilience_lane1（2026-08-03，LLM 调用韧性修复批次 1）
+
+> 来源：`_tmp/fix-plan/lane-1-llm-resilience.md`（2026-08-02 GitHub 简报未交付的分赛道排查结论）。
+> 本节 3 条残留均因**改动边界**（并行 7 个 worker，各持独占文件清单）而非技术困难未在本轮消掉，
+> 逐条给出修复触发条件与需要的文件权限。
+
+| 残留 | 位置 | 为什么留 | 修复条件 |
+|------|------|---------|---------|
+| `synthesis_no_key_fallback` | `src/akb2/briefing/synthesis.py::synthesize`（无 `AI_GATEWAY_API_KEY` 分支） | 本轮按计划只摘「**API 失败** → `_fallback_synthesis`」这条自动路径；**无 key** 时仍自动产出降级假简报（`source.name=synthesis_fallback`，summary 明文含 "fallback summary generated when the synthesis model is unavailable"）。改它会让 `tests/briefing/test_synthesis.py::test_happy_path_fallback` 与 `::test_synthesize_output_file`（CLI e2e，无 key 环境跑）双双失败，而该测试文件不在本轮独占清单内 | 有权改 `tests/briefing/test_synthesis.py` 时，照 github 侧 `allow_mock` 形态把它改成显式 opt-in（`synthesize(..., allow_fallback=True)`），生产链路缺 key 直接硬失败。**需 owner 复核**：生产 env 已配 key，该路径在生产不可达，但它是 P3 fail-closed 的一个缺口 |
+| `http_retry_duplication_in_send_py` | `src/akb2/feishu_sync/feishu/send.py:67-90` 与 `src/akb2/common/http_retry.py` | 退避范式已提取到共享模块并被 github synthesis 采用，但 `send.py` 的三个私有函数（`_parse_retry_after` / `_backoff_delay` / `_is_retryable_http`）仍是本地副本 —— `send.py` 的调用点不在本轮独占清单内，按计划「新模块提供实现，`send.py` 暂不改」 | 有权改 `send.py` 时替换为 `from akb2.common.http_retry import ...` 并删本地实现（其 `_BASE_BACKOFF` / `_MAX_BACKOFF` env 覆盖以 `base` / `cap` 参数传入，行为不变）。当前重复是**已知且有意**的，不是漂移 |
+
+> 另注（**非**残留，已修）：`briefing/synthesis.py` 的 `-preview` 默认模型此前属**无豁免登记的违宪**
+> （宪法 P7 / `docs/constitution.md:95`）。本轮已把默认值改为正式版 `deepseek/deepseek-v4-pro`
+> 并加调用期硬校验，故**不需要**豁免条目 —— 此处仅记录该违规曾存在且已消除，防止日后 grep
+> `preview` 又回到零命中而误判「从未发生」。
+
+> 另注（**非**残留，已修）：`github_synthesis_model_not_in_frontmatter` 曾登记于此
+> —— 族降级后实际使用的模型只在 `synthesize()` 返回值与 stdout 的 `SYNTHESIS_FALLBACK` 行可见，
+> 没有接进 vault 产出，读简报的人与事后审计的人看不出这份是谁产的（违反宪法 P4「失败可见」的原意：
+> 降级必须留在**产物**里，而 stdout 在 launchd 下只落日志文件、无人常看）。
+> 2026-08-03 已接线完成：`schemas/github_briefing_v1.json` 加 `synthesis_model`（optional，
+> `minLength:1`，不进 required 以免既有产物重校验被破）；`pipeline.py::_assemble_briefing`
+> 非空才写入（避免未传参的调用方产出 schema 不合法的 briefing）；`_render_markdown` 输出
+> `synthesis_model:` frontmatter 行。回归锁见
+> `tests/briefing/github/test_pipeline_exit_codes.py::TestSynthesisModelRecordedInArtifact`
+> （两条均经变异验证：注入"永不输出该行"与"空值也写入"各自精确打红对应断言）。
+> 此处仅记录该缺口曾存在且已消除，防止日后误判「从未发生」。

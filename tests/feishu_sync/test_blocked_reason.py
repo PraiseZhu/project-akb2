@@ -115,3 +115,23 @@ def test_discover_node_alert_carries_reason(tmp_path, monkeypatch):
     msg = out["errors"][0]
     assert "缺失" in msg
     assert "真因" in msg and "intake_fixture_fallback" in msg
+
+
+def test_next_step_command_mentions_backstop_then_reconcile(tmp_path):
+    vault = tmp_path / "vault"
+    cmd = blocked.next_step_command("github", "2026-08-02", vault)
+    assert cmd is not None
+    assert "github_briefing_backstop.sh" in cmd
+    assert "--reconcile-missing" in cmd
+
+
+def test_next_step_command_reconcile_only_when_product_exists(tmp_path):
+    vault = tmp_path / "vault"
+    out = vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "GitHub"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "2026-08-02 GitHub Briefing.md").write_text("# done", encoding="utf-8")
+
+    cmd = blocked.next_step_command("github", "2026-08-02", vault)
+    assert cmd is not None
+    assert "github_briefing_backstop.sh" not in cmd
+    assert "--reconcile-missing" in cmd

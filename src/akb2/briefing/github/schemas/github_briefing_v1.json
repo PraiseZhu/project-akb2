@@ -46,7 +46,12 @@
       "description": "今日有原创 + 含 github URL 推文的博主清单"
     },
     "fallback_layer_used": {
-      "enum": ["layer1", "layer2", "layer3", "layer1+2"],
+      "enum": [
+        "layer1",
+        "layer2",
+        "layer3",
+        "layer1+2"
+      ],
       "description": "实际触发的兜底层级；layer1 = X curator 主路径；layer2 = GitHub Trending HTML；layer3 = 人工 JSON 注入；layer1+2 = curator + Trending 混合补位"
     },
     "top_repos": {
@@ -80,12 +85,17 @@
             "minimum": 0
           },
           "language": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "GitHub API 返回的主语言；可为 null"
           },
           "topic_tags": {
             "type": "array",
-            "items": {"type": "string"}
+            "items": {
+              "type": "string"
+            }
           },
           "mention_count": {
             "type": "integer",
@@ -130,12 +140,19 @@
             "description": "该 repo 最热单条提及的加权推文热度；layer2/3 或无 metrics = 0"
           },
           "repo_full_name": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "pattern": "^[\\w.-]+/[\\w.-]+$",
             "description": "GitHub API full_name（权威大小写，301 重定向后为新名）；渲染标题用，去重键仍是小写的 repo_url"
           },
           "grounding_source": {
-            "enum": ["description", "readme", "description+readme"],
+            "enum": [
+              "description",
+              "readme",
+              "description+readme"
+            ],
             "description": "summary 所依据的原文来源；空 grounding 的条目在 pipeline 阶段已被剔除，不会出现在本文件"
           },
           "grounding_excerpt": {
@@ -146,6 +163,11 @@
           }
         }
       }
+    },
+    "synthesis_model": {
+      "type": "string",
+      "minLength": 1,
+      "description": "实际产出本份简报的模型标识。主族失败后族降级时记录的是备用族模型 —— 宪法 P4「失败可见」：降级必须留在产物里，不能只在 stdout 一闪而过。"
     }
   }
 }

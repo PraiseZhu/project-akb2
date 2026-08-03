@@ -4,12 +4,18 @@
 # 由 com.akb2.github_briefing.backstop（07:30）触发。设计要点：
 #   - 幂等：今日 GitHub Briefing 已写盘 → 直接跳过，绝不重复产出。
 #   - 仅补失败：只有当日 briefing 文件不存在时才重跑 daily_github_briefing.sh。
-#   - 不抢主跑：若 github pipeline 进程仍在运行，跳过（让主跑先跑完）。
+#   - 不抢主跑：pgrep 软守卫 + PID 锁（pgrep 会扑空，见锁那一段的说明）。
 #   - 静默：成功/跳过/失败都只写日志，不弹桌面通知。
 #
 # 日志：
 #   logs/github-backstop.log              ← 主看：每次一行（时间 + 结果）
 #   测试/手工调用经 --log-path / AKB2_GITHUB_BACKSTOP_LOG 隔离，绝不污染生产日志
+#
+# ── 退出码语义（与 briefing_backstop.sh 对齐）─────────────────────────────
+#   124 = DEADLINE_EXIT_CODE：**只**保留给「pipeline 被 run_with_deadline.py 到点
+#         终止」。124 也是 GNU timeout(1) 的超时约定码，通用监控会读成"子进程超时"。
+#   125 = GIVE_UP_EXIT_CODE：backstop **自己**主动放弃（过 deadline 不启动补跑、
+#         重试循环撞 deadline）。二者以前共用 124，launchd 层完全不可分辨。
 #
 # 用法：github_briefing_backstop.sh --vault-root <path> [--dry-run] [--log-path <path>]
 set -euo pipefail
@@ -42,8 +48,40 @@ LOG="${LOG_PATH:-${AKB2_GITHUB_BACKSTOP_LOG:-$DEFAULT_LOG}}"
 mkdir -p "$(dirname "$LOG")"
 
 # ── 具名常量（宪法 P4 预算/退出码显式）────────────────────────────────────
-# 与 scripts/run_with_deadline.py 的 _DEADLINE_EXIT 对齐。
+# DEADLINE_EXIT_CODE 与 scripts/run_with_deadline.py 的 _DEADLINE_EXIT 对齐；
+# GIVE_UP_EXIT_CODE 是本脚本主动放弃。两者必须不同值（语义见文件头）。
 readonly DEADLINE_EXIT_CODE=124
+readonly GIVE_UP_EXIT_CODE=125
+
+# 补跑重试：**该变的是模型族，不是次数**。2026-08-02 实证 —— pipeline 的 synthesis
+# 阶段内部已有 3 次重试（`DeepSeek API failed after 3 retries`），主跑 05:59 用掉 3
+# 次、backstop 07:30 又 3 次，**共 6 次同族尝试全部 429**。在同族上加第 7/8/9 次只
+# 会多烧额度、把 backstop 运行时间推向 deadline，**反而降低补跑成功率**。
+# 所以预算取 2 而不是 3，且第 2 轮**必须换模型族**（见 AKB2_LLM_FAMILY_FALLBACK）。
+readonly RERUN_ATTEMPT_BUDGET="${AKB2_GITHUB_RERUN_ATTEMPTS:-2}"
+readonly RERUN_BACKOFF_SECONDS="${AKB2_GITHUB_RERUN_BACKOFF:-600}"
+# 换模型族**救不了**的退出码 → 不进第 2 轮（宪法 P4 预算显式）。github pipeline 的
+# 码位只有 0=已交付 / 1=未交付（见 src/akb2/briefing/github/pipeline.py EXIT_*），
+# 所以这里只需拦 124：pipeline 被 run_with_deadline 到点终止后再跑一轮同样跑不完，
+# 只会把 backstop 自己推过 deadline。1 仍然重试（可能是 LLM 输出质量或 429，换族有救）。
+readonly RERUN_NONRETRYABLE_EXIT_CODES="124"
+
+# is_nonretryable_rc <rc> → 0=该码换族救不了(别重试), 1=可以再试一轮
+is_nonretryable_rc() {
+  local code
+  for code in $RERUN_NONRETRYABLE_EXIT_CODES; do
+    [[ "$1" == "$code" ]] && return 0
+  done
+  return 1
+}
+if ! [[ "$RERUN_ATTEMPT_BUDGET" =~ ^[0-9]+$ ]] || (( RERUN_ATTEMPT_BUDGET < 1 )); then
+  echo "ERROR: AKB2_GITHUB_RERUN_ATTEMPTS 必须是 >=1 的整数，实际 '$RERUN_ATTEMPT_BUDGET'" >&2
+  exit 1
+fi
+if ! [[ "$RERUN_BACKOFF_SECONDS" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: AKB2_GITHUB_RERUN_BACKOFF 必须是非负整数，实际 '$RERUN_BACKOFF_SECONDS'" >&2
+  exit 1
+fi
 
 # run_id/host：同一日志里区分多进程与多机器。~/AI-Agent 是 Syncthing 共享目录，
 # logs/github-backstop.log 会被两台机器同时追加，不带归属字段就看不出
@@ -68,6 +106,32 @@ deadline_missed() {
   (( 10#$now_hm >= 10#$deadline_hm ))
 }
 
+# deadline_missed_after <seconds> → 0=睡完就已过界（别睡，直接放弃）, 1=还有余量
+# 为什么需要它：退避 sleep 发生在**下一轮的 deadline 检查之前**，所以原来会出现
+# "白睡 600s，醒来才发现已过界然后放弃" —— 不但浪费，而且睡着的这段时间一直**占着
+# 补跑锁**，把随后那次 backstop（12:05 那趟）也一起挡在门外。已经能算出的结论就别
+# 靠睡出来（宪法 P1 有界自动化 / P4 预算显式）。
+# 实现刻意只用 HHMM 分钟运算，不用 `date -v`（BSD-only）或 `date -d @`（GNU-only）——
+# 两者任一都会踩 tests/test_shell_portability.py 的跨平台守卫。
+deadline_missed_after() {
+  local wait_s="$1" now_hm now_min dl_min projected
+  now_hm="$(TZ=Asia/Shanghai date +%H%M)"
+  now_min=$(( 10#${now_hm:0:2} * 60 + 10#${now_hm:2:2} ))
+  dl_min=$(( 10#${AKB2_GITHUB_DEADLINE_HOUR:-12} * 60 + 10#${AKB2_GITHUB_DEADLINE_MINUTE:-0} ))
+  projected=$(( now_min + (wait_s + 59) / 60 ))   # 向上取整到分钟，宁可保守
+  (( projected >= 1440 )) && return 0             # 跨夜 = 必然过界（deadline 是当日）
+  (( projected >= dl_min ))
+}
+
+LOCK_FILE=""
+LOCK_HELD=0
+LOCK_PID_HELD_BY=""
+cleanup() {
+  [[ "$LOCK_HELD" -eq 1 && -n "$LOCK_FILE" ]] && rm -f "$LOCK_FILE"
+  return 0
+}
+trap cleanup EXIT
+
 # GitHub briefing 文件名对齐 pipeline.py：today = 抓取日（去掉旧的 +1 偏移）
 DATE_TODAY="$(TZ=Asia/Shanghai date +%Y-%m-%d)"
 GITHUB_FILE="$VAULT_ROOT/Praise Space/AKB2.0/AI TRENDS/GitHub/$DATE_TODAY GitHub Briefing.md"
@@ -82,18 +146,25 @@ if [[ -f "$GITHUB_FILE" ]]; then
 fi
 
 # 守卫 ②：主跑进程仍在运行 → 让它先跑完
-if pgrep -f "akb2.briefing.github.pipeline" >/dev/null 2>&1; then
+#
+# 探针模式做成具名 + 可覆写：`pgrep -f` 是**全机器范围**的模糊匹配，同机器上任何一条
+# 命令行里出现 `akb2.briefing.github.pipeline` 都会让本守卫命中。这对生产是正确行为
+# （就是要让路），但对测试是不可控外因 —— 实测并行开发时另一条链路跑
+# `python3 -m akb2.briefing.github.pipeline` 就让本脚本的用例集体走进 skip 分支。
+# 测试把它指向一个必然不命中的模式来取得确定性；生产不设该变量，行为不变。
+readonly MAIN_RUN_PGREP_PATTERN="${AKB2_GITHUB_BACKSTOP_PGREP_PATTERN:-akb2.briefing.github.pipeline}"
+if pgrep -f "$MAIN_RUN_PGREP_PATTERN" >/dev/null 2>&1; then
   if deadline_missed; then
-    log_terminal failed "FAILED — 已超过 $DEADLINE_LABEL deadline，github pipeline 仍在运行，不能继续静默等待 reason=deadline_missed exit_code=$DEADLINE_EXIT_CODE ($DATE_TODAY)"
-    exit "$DEADLINE_EXIT_CODE"
+    log_terminal failed "FAILED — 已超过 $DEADLINE_LABEL deadline，github pipeline 仍在运行，不能继续静默等待 reason=deadline_missed exit_code=$GIVE_UP_EXIT_CODE ($DATE_TODAY)"
+    exit "$GIVE_UP_EXIT_CODE"
   fi
   log_terminal skip "skip — github pipeline 仍在运行，本次不抢 ($DATE_TODAY)"
   exit 0
 fi
 
 if deadline_missed; then
-  log_terminal failed "FAILED — 已超过 $DEADLINE_LABEL deadline 且 GitHub briefing 缺失，不再启动补跑 reason=deadline_missed exit_code=$DEADLINE_EXIT_CODE ($DATE_TODAY)"
-  exit "$DEADLINE_EXIT_CODE"
+  log_terminal failed "FAILED — 已超过 $DEADLINE_LABEL deadline 且 GitHub briefing 缺失，不再启动补跑 reason=deadline_missed exit_code=$GIVE_UP_EXIT_CODE ($DATE_TODAY)"
+  exit "$GIVE_UP_EXIT_CODE"
 fi
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
@@ -123,22 +194,103 @@ fi
 RERUN_SCRIPT="${AKB2_GITHUB_RERUN_SCRIPT:-$SCRIPT_DIR/daily_github_briefing.sh}"
 export GITHUB_FILE  # 供 rerun/stub 复查落点
 
-# 本脚本单次调用只补跑一轮；attempt 显式标注轮次，避免与其他 run 的行混读成"多轮重试"。
-log "run — 今日 GitHub briefing 缺失，开始补跑 attempt=1/1 ($DATE_TODAY)"
-set +e
-bash "$RERUN_SCRIPT" --vault-root "$VAULT_ROOT"
-rc=$?
-set -e
-
-# SC-5: recovered 必须复查文件 — rc==0 但当日文件未写出 = 假成功 → 仍 fail-visible
-if [[ "$rc" -eq 0 && -f "$GITHUB_FILE" ]]; then
-    log_terminal recovered "recovered — 补跑成功且文件已落盘 (exit 0, $DATE_TODAY)"
-    exit 0
+# ── 补跑互斥锁（L3-4）──────────────────────────────────────────────────────
+# pgrep 结构性救不了双跑：主跑与 backstop 的调度间隔（social 侧 07:30 → 08:00 共
+# 30 分钟）大于主跑实际耗时（历史 8–16 分钟），到 backstop 触发时 pgrep **必然扑
+# 空**。pgrep 守卫保留（便宜的早退），真正的互斥必须落在锁上。
+#
+# 锁实现复用 scripts/akb2-main-pipeline.sh 已验证的范式（PID 文件 + `kill -0` 存活
+# 校验 + 陈旧锁清理）—— 宪法「约定优于新奇」，不引入第二种锁。
+# 锁**位置**用机器本地状态根而不是仓库 staging/locks/：REPO_ROOT 在 ~/AI-Agent
+# （Syncthing folder）内，锁放仓库会被跨机同步 → 两机互看/互删对方的 PID 文件，
+# `kill -0` 对另一台的 PID 毫无意义（该坑 akb2-main-pipeline.sh:26-30 已修过）。
+# shellcheck source=scripts/lib/state-root.sh
+. "$SCRIPT_DIR/lib/state-root.sh"
+akb2_resolve_state_root
+LOCK_FILE="${AKB2_GITHUB_BACKSTOP_LOCK_FILE:-$STATE_ROOT/locks/github-briefing-backstop.lock}"
+if akb2_state_root_is_synced "$(dirname "$LOCK_FILE")"; then
+  # 不 fail-closed 退出：拒跑等于把一次可能成功的补跑直接判死，比锁降级更糟。
+  # 但必须明示降级（宪法 P4 失败可见），否则"为什么又双跑了"查不出来。
+  log "warn — 锁目录在跨机同步范围内，互斥保证降级 lock_sync_risk=1 lock_file=$LOCK_FILE ($DATE_TODAY)"
 fi
+
+acquire_rerun_lock() {
+  local lock_pid
+  mkdir -p "$(dirname "$LOCK_FILE")"
+  if [[ -f "$LOCK_FILE" ]]; then
+    lock_pid="$(cat "$LOCK_FILE" 2>/dev/null || echo '')"
+    if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
+      LOCK_PID_HELD_BY="$lock_pid"
+      return 1
+    fi
+    rm -f "$LOCK_FILE"      # 陈旧锁：持有者已死，接管
+  fi
+  echo $$ > "$LOCK_FILE"
+  LOCK_HELD=1
+  return 0
+}
+
+if ! acquire_rerun_lock; then
+  log_terminal skip "skip — already-running: 另一个 github backstop 补跑正持锁 lock_pid=$LOCK_PID_HELD_BY lock_file=$LOCK_FILE ($DATE_TODAY)"
+  exit 0
+fi
+
+# ── 补跑循环（有界 + 每轮换族 + 每轮前查 deadline）─────────────────────────
+attempt=1
+rc=0
+while (( attempt <= RERUN_ATTEMPT_BUDGET )); do
+  # 每轮开始前查 deadline：补跑本身要耗时，不能开一轮就把运行时间推过界（宪法 P1）
+  if deadline_missed; then
+    log_terminal give_up \
+      "GIVE-UP — 已超过 $DEADLINE_LABEL deadline，停止补跑重试 attempt=$attempt/$RERUN_ATTEMPT_BUDGET reason=deadline_missed exit_code=$GIVE_UP_EXIT_CODE ($DATE_TODAY)"
+    exit "$GIVE_UP_EXIT_CODE"
+  fi
+  # 第 2 轮起换模型族（COMMON.md 契约 1，消费端由 synthesis 实现）。
+  # 同族已被证明连续 6 次 429 —— 换的必须是**族**，不是次数。
+  family_fallback=0
+  (( attempt >= 2 )) && family_fallback=1
+  log "run — 今日 GitHub briefing 缺失，开始补跑 attempt=$attempt/$RERUN_ATTEMPT_BUDGET llm_family_fallback=$family_fallback ($DATE_TODAY)"
+  set +e
+  AKB2_LLM_FAMILY_FALLBACK="$family_fallback" \
+    bash "$RERUN_SCRIPT" --vault-root "$VAULT_ROOT"
+  rc=$?
+  set -e
+  # SC-5: recovered 必须复查文件 — rc==0 但当日文件未写出 = 假成功，不算成功
+  if (( rc == 0 )) && [[ -f "$GITHUB_FILE" ]]; then
+    log_terminal recovered "recovered — 补跑成功且文件已落盘 attempt=$attempt/$RERUN_ATTEMPT_BUDGET (exit 0, $DATE_TODAY)"
+    exit 0
+  fi
+  if (( rc == 0 )); then
+    # rc=0 却没文件 = pipeline 的「未交付即非零」不变式被破了，属真异常，值得再试一轮
+    log "warn — 补跑 rc=0 但当日文件未落盘（假成功，pipeline 不变式被破）attempt=$attempt/$RERUN_ATTEMPT_BUDGET ($DATE_TODAY)"
+  elif is_nonretryable_rc "$rc"; then
+    log "warn — 补跑未成功 attempt=$attempt/$RERUN_ATTEMPT_BUDGET rc=$rc rerun_stop=nonretryable_exit（该退出码换模型族救不了，不再重试）($DATE_TODAY)"
+    break
+  else
+    log "warn — 补跑未成功 attempt=$attempt/$RERUN_ATTEMPT_BUDGET rc=$rc ($DATE_TODAY)"
+  fi
+  attempt=$(( attempt + 1 ))
+  if (( attempt <= RERUN_ATTEMPT_BUDGET )); then
+    backoff=$(( RERUN_BACKOFF_SECONDS * (2 ** (attempt - 2)) ))
+    if deadline_missed_after "$backoff"; then
+      log_terminal give_up \
+        "GIVE-UP — 退避 ${backoff}s 之后即已超过 $DEADLINE_LABEL deadline，不再空等（白睡且占着补跑锁）next_attempt=$attempt/$RERUN_ATTEMPT_BUDGET reason=deadline_would_pass exit_code=$GIVE_UP_EXIT_CODE ($DATE_TODAY)"
+      exit "$GIVE_UP_EXIT_CODE"
+    fi
+    log "info — 退避 ${backoff}s 后换模型族重试 next_attempt=$attempt/$RERUN_ATTEMPT_BUDGET ($DATE_TODAY)"
+    sleep "$backoff"
+  fi
+done
+
 file_state="missing"
 [[ -f "$GITHUB_FILE" ]] && file_state="present"
-log_terminal failed "FAILED — 补跑未交付 attempt=1/1 (rc=$rc, file=$file_state, exit_code=$rc, $DATE_TODAY)"
-if [[ "$rc" -ne 0 ]]; then
-    exit "$rc"
-fi
-exit 1
+# 报实际用掉的轮次，不是预算值：非重试码会提前 break，此时写死 BUDGET/BUDGET
+# 等于谎报"两轮都试过了"。
+attempts_used=$(( attempt > RERUN_ATTEMPT_BUDGET ? RERUN_ATTEMPT_BUDGET : attempt ))
+# exit_code 报的必须是**本脚本真正的退出码**：rc=0 却没交付时脚本退 1，
+# 旧实现在这一行打印 exit_code=0 然后 exit 1 —— 日志与实际退出码不一致，
+# 监控按日志判定就会把一次未交付读成成功（宪法 P4 失败可见）。
+final_exit="$rc"
+(( final_exit == 0 )) && final_exit=1
+log_terminal failed "FAILED — 补跑未交付 attempt=$attempts_used/$RERUN_ATTEMPT_BUDGET (rc=$rc, file=$file_state, exit_code=$final_exit, $DATE_TODAY)"
+exit "$final_exit"

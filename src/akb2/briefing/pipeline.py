@@ -56,6 +56,30 @@ GATE_DECISION_ENUM = {
     "brief_only", "archive", "reject",
 }
 
+# ── 退出码（宪法 P4「失败可见」）───────────────────────────────────────────────
+# 不变式：**未交付即非零**。0 只在 briefing 真正 copy 到发布目录后才返回。
+# 具名化的动因（github 侧同源事故）：SKIPPED/BLOCKED 分支曾出现「exit=0 + vault 零文件」，
+# 看退出码的监控（含 launchctl 的 LastExitStatus）会把零交付读成成功。裸字面量的
+# `sys.exit(3)` 无法自证语义，也无法静态断言"所有未交付分支都非零"。
+#
+# 保留码位（本模块**不得**占用）：
+#   124 = scripts/run_with_deadline.py 的 deadline 超时码
+#   125 = backstop 脚本的主动放弃码
+# 数值一律沿用既有约定不动：scripts/briefing_backstop.sh 与运维记录都按这些数字判读，
+# 改数值会静默改变 backstop 的归因。本次只做"具名 + 静态可断言"，不动语义。
+EXIT_DELIVERED = 0
+EXIT_NOT_DELIVERED = 1            # 通用未交付：上游硬失败 / gate reject / vault 不可用
+EXIT_AUDIT_FAIL = 2               # audit 判 fail，产出留 staging 不入库
+EXIT_INTAKE_FIXTURE_BLOCKED = 3   # intake 降级到测试 fixture，硬阻断
+EXIT_GATE_NOT_CONVERGED = 4       # gate 判定在最终文件上不收敛（有界重试后仍摆动）
+EXIT_DEDUP_STORE_UNAVAILABLE = 5  # 跨日去重账本不可用（不敢放行，会重复发布）
+# 静态自证用（tests/briefing/test_pipeline_exit_codes.py 断言）
+EXIT_CODES = frozenset({
+    EXIT_DELIVERED, EXIT_NOT_DELIVERED, EXIT_AUDIT_FAIL,
+    EXIT_INTAKE_FIXTURE_BLOCKED, EXIT_GATE_NOT_CONVERGED, EXIT_DEDUP_STORE_UNAVAILABLE,
+})
+RESERVED_EXIT_CODES = frozenset({124, 125})
+
 _TZ_SH = zoneinfo.ZoneInfo("Asia/Shanghai")
 # 默认 3 天：19 个活跃账号在 2 天窗口下安静日仅 ~10 条原创、只够 3 主题；
 # 放宽到 3 天提升素材量（够 4-5 主题），新鲜度损失可接受。可 AKB2_INTAKE_WINDOW_DAYS 覆盖。
@@ -101,7 +125,7 @@ def _assert_no_preview_translate_models() -> None:
             + "; ".join(offenders)
             + "\n"
         )
-        sys.exit(1)
+        sys.exit(EXIT_NOT_DELIVERED)
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +233,7 @@ def run_intake(
         sys.stderr.flush()
     if result.returncode != 0:
         sys.stderr.write(f"ERROR: intake failed (exit {result.returncode}):\n")
-        sys.exit(1)
+        sys.exit(EXIT_NOT_DELIVERED)
 
     with open(output_path) as f:
         return json.load(f)
@@ -344,7 +368,7 @@ def _open_social_dedup_store(window_days: int, *, min_window_days: int):
             f"ERROR [social_dedup]: 跨日去重账本不可用（{type(exc).__name__}: {exc}）——"
             "无账本无法保证不重复，拒绝发布（fail-closed）\n"
         )
-        sys.exit(5)
+        sys.exit(EXIT_DEDUP_STORE_UNAVAILABLE)
 
 
 def apply_cross_day_dedup(
@@ -424,7 +448,7 @@ def run_gate(akb_root: Path, input_file: Path, date: str) -> str:
     """Call gate CLI, parse proposed_gate_decision from stdout. Returns decision string."""
     if not GATE_CLI.exists():
         sys.stderr.write(f"ERROR: gate CLI not found at {GATE_CLI}\n")
-        sys.exit(1)
+        sys.exit(EXIT_NOT_DELIVERED)
 
     cmd = [
         sys.executable, str(GATE_CLI), "check",
@@ -442,7 +466,7 @@ def run_gate(akb_root: Path, input_file: Path, date: str) -> str:
         sys.stderr.write(f"ERROR: gate CLI failed (exit {result.returncode}):\n")
         sys.stderr.write(result.stdout)
         sys.stderr.write(result.stderr)
-        sys.exit(1)
+        sys.exit(EXIT_NOT_DELIVERED)
 
     # Parse proposed_gate_decision from stdout
     output = result.stdout
@@ -454,12 +478,12 @@ def run_gate(akb_root: Path, input_file: Path, date: str) -> str:
     if not m:
         sys.stderr.write("ERROR: gate CLI output did not contain proposed_gate_decision:\n")
         sys.stderr.write(output[:2000])
-        sys.exit(1)
+        sys.exit(EXIT_NOT_DELIVERED)
 
     decision = m.group(1)
     if decision not in GATE_DECISION_ENUM:
         sys.stderr.write(f"ERROR: gate decision '{decision}' not in valid enum\n")
-        sys.exit(1)
+        sys.exit(EXIT_NOT_DELIVERED)
     return decision
 
 
@@ -891,7 +915,7 @@ def main(argv: list[str] | None = None) -> int:
             f"ERROR: --vault-root does not exist or is not a directory: {vault_root}\n"
             "Hint: ensure the vault is mounted and the path is correct before running.\n"
         )
-        sys.exit(1)
+        sys.exit(EXIT_NOT_DELIVERED)
 
     # 文件名 = 抓取日（去掉旧的 +1 偏移）
     briefing_filename = f"{date} Daily Briefing.md"
@@ -951,7 +975,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"不写入 Social。诊断: {diag_path}\n"
             )
             print(f"briefing: BLOCKED ({block_reason})")
-            sys.exit(3)
+            sys.exit(EXIT_INTAKE_FIXTURE_BLOCKED)
 
     # Stage 2: Scoring
     stage_start = time.monotonic()
@@ -1061,7 +1085,7 @@ def main(argv: list[str] | None = None) -> int:
     if gate_decision == "reject":
         sys.stderr.write("gate decision: reject — skipping translate/audit/Social write\n")
         print(f"proposed_gate_decision: {gate_decision}")
-        sys.exit(1)
+        sys.exit(EXIT_NOT_DELIVERED)
 
     # Stage 4b: 翻译（全中文化）+ 译后审计定点修复收敛循环
     stage_start = time.monotonic()
@@ -1164,7 +1188,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"proposed_gate_decision: {gate_decision}")
         print(f"audit_verdict: {audit_verdict}")
-        sys.exit(2)  # 2 = audit fail，不入库；调度器可据此区分成功(0)与审计拒绝(2)
+        sys.exit(EXIT_AUDIT_FAIL)  # 2 = audit fail，不入库；调度器可据此区分成功(0)与审计拒绝(2)
 
     # Stage 5b（缺陷 #16）：gate 在**最终写入的那份文件**上复跑。
     # 原实现只在译前的英文临时文件上跑过 gate，模块 docstring 声称的三重断言
@@ -1196,7 +1220,7 @@ def main(argv: list[str] | None = None) -> int:
                  "staging_path": str(real_briefing_path)},
             )
             print(f"proposed_gate_decision: {confirm_decision}")
-            sys.exit(4)
+            sys.exit(EXIT_GATE_NOT_CONVERGED)
     _stage_log("gate_final", "end", time.monotonic() - stage_start)
 
     if gate_decision == "reject":
@@ -1208,7 +1232,7 @@ def main(argv: list[str] | None = None) -> int:
             {"staging_path": str(real_briefing_path)},
         )
         print(f"proposed_gate_decision: {gate_decision}")
-        sys.exit(1)
+        sys.exit(EXIT_NOT_DELIVERED)
 
     # Copy to Social（dry-run 时目标是 staging/dry-run，见上文 publish_dir）
     stage_start = time.monotonic()
@@ -1228,7 +1252,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     print(f"proposed_gate_decision: {gate_decision}")
-    return 0
+    return EXIT_DELIVERED
 
 
 if __name__ == "__main__":

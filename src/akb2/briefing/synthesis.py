@@ -6,6 +6,7 @@ CLI: python -m akb2.briefing.synthesis --input <scored.json> --output <synth.jso
 - 若无凭证：使用 deterministic fallback（从 scored.json 中前 5 条推文构造合规 payload）
 - 输出必须通过 social_trends_v1_1 schema 校验
 - 失败时最多重试 2 次（指数退避，间隔 1s / 2s）
+- **模型可用性耗尽（主族 + 备族都挂）→ fail-closed 抛错，不写降级假简报**
 - 中文化由独立 translate.py 阶段负责，synthesis 只产出干净结构化分析
 """
 
@@ -18,8 +19,65 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-# 合成阶段专用模型（可由环境变量覆盖）
-_SYNTHESIS_MODEL = os.environ.get("AKB2_SYNTHESIS_MODEL", "gemini-3.1-pro-preview")
+
+class SynthesisUnavailableError(RuntimeError):
+    """LLM 合成不可用（主族 + 备族均失败）→ fail-closed，不产出任何 payload。
+
+    修复前这条路径 `return _fallback_synthesis(...)`：一份 topic 恒为
+    "AI Technology Trends"、summary 里明文写着 "This is a fallback summary generated
+    when the synthesis model is unavailable" 的**降级假简报**会被照常写进 vault，
+    读者无从分辨今天是真没内容还是模型挂了。同一仓库的 github 链遇到同样情形是
+    `_write_failed` + exit 1、vault 零写入（github/pipeline.py:356-362）——
+    两条链语义正好相反且都未登记豁免。现统一为 github 侧的 fail-closed（宪法 P3）。
+    """
+
+
+def _reject_preview_model(model: str, source: str) -> str:
+    """宪法 P7 / docs/constitution.md:95：7×24 管线 MUST NOT 使用 `-preview` 模型。
+
+    rationale 点名的正是「预览版限流不受控」—— 而这条链此前默认值就是
+    `gemini-3.1-pro-preview`，两个生产 env 文件与 launchd plist 都没有覆盖它，
+    等于生产 7×24 一直明文违宪且 allowed-residuals.md 无豁免登记。
+    错误文案与 pipeline.py:_assert_no_preview_translate_models 保持一致，便于统一 grep。
+    """
+    if "-preview" in model:
+        raise SynthesisUnavailableError(
+            f"preview model is forbidden for 7x24 pipeline: {source}={model}"
+            "（宪法 P7 / docs/constitution.md:95，rationale：预览版限流不受控）"
+        )
+    return model
+
+
+# 合成阶段专用模型（可由环境变量覆盖）。默认取正式版 deepseek —— 与同管线的
+# translate.py:36 `_TRANSLATE_MODEL` 同族同形态（gateway id），不另起一套。
+# 这里的字面量在导入期就过 -preview 校验：默认值绝不可能再退回预览版。
+_DEFAULT_SYNTHESIS_MODEL = _reject_preview_model("deepseek/deepseek-v4-pro", "default")
+_SYNTHESIS_MODEL = os.environ.get("AKB2_SYNTHESIS_MODEL", _DEFAULT_SYNTHESIS_MODEL)
+
+# 备用模型族（宪法 P7 点名的兜底族，正式版）。主族不可用时降级再试一次，
+# 两族都挂才 fail-closed —— 「降级用尽后才拒」而不是「一挂就拒」。
+_FALLBACK_SYNTHESIS_MODEL = _reject_preview_model("gemini-3.5-flash", "fallback_default")
+
+# COMMON.md 契约 1：读到 =1 直接从备族开始（主族刚打穿预算，再试纯属白烧）
+_FAMILY_FALLBACK_ENV = "AKB2_LLM_FAMILY_FALLBACK"
+
+# 本次 synthesize() 运行中已确认不可用的模型族。synthesize 对**质量退化**重试 3 次
+# （见 max_attempts），每次都重新调 _call_deepseek；不记账的话，刚判定不可用的主族
+# 会被原样再打 3 遍 —— 正是本 lane 要消掉的「明知耗尽还硬试」换位复发。
+# 生命周期 = 单次 synthesize()（入口清空）。用模块级而非参数传递，是因为
+# `_call_deepseek(prompt, max_retries)` 的签名被 12+ 处既有测试 mock 钉死，
+# 加参数会让那些 mock 全部 TypeError。
+_unavailable_families: set[str] = set()
+
+
+def _resolve_synthesis_model() -> str:
+    """调用时解析主模型并硬校验 —— 不靠 env 自觉。
+
+    env 覆盖在**调用点**校验而非导入期：导入期抛会让整个 test collection 炸掉，
+    而调用点抛既拦住生产误配，又保留「显式设了预览版 → 调用即抛」的可测语义。
+    """
+    model = os.environ.get("AKB2_SYNTHESIS_MODEL") or _SYNTHESIS_MODEL
+    return _reject_preview_model(model, "AKB2_SYNTHESIS_MODEL")
 
 # 合成 prompt 文件路径：synthesis.py 在 <root>/src/akb2/briefing/ 下，docs/ 在 <root>/，
 # 故 4 层 parent 到 <root>（worktree 与主仓库结构一致，均适用）。
@@ -101,12 +159,75 @@ def _log_raw_response(model: str, raw: str) -> None:
 
 
 def _call_deepseek(prompt: str, max_retries: int = 2) -> str:
-    """调主合成模型（带 system message），返回 raw response string。"""
+    """调合成模型（带 system message），返回 raw response string。
+
+    主族不可用（含预算耗尽、含重试耗尽）→ 降级到备用族再试一次；两族都挂才抛。
+    修复前此处只有单一硬编码模型，单点模型故障 = 当日简报 100% 缺失，零降级余量；
+    而预算耗尽时退避完全无效（额度不会因为等待回来），换族是唯一有效补救。
+
+    降级在**函数内部**而不是包一层外部 wrapper：本函数已被 12+ 处测试整体 mock 掉，
+    降级放外层等于让所有既有用例绕过它、同时又要求它们的 mock 认识新增的 model 参数。
+    """
     messages = [
         {"role": "system", "content": _SYNTHESIS_SYSTEM},
         {"role": "user", "content": prompt},
     ]
-    return _call_llm(messages, model=_SYNTHESIS_MODEL, json_mode=True, max_retries=max_retries)
+
+    # 契约 1：backstop 第 2 轮补跑时直接从备族开始，主族零请求
+    if os.environ.get(_FAMILY_FALLBACK_ENV) == "1":
+        print(
+            f"SYNTHESIS_FALLBACK model={_FALLBACK_SYNTHESIS_MODEL} "
+            f"reason=env_{_FAMILY_FALLBACK_ENV}=1",
+            flush=True,
+        )
+        return _call_llm(
+            messages, model=_FALLBACK_SYNTHESIS_MODEL,
+            json_mode=True, max_retries=max_retries,
+        )
+
+    primary = _resolve_synthesis_model()
+
+    # 本次运行已判定主族不可用（质量重试的第 2/3 轮会走到这里）→ 不再白烧一轮
+    if primary in _unavailable_families:
+        print(
+            f"SYNTHESIS_FALLBACK model={_FALLBACK_SYNTHESIS_MODEL} "
+            f"reason=primary_already_known_unavailable primary={primary}",
+            flush=True,
+        )
+        return _call_llm(
+            messages, model=_FALLBACK_SYNTHESIS_MODEL,
+            json_mode=True, max_retries=max_retries,
+        )
+
+    try:
+        return _call_llm(messages, model=primary, json_mode=True, max_retries=max_retries)
+    except SynthesisUnavailableError:
+        raise  # 预览版误配是部署错误，换族掩盖不了
+    except Exception as primary_err:
+        _unavailable_families.add(primary)  # 记账后再降级
+        print(
+            f"SYNTHESIS_FALLBACK model={_FALLBACK_SYNTHESIS_MODEL} "
+            f"reason={type(primary_err).__name__} primary={primary}",
+            flush=True,
+        )
+        sys.stderr.write(
+            f"WARNING: 主模型族 {primary} 不可用（{type(primary_err).__name__}: "
+            f"{str(primary_err)[:200]}）→ 降级到 {_FALLBACK_SYNTHESIS_MODEL}\n"
+        )
+        try:
+            return _call_llm(
+                messages, model=_FALLBACK_SYNTHESIS_MODEL,
+                json_mode=True, max_retries=max_retries,
+            )
+        except Exception as fallback_err:
+            # 两族都挂 → fail-closed（宪法 P3），两族真因都要可见（P4）
+            raise SynthesisUnavailableError(
+                f"两个模型族均失败 → 不产出简报。"
+                f"主族 {primary}: {type(primary_err).__name__}: "
+                f"{str(primary_err)[:200]} || "
+                f"备族 {_FALLBACK_SYNTHESIS_MODEL}: {type(fallback_err).__name__}: "
+                f"{str(fallback_err)[:200]}"
+            ) from fallback_err
 
 
 def _validate_response(data: dict) -> None:
@@ -281,6 +402,9 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
             "tweets, focus_discussions."
         )
 
+    # 每次 synthesize 从干净的族可用性账本开始（闩只在本次调用内有效）
+    _unavailable_families.clear()
+
     last_err: Exception | None = None
     max_attempts = 3
     for attempt in range(max_attempts):
@@ -291,19 +415,29 @@ def synthesize(scored_input: dict, date: str | None = None) -> dict:
             _validate_response(merged)
             _validate_quality(merged)
             return merged
+        except SynthesisUnavailableError:
+            # 主族 + 备族都挂 / 预览版误配 —— 再试 max_attempts 次也是同样结果，
+            # 立刻上抛（宪法 P2 收敛优先：无望的重试只是白烧额度与时间）
+            raise
         except Exception as e:
             last_err = e
             if attempt == max_attempts - 1:
                 break
             continue
 
+    # fail-closed（宪法 P3）：有 key 但合成尝试全失败 → **抛错，不写降级假简报**。
+    # 旧行为是 `return _fallback_synthesis(...)`，那份产出的 summary 明文含
+    # "This is a fallback summary generated when the synthesis model is unavailable"
+    # 且 topic 恒为 "AI Technology Trends"，会照常通过 schema 校验写进 vault ——
+    # 读者看到的是一份「格式完整但没有任何真实信号」的简报，且没有任何失败信号。
+    # 同仓 github 链遇到同样情形是 vault 零写入 + exit 1；现在两条链语义一致。
     err_msg = f"{type(last_err).__name__}: {str(last_err)[:200]}" if last_err else "unknown"
-    sys.stderr.write(
-        f"WARNING: DeepSeek API failed after 2 attempts ({err_msg}) — "
-        "synthesis using local fallback. "
-        "SC-5-real remains PENDING.\n"
+    raise SynthesisUnavailableError(
+        f"synthesis fail-closed: 有 API key 但 {max_attempts} 次合成尝试全失败"
+        f"（末次 {err_msg}）→ 不产出简报。"
+        f"旧行为会在此处写入降级假简报（summary 明文标注 fallback、topic 恒为 "
+        f"'AI Technology Trends'），与 github 链的 fail-closed 语义相反且未登记豁免。"
     )
-    return _fallback_synthesis(scored_input, date)
 
 
 def _merge_with_input(

@@ -1,0 +1,62 @@
+// Syncthing ignore patterns — Project AKB2
+//
+// 为什么需要这个文件（2026-08-03 实测）：Syncthing（pid 32225，设备
+// 7PNW6PK / TIA7T3A）在同步**整个仓库**，包括 git 索引与 SQLite 状态库。产物是
+// 13,076 个 .sync-conflict-* 副本，其中包括：
+//   .git/index.sync-conflict-20260605/0630/0710/0725-*   ← git 索引跨机分叉
+//   .git/logs/HEAD.sync-conflict-*                        ← reflog 分叉
+//   data/star_history.sync-conflict-20260725-233326-*.sqlite
+//   config/main_sources.sync-conflict-*.yaml
+//   logs/github-backstop.sync-conflict-20260725-235010-*.log
+//   briefing-failed.sync-conflict-20260725-235831-*.json     ← 告警诊断文件被跨机同步
+//   briefing-skipped.sync-conflict-20260725-234604-*.json       （另有 22 份在 worktree 内）
+// 最后两条尤其要命：`briefing-failed.json` / `briefing-skipped.json` 是飞书告警**唯一**
+// 的归因素材来源（feishu_sync/blocked.py 按固定文件名读取）。它们进了同步范围，
+// 意味着告警的真相来源可能被另一台机器的版本覆盖，或被 Syncthing 改名成
+// .sync-conflict-* 副本而"消失" —— 那时告警只会说"文件缺失"。
+// git 索引与 SQLite 状态库跨机同步 = 仓库/状态库损坏风险，不是"多几个副本"而已：
+// 两台机器各自 read-modify-write 同一个 sqlite，实测已让 star_history live 库丢掉
+// 690 行写入（见 src/akb2/briefing/github/pipeline.py:_resolve_star_db 注释）。
+//
+// 语法（Syncthing）：一行一个模式；`//` 是注释；不含 `/` 的模式在任意层级匹配；
+// 命中目录时其内容一并忽略。
+//
+// ⚠ 生效前提：本文件只在**该目录就是 Syncthing folder 根**时被读取。若 folder 根是
+// 上层目录（如 ~/AI-Agent 或 ~/AI-Agent/Claude），这些模式必须加到那个根的
+// .stignore（路径前缀相应改写）。owner 需在 Syncthing Web UI 核对 folder 根位置。
+//
+// ⚠ 本文件**不会**清理已存在的 .sync-conflict-* 副本 —— 它们是排查证据，且
+// data/star_history.sync-conflict-*.sqlite 需先与主库比对才能决定去留（owner 的活）。
+
+// ── 1. git 元数据：跨机同步必然分叉，且分叉即仓库损坏 ──
+.git
+.git/**
+
+// ── 2. SQLite 状态库：并发 read-modify-write 会静默丢写入 ──
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.db
+*.db-*
+
+// ── 3. 本机日志与临时诊断产物：按机器各自累积，无跨机合并语义 ──
+logs
+_tmp
+
+// ── 4. 虚拟环境 / 依赖 / 工具缓存：体积大、平台相关、可重建 ──
+.venv
+node_modules
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.DS_Store
+
+// ── 5. git worktree 目录：13,030/13,076 个冲突副本来自这里 ──
+.claude/worktrees
+.cindy-worktrees
+
+// ── 6. 已产生的冲突副本本身：不要再让它们跨机繁殖 ──
+//    （只是停止同步；文件保留在本机供 owner 处置）
+*.sync-conflict-*

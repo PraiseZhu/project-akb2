@@ -6,17 +6,33 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 from datetime import date
 from pathlib import Path
-
-import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BACKSTOP_SH = PROJECT_ROOT / "scripts" / "briefing_backstop.sh"
 
+# 本脚本自己放弃时的退出码（GIVE_UP_EXIT_CODE）。124 现在**只**属于
+# run_with_deadline.py 终止 pipeline 这一种来源 —— 两者共用一码时，launchd 的
+# "last exit code 124" 完全分不出是"pipeline 跑超时"还是"守卫压根没启动"。
+GIVE_UP_EXIT_CODE = 125
+DEADLINE_EXIT_CODE = 124
+
+# pgrep -f 是全机器模糊匹配：同机器上任何一条含 `akb2.briefing.pipeline` 的命令行
+# 都会让"主跑仍在运行"守卫命中，把用例推进 skip 分支（并行开发时实测复现）。
+# 测试固定指向一个必然不会出现在真实命令行里的模式，取得确定性。
+_IMPOSSIBLE_PGREP = "akb2-backstop-selftest-no-such-process-a7f3c1"
+
 
 def _today() -> str:
     return date.today().isoformat()
+
+
+def _write_exec(path: Path, body: str) -> Path:
+    path.write_text(f"#!/usr/bin/env bash\n{body}\n", encoding="utf-8")
+    path.chmod(0o755)
+    return path
 
 
 def _run_backstop(
@@ -33,11 +49,23 @@ def _run_backstop(
         prefix="akb2-backstop-test-", suffix=".log", delete=False
     )
     isolated_log.close()
+    # 锁与补跑入口也必须隔离：锁默认落机器本地状态根（~/Library/Application
+    # Support/akb2/locks），测试不该碰真用户目录；补跑入口默认指向真
+    # daily_briefing.sh，测试若意外走到那条路会真去跑 LLM 管线 —— 指向 /bin/false
+    # 当绊线：真的走到了就硬失败，而不是静默跑起生产管线。
+    isolated_lock = tempfile.NamedTemporaryFile(
+        prefix="akb2-backstop-test-lock-", suffix=".pid", delete=False
+    )
+    isolated_lock.close()
+    os.unlink(isolated_lock.name)
     env = {
         **os.environ,
         "AKB2_BRIEFING_DEADLINE_HOUR": "99",
         "AKB2_BRIEFING_DEADLINE_MINUTE": "0",
         "AKB2_BACKSTOP_LOG": isolated_log.name,
+        "AKB2_BACKSTOP_LOCK_FILE": isolated_lock.name,
+        "AKB2_BRIEFING_RERUN_SCRIPT": "/bin/false",
+        "AKB2_BACKSTOP_PGREP_PATTERN": _IMPOSSIBLE_PGREP,
         **(env_overrides or {}),
     }
     return subprocess.run(args, capture_output=True, text=True, env=env)
@@ -81,7 +109,7 @@ def test_missing_report_after_deadline_fails_visibly(tmp_path):
         },
     )
 
-    assert result.returncode == 124
+    assert result.returncode == GIVE_UP_EXIT_CODE
     assert "deadline" in result.stderr
     assert "不再启动补跑" in result.stderr
 
@@ -90,18 +118,14 @@ def test_morning_deadline_compare_uses_decimal_time(tmp_path):
     """08:00 must not trip bash's octal parsing when comparing HHMM values."""
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
-    fake_date = fake_bin / "date"
-    fake_date.write_text(
-        """#!/usr/bin/env bash
-case "${1:-}" in
+    _write_exec(
+        fake_bin / "date",
+        f"""case "${{1:-}}" in
   +%H%M) echo 0800 ;;
-  +%Y-%m-%d) echo 2026-06-19 ;;
-  *) echo "2026-06-19 08:00:00" ;;
-esac
-""",
-        encoding="utf-8",
+  +%Y-%m-%d) echo {_today()} ;;
+  *) echo "{_today()} 08:00:00" ;;
+esac""",
     )
-    fake_date.chmod(0o755)
     vault = tmp_path / "vault"
     (vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
 
@@ -200,6 +224,9 @@ def test_log_path_arg_overrides_env(tmp_path):
         capture_output=True, text=True,
         env={**os.environ,
              "AKB2_BACKSTOP_LOG": str(env_log),
+             "AKB2_BACKSTOP_LOCK_FILE": str(tmp_path / "lock.pid"),
+             "AKB2_BRIEFING_RERUN_SCRIPT": "/bin/false",
+             "AKB2_BACKSTOP_PGREP_PATTERN": _IMPOSSIBLE_PGREP,
              "AKB2_BRIEFING_DEADLINE_HOUR": "0",
              "AKB2_BRIEFING_DEADLINE_MINUTE": "0"},
     )
@@ -235,19 +262,44 @@ def _write_today_briefing(vault: Path, text: str | bytes) -> Path:
     return target
 
 
+def _rerun_marker(tmp_path: Path) -> Path:
+    """补跑 stub 的调用台账 —— 用来断言"补跑到底有没有被触发"。"""
+    return tmp_path / "rerun-marker.txt"
+
+
+def _rerun_calls(tmp_path: Path) -> int:
+    marker = _rerun_marker(tmp_path)
+    if not marker.exists():
+        return 0
+    return len([ln for ln in marker.read_text(encoding="utf-8").splitlines() if ln.strip()])
+
+
 def _run_via_fixture(run_script, vault: Path, tmp_path: Path, extra_env=None, args=None):
     """走 conftest 的 run_script fixture（AKB2_TEST_HOME 模式）跑 bash 脚本。"""
     log = tmp_path / "isolated-backstop.log"
+    # 默认补跑 stub：只记账 + 失败。任何"本不该重跑却重跑了"的回归都会在
+    # _rerun_calls() 上现形，而不是悄悄去跑真 pipeline。
+    stub = _write_exec(
+        tmp_path / "default-rerun-stub.sh",
+        f'echo "invoked" >> "{_rerun_marker(tmp_path)}"\nexit 1',
+    )
     env = {
         "AKB2_BACKSTOP_LOG": str(log),
         "AKB2_BACKSTOP_READ_RETRY_SLEEP": "0",
+        "AKB2_BACKSTOP_LOCK_FILE": str(tmp_path / "backstop.lock"),
+        "AKB2_BRIEFING_RERUN_SCRIPT": str(stub),
+        "AKB2_BRIEFING_RERUN_BACKOFF": "0",
         "AKB2_BRIEFING_DEADLINE_HOUR": "99",
         "AKB2_BRIEFING_DEADLINE_MINUTE": "0",
+        "AKB2_BACKSTOP_PGREP_PATTERN": _IMPOSSIBLE_PGREP,
         **(extra_env or {}),
     }
+    # `args or [...]` 会把显式传入的 `[]`（= 我要跑真链路，不要 --dry-run）当成"没传"
+    # 而塞回 --dry-run —— 用 `is None` 区分"没传"与"传了空"。
+    extra = ["--dry-run"] if args is None else args
     result = run_script(
         "scripts/briefing_backstop.sh",
-        ["--vault-root", str(vault), *(args or ["--dry-run"])],
+        ["--vault-root", str(vault), *extra],
         home=tmp_path / "home",
         env=env,
     )
@@ -318,46 +370,12 @@ def test_warn_verdict_is_logged_with_its_real_value(run_script, tmp_path):
     assert "rerun" in log.read_text(encoding="utf-8")
 
 
-def test_unreadable_file_reported_as_read_failure_not_parse_failure(run_script, tmp_path):
-    """SC2 回归: 文件内容合法但读盘失败 → 归因为读盘失败并带真实错误，不冒名解析失败。
-
-    这是生产 12:05 那条日志的诚实版本：同一份文件按需读取解析得出 pass，
-    说明失败发生在读盘而非解析；旧实现 2>/dev/null 把真因吞掉。
-    """
-    vault = tmp_path / "vault"
-    target = _write_today_briefing(vault, "---\naudit_verdict: pass\n---\n# briefing\n")
-    target.chmod(0o000)
-    if os.access(target, os.R_OK):  # root / 特殊挂载下 chmod 000 拦不住读取
-        target.chmod(0o644)
-        pytest.skip("当前用户仍可读 chmod 000 文件（root?），无法构造读盘失败")
-    try:
-        result, log = _run_via_fixture(run_script, vault, tmp_path)
-    finally:
-        target.chmod(0o644)
-
-    content = log.read_text(encoding="utf-8")
-    assert "读盘失败" in content, f"读盘失败必须显式归因:\n{content}"
-    assert "无法解析 audit_verdict" not in content, "读盘失败不得冒名成解析失败"
-    # 真实错误必须可见（宪法 P4），不得只留一个空 err=""。
-    # 断言不绑 awk 方言文案（BSD "can't open" / gawk+mawk "cannot open"），
-    # 只要求真实错误里带上出问题的文件名。
-    errs = re.findall(r'err="([^"]*)"', content)
-    assert errs, f"必须落 err= 字段:\n{content}"
-    assert all(e.strip() for e in errs), f"err= 不得为空:\n{content}"
-    assert any("Daily Briefing.md" in e for e in errs), f"err= 须指名文件:\n{content}"
-    # 重试次数有界且落日志（宪法 P1）
-    assert "attempt=1/" in content and "attempt=3/" in content
-    assert "attempt=4/" not in content
-    # fail-closed 仍然保留：读不到就保守重跑
-    assert "rerun" in content
-
-
 def test_missing_verdict_key_is_labelled_no_verdict(run_script, tmp_path):
     """读盘成功但 frontmatter 无 audit_verdict → 独立状态 no_verdict，仍 fail-closed 重跑。"""
     vault = tmp_path / "vault"
     _write_today_briefing(vault, "---\ndate: 2026-07-30\n---\n# briefing\n")
 
-    result, log = _run_via_fixture(run_script, vault, tmp_path)
+    _result, log = _run_via_fixture(run_script, vault, tmp_path)
 
     content = log.read_text(encoding="utf-8")
     assert "status=no_verdict" in content, content
@@ -375,7 +393,7 @@ def test_post_deadline_message_reflects_real_status(run_script, tmp_path):
         extra_env={"AKB2_BRIEFING_DEADLINE_HOUR": "0"},
     )
 
-    assert result.returncode == 124
+    assert result.returncode == GIVE_UP_EXIT_CODE
     content = log.read_text(encoding="utf-8")
     assert "今日未发布" not in content, f"文件存在时不得谎报未发布:\n{content}"
     assert "status=warn_or_fail" in content
@@ -383,7 +401,7 @@ def test_post_deadline_message_reflects_real_status(run_script, tmp_path):
 
 
 def test_deadline_exit_code_is_named_and_logged(run_script, tmp_path):
-    """SC3: 124 必须在日志里自证来源（本脚本 deadline 判定，非外层 timeout）。"""
+    """SC3: 放弃码必须在日志里自证来源（本脚本 deadline 判定，非外层 timeout）。"""
     vault = tmp_path / "vault"
     (vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
 
@@ -392,13 +410,15 @@ def test_deadline_exit_code_is_named_and_logged(run_script, tmp_path):
         extra_env={"AKB2_BRIEFING_DEADLINE_HOUR": "0"},
     )
 
-    assert result.returncode == 124
+    assert result.returncode == GIVE_UP_EXIT_CODE
     content = log.read_text(encoding="utf-8")
-    assert "exit_code=124" in content, content
+    assert f"exit_code={GIVE_UP_EXIT_CODE}" in content, content
     assert "reason=deadline_missed" in content, content
     script = (PROJECT_ROOT / "scripts" / "briefing_backstop.sh").read_text(encoding="utf-8")
     assert "DEADLINE_EXIT_CODE=124" in script, "124 必须是具名常量"
+    assert "GIVE_UP_EXIT_CODE=125" in script, "主动放弃码必须是具名常量"
     assert "VERDICT_READ_ATTEMPT_BUDGET" in script, "读盘重试预算必须是具名常量"
+    assert "RERUN_ATTEMPT_BUDGET" in script, "补跑重试预算必须是具名常量"
 
 
 def test_log_lines_carry_host_for_shared_log_attribution(run_script, tmp_path):
@@ -426,6 +446,456 @@ def test_single_terminal_state_per_run(run_script, tmp_path):
     assert "terminal=skip" in terminals[0]
 
 
+# ── L3-1/L3-2 回归：判据单点 + 终态过度断言 ─────────────────────────────────
+#
+# 根因（2026-08-02 排查）：`/Volumes/AKB2` 卷级**瞬时 open() 失败** + **判据单点**
+# （只有一条 awk 读者，无交叉验证）。同一个根因两种表现：
+#   08:00 → 判 unreadable → fail-closed 重跑 → **双跑**（38 天）
+#   12:05 → 判 unreadable → 过 deadline → **假 FAILED**（38/40 = 95% 假阳性）
+#
+# 已排除的错误假设：不是路径含空格未加引号（引号本来就对，且在 launchd 精确环境
+# 实测通过）；`source line number 15` 是 one-true-awk 在任何 FATAL 时无条件打印的
+# curnode->lineno，与失败原因无关；报错里没有 `input record number` ⇒ NR==0 ⇒
+# open() 在读到第一条记录前就失败 ⇒ 纯 open 失败。errno 不可知（awk 不带
+# strerror），所以修法必须对 errno 不可知保持鲁棒。
+#
+# 为什么读者要注入而不是 chmod 000：生产卷是 **noowners 挂载**，chmod 拦不住读取
+# → 旧用例在真机等价环境下 `pytest.skip`，在最需要它的环境里恰好不生效。
+
+
+def _failing_reader(tmp_path: Path, fail_times: int, *, delete_target: bool = False) -> Path:
+    """构造注入式主读者 stub：前 fail_times 次返回非 0，之后真读文件。
+
+    失败文案刻意复刻 one-true-awk 的真实输出（不带 strerror 的 can't open file
+    + 无条件打印的 source line number），这样"err= 里只有 awk 那一句"这个缺陷
+    形状能被真实复现。
+    """
+    counter = tmp_path / "reader-attempts.txt"
+    # delete_target 复刻真实 TOCTOU：`[[ -f ]]` 通过之后文件被删/换掉，
+    # 于是回退读者也拿不到 —— 这是"两个读者都失败"唯一不依赖挂载语义的构造。
+    drop = 'rm -f "$1"' if delete_target else ":"
+    body = f"""
+n=$(cat "{counter}" 2>/dev/null || echo 0)
+n=$(( n + 1 ))
+echo "$n" > "{counter}"
+if [ "$n" -le {fail_times} ]; then
+  {drop}
+  printf '%s\\n' "awk: can't open file $1" >&2
+  printf '%s\\n' " source line number 15" >&2
+  exit 2
+fi
+sed -n 's/^[[:space:]]*audit_verdict[[:space:]]*:[[:space:]]*//p' "$1" | head -1
+exit 0
+"""
+    return _write_exec(tmp_path / "reader-stub.sh", body.strip())
+
+
+def test_native_fallback_reader_rescues_pass_verdict(run_script, tmp_path):
+    """SC-1（本 lane 核心）: awk 主读者恒失败 + 纯 bash 回退读者读出 pass。
+
+    必须同时成立：终态 skip、日志记 read_path=native_fallback、**日志不含
+    terminal=failed**、**补跑一次都没被触发**。这三条合起来正是"把 social 主跑装
+    回 07:30 后，08:00 的 backstop 会不会再双跑"的判据。
+    """
+    vault = tmp_path / "vault"
+    _write_today_briefing(vault, "---\naudit_verdict: pass\n---\n# briefing\n")
+    reader = _failing_reader(tmp_path, fail_times=99)
+
+    result, log = _run_via_fixture(
+        run_script, vault, tmp_path,
+        extra_env={"AKB2_BACKSTOP_READER": str(reader)},
+        args=[],  # 非 dry-run：真走到"要不要补跑"那一步才有意义
+    )
+
+    content = log.read_text(encoding="utf-8")
+    assert result.returncode == 0, f"回退读者读到 pass 应正常 skip:\n{content}"
+    assert "read_path=native_fallback" in content, content
+    assert "terminal=skip" in content, content
+    assert "terminal=failed" not in content, f"回退成功后不得报 failed:\n{content}"
+    assert "terminal=indeterminate" not in content, content
+    assert _rerun_calls(tmp_path) == 0, "回退读者已确认 pass，绝不能触发补跑"
+
+
+def test_spacey_path_is_read_by_primary_awk_without_fallback(run_script, tmp_path):
+    """SC-2（不回归基线）: 含空格的真实落点路径下，awk 主读者自己就该成功。
+
+    路径形如 `<tmp>/vault/Praise Space/AKB2.0/AI TRENDS/Social/<today> Daily
+    Briefing.md`（三处空格）。断言 read_path=awk_primary 而不只是"结果对"——
+    后者在回退读者兜住时也会通过，测不出主读者已经坏了。
+    """
+    vault = tmp_path / "vault"
+    target = _write_today_briefing(vault, "---\naudit_verdict: pass\n---\n# briefing\n")
+    # 自证 fixture 真的含空格（否则这条基线在测一个不含空格的路径，等于没测）
+    assert " " in target.name, target.name
+    spacey_dirs = [p for p in target.parts if " " in p and p != target.name]
+    assert len(spacey_dirs) >= 2, f"路径里应有多段含空格目录: {spacey_dirs}"
+
+    _result, log = _run_via_fixture(run_script, vault, tmp_path)
+
+    content = log.read_text(encoding="utf-8")
+    assert "read_path=awk_primary" in content, f"含空格路径应由主读者直接读到:\n{content}"
+    assert "can't open file" not in content, content
+    assert "cannot open" not in content, content
+    assert "audit_verdict=pass" in content, content
+    assert "read_path=native_fallback" not in content, "主读者能读时不该走回退"
+
+
+def test_transient_read_failure_recovers_within_budget(run_script, tmp_path):
+    """SC-10: 瞬时读失败在重试预算内恢复 —— 断言"救回了什么"，不只是"重试了几次"。
+
+    旧用例只断言 `attempt=1/` 与 `attempt=3/` 都出现（测了"有 3 次"），没测这 3 次
+    能把结果从什么变成什么 —— 宪法「测试须绑可观测行为」在那里失守。
+    这里 stub 前 2 次失败、第 3 次真读出 pass：终态必须是 skip、不得重跑、
+    且**不需要**动用回退读者（证明主读者的重试窗口本身有效）。
+    """
+    vault = tmp_path / "vault"
+    _write_today_briefing(vault, "---\naudit_verdict: pass\n---\n# briefing\n")
+    reader = _failing_reader(tmp_path, fail_times=2)
+
+    result, log = _run_via_fixture(
+        run_script, vault, tmp_path,
+        extra_env={"AKB2_BACKSTOP_READER": str(reader)},
+        args=[],
+    )
+
+    content = log.read_text(encoding="utf-8")
+    assert result.returncode == 0, content
+    assert "attempt=1/" in content and "attempt=2/" in content, content
+    assert "terminal=skip" in content, f"重试内恢复必须回到 skip:\n{content}"
+    assert "audit_verdict=pass" in content, content
+    assert "read_path=native_fallback" not in content, "主读者已在预算内恢复，不该走回退"
+    assert _rerun_calls(tmp_path) == 0, "读到 pass 就不能补跑"
+
+
+def test_read_attempt_budget_is_bounded(run_script, tmp_path):
+    """SC-10 有界: 主读者尝试次数严格等于 VERDICT_READ_ATTEMPT_BUDGET，不多不少。"""
+    script = (PROJECT_ROOT / "scripts" / "briefing_backstop.sh").read_text(encoding="utf-8")
+    budget = int(
+        re.search(r"^readonly VERDICT_READ_ATTEMPT_BUDGET=(\d+)$", script, re.M).group(1)
+    )
+    vault = tmp_path / "vault"
+    _write_today_briefing(vault, "---\naudit_verdict: pass\n---\n# briefing\n")
+    reader = _failing_reader(tmp_path, fail_times=99)
+
+    _result, log = _run_via_fixture(
+        run_script, vault, tmp_path,
+        extra_env={"AKB2_BACKSTOP_READER": str(reader)},
+    )
+
+    content = log.read_text(encoding="utf-8")
+    for i in range(1, budget + 1):
+        assert f"attempt={i}/{budget}" in content, f"缺 attempt={i}/{budget}:\n{content}"
+    assert f"attempt={budget + 1}/" not in content, f"超出预算:\n{content}"
+    attempts_made = int((tmp_path / "reader-attempts.txt").read_text().strip())
+    assert attempts_made == budget, f"主读者实际调用 {attempts_made} 次，预算 {budget}"
+
+
+def test_both_readers_failing_exposes_non_awk_errno(run_script, tmp_path):
+    """SC-3: 双读者都失败时，err= 必须带**非 awk 来源**的 errno 证据。
+
+    one-true-awk 的 `can't open file` 不带 strerror —— 只靠它永远分不出 ENOENT /
+    EIO / EACCES，宪法 P4「失败可见」在此失效。修法：awk 全轮失败后追加 `cat` 探针
+    落 cat_rc=，再让纯 bash 读者独立试一次（bash 的重定向失败带 strerror）。
+    构造用的是真实 TOCTOU 形状：`[[ -f ]]` 通过之后文件被换掉/删掉。
+    """
+    vault = tmp_path / "vault"
+    _write_today_briefing(vault, "---\naudit_verdict: pass\n---\n# briefing\n")
+    reader = _failing_reader(tmp_path, fail_times=99, delete_target=True)
+
+    _result, log = _run_via_fixture(
+        run_script, vault, tmp_path,
+        extra_env={"AKB2_BACKSTOP_READER": str(reader)},
+    )
+
+    content = log.read_text(encoding="utf-8")
+    assert "status=unreadable" in content, f"双读者都失败才算 unreadable:\n{content}"
+    assert "read_path=both_failed" in content, content
+    errs = re.findall(r'err="([^"]*)"', content)
+    assert errs, f"必须落 err= 字段:\n{content}"
+    assert all(e.strip() for e in errs), f"err= 不得为空:\n{content}"
+    # 关键：err= 不能只有 awk 那一句。至少一条非 awk 来源的 errno 证据。
+    final_err = errs[-1]
+    non_awk_evidence = ("cat_rc=", "No such file", "Input/output error", "Permission denied")
+    assert any(tok in final_err for tok in non_awk_evidence), (
+        f"err= 里只有 awk 那句不带 strerror 的话，errno 依旧不可见:\n{final_err}"
+    )
+    assert "cat_rc=" in final_err, f"cat 探针的真实退出码必须落日志:\n{final_err}"
+    # fail-closed 仍然保留：读不到就保守重跑（should_rerun 不变，改的只是终态）
+    assert "rerun" in content
+
+
+def test_unreadable_pass_file_must_not_terminal_failed(run_script, tmp_path):
+    """SC-4 + SC-10: unreadable + 过 deadline → terminal=indeterminate，**绝不是 failed**。
+
+    这正是 38 天假 FAILED 的形状，此前零测试守卫（旧用例只断言日志里有"读盘失败"
+    四个字，完全不检查终态）。failed 断言的是「当天没有简报」，而 unreadable 恰恰
+    不能支持这个断言 —— 假阳性降到 0 之前不能接告警通道，否则必然告警疲劳。
+    """
+    vault = tmp_path / "vault"
+    _write_today_briefing(vault, "---\naudit_verdict: pass\n---\n# briefing\n")
+    reader = _failing_reader(tmp_path, fail_times=99, delete_target=True)
+
+    result, log = _run_via_fixture(
+        run_script, vault, tmp_path,
+        extra_env={
+            "AKB2_BACKSTOP_READER": str(reader),
+            "AKB2_BRIEFING_DEADLINE_HOUR": "0",
+        },
+    )
+
+    content = log.read_text(encoding="utf-8")
+    assert result.returncode == GIVE_UP_EXIT_CODE, content
+    assert "terminal=indeterminate" in content, f"无法判定必须记 indeterminate:\n{content}"
+    assert "terminal=failed" not in content, f"读盘失败不得断言「当天没有简报」:\n{content}"
+    assert "INDETERMINATE" in content
+    assert "需人工" in content, "indeterminate 必须点明需要人工核实"
+    terminals = [ln for ln in content.splitlines() if "terminal=" in ln]
+    assert len(terminals) == 1, f"终态仍必须唯一:\n{content}"
+
+
+def test_missing_after_deadline_still_terminal_failed(run_script, tmp_path):
+    """SC-4 反面: status=missing + 过 deadline → 仍然 terminal=failed（真的没交付）。
+
+    与上一个用例成对：两种终态必须**可区分**，否则解耦等于没做。
+    """
+    vault = tmp_path / "vault"
+    (vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
+
+    result, log = _run_via_fixture(
+        run_script, vault, tmp_path,
+        extra_env={"AKB2_BRIEFING_DEADLINE_HOUR": "0"},
+    )
+
+    content = log.read_text(encoding="utf-8")
+    assert result.returncode == GIVE_UP_EXIT_CODE, content
+    assert "terminal=failed" in content, content
+    assert "terminal=indeterminate" not in content, content
+    assert "status=missing" in content, content
+
+
+# ── L3-3 回归：重试维度是模型族，不是次数 ───────────────────────────────────
+#
+# 2026-08-02 实证反证：pipeline 的 synthesis 内部已有 3 次重试（`DeepSeek API
+# failed after 3 retries`），主跑 05:59 用掉 3 次、backstop 07:30 又 3 次 ——
+# **共 6 次同族尝试全 429**。在同族上加第 7/8/9 次只会多烧额度、把运行时间推向
+# deadline，反而降低补跑成功率。所以预算 = 2，且第 2 轮必须换族。
+
+
+def _counting_rerun_stub(tmp_path: Path, succeed_from: int, target: Path | None = None) -> Path:
+    """补跑 stub：第 succeed_from 轮起成功（并可写出目标文件），每轮记录收到的 env。"""
+    counter = tmp_path / "rerun-attempts.txt"
+    env_log = tmp_path / "rerun-env.txt"
+    marker = _rerun_marker(tmp_path)
+    write_target = ":"
+    if target is not None:
+        write_target = (
+            f'mkdir -p "{target.parent}"\n'
+            f'printf -- "---\\naudit_verdict: pass\\n---\\n" > "{target}"'
+        )
+    body = f"""
+n=$(cat "{counter}" 2>/dev/null || echo 0)
+n=$(( n + 1 ))
+echo "$n" > "{counter}"
+echo "attempt=$n AKB2_LLM_FAMILY_FALLBACK=${{AKB2_LLM_FAMILY_FALLBACK:-<unset>}}" >> "{env_log}"
+echo "invoked" >> "{marker}"
+if [ "$n" -lt {succeed_from} ]; then
+  exit 1
+fi
+{write_target}
+exit 0
+"""
+    return _write_exec(tmp_path / "counting-rerun-stub.sh", body.strip())
+
+
+def test_rerun_second_attempt_switches_model_family(run_script, tmp_path):
+    """SC-5: 第 1 轮失败 → 第 2 轮成功，且第 2 轮的环境里 AKB2_LLM_FAMILY_FALLBACK=1。
+
+    断言绑可观测行为：不是"循环跑了两次"，而是"第二次换了模型族"（COMMON.md 契约
+    1 的生产端）。同族已被证明连续 6 次 429，重试维度选错等于白烧额度。
+    """
+    vault = tmp_path / "vault"
+    (vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
+    target = vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social" / f"{_today()} Daily Briefing.md"
+    stub = _counting_rerun_stub(tmp_path, succeed_from=2, target=target)
+
+    result, log = _run_via_fixture(
+        run_script, vault, tmp_path,
+        extra_env={
+            "AKB2_BRIEFING_RERUN_SCRIPT": str(stub),
+            "AKB2_BRIEFING_RERUN_ATTEMPTS": "2",
+            "AKB2_BRIEFING_RERUN_BACKOFF": "0",
+        },
+        args=[],
+    )
+
+    content = log.read_text(encoding="utf-8")
+    assert result.returncode == 0, content
+    assert "terminal=recovered" in content, content
+    assert "attempt=1/2" in content and "attempt=2/2" in content, content
+    assert "attempt=3/2" not in content, f"预算之外的轮次不得出现:\n{content}"
+
+    env_lines = (tmp_path / "rerun-env.txt").read_text(encoding="utf-8").splitlines()
+    assert len(env_lines) == 2, f"应恰好补跑 2 轮:\n{env_lines}"
+    assert "AKB2_LLM_FAMILY_FALLBACK=0" in env_lines[0], f"第 1 轮不该换族: {env_lines[0]}"
+    assert "AKB2_LLM_FAMILY_FALLBACK=1" in env_lines[1], f"第 2 轮必须换族: {env_lines[1]}"
+
+
+def test_rerun_loop_stops_at_deadline_mid_flight(run_script, tmp_path):
+    """SC-7: 重试循环受 deadline 约束 —— 预算给到 9 也不能越过 deadline。
+
+    本条专锁**循环入口**那道 `deadline_missed`（睡前投影那道由
+    test_backoff_gives_up_instead_of_sleeping_past_deadline 单独锁）。
+
+    假 date 的调用计数必须和脚本里 `date +%H%M` 的实际次序对齐，改动脚本时要一起看：
+      #1 pre-loop deadline_missed        → 08:00 放行
+      #2 循环第 1 轮 deadline_missed      → 08:00 放行 → 真跑 stub（失败）
+      #3 deadline_missed_after(退避 0s)   → 08:00 余量充足 → 不放弃、睡 0s
+      #4 循环第 2 轮 deadline_missed      → 23:00 已过界 → give_up
+    所以阈值是 `-le 3`。退出码是 GIVE_UP_EXIT_CODE 而非 124（124 只属 run_with_deadline）。
+    """
+    vault = tmp_path / "vault"
+    (vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
+    stub = _counting_rerun_stub(tmp_path, succeed_from=99)
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    counter = tmp_path / "date-hm-calls.txt"
+    _write_exec(
+        fake_bin / "date",
+        f"""case "${{1:-}}" in
+  +%H%M)
+    n=$(cat "{counter}" 2>/dev/null || echo 0)
+    n=$(( n + 1 ))
+    echo "$n" > "{counter}"
+    if [ "$n" -le 3 ]; then echo 0800; else echo 2300; fi
+    ;;
+  +%Y-%m-%d) echo {_today()} ;;
+  *) echo "{_today()} 08:00:00" ;;
+esac""",
+    )
+
+    result, log = _run_via_fixture(
+        run_script, vault, tmp_path,
+        extra_env={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "AKB2_BRIEFING_RERUN_SCRIPT": str(stub),
+            "AKB2_BRIEFING_RERUN_ATTEMPTS": "9",
+            "AKB2_BRIEFING_RERUN_BACKOFF": "0",
+            "AKB2_BRIEFING_DEADLINE_HOUR": "12",
+        },
+        args=[],
+    )
+
+    content = log.read_text(encoding="utf-8")
+    assert result.returncode == GIVE_UP_EXIT_CODE, f"主动放弃必须是 125，实际 {result.returncode}:\n{content}"
+    assert result.returncode != DEADLINE_EXIT_CODE, "124 只属 run_with_deadline 终止 pipeline"
+    assert "attempt=1/9" in content, content
+    assert "attempt=3/9" not in content, f"deadline 后不得继续重试:\n{content}"
+    assert "terminal=give_up" in content, content
+    assert "reason=deadline_missed" in content, content
+    assert _rerun_calls(tmp_path) == 1, "只应真正补跑 1 轮就被 deadline 拦下"
+
+
+# ── L3-4 回归：无锁 → 装回 social 主跑就引爆双跑 ─────────────────────────────
+#
+# pgrep 结构性救不了：social 主跑 07:30、backstop 08:00，间隔 30 分钟 > 主跑实际
+# 耗时（历史 8–16 分钟），08:00 时 pgrep **必然扑空**。这正是 38 天双跑的成型条件。
+
+
+def test_concurrent_backstop_blocked_by_pid_lock(tmp_path):
+    """SC-8: 第二个 backstop 必须被 PID 锁挡住，补跑 stub 只被调用 1 次。"""
+    vault = tmp_path / "vault"
+    (vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
+    lock = tmp_path / "shared-backstop.lock"
+    marker = tmp_path / "pipeline-marker.txt"
+    release = tmp_path / "release"
+    # 持锁者：记账后等待 release（有界，最多 20s），模拟一次真在跑的补跑
+    holder_stub = _write_exec(
+        tmp_path / "holder-stub.sh",
+        f'''echo "invoked" >> "{marker}"
+i=0
+while [ ! -f "{release}" ] && [ "$i" -lt 100 ]; do sleep 0.2; i=$(( i + 1 )); done
+exit 0''',
+    )
+    second_stub = _write_exec(
+        tmp_path / "second-stub.sh",
+        f'echo "invoked" >> "{marker}"\nexit 0',
+    )
+
+    common_env = {
+        **os.environ,
+        "AKB2_BRIEFING_DEADLINE_HOUR": "99",
+        "AKB2_BRIEFING_DEADLINE_MINUTE": "0",
+        "AKB2_BACKSTOP_LOCK_FILE": str(lock),
+        "AKB2_BRIEFING_RERUN_BACKOFF": "0",
+        "AKB2_BACKSTOP_PGREP_PATTERN": _IMPOSSIBLE_PGREP,
+    }
+    first = subprocess.Popen(
+        ["/bin/bash", str(BACKSTOP_SH), "--vault-root", str(vault)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        env={**common_env,
+             "AKB2_BACKSTOP_LOG": str(tmp_path / "first.log"),
+             "AKB2_BRIEFING_RERUN_SCRIPT": str(holder_stub)},
+    )
+    try:
+        # 等第一个进程真正拿到锁并进入补跑
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            if lock.exists() and marker.exists():
+                break
+            time.sleep(0.1)
+        assert lock.exists(), "第一个 backstop 应已建立锁文件"
+        assert lock.read_text().strip().isdigit(), "锁文件内容必须是 PID"
+
+        second = subprocess.run(
+            ["/bin/bash", str(BACKSTOP_SH), "--vault-root", str(vault)],
+            capture_output=True, text=True,
+            env={**common_env,
+                 "AKB2_BACKSTOP_LOG": str(tmp_path / "second.log"),
+                 "AKB2_BRIEFING_RERUN_SCRIPT": str(second_stub)},
+        )
+    finally:
+        release.write_text("go", encoding="utf-8")
+        try:
+            first.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            first.kill()
+            first.communicate()
+
+    second_log = (tmp_path / "second.log").read_text(encoding="utf-8")
+    assert second.returncode == 0, f"被锁挡住是正常早退，不是失败:\n{second_log}"
+    assert "already-running" in second_log, f"必须明示被谁挡住:\n{second_log}"
+    assert "terminal=skip" in second_log, second_log
+    calls = len([ln for ln in marker.read_text(encoding="utf-8").splitlines() if ln.strip()])
+    assert calls == 1, f"补跑只应被调用 1 次（双跑防线），实际 {calls} 次"
+
+
+def test_stale_lock_is_reclaimed(tmp_path):
+    """SC-8 配套: 持有者已死的陈旧锁必须能被接管，否则一次崩溃永久锁死补跑。"""
+    vault = tmp_path / "vault"
+    (vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
+    lock = tmp_path / "stale.lock"
+    # 一个必然不存在的 PID：用一个已回收的子进程 pid
+    dead = subprocess.Popen(["/bin/bash", "-c", "exit 0"])
+    dead.wait()
+    lock.write_text(f"{dead.pid}\n", encoding="utf-8")
+    marker = tmp_path / "marker.txt"
+    stub = _write_exec(tmp_path / "stub.sh", f'echo invoked >> "{marker}"\nexit 0')
+
+    result = _run_backstop(
+        vault,
+        env_overrides={
+            "AKB2_BACKSTOP_LOCK_FILE": str(lock),
+            "AKB2_BRIEFING_RERUN_SCRIPT": str(stub),
+            "AKB2_BRIEFING_RERUN_BACKOFF": "0",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert marker.exists(), f"陈旧锁应被接管并正常补跑:\n{result.stderr}"
+    assert "already-running" not in result.stderr
+
+
 # ── 缺陷 D 回归：BSD-only 语法在 CI(ubuntu) 上炸 ──────────────────────────────
 #
 # 生产实证（PR #65 合并后 CI tests job 红）：`mktemp -t akb2-backstop-read` 是
@@ -439,3 +909,449 @@ def test_single_terminal_state_per_run(run_script, tmp_path):
 # parametrize 两个脚本的版本抓不到别处的同类问题 —— 实际漏掉了
 # `akb-pre-commit.sh` 的 `stat -f %z`。不在此处保留平行副本：两套同职责守卫
 # 比一套差（宪法「convention beats novelty」同理）。
+
+
+def test_no_literal_attempt_one_of_one():
+    """SC-6: `attempt=1/1` 这个字面量必须彻底消失（它把"无循环"伪装成"有轮次"）。"""
+    for name in ("briefing_backstop.sh", "github_briefing_backstop.sh"):
+        text = (PROJECT_ROOT / "scripts" / name).read_text(encoding="utf-8")
+        assert "attempt=1/1" not in text, f"{name} 仍有 attempt=1/1 字面量"
+
+
+def test_give_up_and_deadline_exit_codes_are_distinct():
+    """SC-9 静态: 两个退出码都是具名常量且取值不同（launchd 层必须可分辨）。"""
+    for name in ("briefing_backstop.sh", "github_briefing_backstop.sh"):
+        text = (PROJECT_ROOT / "scripts" / name).read_text(encoding="utf-8")
+        deadline = re.search(r"^readonly DEADLINE_EXIT_CODE=(\d+)$", text, re.M)
+        give_up = re.search(r"^readonly GIVE_UP_EXIT_CODE=(\d+)$", text, re.M)
+        assert deadline, f"{name} 缺具名 DEADLINE_EXIT_CODE"
+        assert give_up, f"{name} 缺具名 GIVE_UP_EXIT_CODE"
+        assert deadline.group(1) != give_up.group(1), (
+            f"{name} 的两个退出码同值 —— launchd 的 'last exit code' 又不可分辨了"
+        )
+        assert deadline.group(1) == "124", f"{name} 的 deadline 码须与 run_with_deadline 对齐"
+
+
+def test_deadline_exit_code_still_propagated_from_rerun(run_script, tmp_path):
+    """SC-9 运行时: 补跑子进程返回 124（run_with_deadline 终止）时，backstop 照传 124。
+
+    与"backstop 主动放弃 → 125"成对：两种 124/125 的来源必须能分开看。
+    """
+    vault = tmp_path / "vault"
+    (vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
+    stub = _write_exec(
+        tmp_path / "deadline-killed-stub.sh",
+        f'echo invoked >> "{_rerun_marker(tmp_path)}"\nexit 124',
+    )
+
+    result, log = _run_via_fixture(
+        run_script, vault, tmp_path,
+        extra_env={
+            "AKB2_BRIEFING_RERUN_SCRIPT": str(stub),
+            "AKB2_BRIEFING_RERUN_ATTEMPTS": "1",
+        },
+        args=[],
+    )
+
+    content = log.read_text(encoding="utf-8")
+    assert result.returncode == DEADLINE_EXIT_CODE, f"应原样传出 124:\n{content}"
+    assert "run_with_deadline" in content, content
+    assert f"exit_code={DEADLINE_EXIT_CODE}" in content, content
+
+
+# ── 双读者判据一致性（review 补漏）─────────────────────────────────────────
+#
+# 回退读者的价值前提是「换观测者，不换结论」。如果哪天有人给 awk 主读者加了一种新的
+# 格式容忍（比如支持 `audit_verdict = pass` 这种带空格的等号写法）却忘了同步纯 bash
+# 读者，两个读者就会在同一份文件上给出**不同的 verdict** —— 那比没有回退更危险：
+# 回退会在主读者失败时悄悄把 pass 读成 no_verdict，反过来触发一次不该有的重跑。
+# 所以这条一致性必须有常驻守卫，而不是只在实现当天手工比对过一次。
+
+_READER_PARITY_CASES: dict[str, bytes] = {
+    "plain": b"---\naudit_verdict: pass\n---\n# b\n",
+    "bom_crlf_quote_ws": (
+        b'\xef\xbb\xbf--- \r\ndate: 2026-07-30\r\naudit_verdict:  "pass"  \r\n---\r\n# b\r\n'
+    ),
+    "warn": b"---\naudit_verdict: warn\n---\n",
+    "no_verdict_key": b"---\ndate: 2026-07-30\n---\n# b\n",
+    "no_frontmatter": b"# just a heading\naudit_verdict: pass\n",
+    "trailing_yaml_comment": b"---\naudit_verdict: pass   # gate ok\n---\n",
+    "single_quoted": b"---\naudit_verdict: 'fail'\n---\n",
+    "dots_close_fence": b"---\naudit_verdict: pass\n...\n",
+    "leading_blank_lines": b"\n\n---\naudit_verdict: pass\n---\n",
+    "key_outside_frontmatter": b"---\ndate: x\n---\naudit_verdict: pass\n",
+    "no_trailing_newline": b"---\naudit_verdict: pass\n---",
+    "tab_indent": b"---\n audit_verdict:\tpass\n---\n",
+    "unknown_value": b"---\naudit_verdict: weird\n---\n",
+    "empty_file": b"",
+}
+
+
+def _reader_harness() -> str:
+    """把脚本里的两个读者函数原样抽出来，单独可跑（不执行脚本主流程）。"""
+    src = BACKSTOP_SH.read_text(encoding="utf-8")
+
+    def grab(header: str) -> str:
+        start = src.index("\n" + header) + 1
+        end = src.index("\n}\n", start) + len("\n}\n")
+        return src[start:end]
+
+    awk_fn = grab("read_frontmatter_verdict() {")
+    native_fn = grab("read_frontmatter_verdict_native() {")
+    res = re.findall(r"^_RE_\w+='[^']*'$", src, re.M)
+    max_lines = re.search(r"^readonly NATIVE_READER_MAX_LINES=\d+$", src, re.M)
+    # 守卫自身的非空过：抽取失败时必须炸，不能静默变成"两个空函数一致"
+    assert "LC_ALL=C awk" in awk_fn, "未抽到 awk 主读者"
+    assert "while IFS= read -r line" in native_fn, "未抽到纯 bash 回退读者"
+    assert len(res) >= 4, f"未抽到回退读者用的正则常量: {res}"
+    assert max_lines, "未抽到 NATIVE_READER_MAX_LINES"
+    return "\n".join(
+        ['set -uo pipefail', max_lines.group(0), 'BACKSTOP_READER=""', *res, awk_fn, native_fn]
+    ) + "\n"
+
+
+def _read_with(harness: str, fn: str, path: Path) -> tuple[int, str]:
+    proc = subprocess.run(
+        ["/bin/bash", "-c", harness + f'{fn} "$1"', "_", str(path)],
+        capture_output=True, text=True,
+    )
+    return proc.returncode, proc.stdout
+
+
+def test_native_reader_matches_awk_reader_on_every_format_variant(tmp_path):
+    """两个读者在**每一种**格式变体上必须给出完全相同的 (rc, verdict)。
+
+    包含生产真样本（07-30 fixture）与 13 种已知会出现的格式抖动。任何一处分歧都意味着
+    "主读者失败时回退会改变结论"，那正是回退读者最不该有的行为。
+    """
+    harness = _reader_harness()
+    cases = dict(_READER_PARITY_CASES)
+    cases["production_fixture"] = PRODUCTION_FRONTMATTER.read_bytes()
+
+    mismatches = []
+    for name, data in cases.items():
+        target = tmp_path / f"{name}.md"
+        target.write_bytes(data)
+        awk_out = _read_with(harness, "read_frontmatter_verdict", target)
+        native_out = _read_with(harness, "read_frontmatter_verdict_native", target)
+        if awk_out != native_out:
+            mismatches.append(f"  {name}: awk={awk_out!r} native={native_out!r}")
+
+    assert not mismatches, "双读者判据分歧（回退会改变结论）:\n" + "\n".join(mismatches)
+
+
+def test_reader_parity_matrix_actually_covers_the_pass_verdict(tmp_path):
+    """守卫的非空过：矩阵里必须真有解析出 pass 的样本，否则上一条可能在比较"全都读不出"。"""
+    harness = _reader_harness()
+    target = tmp_path / "sanity.md"
+    target.write_bytes(_READER_PARITY_CASES["plain"])
+    for fn in ("read_frontmatter_verdict", "read_frontmatter_verdict_native"):
+        rc, out = _read_with(harness, fn, target)
+        assert rc == 0 and out.strip() == "pass", f"{fn} 未读出 pass: rc={rc} out={out!r}"
+
+
+# ── 非重试退出码（对账 Lane 6 的 pipeline EXIT_* 表后补）────────────────────
+#
+# Lane 6 把 social pipeline 的退出码定成 0=已交付 / 1=未交付 / 2=audit fail /
+# 3=intake fixture 阻断 / 4=gate 不收敛 / 5=去重账本不可用，并显式保留 124/125。
+# 其中 3（确定性阻断）、5（基础设施故障）、124（这一轮跑不完）**换模型族救不了**——
+# 对它们重试就是这批修复要消掉的「明知无望还烧额度」，只是换了个位置复发。
+
+
+def _fixed_rc_stub(tmp_path: Path, rc: int) -> Path:
+    return _write_exec(
+        tmp_path / f"rc{rc}-stub.sh",
+        f'echo "invoked" >> "{_rerun_marker(tmp_path)}"\nexit {rc}',
+    )
+
+
+def test_nonretryable_exit_codes_skip_second_attempt(run_script, tmp_path):
+    """3 / 5 / 124 必须只跑 1 轮，并把停因写进日志（不是静默少跑一轮）。"""
+    script = BACKSTOP_SH.read_text(encoding="utf-8")
+    declared = re.search(
+        r'^readonly RERUN_NONRETRYABLE_EXIT_CODES="([^"]*)"$', script, re.M
+    )
+    assert declared, "非重试码必须是具名常量（宪法 P4 预算显式）"
+    codes = declared.group(1).split()
+    assert set(codes) == {"124", "3", "5"}, f"非重试码清单意外变化: {codes}"
+
+    for rc in (3, 5, 124):
+        case_dir = tmp_path / f"case{rc}"
+        case_dir.mkdir()
+        vault = case_dir / "vault"
+        (vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
+        stub = _fixed_rc_stub(case_dir, rc)
+        result, log = _run_via_fixture(
+            run_script, vault, case_dir,
+            extra_env={
+                "AKB2_BRIEFING_RERUN_SCRIPT": str(stub),
+                "AKB2_BRIEFING_RERUN_ATTEMPTS": "2",
+            },
+            args=[],
+        )
+        content = log.read_text(encoding="utf-8")
+        assert _rerun_calls(case_dir) == 1, f"rc={rc} 应只补跑 1 轮:\n{content}"
+        assert "rerun_stop=nonretryable_exit" in content, f"rc={rc} 停因必须可见:\n{content}"
+        assert "attempt=1/2" in content, content
+        assert "attempt=2/2" not in content, f"rc={rc} 不该进第 2 轮:\n{content}"
+        assert result.returncode == rc, f"rc={rc} 应原样透传，实际 {result.returncode}"
+
+
+def test_retryable_exit_codes_still_switch_family(run_script, tmp_path):
+    """反面：1 / 2 / 4 仍必须用满预算并在第 2 轮换族 —— 清单不得过宽。
+
+    这三类都可能由 LLM 输出质量或 429 驱动，换族确有机会救回；把它们一起拦掉
+    等于把本 lane 的主修法（换族补跑）关掉。
+    """
+    for rc in (1, 2, 4):
+        case_dir = tmp_path / f"case{rc}"
+        case_dir.mkdir()
+        vault = case_dir / "vault"
+        (vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
+        stub = _counting_rerun_stub(case_dir, succeed_from=99)
+        # succeed_from=99 的 stub 退 1；2/4 用固定码 stub 另测透传
+        if rc != 1:
+            stub = _write_exec(
+                case_dir / f"rc{rc}-env-stub.sh",
+                f'''n=$(cat "{case_dir / "rerun-attempts.txt"}" 2>/dev/null || echo 0)
+n=$(( n + 1 ))
+echo "$n" > "{case_dir / "rerun-attempts.txt"}"
+echo "attempt=$n AKB2_LLM_FAMILY_FALLBACK=${{AKB2_LLM_FAMILY_FALLBACK:-<unset>}}" >> "{case_dir / "rerun-env.txt"}"
+echo "invoked" >> "{_rerun_marker(case_dir)}"
+exit {rc}''',
+            )
+        result, log = _run_via_fixture(
+            run_script, vault, case_dir,
+            extra_env={
+                "AKB2_BRIEFING_RERUN_SCRIPT": str(stub),
+                "AKB2_BRIEFING_RERUN_ATTEMPTS": "2",
+            },
+            args=[],
+        )
+        content = log.read_text(encoding="utf-8")
+        assert _rerun_calls(case_dir) == 2, f"rc={rc} 应用满 2 轮预算:\n{content}"
+        assert "rerun_stop=nonretryable_exit" not in content, f"rc={rc} 不该被当非重试码"
+        env_lines = (case_dir / "rerun-env.txt").read_text(encoding="utf-8").splitlines()
+        assert "AKB2_LLM_FAMILY_FALLBACK=1" in env_lines[1], f"rc={rc} 第 2 轮须换族: {env_lines}"
+        assert result.returncode == rc, f"rc={rc} 应原样透传，实际 {result.returncode}"
+
+
+def test_rerun_result_labels_match_pipeline_exit_table(run_script, tmp_path):
+    """每个已定义码的日志归因必须说对，且不得再把 3/4/5 混称"异常"。
+
+    旧实现把 1 一律叫 "gate reject"（1 实际还覆盖上游硬失败与 vault 不可用），并把
+    3/4/5 丢进 `*)` 的"异常" —— 它们是 pipeline 已定义的结局。误标归因会把排查带偏。
+    """
+    expected = {
+        1: "未交付",
+        2: "audit 判 fail",
+        3: "intake 降级到测试 fixture",
+        4: "gate 在最终文件上不收敛",
+        5: "跨日去重账本不可用",
+    }
+    for rc, phrase in expected.items():
+        case_dir = tmp_path / f"label{rc}"
+        case_dir.mkdir()
+        vault = case_dir / "vault"
+        (vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
+        stub = _fixed_rc_stub(case_dir, rc)
+        _result, log = _run_via_fixture(
+            run_script, vault, case_dir,
+            extra_env={
+                "AKB2_BRIEFING_RERUN_SCRIPT": str(stub),
+                "AKB2_BRIEFING_RERUN_ATTEMPTS": "1",
+            },
+            args=[],
+        )
+        content = log.read_text(encoding="utf-8")
+        assert phrase in content, f"rc={rc} 归因文案缺「{phrase}」:\n{content}"
+        assert "(异常)" not in content, f"rc={rc} 是已定义结局，不得叫异常:\n{content}"
+        assert f"exit_code={rc}" in content, content
+
+
+# ── 回退不得悄悄变成常态（集成期提醒后补）──────────────────────────────────
+#
+# 回退读者只有作为**例外路径**才有价值。若 awk 本身不可解析（launchd 给的是固定最小
+# PATH，见 launchd/com.akb2.briefing.backstop.plist 的 PATH 键），主读者会**每次**失败，
+# native 回退将永久承担 100% 判据 —— 而 verdict 依然正确，于是这个结构性缺陷被回退
+# 悄悄掩盖：`read_path=native_fallback` 本该表示"今天卷抖了一下"，却变成"永远如此"，
+# 信号价值归零。把响亮的故障变成安静的长期降级，正是宪法 P4 要禁的。
+
+
+def test_structurally_unavailable_primary_reader_is_attributed_separately(run_script, tmp_path):
+    """主读者结构性不可用 → 单独归因 reader_unavailable=，且不空跑重试窗口。
+
+    与"卷级瞬时失败"必须可区分：后者重试有意义（4 轮 20s 窗口），前者重试毫无意义
+    （二进制不存在，等 20s 只是把 backstop 往 deadline 推）。
+    """
+    vault = tmp_path / "vault"
+    _write_today_briefing(vault, "---\naudit_verdict: pass\n---\n# briefing\n")
+
+    result, log = _run_via_fixture(
+        run_script, vault, tmp_path,
+        # 指向不存在的读者 → primary_reader_available() 判否
+        extra_env={"AKB2_BACKSTOP_READER": str(tmp_path / "no-such-reader.sh")},
+        args=[],
+    )
+
+    content = log.read_text(encoding="utf-8")
+    assert "reader_unavailable=" in content, f"结构性不可用必须单独归因:\n{content}"
+    assert "需人工修环境" in content, "必须点明这要人修环境，不是等它自愈"
+    # 不空跑重试窗口：只尝试 1 轮
+    assert "attempt=1/1" in content, f"结构性不可用时预算应收到 1:\n{content}"
+    assert "attempt=2/" not in content, f"不得对缺失的二进制重试:\n{content}"
+    # 判据仍然正确（回退兜住），终态仍是 skip
+    assert "read_path=native_fallback" in content, content
+    assert "terminal=skip" in content, content
+    assert result.returncode == 0
+    assert _rerun_calls(tmp_path) == 0
+
+
+def test_transient_failure_still_uses_full_retry_window(run_script, tmp_path):
+    """反面：读者**存在**但读不到（卷抖动）时，仍必须用满 4 轮窗口。
+
+    与上一条成对 —— 防止"结构性不可用"的判定过宽，把真正该重试的卷抖动也一并缩成 1 轮
+    （那会把 20s 容错窗口悄悄关掉，双读者修法的第一道防线就没了）。
+    """
+    script = BACKSTOP_SH.read_text(encoding="utf-8")
+    budget = int(
+        re.search(r"^readonly VERDICT_READ_ATTEMPT_BUDGET=(\d+)$", script, re.M).group(1)
+    )
+    vault = tmp_path / "vault"
+    _write_today_briefing(vault, "---\naudit_verdict: pass\n---\n# briefing\n")
+    reader = _failing_reader(tmp_path, fail_times=99)   # 存在且可执行，只是恒失败
+
+    _result, log = _run_via_fixture(
+        run_script, vault, tmp_path,
+        extra_env={"AKB2_BACKSTOP_READER": str(reader)},
+        args=[],
+    )
+
+    content = log.read_text(encoding="utf-8")
+    assert "reader_unavailable=" not in content, "读者存在时不得判成结构性不可用"
+    assert f"attempt={budget}/{budget}" in content, f"应用满 {budget} 轮窗口:\n{content}"
+
+
+def test_native_fallback_is_not_the_default_path(run_script, tmp_path):
+    """一切正常时绝不能出现 native_fallback —— 它是例外信号，常态化即失去价值。
+
+    这条与 test_spacey_path_is_read_by_primary_awk_without_fallback 一起构成
+    "回退必须罕见" 的双保险：那条盯含空格路径，这条盯普通路径 + 生产 fixture。
+    """
+    for name, payload in (
+        ("plain", "---\naudit_verdict: pass\n---\n# briefing\n"),
+        ("production", PRODUCTION_FRONTMATTER.read_text(encoding="utf-8")),
+    ):
+        case_dir = tmp_path / name
+        case_dir.mkdir()
+        vault = case_dir / "vault"
+        _write_today_briefing(vault, payload)
+        _result, log = _run_via_fixture(run_script, vault, case_dir)
+        content = log.read_text(encoding="utf-8")
+        assert "read_path=awk_primary" in content, f"{name}: 主读者应直接成功:\n{content}"
+        assert "read_path=native_fallback" not in content, f"{name}: 常态不得走回退:\n{content}"
+        assert "reader_unavailable=" not in content, content
+        # 主读者一次就该成功：不该出现任何 warn 级读盘失败行
+        assert "读取 audit_verdict 失败" not in content, content
+
+
+# ── 退避前的 deadline 投影（fix-exit-truth 时长风险核对后补）──────────────────
+#
+# 退避 sleep 发生在**下一轮 deadline 检查之前**，所以原来会"白睡 600s、醒来才发现
+# 已过界然后放弃"。除了浪费，睡着期间还一直**占着补跑锁** —— 把随后那趟 backstop
+# （12:05）也挡在门外。默认常量（07:30 起跑 / deadline 12:00 / 退避 600s）余量约 4 小时
+# 触不到这条；但只要有人按建议调大重试轮次、或把 deadline 提前，它立刻变成活风险。
+
+
+def test_backoff_gives_up_instead_of_sleeping_past_deadline(run_script, tmp_path):
+    """睡完就会过界时必须**当场放弃**，不能先睡再放弃（且不得白占补跑锁）。
+
+    构造：假 date 恒返回 11:50，deadline 12:00，退避 600s → 11:50+10min = 12:00 已过界。
+    断言绑可观测行为：终态 give_up + reason=deadline_would_pass + 只补跑 1 轮，
+    并且**实测耗时远小于退避时长**（证明真的没睡）。
+    """
+    vault = tmp_path / "vault"
+    (vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
+    stub = _counting_rerun_stub(tmp_path, succeed_from=99)
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_exec(
+        fake_bin / "date",
+        f"""case "${{1:-}}" in
+  +%H%M) echo 1150 ;;
+  +%Y-%m-%d) echo {_today()} ;;
+  *) echo "{_today()} 11:50:00" ;;
+esac""",
+    )
+
+    started = time.monotonic()
+    result, log = _run_via_fixture(
+        run_script, vault, tmp_path,
+        extra_env={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "AKB2_BRIEFING_RERUN_SCRIPT": str(stub),
+            "AKB2_BRIEFING_RERUN_ATTEMPTS": "2",
+            "AKB2_BRIEFING_RERUN_BACKOFF": "600",   # 真实生产值，不是 0
+            "AKB2_BRIEFING_DEADLINE_HOUR": "12",
+            "AKB2_BRIEFING_DEADLINE_MINUTE": "0",
+        },
+        args=[],
+    )
+    elapsed = time.monotonic() - started
+
+    content = log.read_text(encoding="utf-8")
+    assert result.returncode == GIVE_UP_EXIT_CODE, content
+    assert "terminal=give_up" in content, content
+    assert "reason=deadline_would_pass" in content, f"停因必须与「已过界」区分:\n{content}"
+    assert _rerun_calls(tmp_path) == 1, f"只应补跑 1 轮:\n{content}"
+    # 断"实际开跑的轮次"而不是裸子串：give-up 行本身会带 next_attempt=2/2
+    #（那是诚实的——它标的是"被我们拒绝启动的那一轮"），裸 "attempt=2/2" 会误命中它。
+    # 用唯一 token："run — " 会被 "rerun — " 包含，"attempt=2/2" 会被 "next_attempt=2/2" 包含
+    run_lines = [ln for ln in content.splitlines() if "开始补跑 attempt=" in ln]
+    assert len(run_lines) == 1, f"只应有 1 条开跑行:\n{chr(10).join(run_lines)}"
+    # 没有真的睡 600s —— 这是本条的核心（宽松阈值，只要远小于退避即可）
+    assert elapsed < 60, f"不得先睡再放弃，实测耗时 {elapsed:.1f}s"
+    # 锁必须已释放（睡着时占锁会把 12:05 那趟一起挡掉）
+    assert not (tmp_path / "backstop.lock").exists(), "放弃后必须释放补跑锁"
+
+
+def test_backoff_still_sleeps_when_margin_is_sufficient(run_script, tmp_path):
+    """反面：余量充足时退避必须照常发生 —— 投影判据不得过宽把重试机制关掉。
+
+    构造：假 date 恒返回 08:00，deadline 12:00，退避 1s → 余量 4 小时，应正常睡完并跑第 2 轮。
+    """
+    vault = tmp_path / "vault"
+    (vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
+    stub = _counting_rerun_stub(tmp_path, succeed_from=99)
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_exec(
+        fake_bin / "date",
+        f"""case "${{1:-}}" in
+  +%H%M) echo 0800 ;;
+  +%Y-%m-%d) echo {_today()} ;;
+  *) echo "{_today()} 08:00:00" ;;
+esac""",
+    )
+
+    _result, log = _run_via_fixture(
+        run_script, vault, tmp_path,
+        extra_env={
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "AKB2_BRIEFING_RERUN_SCRIPT": str(stub),
+            "AKB2_BRIEFING_RERUN_ATTEMPTS": "2",
+            "AKB2_BRIEFING_RERUN_BACKOFF": "1",
+            "AKB2_BRIEFING_DEADLINE_HOUR": "12",
+            "AKB2_BRIEFING_DEADLINE_MINUTE": "0",
+        },
+        args=[],
+    )
+
+    content = log.read_text(encoding="utf-8")
+    assert "reason=deadline_would_pass" not in content, f"余量充足时不得放弃:\n{content}"
+    assert _rerun_calls(tmp_path) == 2, f"应正常跑满 2 轮:\n{content}"
+    assert "attempt=2/2" in content, content
+    env_lines = (tmp_path / "rerun-env.txt").read_text(encoding="utf-8").splitlines()
+    assert "AKB2_LLM_FAMILY_FALLBACK=1" in env_lines[1], env_lines

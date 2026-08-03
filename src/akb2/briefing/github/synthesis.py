@@ -2,13 +2,23 @@
 
 import json
 import os
+import sys
 import time
 import xml.sax.saxutils as saxutils
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import jsonschema
+
+from akb2.common.http_retry import (
+    ProviderErrorDiagnosis,
+    backoff_delay,
+    classify_provider_error,
+    parse_retry_after,
+)
+from akb2.quality import llm_router
 
 from .url_normalizer import normalize
 
@@ -25,8 +35,52 @@ _GATEWAY_BASE = (
 ).rstrip("/")
 DEEPSEEK_API_URL = f"{_GATEWAY_BASE}/v1/chat/completions"
 MAX_INPUT_TOKENS = 12000
-RETRY_BACKOFF = [5, 15, 45]
-MAX_RETRIES = 3
+
+# ── 重试预算：两个常量必须从一个来源推导（宪法 P4「预算显式」）────────────────────
+# 旧值 RETRY_BACKOFF=[5,15,45] + MAX_RETRIES=3 不自洽：3 次尝试只在 attempt 0/1 之后
+# sleep，实际等待 [5,15]=20s，索引 2 的 45 **永不执行**。2026-08-02 日志里
+# `elapsed=20.5s` 精确吻合，而读代码的人会以为最多等 65s —— 声明的预算和真实预算差
+# 3 倍多，排查时按 65s 反推必然误判。现在 MAX_RETRIES 由退避表长度推导：改表即改次数,
+# 不可能再漂。N 次尝试 = N-1 次 sleep，退避表恰好用满。
+RETRY_BACKOFF = [5.0, 15.0, 45.0]
+MAX_RETRIES = len(RETRY_BACKOFF) + 1
+# 单次等待封顶取退避表的最大值（派生，不另写一个可能对不上的数字）
+MAX_BACKOFF_S = max(RETRY_BACKOFF)
+REQUEST_TIMEOUT_S = 120
+
+
+def _gateway_model_id(family: str) -> str:
+    """取该模型族在 Gateway 上的模型 id，顺带过 llm_router 的族校验。
+
+    走 llm_router 而不是各写一份字面量：模型 id 只有一个权威来源，且
+    `_validate_model_family` 会拒 `-preview` 与不支持的族（宪法 P7）。
+    本模块的端点恒为 Gateway（见 _GATEWAY_BASE），故直接取 gateway 形态的 id，
+    不用 llm_router 的 env 嗅探结果 —— 否则同一进程里模型 id 会随 env 漂移。
+    """
+    llm_router._validate_model_family(family)
+    cfg = llm_router._MODEL_CONFIG[family]
+    return cfg.get("gateway_model_id_default", cfg["model_id_default"])
+
+
+# ── 模型族降级（宪法 P4「失败可见」+ P7 兜底族）─────────────────────────────────
+# 修复前模型硬编码在请求体里，briefing 侧全链零降级余量：单点模型故障 = 当日简报
+# 100% 缺失。而预算耗尽时退避完全无效（额度不会因为等待回来），**换族是唯一有效补救**。
+# 主族 = deepseek（生产/提炼族，值与修复前的硬编码字面量一致，行为不变）；
+# 备族 = gemini-flash（宪法 P7 点名的兜底族，正式版非 -preview）。
+PRIMARY_SYNTHESIS_MODEL = _gateway_model_id("deepseek-v4-pro")
+FALLBACK_SYNTHESIS_MODEL = _gateway_model_id("gemini-flash")
+
+# COMMON.md 契约 1：Lane 3 的 backstop 第 2 轮补跑设置它，本模块是消费端 ——
+# 读到 =1 就**直接从备族开始**（主族刚在第 1 轮打穿预算，再试一次纯属白烧）。
+FAMILY_FALLBACK_ENV = "AKB2_LLM_FAMILY_FALLBACK"
+
+# 本次 synthesize() 运行中已确认不可用的模型族。为什么需要记住：synthesize 的
+# JSON 重试分支会**再调用一次**合成，若不记账，刚被判定「预算耗尽」的主族会被原样
+# 再打一遍 —— 那正是本 lane 要消掉的「明知耗尽还硬试」，只是换了个位置复发。
+# 生命周期 = 单次 synthesize()（入口清空），不跨调用累积；跨**进程**协调不在此处。
+# 有这个闩后，单次 synthesize 的最坏请求数有界：
+#   主族 MAX_RETRIES 次（仅第一次）+ 备族 MAX_RETRIES 次 × 2 个调用点。
+_unavailable_families: set[str] = set()
 
 # ── 输出预算（宪法 P4「预算显式」+ P1「有界自动化」）─────────────────────────────
 # 2026-07-21/24/27 三次生产失败（logs/github-briefing-stdout.log:421/457/493）的真因
@@ -68,6 +122,52 @@ class SynthesisTruncatedError(RuntimeError):
     在日志里自证，并且**绕开** synthesize() 里的 JSON 重试分支：同一请求配同一上限
     重跑必然截在同一处，重试只是白烧一次调用（生产实测每次失败因此翻倍到 103-156s）。
     """
+
+
+class SynthesisAPIError(RuntimeError):
+    """LLM **调用层**失败（HTTP / 网络），携带契约 2 诊断字段。
+
+    与 SynthesisTruncatedError 分开：截断是「拿到了响应但产出被预算截短」，属产出层，
+    换模型族救不了、也不该重试；本类是「响应没拿到」，是模型族级故障 ——
+    上层据此决定是否降级到备用族（`family_fallback_worthwhile`）。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        diagnosis: ProviderErrorDiagnosis | None = None,
+        model: str = "",
+        exhausted: bool = False,
+        total_wait_s: float = 0.0,
+    ):
+        super().__init__(message)
+        self.diagnosis = diagnosis
+        self.model = model
+        self.exhausted = exhausted
+        self.total_wait_s = total_wait_s
+
+    @property
+    def error_type(self) -> str:
+        return self.diagnosis.error_type if self.diagnosis else "other"
+
+    @property
+    def family_fallback_worthwhile(self) -> bool:
+        """换模型族还有意义吗。
+
+        预算耗尽（共享账户额度打穿）与重试耗尽（该族持续限流/故障）都属「这一族现在
+        不可用」，换族有效。非可重试硬错（401/403/400）是**配置/鉴权**问题，
+        换族只会在另一族上原样再错一次 —— 不换，立即抛。
+        """
+        if self.exhausted:
+            return True
+        return bool(self.diagnosis and self.diagnosis.is_budget_exceeded)
+
+
+def _sleep(seconds: float) -> None:
+    """可被测试 monkeypatch 拦截的 sleep（沿用 send.py 的既有形态）。"""
+    if seconds > 0:
+        time.sleep(seconds)
 
 
 def _load_prompt_template() -> str:
@@ -169,7 +269,14 @@ def _mock_response(prompt: str) -> dict:
 
 
 def _call_deepseek(prompt: str, api_key: str | None = None,
-                   *, allow_mock: bool = False) -> dict | None:
+                   *, allow_mock: bool = False,
+                   model: str | None = None) -> dict | None:
+    """打一次合成请求（含同族退避重试）。失败抛 SynthesisAPIError，不返回 None。
+
+    Args:
+        model: 本次使用的模型 id；None → PRIMARY_SYNTHESIS_MODEL。
+            换族由 `_call_with_family_fallback` 负责，本函数只忠实打一个族。
+    """
     # AI Gateway key：部署侧约定 AI_GATEWAY_API_KEY，
     # 本机运行时设 DEEPSEEK_API_KEY（同一 Gateway key）。
     key = api_key or os.environ.get("AI_GATEWAY_API_KEY") or os.environ.get("DEEPSEEK_API_KEY", "")
@@ -185,12 +292,13 @@ def _call_deepseek(prompt: str, api_key: str | None = None,
             "缺 API key 时不产出任何内容（旧行为会静默产出 mock 假简报）。"
         )
 
+    model_id = model or PRIMARY_SYNTHESIS_MODEL
     headers = {
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
     }
     body = json.dumps({
-        "model": "deepseek/deepseek-v4-pro",
+        "model": model_id,
         "messages": [
             {"role": "user", "content": prompt},
         ],
@@ -198,18 +306,147 @@ def _call_deepseek(prompt: str, api_key: str | None = None,
         "max_tokens": MAX_OUTPUT_TOKENS,
     }).encode()
 
+    # 实收等待累计 —— 耗尽时打印它而不是打印退避表（自证真实预算，宪法 P4）
+    total_wait = 0.0
     for attempt in range(MAX_RETRIES):
         try:
             req = Request(DEEPSEEK_API_URL, data=body, headers=headers)
-            with urlopen(req, timeout=120) as resp:
+            with urlopen(req, timeout=REQUEST_TIMEOUT_S) as resp:
                 return json.loads(resp.read())
+        except HTTPError as e:
+            # HTTPError 本身就是 response：有 .code/.headers/.read()。旧实现只取
+            # str(e)（= "HTTP Error 429: Too Many Requests"）就把状态码、Retry-After
+            # 和错误体全丢了 —— 于是 401 和 429 走同一条路，预算耗尽也照样烧满重试。
+            diagnosis = classify_provider_error(e.code, _read_error_body(e))
+            if diagnosis.is_budget_exceeded:
+                # 额度不会因为等待回来：退避 0 次，5s 内报出真因（L1-2）
+                raise SynthesisAPIError(
+                    f"synthesis fail-fast: 预算耗尽，重试无用 → 不退避不重试"
+                    f"（{diagnosis.summary()} model={model_id}）。"
+                    f"补救只有换模型族或等额度重置；本次已跳过全部 {MAX_RETRIES - 1} 次退避。",
+                    diagnosis=diagnosis, model=model_id,
+                ) from e
+            if not diagnosis.retryable:
+                # 401/403/400 这类配置/鉴权错：立即抛，**不消耗剩余尝试**
+                raise SynthesisAPIError(
+                    f"synthesis 硬失败（不可重试状态码 {e.code}）: {e} "
+                    f"[{diagnosis.summary()} model={model_id}] — "
+                    f"剩余 {MAX_RETRIES - attempt - 1} 次尝试未消耗。",
+                    diagnosis=diagnosis, model=model_id,
+                ) from e
+            if attempt == MAX_RETRIES - 1:
+                raise _exhausted_error(e, diagnosis, model_id, total_wait) from e
+            total_wait += _wait_before_retry(attempt, parse_retry_after(e))
         except Exception as e:
-            if attempt < MAX_RETRIES - 1:
-                time.sleep(RETRY_BACKOFF[attempt])
-            else:
-                raise RuntimeError(f"DeepSeek API failed after {MAX_RETRIES} retries: {e}") from e
+            # 网络瞬断 / 超时 / 网关吐非 JSON —— 无状态码可分类，按瞬时故障退避
+            diagnosis = classify_provider_error(None, str(e))
+            if attempt == MAX_RETRIES - 1:
+                raise _exhausted_error(e, diagnosis, model_id, total_wait) from e
+            total_wait += _wait_before_retry(attempt, None)
 
-    return None
+    return None  # pragma: no cover — 循环内每条路径都 return 或 raise
+
+
+def _read_error_body(err: HTTPError) -> str:
+    """读 HTTPError 的响应体（只读一次，读失败按空处理）。"""
+    try:
+        raw = err.read()
+    except Exception:  # noqa: BLE001 — fp 可能已关闭/不存在
+        return ""
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace")
+    return str(raw or "")
+
+
+def _wait_before_retry(attempt: int, retry_after: float | None) -> float:
+    """退避一次并返回实际等待秒数（尊重 Retry-After、指数上限表、full jitter）。"""
+    delay = backoff_delay(
+        attempt, retry_after, schedule=RETRY_BACKOFF, cap=MAX_BACKOFF_S,
+    )
+    _sleep(delay)
+    return delay
+
+
+def _exhausted_error(
+    err: Exception, diagnosis: ProviderErrorDiagnosis, model_id: str, total_wait: float,
+) -> SynthesisAPIError:
+    """重试耗尽错误 —— 文本里打**实收总等待**，不是退避表的理论值。"""
+    return SynthesisAPIError(
+        f"synthesis API failed after {MAX_RETRIES} attempts "
+        f"(total_wait={total_wait:.1f}s, model={model_id}): {err} "
+        f"[{diagnosis.summary()}]",
+        diagnosis=diagnosis, model=model_id, exhausted=True, total_wait_s=total_wait,
+    )
+
+
+def _call_with_family_fallback(
+    prompt: str, api_key: str | None = None, *, allow_mock: bool = False,
+) -> tuple[dict | None, str]:
+    """主族失败后降级到备用族再试一次。返回 (响应, 实际使用的模型)。
+
+    只在「这一族现在不可用」时换族（预算耗尽 / 重试耗尽），配置类硬错不换
+    —— 见 SynthesisAPIError.family_fallback_worthwhile。
+    降级**必须可见**（宪法 P4）：stdout 打一行 SYNTHESIS_FALLBACK，禁止静默降级。
+    """
+    # 契约 1：backstop 第 2 轮已知主族打穿预算 → 直接从备族开始，主族零请求
+    if os.environ.get(FAMILY_FALLBACK_ENV) == "1":
+        print(
+            f"SYNTHESIS_FALLBACK model={FALLBACK_SYNTHESIS_MODEL} "
+            f"reason=env_{FAMILY_FALLBACK_ENV}=1",
+            flush=True,
+        )
+        return (
+            _call_deepseek(prompt, api_key, allow_mock=allow_mock,
+                           model=FALLBACK_SYNTHESIS_MODEL),
+            FALLBACK_SYNTHESIS_MODEL,
+        )
+
+    # 本次运行已判定主族不可用（JSON 重试等二次调用会走到这里）→ 不再白烧一次
+    if PRIMARY_SYNTHESIS_MODEL in _unavailable_families:
+        print(
+            f"SYNTHESIS_FALLBACK model={FALLBACK_SYNTHESIS_MODEL} "
+            f"reason=primary_already_known_unavailable primary={PRIMARY_SYNTHESIS_MODEL}",
+            flush=True,
+        )
+        return (
+            _call_deepseek(prompt, api_key, allow_mock=allow_mock,
+                           model=FALLBACK_SYNTHESIS_MODEL),
+            FALLBACK_SYNTHESIS_MODEL,
+        )
+
+    try:
+        response = _call_deepseek(prompt, api_key, allow_mock=allow_mock,
+                                  model=PRIMARY_SYNTHESIS_MODEL)
+        return response, PRIMARY_SYNTHESIS_MODEL
+    except SynthesisAPIError as primary_err:
+        if not primary_err.family_fallback_worthwhile:
+            raise
+        # 记账后再降级：本次运行剩下的调用点不许再碰这一族
+        _unavailable_families.add(PRIMARY_SYNTHESIS_MODEL)
+        print(
+            f"SYNTHESIS_FALLBACK model={FALLBACK_SYNTHESIS_MODEL} "
+            f"reason={primary_err.error_type}"
+            f"{'_exhausted' if primary_err.exhausted else ''} "
+            f"primary={primary_err.model}",
+            flush=True,
+        )
+        sys.stderr.write(
+            f"WARNING: 主模型族 {primary_err.model} 不可用（{primary_err}）→ "
+            f"降级到 {FALLBACK_SYNTHESIS_MODEL}\n"
+        )
+        try:
+            response = _call_deepseek(prompt, api_key, allow_mock=allow_mock,
+                                      model=FALLBACK_SYNTHESIS_MODEL)
+        except SynthesisAPIError as fallback_err:
+            # 两族都挂：fail-closed（宪法 P3），且两族真因都要可见（P4）
+            raise SynthesisAPIError(
+                f"两个模型族均失败 → 不产出简报。"
+                f"主族 {primary_err.model}: {primary_err} || "
+                f"备族 {FALLBACK_SYNTHESIS_MODEL}: {fallback_err}",
+                diagnosis=fallback_err.diagnosis, model=FALLBACK_SYNTHESIS_MODEL,
+                exhausted=fallback_err.exhausted,
+            ) from fallback_err
+        return response, FALLBACK_SYNTHESIS_MODEL
 
 
 def _content_or_raise(response: dict, *, repo_count: int) -> str:
@@ -335,7 +572,10 @@ def synthesize(repos: list[dict[str, Any]], api_key: str | None = None,
             f"超出即必然撞顶被截断。要提高条数必须同步重算输出预算。"
         )
 
-    response = _call_deepseek(prompt, api_key, allow_mock=mock)
+    # 每次 synthesize 从干净的族可用性账本开始（闩只在本次调用内有效）
+    _unavailable_families.clear()
+
+    response, model_used = _call_with_family_fallback(prompt, api_key, allow_mock=mock)
     if response is None:
         raise RuntimeError("DeepSeek API returned no response")
 
@@ -346,7 +586,9 @@ def synthesize(repos: list[dict[str, Any]], api_key: str | None = None,
     except json.JSONDecodeError as e:
         # Retry once with error hint
         retry_prompt = prompt + "\n\n前次输出不是合法 JSON，重新输出严格 JSON 数组。"
-        response = _call_deepseek(retry_prompt, api_key, allow_mock=mock)
+        response, model_used = _call_with_family_fallback(
+            retry_prompt, api_key, allow_mock=mock,
+        )
         if response is None:
             raise RuntimeError("DeepSeek retry also failed") from e
         content = _content_or_raise(response, repo_count=len(repos))
@@ -357,7 +599,15 @@ def synthesize(repos: list[dict[str, Any]], api_key: str | None = None,
     if len(summaries) != len(repos):
         raise ValueError(f"Summary count mismatch: got {len(summaries)}, expected {len(repos)}")
 
-    return {"top_repos": _align_by_repo_url(repos, summaries), "input_tokens": input_tokens}
+    return {
+        "top_repos": _align_by_repo_url(repos, summaries),
+        "input_tokens": input_tokens,
+        # 实际产出这份简报的模型 —— 降级后必须能从产出侧看出来（宪法 P4 禁静默降级）。
+        # 写入 vault frontmatter 需要 pipeline.py + github_briefing_v1.json
+        # （additionalProperties:false）配套改动，两者都不在本轮改动范围，故先在
+        # synthesize 返回值上落字段，接线留给有权改那两个文件的一轮。
+        "synthesis_model": model_used,
+    }
 
 
 def _extract_json(text: str) -> str:

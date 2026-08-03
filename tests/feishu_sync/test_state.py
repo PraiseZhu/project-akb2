@@ -1,6 +1,8 @@
-"""paths + 幂等：绝对 state-path 防 cwd 漂移；按 (date,kind,target) 去重（SC-4）。"""
+"""paths + 幂等/待补发状态。"""
 
 from __future__ import annotations
+
+import json
 
 import pytest
 
@@ -23,26 +25,107 @@ def test_state_path_independent_of_cwd(monkeypatch, tmp_path):
     p1 = resolve_state_path(None)
     monkeypatch.chdir(tmp_path)
     p2 = resolve_state_path(None)
-    assert p1 == p2  # cwd 变化不影响（Codex P1）
+    assert p1 == p2
 
 
-def test_idempotency_roundtrip(tmp_path):
+def test_idempotency_roundtrip_new_format(tmp_path):
     sp = tmp_path / "state.json"
     assert not idempotency.already_sent(sp, "2026-06-03", "ai_trends", "dm")
     idempotency.mark_sent(sp, "2026-06-03", "ai_trends", "dm")
     assert idempotency.already_sent(sp, "2026-06-03", "ai_trends", "dm")
-    # target / kind 维度独立
-    assert not idempotency.already_sent(sp, "2026-06-03", "ai_trends", "group")
-    assert not idempotency.already_sent(sp, "2026-06-03", "github", "dm")
+    data = idempotency.load_state(sp)
+    assert "sent" in data["2026-06-03"]
+    assert "ai_trends:dm" in data["2026-06-03"]["sent"]
+
+
+def test_old_format_state_loads_and_upgrades(tmp_path):
+    sp = tmp_path / "state.json"
+    sp.write_text(
+        json.dumps({"2026-08-02": {"ai_trends:group": "2026-08-02T10:00:07"}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    assert idempotency.already_sent(sp, "2026-08-02", "ai_trends", "group")
+    assert not idempotency.already_sent(sp, "2026-08-02", "github", "group")
+
+    idempotency.mark_missing_expected(
+        sp,
+        date="2026-08-02",
+        kind="github",
+        target="group",
+        expected_path="/vault/2026-08-02 GitHub Briefing.md",
+        reason="failed: synthesis_failed",
+    )
+    data = idempotency.load_state(sp)
+    assert data["2026-08-02"]["sent"]["ai_trends:group"] == "2026-08-02T10:00:07"
+    pending = data["2026-08-02"]["pending"]["github:group"]
+    assert pending["status"] == idempotency.PENDING_MISSING_EXPECTED
+    assert pending["expected_path"].endswith("2026-08-02 GitHub Briefing.md")
+
+
+def test_missing_expected_record_shape(tmp_path):
+    sp = tmp_path / "state.json"
+    idempotency.mark_missing_expected(
+        sp,
+        date="2026-08-02",
+        kind="github",
+        target="group",
+        expected_path="/vault/2026-08-02 GitHub Briefing.md",
+        reason="failed: synthesis_failed",
+    )
+    pending = idempotency.pending_items(
+        sp,
+        date="2026-08-02",
+        target="group",
+        statuses=(idempotency.PENDING_MISSING_EXPECTED,),
+    )
+    assert len(pending) == 1
+    item = pending[0]
+    assert item["kind"] == "github"
+    assert item["date"] == "2026-08-02"
+    assert item["expected_path"].endswith("2026-08-02 GitHub Briefing.md")
+    assert item["reason"] == "failed: synthesis_failed"
+
+
+def test_mark_sent_clears_pending(tmp_path):
+    sp = tmp_path / "state.json"
+    idempotency.mark_missing_expected(
+        sp,
+        date="2026-08-02",
+        kind="github",
+        target="group",
+        expected_path="/vault/2026-08-02 GitHub Briefing.md",
+        reason="failed: synthesis_failed",
+    )
+    idempotency.mark_sent(sp, "2026-08-02", "github", "group")
+    assert idempotency.pending_items(sp, date="2026-08-02") == []
+
+
+def test_retryable_send_pending_roundtrip(tmp_path):
+    sp = tmp_path / "state.json"
+    idempotency.mark_send_failed_retryable(
+        sp,
+        date="2026-08-02",
+        kind="github",
+        target="group",
+        reason="rate-limit retry exhausted",
+        retry_after=7.0,
+    )
+    pending = idempotency.pending_items(
+        sp,
+        date="2026-08-02",
+        statuses=(idempotency.PENDING_SEND_FAILED_RETRYABLE,),
+    )
+    assert len(pending) == 1
+    assert pending[0]["retry_after"] == 7.0
 
 
 def test_missing_state_is_first_run(tmp_path):
     sp = tmp_path / "nope.json"
-    assert not idempotency.already_sent(sp, "d", "k", "t")  # 不存在=首跑，不抛
+    assert not idempotency.already_sent(sp, "d", "k", "t")
 
 
 def test_corrupt_state_fails_closed(tmp_path):
-    # 损坏状态 → 抛 StateCorruptError（拒发以防重复，Codex P1）
     sp = tmp_path / "state.json"
     sp.write_text("{ broken", encoding="utf-8")
     with pytest.raises(idempotency.StateCorruptError):
@@ -68,7 +151,5 @@ def test_mark_sent_atomic_no_tmp_left(tmp_path):
     sp = tmp_path / "state.json"
     idempotency.mark_sent(sp, "2026-06-03", "ai_trends", "dm")
     assert sp.exists()
-    # 原子写：不留 .tmp 残file
     assert not (tmp_path / "state.json.tmp").exists()
-    # 写出的内容可被再次正常加载（不损坏）
     assert idempotency.already_sent(sp, "2026-06-03", "ai_trends", "dm")

@@ -1,5 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  2026-08-03 调度变更（owner 确认）：第二补跑时段 12:05 → 11:00。
+  原因：12:05 晚于脚本 deadline 12:00，该时段**每天必然走 deadline 分支、一次都没真正补跑过**
+  （旧版还因此把假 FAILED 记进日志）。11:00 既在 deadline 之内，又落在 UTC 预算日重置之后
+  （11:00 CST = 03:00 UTC，而 UTC 日额度在 08:00 CST 重置）——是当天唯一「有额度且有权补跑」的窗口。
+  对照本次事故：05:30/07:30 CST 两趟都落在 UTC 预算日尾部，额度已耗尽，注定失败。
+  未把 deadline 往后推，因为简报价值随时间衰减，后移 deadline 等于降低产出价值。
+-->
 <plist version="1.0">
 <dict>
     <key>Label</key>
@@ -7,12 +15,12 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/praise/AI-Agent/Claude/projects/Project AKB2/scripts/github_briefing_backstop.sh</string>
+        <string>__AKB2_REPO_ROOT__/scripts/github_briefing_backstop.sh</string>
         <string>--vault-root</string>
-        <string>/Volumes/AKB2/Obsidian</string>
+        <string>__AKB2_VAULT_ROOT__</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>/Users/praise/AI-Agent/Claude/projects/Project AKB2/</string>
+    <string>__AKB2_REPO_ROOT__</string>
     <!-- 结构性说明（2026-07-30）：下面第二个时段 12:05 晚于脚本默认 deadline 12:00，
          该时段调用按设计只能巡检报告、无法真正补跑；当日简报已 pass 时 exit 0(skip)，
          未达 pass 时照实 FAILED + exit 124。若要让第二次调用真能补跑，需人工决定是
@@ -27,21 +35,21 @@
         </dict>
         <dict>
             <key>Hour</key>
-            <integer>12</integer>
+            <integer>11</integer>
             <key>Minute</key>
-            <integer>5</integer>
+            <integer>0</integer>
         </dict>
     </array>
     <key>StandardOutPath</key>
-    <string>/Users/praise/AI-Agent/Claude/projects/Project AKB2/logs/github-backstop-stdout.log</string>
+    <string>__AKB2_REPO_ROOT__/logs/github-backstop-stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/praise/AI-Agent/Claude/projects/Project AKB2/logs/github-backstop-stderr.log</string>
+    <string>__AKB2_REPO_ROOT__/logs/github-backstop-stderr.log</string>
     <key>EnvironmentVariables</key>
     <dict>
+        <key>PYTHONPATH</key>
+        <string>__AKB2_REPO_ROOT__/src</string>
         <key>PATH</key>
-        <string>/Users/praise/.pyenv/shims:/Users/praise/.pyenv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
-        <key>VAULT_ROOT</key>
-        <string>/Volumes/AKB2/Obsidian</string>
+        <string>__AKB2_HOME__/.pyenv/shims:__AKB2_HOME__/.pyenv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     </dict>
 </dict>
 </plist>
