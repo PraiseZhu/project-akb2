@@ -150,32 +150,55 @@ def send_node(state: SyncState) -> dict:
             log.append(f"{briefing.kind} dry-run → {target}")
             continue
         try:
-            is_dup = idempotency.already_sent(state_path, date, briefing.kind, target)
+            reservation = idempotency.reserve_if_unsent(
+                state_path, date, briefing.kind, target
+            )
         except idempotency.StateCorruptError as exc:
             errors.append(f"{briefing.kind} 幂等状态损坏，拒发以防重复: {exc}")
             log.append(f"{briefing.kind} fail-state-corrupt")
             continue
-        if is_dup:
-            log.append(f"{briefing.kind} skip-dup（{date}/{target} 已发）")
-            continue
-        try:
-            idempotency.mark_sent(state_path, date, briefing.kind, target)
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{briefing.kind} 预留状态失败，未发送: {exc}")
             log.append(f"{briefing.kind} fail-reserve")
             continue
+        if reservation is None:
+            log.append(f"{briefing.kind} skip-dup-or-inflight（{date}/{target} 已发或发送中）")
+            continue
+
+        preserve_reservation = False
         try:
-            for card in briefing.cards:
+            sent_indexes = idempotency.sent_card_indexes(
+                state_path, date, briefing.kind, target
+            )
+            total_cards = len(briefing.cards)
+            for card_index, card in enumerate(briefing.cards):
+                if card_index in sent_indexes:
+                    log.append(f"{briefing.kind} skip-card-dup（card={card_index}）")
+                    continue
                 if target == "group":
                     send_card(config.push_chat_id(), card)
                 else:
                     send_card_dm(config.dm_open_id(), card)
+                try:
+                    idempotency.mark_card_sent(
+                        state_path,
+                        date,
+                        briefing.kind,
+                        target,
+                        card_index=card_index,
+                        total_cards=total_cards,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    # transport 已成功，若此时释放 CAS 会允许重发该卡；保留预留 fail-closed。
+                    preserve_reservation = True
+                    raise RuntimeError(
+                        f"card={card_index} 已发送但进度状态落盘失败: {exc}"
+                    ) from exc
+            idempotency.mark_sent(state_path, date, briefing.kind, target)
             log.append(f"{briefing.kind} sent → {target}")
         except Exception as exc:  # noqa: BLE001
-            try:
-                idempotency.unmark_sent(state_path, date, briefing.kind, target)
-            except Exception:  # noqa: BLE001
-                pass
+            if not preserve_reservation and not idempotency.release_reservation(reservation):
+                log.append(f"{briefing.kind} fail-reserve-release")
             if isinstance(exc, FeishuSendError) and (exc.retryable or exc.exhausted):
                 try:
                     idempotency.mark_send_failed_retryable(
@@ -190,6 +213,9 @@ def send_node(state: SyncState) -> dict:
                     log.append(f"{briefing.kind} fail-pending-write")
             errors.append(f"{briefing.kind} 发送失败: {exc}")
             log.append(f"{briefing.kind} fail")
+        else:
+            if not idempotency.release_reservation(reservation):
+                log.append(f"{briefing.kind} reserve-release-skipped")
 
     return {"log": log, "errors": errors}
 

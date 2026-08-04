@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import multiprocessing
+
 from akb2.feishu_sync import agent, config, idempotency, paths
 
 from .conftest import write_ai_trends, write_github
@@ -291,3 +293,113 @@ def test_strict_both_present_dry_run_ok(monkeypatch, tmp_path, vault, feishu_env
     log_text = (tmp_path / "logs" / "feishu-sync.log").read_text(encoding="utf-8")
     assert "ai_trends dry-run → group" in log_text
     assert "github dry-run → group" in log_text
+
+
+def test_concurrent_sync_reconcile_single_send(monkeypatch, tmp_path, vault, feishu_env):
+    """SC-R1-33: normal sync 与 reconcile 同刻进入 CAS，只能一个 transport 调用。"""
+    write_github(vault, "2026-08-02")
+    state_path = tmp_path / "state.json"
+    idempotency.mark_missing_expected(
+        state_path,
+        date="2026-08-02",
+        kind="github",
+        target="group",
+        expected_path=str(vault / "2026-08-02 GitHub Briefing.md"),
+        reason="test pending",
+    )
+
+    context = multiprocessing.get_context("fork")
+    reserve_barrier = context.Barrier(2)
+    send_count = context.Value("i", 0)
+    results = context.Queue()
+    original_reserve = idempotency.reserve_if_unsent
+
+    def synchronized_reserve(*args, **kwargs):
+        reserve_barrier.wait(timeout=5)
+        return original_reserve(*args, **kwargs)
+
+    def stub_send(_chat_id, _card):
+        with send_count.get_lock():
+            send_count.value += 1
+
+    def run_child(reconcile_missing):
+        results.put(
+            agent.run_sync(
+                date="2026-08-02",
+                vault_root=vault,
+                target="group",
+                state_path=state_path,
+                reconcile_missing=reconcile_missing,
+            )
+        )
+
+    monkeypatch.setattr(idempotency, "reserve_if_unsent", synchronized_reserve)
+    monkeypatch.setattr(agent, "send_card", stub_send)
+    monkeypatch.setattr(agent.notify, "log_line", lambda _message: None)
+    monkeypatch.setattr(agent.notify, "alert_failure", lambda _message: None)
+
+    processes = [
+        context.Process(target=run_child, args=(False,)),
+        context.Process(target=run_child, args=(True,)),
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=10)
+
+    assert [process.exitcode for process in processes] == [0, 0]
+    assert sorted([results.get(timeout=1), results.get(timeout=1)]) == [0, 0]
+    assert send_count.value == 1
+    assert idempotency.already_sent(
+        state_path, "2026-08-02", "github", "group"
+    )
+
+
+def test_partial_send_not_rolled_back(monkeypatch, tmp_path, vault, feishu_env):
+    """SC-R1-34: 前卡成功后后卡失败，重试只发送尚未成功的卡。"""
+    _redirect_logs(monkeypatch, tmp_path)
+    write_ai_trends(vault, "2026-06-03")
+    state_path = tmp_path / "state.json"
+    attempted: list[str] = []
+    fail_second = True
+
+    monkeypatch.setattr(
+        agent.render,
+        "render_cards",
+        lambda _briefing: [{"card": "first"}, {"card": "second"}],
+    )
+    monkeypatch.setattr(agent.notify, "alert_failure", lambda _message: None)
+
+    def stub_send(_open_id, card):
+        nonlocal fail_second
+        attempted.append(card["card"])
+        if card["card"] == "second" and fail_second:
+            fail_second = False
+            raise RuntimeError("stub second-card failure")
+
+    monkeypatch.setattr(agent, "send_card_dm", stub_send)
+
+    first_rc = agent.run_sync(
+        date="2026-06-03",
+        vault_root=vault,
+        target="dm",
+        state_path=state_path,
+    )
+    assert first_rc == 1
+    assert attempted == ["first", "second"]
+    day = idempotency.load_state(state_path)["2026-06-03"]
+    assert day["card_progress"]["ai_trends:dm"]["sent_indexes"] == [0]
+    assert "ai_trends:dm" not in day["sent"]
+
+    attempted.clear()
+    second_rc = agent.run_sync(
+        date="2026-06-03",
+        vault_root=vault,
+        target="dm",
+        state_path=state_path,
+    )
+    assert second_rc == 0
+    assert attempted == ["second"]
+    assert idempotency.already_sent(
+        state_path, "2026-06-03", "ai_trends", "dm"
+    )

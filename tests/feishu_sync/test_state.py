@@ -153,3 +153,17 @@ def test_mark_sent_atomic_no_tmp_left(tmp_path):
     assert sp.exists()
     assert not (tmp_path / "state.json.tmp").exists()
     assert idempotency.already_sent(sp, "2026-06-03", "ai_trends", "dm")
+
+
+def test_reservation_release_is_owner_only(tmp_path):
+    sp = tmp_path / "state.json"
+    reservation = idempotency.reserve_if_unsent(sp, "2026-06-03", "github", "group")
+    assert reservation is not None
+    impostor = idempotency.SendReservation(
+        state_path=sp, path=reservation.path, token="not-the-owner"
+    )
+
+    assert idempotency.release_reservation(impostor) is False
+    assert reservation.path.exists()
+    assert idempotency.release_reservation(reservation) is True
+    assert not reservation.path.exists()
