@@ -139,9 +139,15 @@ def test_plist_lints_with_plutil(plist_name: str) -> None:
 
 @pytest.mark.parametrize("plist_name", PLIST_NAMES)
 def test_plist_parses_with_plistlib(plist_name: str) -> None:
-    """plist 合法性的**跨平台**判据（plutil 缺失时它就是唯一的守门人）。"""
+    """plist 合法性的**跨平台**判据（plutil 缺失时它就是唯一的守门人）。
+
+    走 _strip_xml_comments：文档注释里可能含裸 "--"（如 flag 名 --dry-run），
+    XML 规范禁注释内 "--"、strict expat 拒解，但 plutil 与 launchd 自身加载器都接受，
+    且注释不影响 plist 实际结构。剥注释后 plistlib 与 plutil 校验的是同一件事（真实结构），
+    否则本判据会因合法文档注释误判 plist 非法。
+    """
     _maybe_xfail(plist_name, "lint")
-    text = _render_plist_text(LAUNCHD_DIR / plist_name)
+    text = _strip_xml_comments(_render_plist_text(LAUNCHD_DIR / plist_name))
     data = plistlib.loads(text.encode("utf-8"))
     assert isinstance(data, dict), plist_name
     assert data.get("Label"), f"{plist_name}: 缺 Label"
