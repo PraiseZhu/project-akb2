@@ -10,8 +10,8 @@
 
   ==== 安装（由人工执行，确认后再跑）====
   REPO_ROOT="$HOME/AI-Agent/Claude/projects/Project AKB2"
-  # 1) 先手动跑 dry-run 模式验证判定与文案（不发送）
-  bash "$REPO_ROOT/scripts/inflow_sentinel.sh" dry-run
+  # 1) 先手动 dry-run 验证判定与文案（不发送）
+  bash "$REPO_ROOT/scripts/inflow_sentinel.sh" --dry-run
   # 2) 渲染占位符 → ~/Library/LaunchAgents
   sed -e "s|__AKB2_REPO_ROOT__|$REPO_ROOT|g" -e "s|__AKB2_HOME__|$HOME|g" \
       "$REPO_ROOT/launchd/com.akb2.inflow-sentinel.plist" \

@@ -54,8 +54,17 @@ def _render_plist_text(path: Path, *, repo_root: Path = REPO, home: Path | None 
     return text
 
 
+def _strip_xml_comments(text: str) -> str:
+    """去掉 <!-- ... --> 块。文档性注释可能含裸 "--"(如 flag 名 --dry-run),
+    这在 XML 规范里是非法的 comment 内容,但不影响 plist 的实际结构——
+    plutil -lint 对此宽容,strict 的 expat/plistlib 不宽容,所以在结构解析前先剥掉。
+    """
+    return re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+
+
 def _load_rendered_plist(path: Path) -> dict[str, Any]:
-    return plistlib.loads(_render_plist_text(path).encode("utf-8"))
+    text = _strip_xml_comments(_render_plist_text(path))
+    return plistlib.loads(text.encode("utf-8"))
 
 
 def _write_plist(
@@ -472,3 +481,40 @@ def test_manifest_covers_every_repo_plist() -> None:
     )
     manifest_labels = sorted(job["label"] for job in _manifest_jobs())
     assert manifest_labels == sorted(n.removesuffix(".plist") for n in on_disk)
+
+
+def test_documented_commands_accepted_by_targets() -> None:
+    """SC-R1-35: plist 注释里给出的手动操作命令必须能被目标脚本真实接受。"""
+    inflow_text = (LAUNCHD_DIR / "com.akb2.inflow-sentinel.plist").read_text(encoding="utf-8")
+    match = re.search(
+        r'bash "\$REPO_ROOT/scripts/inflow_sentinel\.sh" (.+)$', inflow_text, re.MULTILINE
+    )
+    assert match, "未找到 inflow_sentinel.sh 安装说明命令"
+    doc_args = match.group(1).split()
+
+    env = {**os.environ, "PYTHONPATH": "src"}
+    result = subprocess.run(
+        [sys.executable, "-m", "akb2.quality.inflow_sentinel", *doc_args],
+        cwd=REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 2, (
+        f"文档命令的参数被 argparse 拒绝(exit=2): {doc_args}\nstderr={result.stderr}"
+    )
+    assert "unrecognized arguments" not in result.stderr, result.stderr
+
+    feishu_text = (LAUNCHD_DIR / "com.akb2.feishu-sync.plist").read_text(encoding="utf-8")
+    doc_match = re.search(r"手动跑 wrapper（默认 (.+?)）", feishu_text)
+    assert doc_match, "未找到 feishu_sync.sh 默认 target 注释"
+    documented_flag = doc_match.group(1)
+
+    script_text = (REPO / "scripts" / "feishu_sync.sh").read_text(encoding="utf-8")
+    flag_names = set(re.findall(r'^\s*(--[\w-]+)\)', script_text, re.MULTILINE))
+    assert documented_flag.startswith("--"), (
+        f"注释里的 target 写法 {documented_flag!r} 不是 feishu_sync.sh 实际接受的旗标形态"
+    )
+    flag_name = documented_flag.split()[0] if " " in documented_flag else documented_flag
+    assert flag_name in flag_names, f"{flag_name} 不在 feishu_sync.sh 接受的旗标列表 {flag_names} 中"
