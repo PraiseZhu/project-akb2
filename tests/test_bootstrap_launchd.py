@@ -145,24 +145,41 @@ def _git_init(work: Path) -> None:
     )
 
 
+# plist 解析咽喉（src/akb2/common/plist_parse.py）必须一起进假仓：安装脚本的
+# 身份派生与 lint 门都从 ${BASH_SOURCE[0]}/../../src 导入它，缺了就整体 fail-closed
+# （那是对的方向，但会把每个用例变成"咽喉不可导入"的拒绝路径，测不到脚本逻辑）。
+_CHOKEPOINT_RELS = (
+    "src/akb2/__init__.py",
+    "src/akb2/common/__init__.py",
+    "src/akb2/common/plist_parse.py",
+)
+
+
 def _prepare_fake_repo(
     tmp_path: Path, *, subdir: str = "repo", git_init: bool = True
 ) -> Path:
-    """把安装脚本 + 共用 lib + plist 模板复制到一个隔离的假仓根（默认 git init）。
+    """把安装脚本 + 共用 lib + 解析咽喉 + **全部** plist 模板复制到隔离假仓根。
 
     `git_init=False` 留给专门测「非 git 环境必须被拒」的用例。
+
+    模板从"手工列 3 个"改成 `launchd/*.plist` 全量（2026-08-04）：
+    test_render_only_accepts_every_repo_template 要对每个随仓模板跑 render-only，
+    手工清单会让新增模板天然逃过覆盖 —— 而本轮 blocker（feishu-sync /
+    inflow-sentinel 装不上）正好就落在那两个不在手工清单里的模板上。
     """
     work = tmp_path / subdir
     (work / "scripts" / "lib").mkdir(parents=True)
     (work / "launchd").mkdir(parents=True)
+    (work / "src" / "akb2" / "common").mkdir(parents=True)
+    templates = sorted(p.name for p in (REPO / "launchd").glob("*.plist"))
+    assert templates, "REPO/launchd 下没有 plist 模板 —— 假仓会是空的"
     for rel in (
         "scripts/bootstrap_launchd.sh",
         "scripts/bootstrap_intake_launchd.sh",
         "scripts/lib/launchctl.sh",
         "scripts/lib/state-root.sh",
-        f"launchd/{BRIEFING_LABEL}.plist",
-        f"launchd/{INTAKE_LABEL}.plist",
-        f"launchd/{GITHUB_BRIEFING_LABEL}.plist",
+        *_CHOKEPOINT_RELS,
+        *(f"launchd/{name}" for name in templates),
     ):
         shutil.copy2(REPO / rel, work / rel)
     if git_init:
@@ -184,15 +201,20 @@ def _prepare_env(
     _write_executable(fake_bin / "launchctl", FAKE_LAUNCHCTL)
     # intake preflight 需要的两个外部依赖桩
     _write_executable(fake_bin / "defuddle", "#!/usr/bin/env bash\nexit 0\n")
-    # python3 桩：intake preflight 的 `import akb2...` 一律放行（exit 0），但**plist 解析
-    # 必须走真 python3** —— 身份派生（akb2_plist_identity）与 plist 合法性门都靠 plistlib，
-    # 一刀切 exit 0 会让 Label 解析恒空，测的就不再是脚本逻辑而是桩的形状。
+    # python3 桩：intake preflight 的 `import akb2.quality...` / `import playwright`
+    # 一律放行（exit 0），但**plist 相关的调用必须走真 python3** —— 身份派生
+    # （akb2_plist_identity）、占位符残留门、plist 合法性门都靠
+    # akb2.common.plist_parse，一刀切 exit 0 会让 Label 解析恒空、残留门恒过，
+    # 测的就不再是脚本逻辑而是桩的形状。
+    # 匹配 `*plist*` 而不是 `*plistlib*`：解析改走咽喉后代码里出现的是
+    # `plist_parse` / `parse_plist_file`，钉死 `plistlib` 会让三道门全部落到 exit 0
+    # 的静默放行分支（本轮实测：test_malformed_xml_rejected 会假绿）。
     _write_executable(
         fake_bin / "python3",
         "#!/usr/bin/env bash\n"
         "for arg in \"$@\"; do\n"
         "  case \"$arg\" in\n"
-        f"    -|*plistlib*) exec {shutil.which('python3')} \"$@\" ;;\n"
+        f"    -|*plist*) exec {shutil.which('python3')} \"$@\" ;;\n"
         "  esac\n"
         "done\n"
         "exit 0\n",
@@ -572,6 +594,129 @@ class TestVaultRootGates:
 # ===========================================================================
 # SC-5 — 渲染产物双门（占位符残留 + plist 合法性）
 # ===========================================================================
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SC-R2-01 —— 安装器必须装得上仓库自带的每一个 plist 模板
+# 模块级（不进 TestRenderGates）：SC 的 verify nodeid 就是模块级函数名，
+# 挪进类里 orchestrator 复跑时收集不到。
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_render_only_accepts_every_repo_template(tmp_path: Path) -> None:
+    """SC-R2-01：`--render-only` 对 launchd/ 下**每一个**随仓模板都必须 exit=0。
+
+    R2 blocker（干净 clone 实测）：
+        --plist-src launchd/com.akb2.feishu-sync.plist    → exit=2「无法从 plist 解析 Label」
+        --plist-src launchd/com.akb2.inflow-sentinel.plist → exit=2（同上）
+        --plist-src launchd/com.akb2.briefing.plist        → exit=0（对照组）
+    也就是**安装器装不上仓库自带的两个模板**，而 owner 待办里正有一项 launchd 重装。
+
+    两个独立成因，都在同一条 render-only 路径上：
+      ① 身份派生 / lint 门用裸 plistlib（严），而 parity 读 installed plist 用剥注释
+         回退（宽）—— 两个模板的文档注释含裸 `--`（`--dry-run` / `--target dm`），
+         XML 规范禁注释内 `--`，strict expat 拒解，但 plutil 与 launchd 自身接受。
+         修法：单一咽喉 akb2.common.plist_parse，4 个解析点全部改调它。
+      ② 占位符残留门直接 grep 整文件文本，而 inflow-sentinel 的安装说明注释里就写着
+         验证命令 `! grep -q "__AKB2_" <plist>` —— 那串字面量渲染后仍在注释里，
+         门恒命中；且 `-o '__AKB2_[..]*__'` 匹配不到裸前缀，报错文案后面是空白。
+         修法：残留判定改按剥注释后的结构内容。
+
+    用参数化而不是循环：哪个模板坏了直接看用例名，不用读断言消息。
+    清单从磁盘 glob（`_prepare_fake_repo` 已全量复制），新增模板自动进覆盖。
+    """
+    templates = sorted(p.name for p in (REPO / "launchd").glob("*.plist"))
+    assert len(templates) >= 9, f"模板数异常少，断言可能已失去意义: {templates}"
+
+    work = _prepare_fake_repo(tmp_path, subdir="repo-render-every")
+    # 假仓是 `git init` 出来的真 git 仓、路径不含 .cindy-worktrees → worktree 守卫
+    # 走的是"主仓放行"分支，不靠 AKB2_ALLOW_WORKTREE_INSTALL 绕过。
+    assert ".cindy-worktrees" not in str(work)
+    vault = tmp_path / "vault-render-every"
+    (vault / "Praise Space" / "AKB2.0").mkdir(parents=True)
+
+    failures: list[str] = []
+    for name in templates:
+        env = os.environ.copy()
+        env["VAULT_ROOT"] = str(vault)
+        # tmp_path 在 macOS 上就在 /var/folders 下 → VAULT_ROOT 门 3 会拦；
+        # 这条用例测的是解析/残留两道门，临时目录门与它无关，显式放行。
+        env["AKB2_ALLOW_TMP_VAULT_ROOT"] = "1"
+        env["AKB2_STATE_ROOT"] = str(tmp_path / f"state-every-{name}")
+        out = tmp_path / f"rendered-every-{name}"
+        result = _run(
+            work / "scripts" / "bootstrap_launchd.sh",
+            env,
+            ["--plist-src", str(work / "launchd" / name), "--render-only", str(out)],
+        )
+        if result.returncode != 0 or not out.exists():
+            failures.append(
+                f"{name}: exit={result.returncode}\n"
+                f"    stdout={result.stdout.strip()}\n    stderr={result.stderr.strip()}"
+            )
+            continue
+        # 非空过：渲染件必须真的是**结构上**无残留的合法 plist
+        body = out.read_text(encoding="utf-8")
+        structural = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL)
+        if "__AKB2_" in structural:
+            failures.append(f"{name}: 渲染件结构里仍有占位符残留")
+
+    assert not failures, (
+        "以下随仓模板过不了 --render-only（安装器装不上仓库自带的 plist）：\n  "
+        + "\n  ".join(failures)
+    )
+
+def test_placeholder_gate_separates_comment_from_structure(tmp_path: Path) -> None:
+    """占位符残留门：注释里的占位符放过，结构里的必拒（两侧都要守）。
+
+    只修"注释里放过"会让门变成"全放过"——那比误拒更危险：真正残留的
+    `__AKB2_REPO_ROOT__/scripts/...` 会被装进 LaunchAgents，job 指向字面量路径，
+    launchd 不报错、运行期才炸。所以这条用例两侧同时钉。
+    """
+    lib = REPO / "scripts" / "lib" / "launchctl.sh"
+    rendered = (
+        (REPO / "launchd" / f"{BRIEFING_LABEL}.plist")
+        .read_text(encoding="utf-8")
+        .replace("__AKB2_REPO_ROOT__", str(tmp_path))
+        .replace("__AKB2_VAULT_ROOT__", str(tmp_path))
+        .replace("__AKB2_STATE_ROOT__", str(tmp_path))
+        .replace("__AKB2_HOME__", str(tmp_path))
+    )
+
+    def probe(text: str, tag: str) -> subprocess.CompletedProcess:
+        target = tmp_path / f"{tag}.plist"
+        target.write_text(text, encoding="utf-8")
+        return subprocess.run(
+            ["bash", "-c", f'. "{lib}"\nakb2_assert_render_clean "{target}"'],
+            capture_output=True, text=True, env=os.environ.copy(),
+        )
+
+    # ① 注释里带占位符（inflow-sentinel 的真实形态：说明里写着验证命令本身）
+    commented = rendered.replace(
+        "<dict>",
+        '<dict>\n<!-- 装完自检： ! grep -q "__AKB2_" <plist>；'
+        "另含 __AKB2_REPO_ROOT__ 占位符 -->",
+        1,
+    )
+    ok = probe(commented, "comment-only")
+    assert ok.returncode == 0, (
+        "注释里的占位符把门触发了（inflow-sentinel 就是这样装不上的）：\n"
+        f"{ok.stdout}{ok.stderr}"
+    )
+
+    # ② 结构里带占位符 → 必拒，且**点名**是哪个（旧实现这里会打出空白）
+    structural = rendered.replace(
+        "<key>WorkingDirectory</key>",
+        "<key>AKB2Injected</key>\n    <string>__AKB2_FOO__</string>\n"
+        "    <key>WorkingDirectory</key>",
+        1,
+    )
+    bad = probe(structural, "structural")
+    assert bad.returncode != 0, f"结构里的占位符被放行了：\n{bad.stdout}{bad.stderr}"
+    assert "未替换占位符" in bad.stderr, bad.stderr
+    assert "__AKB2_FOO__" in bad.stderr, (
+        f"拒绝了但没点名残留的占位符（运维无从下手）：\n{bad.stderr}"
+    )
 
 
 class TestRenderGates:

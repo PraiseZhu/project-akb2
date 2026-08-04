@@ -35,8 +35,21 @@ jobs:
     expected_env_keys:
       - PATH
       - PYTHONPATH
+    # 抑制项 schema：每条都是 {key, reason}，理由与键物理不可分离。
+    # 抑制 = 「明知运行态与模板不一致、决定不报」的例外；不写为什么，下次没人敢删
+    # → 成永久债。解析口在 scripts/verify-launchd-parity.sh::_ignore_env_keys
+    # （缺 reason 直接抛错，不静默当合法抑制）；守卫在
+    # tests/test_launchd_manifest_suppressions.py。
     ignore_installed_env_keys:
-      - AKB2_TRANSLATE_TIMEOUT
+      - key: AKB2_TRANSLATE_TIMEOUT
+        reason: >-
+          运行态多出 AKB2_TRANSLATE_TIMEOUT=300，而它正是代码默认值
+          （src/akb2/briefing/translate.py 的 _DEFAULT_TRANSLATE_TIMEOUT 取
+          os.environ.get("AKB2_TRANSLATE_TIMEOUT", "300")），所以这条差异行为上是
+          no-op：模板不带它、运行态带它，跑出来的超时都是 300s。不为一个 no-op 去
+          bootout/bootstrap social 主跑 —— 2026-07-28 正是这个脚本把 com.akb2.briefing
+          卸掉 5 天 22 小时。清除条件：下次因其他原因重装 com.akb2.briefing 时该键会
+          随渲染消失，届时把本条抑制一并删掉。
   - label: com.akb2.briefing.backstop
     template: launchd/com.akb2.briefing.backstop.plist
     installed: ~/Library/LaunchAgents/com.akb2.briefing.backstop.plist

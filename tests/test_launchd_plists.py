@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from akb2.common.plist_parse import parse_plist_text
 from src.akb2.quality.smoke_validator import (
     SmokeValidationError,
     validate_env_parity,
@@ -41,6 +42,36 @@ def _maybe_xfail(plist_name: str, check_name: str) -> None:
         pytest.xfail(reason)
 
 
+@pytest.fixture(autouse=True, scope="module")
+def _log_dirs_exist() -> None:
+    """SC-R2-09：本文件自建所需的日志父目录，去掉隐式跑序依赖。
+
+    `test_plist_standard_log_parents_exist_after_render` 断言渲染后
+    `StandardOutPath` / `StandardErrorPath` 的父目录存在。这些路径渲染成
+    `<REPO>/logs/...`，而 `logs/` 在 .gitignore 里 —— **干净检出单跑本文件 = 9 failed**
+    （每个 plist 一条），先跑 `tests/briefing`（它会顺手建出 logs/）才 110 passed。
+    也就是这条断言的绿灯来自"别人先跑过"，不是被测对象的性质：CI 换个分片顺序、
+    或有人单跑本文件，就红。
+
+    fixture 放在本文件而不是共享 conftest：这是本文件自己的前置条件，
+    共享 conftest 会让别的文件也悄悄依赖它（同一个坑换个地方埋）。
+    目录由 launchd 在运行期同样需要，`exist_ok=True` 幂等，不改任何被测语义。
+    """
+    created: list[Path] = []
+    for plist_name in PLIST_NAMES:
+        data = parse_plist_text(_render_plist_text(LAUNCHD_DIR / plist_name))
+        for key in ("StandardOutPath", "StandardErrorPath"):
+            raw = data.get(key)
+            if not isinstance(raw, str) or not raw:
+                continue
+            parent = Path(raw).parent
+            if not parent.exists():
+                parent.mkdir(parents=True, exist_ok=True)
+                created.append(parent)
+    # 非空过：断言 fixture 真的覆盖到了被测断言要看的那些目录
+    assert PLIST_NAMES, "PLIST_NAMES 为空，fixture 什么都没建"
+
+
 def _render_plist_text(path: Path, *, repo_root: Path = REPO, home: Path | None = None) -> str:
     home_root = home or Path.home()
     text = path.read_text(encoding="utf-8")
@@ -54,17 +85,16 @@ def _render_plist_text(path: Path, *, repo_root: Path = REPO, home: Path | None 
     return text
 
 
-def _strip_xml_comments(text: str) -> str:
-    """去掉 <!-- ... --> 块。文档性注释可能含裸 "--"(如 flag 名 --dry-run),
-    这在 XML 规范里是非法的 comment 内容,但不影响 plist 的实际结构——
-    plutil -lint 对此宽容,strict 的 expat/plistlib 不宽容,所以在结构解析前先剥掉。
-    """
-    return re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
-
-
 def _load_rendered_plist(path: Path) -> dict[str, Any]:
-    text = _strip_xml_comments(_render_plist_text(path))
-    return plistlib.loads(text.encode("utf-8"))
+    """走生产解析咽喉，不再在本文件里维护第二份注释策略。
+
+    此前本文件有自己的 `_strip_xml_comments` + `plistlib.loads` —— 那正是 R2 blocker
+    的成因形状：**测试放宽了，生产解析路径没跟着宽**。于是 feishu-sync /
+    inflow-sentinel 在这里绿着，在安装器（akb2_plist_identity / lint 门）和 parity 的
+    `_render_template` 里 exit=2 / 假 parse_error，3575 条全绿也没人知道。
+    改调 akb2.common.plist_parse 后，本文件观测的就是生产实际判定。
+    """
+    return parse_plist_text(_render_plist_text(path))
 
 
 def _write_plist(
@@ -141,14 +171,18 @@ def test_plist_lints_with_plutil(plist_name: str) -> None:
 def test_plist_parses_with_plistlib(plist_name: str) -> None:
     """plist 合法性的**跨平台**判据（plutil 缺失时它就是唯一的守门人）。
 
-    走 _strip_xml_comments：文档注释里可能含裸 "--"（如 flag 名 --dry-run），
-    XML 规范禁注释内 "--"、strict expat 拒解，但 plutil 与 launchd 自身加载器都接受，
-    且注释不影响 plist 实际结构。剥注释后 plistlib 与 plutil 校验的是同一件事（真实结构），
-    否则本判据会因合法文档注释误判 plist 非法。
+    走生产解析咽喉 akb2.common.plist_parse：文档注释里可能含裸 "--"（如 flag 名
+    --dry-run），XML 规范禁注释内 "--"、strict expat 拒解，但 plutil 与 launchd 自身
+    加载器都接受，且注释不影响 plist 实际结构。
+
+    这里**不能**用本文件自己的剥注释实现（此前就是那样）：那样这条判据与安装器/parity
+    的判据是两份，测试宽、生产严 —— R2 blocker 正是这么活下来的。现在本判据与
+    akb2_plist_identity / akb2_assert_render_clean / parity 用同一份实现，
+    这条一绿就代表那三处也接受（跨解析点一致性由
+    tests/test_plist_parse_chokepoint.py 直接断言）。
     """
     _maybe_xfail(plist_name, "lint")
-    text = _strip_xml_comments(_render_plist_text(LAUNCHD_DIR / plist_name))
-    data = plistlib.loads(text.encode("utf-8"))
+    data = parse_plist_text(_render_plist_text(LAUNCHD_DIR / plist_name))
     assert isinstance(data, dict), plist_name
     assert data.get("Label"), f"{plist_name}: 缺 Label"
 

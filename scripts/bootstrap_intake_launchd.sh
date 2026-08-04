@@ -49,7 +49,8 @@ if [ ! -f "$PLIST_SRC" ]; then
 fi
 if ! command -v defuddle >/dev/null 2>&1; then
     echo "ERROR: defuddle CLI 不可用(orchestrator 必需软依赖)" >&2
-    echo "   装: pip install defuddle" >&2
+    echo "   装: npm install -g defuddle-cli@0.7.0" >&2
+    echo "   注意:同名 npm 包 defuddle@0.1.0 没有 bin,不要按 defuddle --version 打印的 0.1.0 去装它(详见 docs/runbooks/intake-tools-setup.md §6.3)" >&2
     exit 3
 fi
 if ! PYTHONPATH="$PROJECT_ROOT/src" "$PYTHON_BIN" -c "import akb2.quality.intake.orchestrator" 2>/dev/null; then

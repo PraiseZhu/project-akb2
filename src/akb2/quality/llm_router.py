@@ -60,6 +60,7 @@ try:  # pragma: no cover - runtime path
         ERROR_TYPE_BUDGET_EXCEEDED,
         ERROR_TYPE_RATE_LIMIT,
         classify_provider_error,
+        redact_provider_text,
     )
     from src.akb2.common.state_paths import LEDGER_SUBDIR, resolve_state_file
     from src.akb2.loops.ledger import append_event
@@ -78,6 +79,7 @@ except ImportError:  # pragma: no cover - script runtime path
         ERROR_TYPE_BUDGET_EXCEEDED,
         ERROR_TYPE_RATE_LIMIT,
         classify_provider_error,
+        redact_provider_text,
     )
     from akb2.common.state_paths import LEDGER_SUBDIR, resolve_state_file
     from akb2.loops.ledger import append_event
@@ -189,6 +191,29 @@ def _provider_error_text(exc: Exception) -> str:
         parts.append(str(message))
     parts.append(str(exc))
     return " | ".join(part for part in parts if part).strip()
+
+
+def _public_provider_detail(exc: Exception) -> str:
+    """provider 异常 → 可公开的单行摘要：异常类型名 + 脱敏原文。
+
+    唯一 owner（加固清单第 10 类形态①）：本模块所有把 provider 异常包成
+    ``LLMProviderError`` / ``LLMTimeoutError`` 的点都经这里，任何一处都不再直接内插
+    ``{exc}``、也不再 ``raise ... from exc``。理由是 SC-R2-11① 实测的两条打印路径：
+
+    - ``str(err)`` —— 公开文本（旧代码这条已脱敏）；
+    - ``traceback.format_exception(err)`` —— 会把 ``__cause__`` 全链打印出来。
+      ``from exc`` 让**未脱敏的 provider 原始异常**留在链上（对抗席探针实测
+      ``outer_secret=False`` 但 ``cause_secret=True`` / ``traceback_secret=True``；
+      R1 也实测 provider 原文能带出 ``sk-*`` 字面量）。
+
+    只覆盖其中一条不算脱敏，所以改用 ``from None``：``__cause__`` 清空、
+    ``__suppress_context__`` 置真，两条路径同时干净。
+
+    保留异常类型名有两个理由：它不敏感；而且是 **load-bearing** ——
+    ``runner._INFRA_ERROR_MARKERS`` 用 ``"BadRequestError"`` 这类类名把上游 400 归成
+    infra 走 F39 重审，原文被 200 字截断时类型名是唯一稳定的指纹。
+    """
+    return f"{type(exc).__name__}: {redact_provider_text(_provider_error_text(exc))}"
 
 
 def _diagnostics_from_provider_error(exc: Exception) -> BudgetDiagnostics:
@@ -616,10 +641,15 @@ def route_deepseek_beta_tool(
         response = client.chat.completions.create(**payload)
     except openai.APITimeoutError as exc:
         raise LLMTimeoutError(
-            f"DeepSeek beta tool 调用超时 ({actual_timeout}s)"
-        ) from exc
+            f"DeepSeek beta tool 调用超时 ({actual_timeout}s):"
+            f" {_public_provider_detail(exc)}"
+        ) from None
     except openai.APIError as exc:
-        raise LLMProviderError(f"DeepSeek beta tool API 错误: {exc}") from exc
+        # SC-R2-11① 审计连带修复：旧代码把 `{exc}` **直接**内插进公开消息（比被点名
+        # 的 route_llm 那处更露），且 `from exc` 又把原文留在链上。两条路径一起收口。
+        raise LLMProviderError(
+            f"DeepSeek beta tool API 错误: {_public_provider_detail(exc)}"
+        ) from None
 
     message = response.choices[0].message
     tool_calls = getattr(message, "tool_calls", None) or []
@@ -676,10 +706,14 @@ def route_deepseek_json_object(
         response = client.chat.completions.create(**payload)
     except openai.APITimeoutError as exc:
         raise LLMTimeoutError(
-            f"DeepSeek JSON mode 调用超时 ({actual_timeout}s)"
-        ) from exc
+            f"DeepSeek JSON mode 调用超时 ({actual_timeout}s):"
+            f" {_public_provider_detail(exc)}"
+        ) from None
     except openai.APIError as exc:
-        raise LLMProviderError(f"DeepSeek JSON mode API 错误: {exc}") from exc
+        # SC-R2-11① 审计连带修复：同 route_deepseek_beta_tool，原文既进公开消息又挂链上。
+        raise LLMProviderError(
+            f"DeepSeek JSON mode API 错误: {_public_provider_detail(exc)}"
+        ) from None
 
     raw = response.choices[0].message.content or ""
     try:
@@ -813,7 +847,8 @@ def route_llm(
     except openai.APITimeoutError as exc:
         raise LLMTimeoutError(
             f"LLM 调用超时 ({actual_timeout}s): {model_family}"
-        ) from exc
+            f" — {_public_provider_detail(exc)}"
+        ) from None
     except openai.APIError as exc:
         diagnostics = _diagnostics_from_provider_error(exc)
         gate_write_note = ""
@@ -833,12 +868,15 @@ def route_llm(
                 gate_write_note = f" | budget_gate_write_refused={gate_exc}"
         # 异常文本用脱敏后的归因，不用 str(exc)：str(exc) 含 provider 原文
         # （R1 实测能把 sk-* 探针字面量带进日志）。
+        # SC-R2-11①：`from None` 而非 `from exc` —— 公开文本脱敏了但 `from exc` 把
+        # 未脱敏的 provider 异常留在 __cause__ 里，traceback.format_exception() 全链
+        # 打印照样泄漏（对抗席探针实测 cause_secret=True / traceback_secret=True）。
         raise LLMProviderError(
             f"LLM API 错误: {model_family} — error_type={diagnostics.error_type}"
             f" budget_scope={diagnostics.budget_scope or 'n/a'}"
             f" provider_code={diagnostics.provider_code or 'n/a'}"
-            f" detail={diagnostics.raw_message}{gate_write_note}"
-        ) from exc
+            f" detail={_public_provider_detail(exc)}{gate_write_note}"
+        ) from None
 
     raw = response.choices[0].message.content or ""
 

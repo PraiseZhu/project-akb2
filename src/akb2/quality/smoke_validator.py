@@ -9,13 +9,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import plistlib
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from akb2.common.plist_parse import parse_plist_file
 
 LAUNCHD_LABEL = "com.akb2.main-pipeline"
 TERMINAL_EVENTS = {"grade_llm", "promote", "finalize"}
@@ -38,7 +39,17 @@ class SmokeValidationError(RuntimeError):
     """Smoke validation failed."""
 
 
-def _launchd_mode_from_env(env: dict[str, Any], *, context: str) -> str:
+# Default expected launchd mode. Must track the deployed reality, not the
+# historical proposal-only rollout: both launchd/com.akb2.main-pipeline.plist and
+# the installed ~/Library/LaunchAgents copy carry AKB2_AUTO_PROMOTE=1, so a
+# "proposal" default made every all-defaults invocation raise SmokeValidationError
+# — an operator running the documented command got a failure that says nothing
+# about the pipeline. Explicit --expected-mode proposal still works for the
+# isolated proposal-mode replay.
+DEFAULT_EXPECTED_LAUNCHD_MODE = "active"
+
+
+def _launchd_mode_from_env(env: dict[str, Any]) -> str:
     auto_promote = str(env.get("AKB2_AUTO_PROMOTE", "0"))
     # AKB2_AMENDMENT_APPLIED is a calibration-side marker only. Runtime execution
     # and smoke validation must classify active/proposal from AKB2_AUTO_PROMOTE
@@ -251,8 +262,12 @@ def _load_plist(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise SmokeValidationError(f"plist missing: {path}")
     try:
-        with path.open("rb") as fh:
-            data = plistlib.load(fh)
+        # Single parse chokepoint (see akb2.common.plist_parse): --repo-plist points
+        # at a repo template whose doc comments may contain bare "--", which expat
+        # rejects but launchd/CoreFoundation accepts. A bare plistlib.load here made
+        # this the 5th parse point with its own comment policy — the exact drift the
+        # chokepoint exists to prevent.
+        data = parse_plist_file(path)
     except Exception as exc:
         raise SmokeValidationError(f"plist invalid: {path}") from exc
     if not isinstance(data, dict):
@@ -364,7 +379,7 @@ def validate_source_ledger(
 
 def validate_launchd_static(
     plist_path: str | Path,
-    expected_mode: str = "proposal",
+    expected_mode: str = DEFAULT_EXPECTED_LAUNCHD_MODE,
     require_label_absent: bool = False,
     repo_plist_path: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -399,7 +414,7 @@ def validate_launchd_static(
     if not isinstance(env, dict):
         raise SmokeValidationError("launchd EnvironmentVariables invalid")
     _assert_repo_plist_matches_installed(plist_path, repo_plist_path)
-    actual_mode = _launchd_mode_from_env(env, context="launchd plist")
+    actual_mode = _launchd_mode_from_env(env)
     if expected_mode not in {"proposal", "active"}:
         raise SmokeValidationError(f"expected_mode invalid: {expected_mode}")
     if actual_mode != expected_mode:
@@ -447,7 +462,7 @@ def validate_env_parity(
     if not isinstance(env, dict):
         raise SmokeValidationError("launchd EnvironmentVariables invalid")
     _assert_repo_plist_matches_installed(plist_path, repo_plist_path)
-    plist_mode = _launchd_mode_from_env(env, context="launchd plist")
+    plist_mode = _launchd_mode_from_env(env)
     smoke_mode = "active" if smoke_auto_promote == "1" else "proposal"
     if plist_mode == "active" and smoke_mode != "active" and not active_ready:
         raise SmokeValidationError(
@@ -703,7 +718,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Installed launchd plist to validate",
     )
     parser.add_argument("--repo-plist", help="Optional repo template plist to compare")
-    parser.add_argument("--expected-mode", choices=["proposal", "active"], default="proposal")
+    parser.add_argument(
+        "--expected-mode",
+        choices=["proposal", "active"],
+        default=DEFAULT_EXPECTED_LAUNCHD_MODE,
+    )
     parser.add_argument("--require-label-absent", action="store_true")
     parser.add_argument("--max-age-hours", type=int, default=DEFAULT_SOURCE_LEDGER_MAX_AGE_HOURS)
     parser.add_argument("--require-candidate-quality", action="store_true")

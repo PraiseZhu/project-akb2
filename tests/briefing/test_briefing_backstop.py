@@ -5,13 +5,17 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import time
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BACKSTOP_SH = PROJECT_ROOT / "scripts" / "briefing_backstop.sh"
+GITHUB_BACKSTOP_SH = PROJECT_ROOT / "scripts" / "github_briefing_backstop.sh"
 
 # 本脚本自己放弃时的退出码（GIVE_UP_EXIT_CODE）。124 现在**只**属于
 # run_with_deadline.py 终止 pipeline 这一种来源 —— 两者共用一码时，launchd 的
@@ -33,6 +37,15 @@ def _write_exec(path: Path, body: str) -> Path:
     path.write_text(f"#!/usr/bin/env bash\n{body}\n", encoding="utf-8")
     path.chmod(0o755)
     return path
+
+
+@pytest.fixture(autouse=True)
+def _stub_pgrep_probe(tmp_path, monkeypatch):
+    """Keep every test independent of the machine-global process table."""
+    stub_bin = tmp_path / "hermetic-pgrep-bin"
+    stub_bin.mkdir()
+    _write_exec(stub_bin / "pgrep", "exit 1")
+    monkeypatch.setenv("PATH", f"{stub_bin}{os.pathsep}{os.environ['PATH']}")
 
 
 def _run_backstop(
@@ -69,6 +82,35 @@ def _run_backstop(
         **(env_overrides or {}),
     }
     return subprocess.run(args, capture_output=True, text=True, env=env)
+
+
+def test_pgrep_guard_is_hermetic(tmp_path):
+    """A real process matching the probe string must not steer the test harness."""
+    sentinel = f"akb2-pgrep-hermetic-{os.getpid()}-{time.time_ns()}"
+    sleeper = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(20)", sentinel]
+    )
+    vault = tmp_path / "vault"
+    (vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(
+        parents=True
+    )
+    try:
+        result = _run_backstop(
+            vault,
+            ["--dry-run"],
+            env_overrides={"AKB2_BACKSTOP_PGREP_PATTERN": sentinel},
+        )
+    finally:
+        sleeper.terminate()
+        try:
+            sleeper.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            sleeper.kill()
+            sleeper.wait(timeout=5)
+
+    assert result.returncode == 0, result.stderr
+    assert "dry-run" in result.stderr, result.stderr
+    assert "主跑仍在进行" not in result.stderr, result.stderr
 
 
 def test_existing_pass_report_skips_even_after_deadline(tmp_path):
@@ -919,6 +961,210 @@ def test_stale_lock_is_reclaimed(tmp_path):
     assert "already-running" not in result.stderr
 
 
+def _run_atomic_lock_barrier_case(tmp_path: Path, kind: str) -> None:
+    case_dir = tmp_path / kind
+    case_dir.mkdir()
+    vault = case_dir / "vault"
+    lock = case_dir / "shared.lock"
+    marker = case_dir / "rerun-marker.txt"
+    release = case_dir / "release"
+    barrier = case_dir / "barrier"
+    if kind == "social":
+        script = BACKSTOP_SH
+        target = (
+            vault
+            / "Praise Space"
+            / "AKB2.0"
+            / "AI TRENDS"
+            / "Social"
+            / f"{_today()} Daily Briefing.md"
+        )
+        script_env = {
+            "AKB2_BACKSTOP_LOCK_FILE": str(lock),
+            "AKB2_BRIEFING_RERUN_ATTEMPTS": "1",
+            "AKB2_BRIEFING_RERUN_BACKOFF": "0",
+            "AKB2_BRIEFING_DEADLINE_HOUR": "99",
+            "AKB2_BACKSTOP_PGREP_PATTERN": _IMPOSSIBLE_PGREP,
+        }
+        artifact = "---\\naudit_verdict: pass\\n---\\n"
+    else:
+        script = GITHUB_BACKSTOP_SH
+        target = (
+            vault
+            / "Praise Space"
+            / "AKB2.0"
+            / "AI TRENDS"
+            / "GitHub"
+            / f"{_today()} GitHub Briefing.md"
+        )
+        script_env = {
+            "AKB2_GITHUB_BACKSTOP_LOCK_FILE": str(lock),
+            "AKB2_GITHUB_RERUN_ATTEMPTS": "1",
+            "AKB2_GITHUB_RERUN_BACKOFF": "0",
+            "AKB2_GITHUB_DEADLINE_HOUR": "99",
+            "AKB2_GITHUB_ENV_FILE": "/dev/null",
+            "AKB2_GITHUB_BACKSTOP_PGREP_PATTERN": _IMPOSSIBLE_PGREP,
+        }
+        artifact = "# GitHub briefing\\n"
+    target.parent.mkdir(parents=True)
+    holder = _write_exec(
+        case_dir / "holder.sh",
+        f'''echo invoked >> "{marker}"
+i=0
+while [ ! -f "{release}" ] && [ "$i" -lt 500 ]; do
+  sleep 0.01
+  i=$(( i + 1 ))
+done
+printf -- "{artifact}" > "{target}"
+exit 0''',
+    )
+    barrier_runner = _write_exec(
+        case_dir / "barrier-runner.sh",
+        'while [ ! -f "$1" ]; do sleep 0.01; done\nshift\nexec "$@"',
+    )
+
+    process_count = 24
+    processes = []
+    for index in range(process_count):
+        log_key = (
+            "AKB2_BACKSTOP_LOG"
+            if kind == "social"
+            else "AKB2_GITHUB_BACKSTOP_LOG"
+        )
+        rerun_key = (
+            "AKB2_BRIEFING_RERUN_SCRIPT"
+            if kind == "social"
+            else "AKB2_GITHUB_RERUN_SCRIPT"
+        )
+        env = {
+            **os.environ,
+            **script_env,
+            log_key: str(case_dir / f"backstop-{index}.log"),
+            rerun_key: str(holder),
+        }
+        processes.append(
+            subprocess.Popen(
+                [
+                    str(barrier_runner),
+                    str(barrier),
+                    "/bin/bash",
+                    str(script),
+                    "--vault-root",
+                    str(vault),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+        )
+
+    try:
+        barrier.write_text("go", encoding="utf-8")
+        deadline = time.time() + 10
+        while time.time() < deadline and not marker.exists():
+            time.sleep(0.02)
+        assert marker.exists(), f"{kind}: no process entered the rerun"
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            completed = sum(proc.poll() is not None for proc in processes)
+            if completed >= process_count - 1:
+                break
+            time.sleep(0.02)
+        assert lock.read_text(encoding="utf-8").strip().isdigit()
+        release.write_text("go", encoding="utf-8")
+        results = [proc.communicate(timeout=15) for proc in processes]
+    finally:
+        release.touch(exist_ok=True)
+        for proc in processes:
+            if proc.poll() is None:
+                proc.kill()
+                proc.communicate()
+
+    calls = marker.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 1, f"{kind}: {len(calls)} processes entered the paid rerun"
+    assert all(proc.returncode == 0 for proc in processes), results
+
+
+def test_lock_acquire_is_atomic_under_barrier_start(tmp_path):
+    """O_EXCL acquisition permits one rerun owner under a true barrier start."""
+    for script in (BACKSTOP_SH, GITHUB_BACKSTOP_SH):
+        source = script.read_text(encoding="utf-8")
+        assert "set -o noclobber" in source, f"{script.name}: lock creation is not O_EXCL"
+    for kind in ("social", "github"):
+        _run_atomic_lock_barrier_case(tmp_path, kind)
+
+
+def test_artifact_is_rechecked_after_lock_acquisition(tmp_path):
+    """An artifact published after the first guard must cancel the paid rerun."""
+    for kind in ("social", "github"):
+        case_dir = tmp_path / f"post-lock-{kind}"
+        case_dir.mkdir()
+        vault = case_dir / "vault"
+        if kind == "social":
+            script = BACKSTOP_SH
+            rerun = case_dir / "rerun.sh"
+            target = (
+                vault
+                / "Praise Space"
+                / "AKB2.0"
+                / "AI TRENDS"
+                / "Social"
+                / f"{_today()} Daily Briefing.md"
+            )
+            env = {
+                "AKB2_BACKSTOP_LOG": str(case_dir / "backstop.log"),
+                "AKB2_BACKSTOP_LOCK_FILE": str(case_dir / "backstop.lock"),
+                "AKB2_BRIEFING_RERUN_SCRIPT": str(rerun),
+                "AKB2_BRIEFING_RERUN_ATTEMPTS": "1",
+                "AKB2_BRIEFING_RERUN_BACKOFF": "0",
+                "AKB2_BRIEFING_DEADLINE_HOUR": "99",
+            }
+            artifact = "---\\naudit_verdict: pass\\n---\\n"
+        else:
+            script = GITHUB_BACKSTOP_SH
+            rerun = case_dir / "rerun.sh"
+            target = (
+                vault
+                / "Praise Space"
+                / "AKB2.0"
+                / "AI TRENDS"
+                / "GitHub"
+                / f"{_today()} GitHub Briefing.md"
+            )
+            env = {
+                "AKB2_GITHUB_BACKSTOP_LOG": str(case_dir / "backstop.log"),
+                "AKB2_GITHUB_BACKSTOP_LOCK_FILE": str(case_dir / "backstop.lock"),
+                "AKB2_GITHUB_RERUN_SCRIPT": str(rerun),
+                "AKB2_GITHUB_RERUN_ATTEMPTS": "1",
+                "AKB2_GITHUB_DEADLINE_HOUR": "99",
+                "AKB2_GITHUB_ENV_FILE": "/dev/null",
+            }
+            artifact = "# GitHub briefing\\n"
+        target.parent.mkdir(parents=True)
+        marker = case_dir / "paid-rerun.txt"
+        _write_exec(rerun, f'echo invoked > "{marker}"\nexit 1')
+        probe_bin = case_dir / "probe-bin"
+        probe_bin.mkdir()
+        _write_exec(
+            probe_bin / "pgrep",
+            f'printf -- "{artifact}" > "{target}"\nexit 1',
+        )
+        result = subprocess.run(
+            ["/bin/bash", str(script), "--vault-root", str(vault)],
+            capture_output=True,
+            text=True,
+            env={
+                **os.environ,
+                **env,
+                "PATH": f"{probe_bin}{os.pathsep}{os.environ['PATH']}",
+            },
+        )
+        assert result.returncode == 0, result.stderr
+        assert not marker.exists(), f"{kind}: artifact recheck did not cancel rerun"
+        assert "lock_artifact_recheck=pass" in result.stderr, result.stderr
+
+
 # ── 缺陷 D 回归：BSD-only 语法在 CI(ubuntu) 上炸 ──────────────────────────────
 #
 # 生产实证（PR #65 合并后 CI tests job 红）：`mktemp -t akb2-backstop-read` 是
@@ -1446,6 +1692,33 @@ def test_exit_65_budget_blocked_is_nonretryable(run_script, tmp_path):
     assert "attempt=2/2" not in content, f"65 不该进第 2 轮:\n{content}"
     assert "next_attempt=" not in content, f"65 不该进退避:\n{content}"
     assert result.returncode == SHARED_BUDGET_BLOCKED_EXIT_CODE
+
+
+def test_exit_65_is_classified_not_unknown(run_script, tmp_path):
+    """A named budget exit must retain its meaning in the terminal record."""
+    case_dir = tmp_path / "case65-classification"
+    case_dir.mkdir()
+    vault = case_dir / "vault"
+    (vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(
+        parents=True
+    )
+    stub = _fixed_rc_stub(case_dir, SHARED_BUDGET_BLOCKED_EXIT_CODE)
+    result, log = _run_via_fixture(
+        run_script,
+        vault,
+        case_dir,
+        extra_env={
+            "AKB2_BRIEFING_RERUN_SCRIPT": str(stub),
+            "AKB2_BRIEFING_RERUN_ATTEMPTS": "1",
+        },
+        args=[],
+    )
+
+    content = log.read_text(encoding="utf-8")
+    assert result.returncode == SHARED_BUDGET_BLOCKED_EXIT_CODE
+    assert "共享预算" in content, content
+    assert "未知码" not in content, content
+    assert "不在 pipeline 已定义集合" not in content, content
 
 
 def test_cleanup_only_removes_own_lock(tmp_path):

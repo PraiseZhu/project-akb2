@@ -134,11 +134,9 @@ LOCK_FILE=""
 LOCK_HELD=0
 LOCK_PID_HELD_BY=""
 LOCK_SETUP_ERROR=""
-# 释放锁：**删前重读**，内容 == 自己的 pid 才删（所有者校验）。
-# 为什么 `LOCK_HELD=1` 不够：acquire 是 check-then-write，两个同刻实例可以都判定
-# 「无锁/陈旧锁」并各自 `echo $$ >`，于是**双方 LOCK_HELD 都是 1**；后写者覆盖前者，
-# 前者退出时无条件 rm 就把**后者**（当前真持有者）的锁删了。
-# 内容比对不消除 acquire 侧的竞态窗口，但保证「只有所有者释放锁」。
+# 释放锁：**删前重读**，内容 == 自己的 pid 才删（所有者校验）。acquire 侧现已用
+# noclobber/O_EXCL 保证同刻只有一个创建者；这里仍必须校验，因为锁路径可能在持锁期间
+# 被外部进程替换，旧持有者退出时不得删除新持有者的 PID 文件。
 release_rerun_lock() {
   local current
   [[ "$LOCK_HELD" -eq 1 && -n "$LOCK_FILE" ]] || return 0
@@ -249,20 +247,28 @@ acquire_rerun_lock() {
     LOCK_SETUP_ERROR="锁目录不可创建: $lock_dir"
     return 2
   fi
-  if [[ -f "$LOCK_FILE" ]]; then
+  while true; do
+    # noclobber 把「不存在 → 写入自身 PID」合成一次 O_EXCL 获取；失败后才读取现持有者。
+    # PID 文件格式仍是单行十进制 PID，不引入 flock/mkdir 等第二种锁协议。
+    if ( set -o noclobber; printf '%s\n' "$$" > "$LOCK_FILE" ) 2>/dev/null; then
+      LOCK_HELD=1
+      return 0
+    fi
+    if [[ ! -f "$LOCK_FILE" ]]; then
+      LOCK_SETUP_ERROR="锁文件不可写: $LOCK_FILE"
+      return 2
+    fi
     lock_pid="$(cat "$LOCK_FILE" 2>/dev/null || echo '')"
     if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
       LOCK_PID_HELD_BY="$lock_pid"
       return 1
     fi
-    rm -f "$LOCK_FILE"      # 陈旧锁：持有者已死，接管
-  fi
-  if ! echo $$ > "$LOCK_FILE" 2>/dev/null; then
-    LOCK_SETUP_ERROR="锁文件不可写: $LOCK_FILE"
-    return 2
-  fi
-  LOCK_HELD=1
-  return 0
+    if ! rm -f "$LOCK_FILE" 2>/dev/null; then
+      LOCK_SETUP_ERROR="陈旧锁不可移除: $LOCK_FILE"
+      return 2
+    fi
+    # 陈旧锁已移除后回到 O_EXCL 获取点；若另一实例先抢到，本轮不会覆盖它。
+  done
 }
 
 set +e
@@ -278,6 +284,13 @@ if (( lock_rc == 2 )); then
 fi
 if (( lock_rc != 0 )); then
   log_terminal skip "skip — already-running: 另一个 github backstop 补跑正持锁 lock_pid=$LOCK_PID_HELD_BY lock_file=$LOCK_FILE ($DATE_TODAY)"
+  exit 0
+fi
+
+# 初次产物判断与拿锁之间，主跑可能刚好完成。成为唯一锁 owner 后必须重检，避免对
+# 已交付的产物再启动一次付费补跑。
+if [[ -f "$GITHUB_FILE" ]]; then
+  log_terminal skip "skip — 拿锁后重检发现 GitHub briefing 已产出，不启动补跑 lock_artifact_recheck=pass ($DATE_TODAY)"
   exit 0
 fi
 

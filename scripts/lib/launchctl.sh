@@ -52,6 +52,16 @@ AKB2_BOUNDED_OUTPUT=""
 # 已知临时目录前缀（VAULT_ROOT 门 3 判据）。$TMPDIR 在运行期追加。
 AKB2_TMP_PATH_PREFIXES=(/var/folders /private/var/folders /tmp /private/tmp)
 
+# 本 lib 所在仓库的 src/ —— 供 python 侧 import 单一 plist 解析咽喉
+# （src/akb2/common/plist_parse.py）。从 ${BASH_SOURCE[0]} 自推，不依赖调用方
+# 的 cwd 或 PROJECT_ROOT 变量：本文件的两个 plist 解析点与
+# scripts/verify-launchd-parity.sh 的两个必须用同一份实现，见该模块首段。
+AKB2_LAUNCHCTL_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AKB2_PLIST_PARSE_PYTHONPATH="$(cd "$AKB2_LAUNCHCTL_LIB_DIR/../.." && pwd)/src"
+# 占位符残留检查的"查到了"专用退出码：与"检查本身跑不起来"（import 失败等）区分开，
+# 否则 ImportError 的 stderr 会被当成占位符清单打给运维（错误归因）。
+AKB2_PLIST_RESIDUE_RC=3
+
 # --------------------------------------------------------------------------
 # 基础
 # --------------------------------------------------------------------------
@@ -124,7 +134,8 @@ akb2_run_bounded() {
 # plist 身份派生（--plist-src 的唯一真相来源）
 # --------------------------------------------------------------------------
 
-# python3 解析（plistlib 是本文件所有 plist 判定的唯一实现，见 akb2_assert_render_clean）。
+# python3 解析（akb2.common.plist_parse 是本文件所有 plist 判定的唯一实现，
+# 见 akb2_assert_render_clean）。
 akb2_python_bin() {
     local python_bin
     python_bin="$(command -v python3 2>/dev/null || true)"
@@ -153,13 +164,14 @@ akb2_plist_identity() {
     AKB2_PLIST_PROGRAM_TOKEN=""
     AKB2_PLIST_SCHEDULE_TOKEN=""
     python_bin="$(akb2_python_bin)" || return 1
-    if ! raw="$("$python_bin" - "$plist" <<'PY'
+    if ! raw="$(PYTHONPATH="$AKB2_PLIST_PARSE_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}" \
+            "$python_bin" - "$plist" <<'PY'
 import os
-import plistlib
 import sys
 
-with open(sys.argv[1], "rb") as handle:
-    data = plistlib.load(handle)
+from akb2.common.plist_parse import parse_plist_file
+
+data = parse_plist_file(sys.argv[1])
 if not isinstance(data, dict):
     sys.exit(3)
 label = str(data.get("Label") or "").strip()
@@ -195,6 +207,9 @@ print(schedule)
 PY
     )"; then
         printf 'ERROR: 无法从 plist 解析 Label（模板不合法或缺 Label 键）：%s\n' "$plist" >&2
+        printf '       若上方是 ModuleNotFoundError：解析咽喉 akb2.common.plist_parse\n' >&2
+        printf '       不在 PYTHONPATH=%s 下 —— 同样 fail-closed，不退化到裸 plistlib。\n' \
+            "$AKB2_PLIST_PARSE_PYTHONPATH" >&2
         return 1
     fi
     AKB2_PLIST_LABEL="$(printf '%s\n' "$raw" | sed -n '1p')"
@@ -357,26 +372,75 @@ akb2_assert_vault_root_sane() {
 # —— 门的强度随主机而变，且声称的强度 > 实际强度。
 # 现在：plistlib 是唯一判定权（两个平台同强度），plutil 存在时**叠加**跑一遍作补充
 # （它能报出 plistlib 不查的一些结构问题）。缺 python3 → fail-closed，不退化到弱实现。
+#
+# plistlib 的调用只走单一咽喉 akb2.common.plist_parse（2026-08-04 R2）：这道门此前
+# 是裸 plistlib（严），而 parity 读 installed plist 用的是剥注释回退（宽）——
+# 同一个仓库模板在两处得出相反结论，仓库自带的 feishu-sync / inflow-sentinel
+# 因此过不了这道门（render-only exit=2）。咽喉只对「注释内容让 expat 拒解」放宽，
+# 裸片段等真实结构错误照拒（下面反证用例 test_lint_gate_rejects_fragment_* 守这条）。
 # 返回 0 = 双门通过；返回 1 = 拒绝。
 akb2_assert_render_clean() {
-    local rendered="$1" leftovers python_bin
+    local rendered="$1" leftovers python_bin parse_err="" residue_rc=0
 
     if [ ! -f "$rendered" ]; then
         printf 'ERROR: 渲染产物不存在：%s\n' "$rendered" >&2
         return 1
     fi
 
-    if grep -q '__AKB2_' "$rendered"; then
-        leftovers="$(grep -o '__AKB2_[A-Za-z0-9_]*__' "$rendered" | sort -u | tr '\n' ' ')"
-        printf 'ERROR: 渲染后的 plist 仍有未替换占位符：%s\n' "${leftovers% }" >&2
+    python_bin="$(akb2_python_bin)" || return 1
+
+    # ── 门 1：占位符残留，按**剥掉 XML 注释后的结构内容**判定 ────────────────────
+    # 旧实现是 `grep -q '__AKB2_' "$rendered"`（整文件文本），于是
+    # launchd/com.akb2.inflow-sentinel.plist 恒被拒：它的安装说明注释里就写着验证命令
+    # `! grep -q "__AKB2_" <plist>`，那串字面量渲染后仍留在注释里。更糟的是
+    # `-o '__AKB2_[A-Za-z0-9_]*__'` 匹配不到这个裸前缀 → 打出「仍有未替换占位符：」
+    # 后面是**空白**：一道既拒绝安装、又说不出拒绝原因的门（宪法 P4 失败可见）。
+    # 注释不进 launchd 的解析结果，残留在注释里是惰性的；真正会让 job 指向字面量
+    # 路径（`__AKB2_REPO_ROOT__/scripts/...`）的是结构里的残留，那才是这道门要拦的。
+    # 剥注释实现与 plist 解析共用同一份（akb2.common.plist_parse.strip_xml_comments）。
+    leftovers="$(PYTHONPATH="$AKB2_PLIST_PARSE_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}" \
+        AKB2_PLIST_RESIDUE_RC="$AKB2_PLIST_RESIDUE_RC" "$python_bin" -c '
+import os
+import re
+import sys
+from pathlib import Path
+
+from akb2.common.plist_parse import strip_xml_comments
+
+body = strip_xml_comments(Path(sys.argv[1]).read_bytes()).decode("utf-8", "replace")
+if "__AKB2_" not in body:
+    sys.exit(0)
+hits = sorted(set(re.findall(r"__AKB2_[A-Za-z0-9_]*__", body)))
+print(" ".join(hits) if hits else "__AKB2_（裸前缀，未构成完整占位符）")
+sys.exit(int(os.environ["AKB2_PLIST_RESIDUE_RC"]))
+' "$rendered" 2>&1)" || residue_rc=$?
+    if [ "$residue_rc" -eq "$AKB2_PLIST_RESIDUE_RC" ]; then
+        printf 'ERROR: 渲染后的 plist 仍有未替换占位符：%s\n' "$leftovers" >&2
         printf '       放弃安装（既有 plist 未动）。\n' >&2
         return 1
     fi
-
-    python_bin="$(akb2_python_bin)" || return 1
-    if ! "$python_bin" -c \
-        'import plistlib,sys; plistlib.load(open(sys.argv[1],"rb"))' "$rendered" >/dev/null 2>&1; then
-        printf 'ERROR: plistlib 解析失败——渲染后的 plist XML 不合法：%s\n' "$rendered" >&2
+    if [ "$residue_rc" -ne 0 ]; then
+        printf 'ERROR: 占位符残留检查无法完成——拒绝安装（fail-closed）：%s\n' "$leftovers" >&2
+        printf '       检查跑不起来 ≠ 没有残留；不退化到裸 grep（那会连注释一起误判）。\n' >&2
+        return 1
+    fi
+    if ! parse_err="$(PYTHONPATH="$AKB2_PLIST_PARSE_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}" \
+        "$python_bin" -c \
+        'import sys
+from akb2.common.plist_parse import parse_plist_file
+parse_plist_file(sys.argv[1])' "$rendered" 2>&1)"; then
+        case "$parse_err" in
+            *ModuleNotFoundError*|*ImportError*)
+                printf 'ERROR: 找不到 plist 解析咽喉 akb2.common.plist_parse（PYTHONPATH=%s）\n' \
+                    "$AKB2_PLIST_PARSE_PYTHONPATH" >&2
+                printf '       拒绝安装（fail-closed）：不退化到裸 plistlib，避免这道门\n' >&2
+                printf '       与 parity 的解析判据再次分叉。\n' >&2
+                ;;
+            *)
+                printf 'ERROR: plistlib 解析失败——渲染后的 plist XML 不合法：%s\n' "$rendered" >&2
+                printf '       %s\n' "$parse_err" >&2
+                ;;
+        esac
         return 1
     fi
 

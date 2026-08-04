@@ -298,12 +298,9 @@ LOCK_HELD=0
 # 补跑后复查得到的产物状态。初值刻意不是 "pass"：若 rc=0 却没走过复查（结构性不可能，
 # 但真发生时属编程错误），假 recovered 闸按 fail-closed 报 FAILED 而不是放行 recovered。
 RERUN_POST_STATUS="unset"
-# 释放锁：**删前重读**，内容 == 自己的 pid 才删（所有者校验）。
-# 为什么 `LOCK_HELD=1` 不够：acquire 是 check-then-write，两个同刻实例可以都判定
-# 「无锁/陈旧锁」并各自 `echo $$ >`，于是**双方 LOCK_HELD 都是 1**；后写者覆盖前者，
-# 前者退出时无条件 rm 就把**后者**（当前真持有者）的锁删了 —— 第三个实例随即冲进来。
-# 内容比对不能消除 acquire 侧的竞态窗口，但能保证「只有所有者释放锁」，
-# 把「误删他人锁」这一半彻底关掉。
+# 释放锁：**删前重读**，内容 == 自己的 pid 才删（所有者校验）。acquire 侧现已用
+# noclobber/O_EXCL 保证同刻只有一个创建者；这里仍必须校验，因为锁路径可能在持锁期间
+# 被外部进程替换，旧持有者退出时不得删除新持有者的 PID 文件。
 release_rerun_lock() {
   local current
   [[ "$LOCK_HELD" -eq 1 && -n "$LOCK_FILE" ]] || return 0
@@ -558,20 +555,28 @@ acquire_rerun_lock() {
     LOCK_SETUP_ERROR="锁目录不可创建: $lock_dir"
     return 2
   fi
-  if [[ -f "$LOCK_FILE" ]]; then
+  while true; do
+    # noclobber 把「不存在 → 写入自身 PID」合成一次 O_EXCL 获取；失败后才读取现持有者。
+    # PID 文件格式仍是单行十进制 PID，不引入 flock/mkdir 等第二种锁协议。
+    if ( set -o noclobber; printf '%s\n' "$$" > "$LOCK_FILE" ) 2>/dev/null; then
+      LOCK_HELD=1
+      return 0
+    fi
+    if [[ ! -f "$LOCK_FILE" ]]; then
+      LOCK_SETUP_ERROR="锁文件不可写: $LOCK_FILE"
+      return 2
+    fi
     lock_pid="$(cat "$LOCK_FILE" 2>/dev/null || echo '')"
     if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
       LOCK_PID_HELD_BY="$lock_pid"
       return 1
     fi
-    rm -f "$LOCK_FILE"      # 陈旧锁：持有者已死，接管
-  fi
-  if ! echo $$ > "$LOCK_FILE" 2>/dev/null; then
-    LOCK_SETUP_ERROR="锁文件不可写: $LOCK_FILE"
-    return 2
-  fi
-  LOCK_HELD=1
-  return 0
+    if ! rm -f "$LOCK_FILE" 2>/dev/null; then
+      LOCK_SETUP_ERROR="陈旧锁不可移除: $LOCK_FILE"
+      return 2
+    fi
+    # 陈旧锁已移除后回到 O_EXCL 获取点；若另一实例先抢到，本轮不会覆盖它。
+  done
 }
 
 set +e
@@ -587,6 +592,15 @@ if (( lock_rc == 2 )); then
 fi
 if (( lock_rc != 0 )); then
   log_terminal skip "skip — already-running: 另一个 backstop 补跑正持锁 lock_pid=$LOCK_PID_HELD_BY lock_file=$LOCK_FILE status=$status ($DATE)"
+  exit 0
+fi
+
+# 初次产物判断与拿锁之间，主跑可能刚好完成。成为唯一锁 owner 后必须重检，避免对
+# 已交付的产物再启动一次付费补跑。
+resolve_published_state "$SOCIAL_FILE"
+status="$PUBLISHED_STATUS"
+if ! should_rerun "$status"; then
+  log_terminal skip "skip — 拿锁后重检发现产物已达 pass，不启动补跑 lock_artifact_recheck=pass status=$status read_path=$PUBLISHED_READ_PATH ($DATE)"
   exit 0
 fi
 
@@ -673,6 +687,8 @@ case "$rc" in
   3)  log_terminal failed "FAILED — 重跑 exit 3 (intake 降级到测试 fixture，硬阻断)，当日无简报 attempt=$attempts_used/$RERUN_ATTEMPT_BUDGET exit_code=3 ($DATE)" ;;
   4)  log_terminal failed "FAILED — 重跑 exit 4 (gate 在最终文件上不收敛)，当日无简报 attempt=$attempts_used/$RERUN_ATTEMPT_BUDGET exit_code=4 ($DATE)" ;;
   5)  log_terminal failed "FAILED — 重跑 exit 5 (跨日去重账本不可用，不敢放行)，当日无简报 attempt=$attempts_used/$RERUN_ATTEMPT_BUDGET exit_code=5 ($DATE)" ;;
+  "$SHARED_BUDGET_BLOCKED_EXIT_CODE")
+      log_terminal failed "FAILED — 重跑 exit $SHARED_BUDGET_BLOCKED_EXIT_CODE (共享预算闸在 pipeline 启动前阻断)，当日无简报 attempt=$attempts_used/$RERUN_ATTEMPT_BUDGET reason=shared_budget_blocked exit_code=$SHARED_BUDGET_BLOCKED_EXIT_CODE ($DATE)" ;;
   "$DEADLINE_EXIT_CODE")
       log_terminal failed "FAILED — 重跑被 $DEADLINE_LABEL deadline 终止 (run_with_deadline)，当日无简报 attempt=$attempts_used/$RERUN_ATTEMPT_BUDGET reason=deadline_missed exit_code=$DEADLINE_EXIT_CODE ($DATE)" ;;
   *)  log_terminal failed "FAILED — 重跑 exit $rc (未知码，不在 pipeline 已定义集合 0-5/124 内)，当日无简报 attempt=$attempts_used/$RERUN_ATTEMPT_BUDGET exit_code=$rc ($DATE)" ;;

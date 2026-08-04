@@ -10,6 +10,10 @@
 #       把本脚本当硬门 —— 旧实现对 pending 无条件计 failure，于是**任何**无关的 write
 #       pipeline 都结构性失败，合法状态下 gate 无解（CADV-G4）。
 #       pending 必须可诊断（打印出来、带 pending_days）但不能让无关 gate 永久无解。
+#       **"已批准的 pending" 只认一种态：installed 文件缺失 且 探针确认未加载。**
+#       文件已存在 / job 仍在册 / 探针问不出来 → 一律 DRIFT（exit 1），否则
+#       「plist 已删、旧 job 仍驻留 launchd 继续跑」会被伪装成"已批准未安装"，
+#       让 post-change --write 放行（write gate fail-open，2026-08-04 R2 blocker）。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -19,12 +23,13 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # 生产调用不传该变量，行为不变。反证测试在 tests/test_verify_launchd_parity.py。
 MANIFEST="${AKB2_PARITY_MANIFEST:-$ROOT/launchd/INSTALL-MANIFEST.yaml}"
 
-python3 - "$ROOT" "$MANIFEST" <<'PY'
+# plist 解析走单一咽喉 src/akb2/common/plist_parse.py（本脚本两个解析点 +
+# scripts/lib/launchctl.sh 两个解析点共用同一注释策略；两套策略的后果见该模块首段）。
+# 咽喉不可导入 → python 侧 ImportError → 本脚本非 0 退出（fail-closed）。
+PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}" python3 - "$ROOT" "$MANIFEST" <<'PY'
 from __future__ import annotations
 
 import os
-import plistlib
-import re
 import subprocess
 import sys
 from copy import deepcopy
@@ -33,18 +38,11 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-
-
-def _strip_xml_comments(text: str) -> str:
-    return re.sub(r"<!--.*?-->", "", text, flags=re.S)
+from akb2.common.plist_parse import parse_plist_file, parse_plist_text
 
 
 def _load_plist(path: Path) -> dict[str, Any]:
-    text = path.read_text(encoding="utf-8")
-    try:
-        return plistlib.loads(text.encode("utf-8"))
-    except Exception:
-        return plistlib.loads(_strip_xml_comments(text).encode("utf-8"))
+    return parse_plist_file(path)
 
 
 def _normalize_string(value: str) -> str:
@@ -164,7 +162,9 @@ def _render_template(
     }
     for placeholder, replacement in replacements.items():
         text = text.replace(str(placeholder), replacement)
-    return plistlib.loads(text.encode("utf-8"))
+    # 同一咽喉：仓库模板与 installed plist 必须用同一注释策略，否则「模板解析失败
+    # 被 except 吞成 parse_error=DRIFT」而 installed 侧同一文件却解析得动。
+    return parse_plist_text(text)
 
 
 # 放行口不得进入**运行态**的 EnvironmentVariables —— 一旦进了，安装脚本的
@@ -197,14 +197,52 @@ def _escape_hatches_in(plist_dict: dict[str, Any]) -> list[str]:
     return [k for k in _ESCAPE_HATCH_ENV_KEYS if k in env]
 
 
-def _launchctl_loaded(label: str) -> bool:
-    proc = subprocess.run(
-        ["launchctl", "print", f"gui/{os.getuid()}/{label}"],
-        capture_output=True,
-        text=True,
-        check=False,
+# 单次 launchctl 探针的 wall-clock 上限（秒）。具名 + 与安装侧同一个 env 旋钮
+# （scripts/lib/launchctl.sh 的 AKB2_LAUNCHCTL_TIMEOUT_SEC），避免两侧各自漂移。
+# 为什么必须有：裸 `subprocess.run(["launchctl", ...])` 无上限，一次挂死的
+# `launchctl print` 就让 parity 永久悬挂；而 post-change-pipeline --write 把
+# parity 当硬门 —— 门不返回 = write 流程整体卡住，且没有任何超时留痕。
+_PROBE_TIMEOUT_RAW = os.environ.get("AKB2_LAUNCHCTL_TIMEOUT_SEC", "30")
+try:
+    LAUNCHCTL_PROBE_TIMEOUT_SEC = float(_PROBE_TIMEOUT_RAW)
+    if LAUNCHCTL_PROBE_TIMEOUT_SEC <= 0:
+        raise ValueError("上限必须为正数")
+except ValueError as _exc:
+    # 配置坏了不能退化成"没有上限"（那就回到了悬挂的老行为）——直接拒跑
+    print(
+        "check=launchd:config result=SCHEMA_INVALID "
+        f"reason=AKB2_LAUNCHCTL_TIMEOUT_SEC={_PROBE_TIMEOUT_RAW!r} 不是正数（{_exc}）"
     )
-    return proc.returncode == 0
+    print("summary drift_failures=1 expected_pending=0")
+    raise SystemExit(1) from None
+
+PROBE_LOADED = "loaded"
+PROBE_UNLOADED = "unloaded"
+PROBE_UNKNOWN = "unknown"
+
+
+def _probe_launchctl(label: str) -> str:
+    """探测 job 是否在册。返回 loaded / unloaded / unknown。
+
+    `unknown` 是**独立结果值**，不得折叠成 unloaded：「问不出来」与「确认未加载」
+    是两件事，把前者当后者正是 write gate fail-open 的形状（见下方 pending 分支）。
+    超时/异常一律走 unknown → 调用方判 DRIFT（fail-closed）。
+    """
+    try:
+        proc = subprocess.run(
+            ["launchctl", "print", f"gui/{os.getuid()}/{label}"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=LAUNCHCTL_PROBE_TIMEOUT_SEC,
+        )
+    except subprocess.TimeoutExpired:
+        # subprocess.run 在超时时已 kill 子进程并 reap，不留残余。
+        return PROBE_UNKNOWN
+    except OSError:
+        # launchctl 不存在 / 不可执行（非 macOS、PATH 异常）—— 同样是"问不出来"
+        return PROBE_UNKNOWN
+    return PROBE_LOADED if proc.returncode == 0 else PROBE_UNLOADED
 
 
 def _canonical_repo_root(path: Path) -> Path:
@@ -213,6 +251,34 @@ def _canonical_repo_root(path: Path) -> Path:
         idx = parts.index(".cindy-worktrees")
         return Path(*parts[:idx])
     return path
+
+
+def _ignore_env_keys(job: dict[str, Any]) -> set[str]:
+    """`ignore_installed_env_keys` 的唯一解析口 —— 每条抑制必须自带非空 reason。
+
+    为什么把 schema 做成 `{key, reason}` 而不是裸字符串列表 + 旁边写 YAML 注释：
+    抑制项是「明知不一致、决定不报」的例外，没有理由的例外下次没人敢删 → 成永久债。
+    键与理由物理不可分离时，「加了抑制却不写为什么」在数据层面就不成立；裸列表只能
+    靠测试兜，数据模型本身仍允许漂移。fail-closed：格式不合规 → 抛错，不静默忽略
+    （静默忽略等于把一条不该存在的抑制当成合法抑制放行）。
+    """
+    keys: set[str] = set()
+    for entry in job.get("ignore_installed_env_keys") or []:
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"{job['label']}: ignore_installed_env_keys 条目必须是 "
+                f"{{key, reason}} 映射，实际 {entry!r}"
+            )
+        key = str(entry.get("key", "")).strip()
+        reason = str(entry.get("reason", "")).strip()
+        if not key:
+            raise ValueError(f"{job['label']}: ignore_installed_env_keys 条目缺 key")
+        if not reason:
+            raise ValueError(
+                f"{job['label']}: 抑制 {key} 没写 reason —— 无理由的抑制会成永久债"
+            )
+        keys.add(key)
+    return keys
 
 
 def _installed_repo_root(installed_dict: dict[str, Any]) -> str:
@@ -261,6 +327,22 @@ EXPECTED_VAULT_ROOT_BASE = _normalize_string(str(defaults["vault_root_base"]))
 # 退出码语义见文件头
 PARITY_PENDING_EXIT_CODE = 3
 
+# ── manifest schema 先于任何探测校验（fail fast）──────────────────────────────
+# manifest 是本检查的输入契约：契约本身不合规时，逐 job 跑下去只会先打出一堆
+# 与真因无关的 job 行，真正的原因（某条抑制没写 reason）埋在末尾的 traceback 里。
+# 放在循环前一次校完 → 一行说清楚，且不会有"检查跑了一半"的中间态输出。
+_suppressions: dict[str, set[str]] = {}
+_schema_errors: list[str] = []
+for job in manifest["jobs"]:
+    try:
+        _suppressions[job["label"]] = _ignore_env_keys(job)
+    except ValueError as exc:
+        _schema_errors.append(str(exc))
+if _schema_errors:
+    print("check=launchd:manifest result=SCHEMA_INVALID reason=" + "; ".join(_schema_errors))
+    print(f"summary drift_failures={len(_schema_errors)} expected_pending=0")
+    raise SystemExit(1)
+
 failures = 0
 pending_only = 0
 today = date.today()
@@ -272,7 +354,7 @@ for job in manifest["jobs"]:
     installed_path = Path(job["installed"]).expanduser()
     pending = bool(job.get("pending_human_install", False))
     should_load = bool(job.get("should_load", False))
-    ignore_installed_env_keys = set(job.get("ignore_installed_env_keys", []))
+    ignore_installed_env_keys = _suppressions[label]
 
     file_status = "MATCH"
     result = "MATCH"
@@ -385,7 +467,26 @@ for job in manifest["jobs"]:
         result = "DRIFT"
         details.append(f"parse_error={exc}")
 
-    loaded = _launchctl_loaded(label)
+    # ── 运行态探测：真实结果始终进 loaded= 字段（pending 也不例外）─────────────
+    # 旧实现在 pending 分支无条件把 loaded_status 打成 "PENDING" 并保持
+    # EXPECTED_PENDING —— 于是「plist 已从 LaunchAgents 删掉、job 却仍驻留 launchd」
+    # 这个异常运行态被伪装成"已批准未安装"：parity 出 exit 3，post-change --write
+    # 把 3 当通过放行，而旧配置的 job 继续跑、继续花额度，且输出里连"它其实还在册"
+    # 都看不到（诊断字段被自己盖掉了）。已批准的 pending 必须可诊断，但只有
+    # 「文件缺失 **且** 确认未加载」这一种态才配得上"预期的未安装"。
+    probe = _probe_launchctl(label)
+    loaded_status = {
+        PROBE_LOADED: "YES",
+        PROBE_UNLOADED: "NO",
+        PROBE_UNKNOWN: "UNKNOWN",
+    }[probe]
+    if probe == PROBE_UNKNOWN:
+        result = "DRIFT"
+        details.append(
+            f"launchctl_probe_unknown=1 launchctl_timeout={LAUNCHCTL_PROBE_TIMEOUT_SEC}s"
+            " (探针问不出来 ≠ 未加载 → fail-closed)"
+        )
+
     if pending:
         pending_since_raw = job["pending_since"]
         if isinstance(pending_since_raw, date):
@@ -393,22 +494,33 @@ for job in manifest["jobs"]:
         else:
             pending_since = date.fromisoformat(str(pending_since_raw))
         pending_days = (today - pending_since).days
-        loaded_status = "PENDING"
         details.append(f"pending_days={pending_days}")
-        # pending 但**文件竟然存在** = 批准的前提已不成立（已被人装上却没更新 manifest）
-        # —— 那是真 DRIFT，不能继续按"已批准未安装"放过。
-        if result != "EXPECTED_PENDING":
+        # 判据用 file_status 而不是 result：result 已可能被上面的探针分支改成 DRIFT，
+        # 拿它当"文件是否存在"的证据会打出错误归因（文件明明不在却说 installed_exists）。
+        if file_status != "PENDING":
+            # pending 但**文件竟然存在** = 批准的前提已不成立（已被人装上却没更新 manifest）
             result = "DRIFT"
             details.append(
                 "pending_but_installed_exists (manifest 的 pending 登记已过期，需更新)"
             )
-    elif loaded:
-        loaded_status = "YES"
-    else:
-        loaded_status = "NO"
-        if should_load:
-            result = "DRIFT" if result == "MATCH" else result
-            details.append("installed_not_loaded")
+        elif probe == PROBE_LOADED:
+            # 文件缺失却仍在册：旧配置的 job 还在跑，是最需要被 write gate 拦住的态
+            result = "DRIFT"
+            details.append(
+                "pending_but_still_loaded (plist 未安装却仍在 launchd 注册："
+                "旧配置仍在跑 → 需 launchctl bootout 或补装后更新 manifest)"
+            )
+        elif probe == PROBE_UNKNOWN:
+            result = "DRIFT"          # 探针分支已置 DRIFT，这里补上归因
+            details.append(
+                "pending_but_load_state_unknown (无法确认未加载 → 不按已批准 pending 放过)"
+            )
+    elif should_load and probe != PROBE_LOADED:
+        result = "DRIFT" if result == "MATCH" else result
+        details.append(
+            "installed_not_loaded" if probe == PROBE_UNLOADED
+            else "installed_load_state_unknown"
+        )
 
     if installed_plist is not None:
         hatches = _escape_hatches_in(installed_plist)

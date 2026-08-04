@@ -6,6 +6,13 @@
 - 按 failure-signature.schema.json 格式写入 failures.jsonl。
 - 同签名的 count 累计；第 3 次出现时写入 escalation 标记行。
 - 返回值包含 count 与 escalated 标志，供调用方判断升级状态。
+
+SC-R2-11② 审计连带修复（2026-08-04）：
+    `failures.jsonl` 与 `quality-ledger.jsonl` 同住机器本地状态目录，且 `node`
+    字段会带上入库源 URL（`intake.extract.<url>`，URL 可能含 query 里的凭证样式
+    参数）。原先用普通 `open(path, "a")` → umask 022 下落成 0644。权限判据只有一个
+    owner：`loops.ledger.open_append_secure`（首次创建即 0600，已存在的更宽文件收紧），
+    本模块不自建第二份 chmod 逻辑。
 """
 
 from __future__ import annotations
@@ -13,6 +20,8 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+
+from .ledger import open_append_secure
 
 # ---------------------------------------------------------------------------
 # 具名常量
@@ -93,7 +102,7 @@ def record_failure(
     }
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(path, "a", encoding="utf-8") as fh:
+    with open_append_secure(path) as fh:
         fh.write(json.dumps(record, sort_keys=True, ensure_ascii=False) + "\n")
 
     escalated = new_count >= ESCALATION_THRESHOLD
@@ -112,7 +121,7 @@ def record_failure(
                 "reason": f"同一签名第 {new_count} 次出现，触发升级规则",
             },
         }
-        with open(path, "a", encoding="utf-8") as fh:
+        with open_append_secure(path) as fh:
             fh.write(json.dumps(escalation, sort_keys=True, ensure_ascii=False) + "\n")
 
     return {

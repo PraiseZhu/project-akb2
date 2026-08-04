@@ -290,3 +290,43 @@ step-2 量规外置正当升级 `skillpack/quality/rubric/10-dimensions.md`（�
 > `tests/briefing/github/test_pipeline_exit_codes.py::TestSynthesisModelRecordedInArtifact`
 > （两条均经变异验证：注入"永不输出该行"与"空值也写入"各自精确打红对应断言）。
 > 此处仅记录该缺口曾存在且已消除，防止日后误判「从未发生」。
+
+---
+
+## r2_allowed_residuals_2026_08_04（backstop / LLM / 配置）
+
+### A7-b — main/backstop 不共锁
+
+`backstop` 与 daily 主跑不共享同一把互斥锁。主跑（`daily_briefing.sh` /
+`daily_github_briefing.sh`）不持锁，backstop 侧仅有 `pgrep -f` 软守卫（其“全机器模糊匹配 +
+与 pipeline 启动之间无原子性”两项局限已在 `scripts/briefing_backstop.sh` 如实记录）。因此主跑
+耗时超过 07:30→08:00 的 30 分钟间隔时，存在 main×backstop 并发双跑、双花额度的窗口。
+
+本 PR 不修的理由：让主跑持硬锁会把“双花额度”风险替换成“主跑因锁残留/陈旧判定误判而完全
+不出简报”的风险，后者正是本 PR 所修事故的形态。真正的修法需要主跑侧的锁生命周期设计与独立
+测试矩阵，另 PR 处理。
+
+### A11 — 同步锁根只告警不拒跑
+
+锁目录落在跨机同步范围内时（`akb2_state_root_is_synced` 命中），backstop 只打印
+`lock_sync_risk=1` 并继续，不 fail-closed。生产默认配置下该分支不可达（实测
+`STATE_ROOT=~/Library/Application Support/akb2`，`is_synced=NO`），仅在显式覆盖
+`AKB2_STATE_ROOT` / `AKB2_BACKSTOP_LOCK_FILE` 指向同步目录时触发。“回落到机器本地目录”已经是
+默认行为；不改为拒跑的理由，是为一个非默认 env 覆盖关闭整个补跑安全网，代价高于收益。跨机
+互斥超出 PID 文件的能力边界（异机 PID 对 `kill -0` 无意义），需要共享租约机制，另议。
+
+### F14 — llm_router 的 SDK 层仍自动重试 429
+
+`llm_router` 在 provider 返回 429 后仍允许 SDK 层自动重试；已知被共享预算闸阻断的调用会在
+`record_budget_event` 生效前产生额外请求并额外消耗额度。接受理由：共享写闸在首击后会阻断后续
+consumer，且单个 consumer 调用内的 SDK 重试增量有界。本轮保留现状；若要把 fail-fast 扩展到
+SDK 内部尝试，需要另行调整 `llm_router` 的重试所有权与相应回归测试。
+
+### s5 — missing_policy 静默回落
+
+`config.py` 的 `missing_policy` 在取值非法或缺失时静默回落到默认值，未按宪法 P4（失败可见）
+明示。`config.py` 不在本 PR 改动集内，本轮不修。影响：配置写错时不报错，按默认行为运行且无告警。
+
+补充：非法值会静默落到两个取值里**较宽松的那个**（`partial_ok_recoverable`，见
+`src/akb2/feishu_sync/config.py:21,61-65`），因此运维想收紧成 `fail_all` 而拼错时，系统按更宽松
+模式运行且无任何告警。改动 `config.py` 的下一个 PR 应一并修掉，届时删除本条。

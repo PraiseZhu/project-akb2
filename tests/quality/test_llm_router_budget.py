@@ -6,6 +6,7 @@ import inspect
 import json
 import sys
 import textwrap
+import traceback
 import types
 
 import pytest
@@ -284,6 +285,98 @@ def test_provider_raw_text_is_redacted_before_ledger_and_exception(monkeypatch):
     state_text = budget_gate._state_path().read_text(encoding="utf-8")
     assert "sk-probe-secret-2026" not in state_text
     assert "User=zhuzan" not in state_text
+
+
+@pytest.mark.usefixtures("_isolate_quality_state")
+def test_traceback_chain_has_no_raw_provider_text(monkeypatch):
+    """SC-R2-11①：脱敏必须同时覆盖 str(err) 与 traceback 全链，不能只覆盖一条。
+
+    上一版代码公开文本已脱敏（用 diagnostics.raw_message 而非 str(exc)），但结尾
+    `from exc` 把**未脱敏的 provider 原始异常**留在 `__cause__` 里 ——
+    `traceback.format_exception()` 会把整条链打印出来。R2 对抗席用含伪凭证哨兵的
+    探针实测：`outer_secret=False` 但 `cause_secret=True` / `traceback_secret=True`。
+    只覆盖两条打印路径中的一条，那不叫脱敏。
+
+    哨兵串只在变量里出现一次，不写进任何会进 traceback 的源码行（否则打印出来的
+    源码行本身会把断言打红，那是假红）。
+    """
+    monkeypatch.setenv("AI_GATEWAY_API_KEY", "gw-test-key")
+    sentinel = "sk-" + "probe-traceback-2026"
+    sentinel_body = (
+        "ExceededBudget: User=zhuzan over budget. Spend=1.0, Budget=1.0 "
+        f"(auth used api_key={sentinel} via Bearer {sentinel})"
+    )
+
+    def _raise_429(**kwargs):
+        raise api_error(sentinel_body, status_code=429, body=sentinel_body)
+
+    api_error = _install_fake_openai(monkeypatch, _raise_429)
+
+    with pytest.raises(LLMProviderError) as excinfo:
+        route_llm(
+            "deepseek-v4-pro",
+            [{"role": "user", "content": "test"}],
+            budget_consumer="quality.distill",
+        )
+
+    err = excinfo.value
+    rendered = "".join(
+        traceback.format_exception(type(err), err, err.__traceback__)
+    )
+    assert sentinel not in rendered, (
+        "traceback 全链仍含未脱敏 provider 原文——公开文本脱敏而链上没脱敏等于没脱敏"
+    )
+    assert "User=zhuzan" not in rendered
+
+    # 结构性锁：链上不得再挂 provider 异常，且不许靠 __context__ 复活
+    # （`from None` 同时清 __cause__ 并置 __suppress_context__=True）。
+    assert err.__cause__ is None
+    assert err.__suppress_context__ is True
+
+    # 脱敏不能把诊断价值一起删掉：provider 异常类型名 + 结构化归因必须还在。
+    # 类型名是 runner._INFRA_ERROR_MARKERS 的判据之一（"BadRequestError" 归 infra）。
+    assert "_FakeAPIError" in str(err)
+    assert "error_type=budget_exceeded" in str(err)
+    assert "budget_scope=total" in str(err)
+
+
+def test_deepseek_direct_routes_do_not_leak_raw_provider_text(monkeypatch):
+    """SC-R2-11① 的审计连带面：两条 DeepSeek 直连路由此前把 `{exc}` 直接内插公开消息。
+
+    比被点名的 route_llm 那处更露（那处至少用了脱敏字段），所以一并收口：公开文本
+    与 traceback 全链都不得含哨兵，异常类型名保留。
+    """
+    monkeypatch.setenv("AI_GATEWAY_API_KEY", "gw-test-key")
+    monkeypatch.setenv("DEEPSEEK_BETA_API_KEY", "ds-beta-test-key")
+    sentinel = "sk-" + "probe-direct-2026"
+    sentinel_body = f"Error code: 400 - upstream rejected (api_key={sentinel})"
+
+    def _raise_400(**kwargs):
+        raise api_error(sentinel_body, status_code=400, body=sentinel_body)
+
+    api_error = _install_fake_openai(monkeypatch, _raise_400)
+
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+    for call in (
+        lambda: llm_router.route_deepseek_beta_tool(
+            [{"role": "user", "content": "test"}], schema
+        ),
+        lambda: llm_router.route_deepseek_json_object(
+            [{"role": "user", "content": "test"}]
+        ),
+    ):
+        with pytest.raises(LLMProviderError) as excinfo:
+            call()
+        err = excinfo.value
+        rendered = "".join(
+            traceback.format_exception(type(err), err, err.__traceback__)
+        )
+        assert sentinel not in str(err)
+        assert sentinel not in rendered
+        assert err.__cause__ is None
+        assert err.__suppress_context__ is True
+        # 上游 400 的 infra 指纹不能被脱敏顺手删掉（F39 重审判据）
+        assert "Error code: 400" in str(err)
 
 
 def test_redact_provider_text_is_idempotent_and_bounded():

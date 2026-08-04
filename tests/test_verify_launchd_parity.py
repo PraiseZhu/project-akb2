@@ -85,27 +85,82 @@ def _render(text: str, *, repo_root: Path, vault_root: str) -> bytes:
     )
 
 
-class _Harness:
-    """自造 manifest + 假 installed plist + stub launchctl 的隔离运行环境。"""
+# 假 launchctl：按 label 分别回答"是否在册"。
+#
+# 为什么必须**按 label**而不是一刀切 exit 0/113：SC-R2-04 要判的四态里有
+# 「pending 的 job 未装但仍在册」与「另一个 job 正常在册」共存的形态，一刀切的
+# stub 表达不出来 —— 而旧版正是 `exit 0`（全部在册）+ `_Harness(launchctl_loaded=True)`
+# 默认值，把 pending+loaded 这个异常态当成了 pending 用例的**期望环境**。
+_FAKE_LAUNCHCTL = r"""#!/usr/bin/env bash
+# 只认 `launchctl print gui/<uid>/<label>`：取末位参数的 label 段查 loaded 清单。
+for arg in "$@"; do last="$arg"; done
+label="${last##*/}"
+if [ -n "${FAKE_LAUNCHCTL_LOADED_FILE:-}" ] \
+   && [ -f "$FAKE_LAUNCHCTL_LOADED_FILE" ] \
+   && grep -qxF "$label" "$FAKE_LAUNCHCTL_LOADED_FILE"; then
+  exit 0
+fi
+echo "Could not find service \"$label\" in domain" >&2
+exit 113
+"""
 
-    def __init__(self, tmp_path: Path, *, launchctl_loaded: bool = True):
+# 挂死的假 launchctl：记录自身 pid 后 exec sleep（exec 让 pid 不变，
+# 于是"父被 kill、sleep 变孤儿"这种残余无法混进判定）。
+_HANG_LAUNCHCTL = r"""#!/usr/bin/env bash
+printf '%s\n' "$$" >> "${FAKE_LAUNCHCTL_PIDFILE:?FAKE_LAUNCHCTL_PIDFILE 未设}"
+exec sleep 600
+"""
+
+# 解析咽喉必须进假仓：parity 用 $ROOT/src 导入 akb2.common.plist_parse。
+_CHOKEPOINT_RELS = (
+    "src/akb2/__init__.py",
+    "src/akb2/common/__init__.py",
+    "src/akb2/common/plist_parse.py",
+)
+
+
+class _Harness:
+    """自造 manifest + 假 installed plist + stub launchctl 的隔离运行环境。
+
+    `loaded_labels=None` 时按 `launchctl_loaded` 兜全部 label（保持旧用例语义）；
+    传显式集合则逐 label 控制 —— pending 相关用例**必须**显式给出 loaded 态，
+    见 `_FAKE_LAUNCHCTL` 上方注释。
+    """
+
+    def __init__(
+        self,
+        tmp_path: Path,
+        *,
+        launchctl_loaded: bool = True,
+        loaded_labels: set[str] | None = None,
+        launchctl_hangs: bool = False,
+    ):
         self.tmp = tmp_path
         self.repo = tmp_path / "repo"
         (self.repo / "launchd").mkdir(parents=True)
         (self.repo / "scripts").mkdir(parents=True)
+        (self.repo / "src" / "akb2" / "common").mkdir(parents=True)
         # parity 脚本从 $0/.. 推 ROOT，所以脚本要住在假仓里
         (self.repo / "scripts" / "verify-launchd-parity.sh").write_text(
             PARITY_SH.read_text(encoding="utf-8"), encoding="utf-8"
         )
         (self.repo / "scripts" / "verify-launchd-parity.sh").chmod(0o755)
+        for rel in _CHOKEPOINT_RELS:
+            (self.repo / rel).write_text(
+                (REPO / rel).read_text(encoding="utf-8"), encoding="utf-8"
+            )
         self.installed_dir = tmp_path / "LaunchAgents"
         self.installed_dir.mkdir()
         self.bin = tmp_path / "bin"
         self.bin.mkdir()
         _write_executable(
             self.bin / "launchctl",
-            f"#!/usr/bin/env bash\nexit {0 if launchctl_loaded else 113}\n",
+            _HANG_LAUNCHCTL if launchctl_hangs else _FAKE_LAUNCHCTL,
         )
+        self.launchctl_loaded = launchctl_loaded
+        self.loaded_labels = loaded_labels
+        self.loaded_file = tmp_path / "launchctl-loaded-labels"
+        self.pidfile = tmp_path / "launchctl-hang-pids"
         self.jobs: list[dict[str, Any]] = []
 
     def add_job(
@@ -120,11 +175,16 @@ class _Harness:
         pending_since: str = "2026-07-30",
         installed_vault_root: str | None = None,
         installed_repo_root: Path | None = None,
+        template_comment: str | None = None,
+        ignore_env: list[Any] | None = None,
     ) -> None:
         template = self.repo / "launchd" / f"{label}.plist"
-        template.write_text(
-            _template_text(label, hours=template_hours), encoding="utf-8"
-        )
+        template_body = _template_text(label, hours=template_hours)
+        if template_comment is not None:
+            template_body = template_body.replace(
+                "<dict>\n", f"<!--\n{template_comment}\n-->\n<dict>\n", 1
+            )
+        template.write_text(template_body, encoding="utf-8")
         installed_path = self.installed_dir / f"{label}.plist"
         if installed_hours is not None:
             installed_path.write_bytes(
@@ -149,7 +209,14 @@ class _Harness:
         }
         if pending:
             job["pending_since"] = pending_since
+        if ignore_env is not None:
+            job["ignore_installed_env_keys"] = ignore_env
         self.jobs.append(job)
+
+    def _loaded_now(self) -> set[str]:
+        if self.loaded_labels is not None:
+            return set(self.loaded_labels)
+        return {job["label"] for job in self.jobs} if self.launchctl_loaded else set()
 
     def write_manifest(self) -> Path:
         import yaml
@@ -169,18 +236,34 @@ class _Harness:
         path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
         return path
 
-    def run(self) -> subprocess.CompletedProcess:
+    def run(self, *, timeout: float = 120, probe_timeout_sec: str | None = None):
         manifest = self.write_manifest()
+        self.loaded_file.write_text(
+            "".join(f"{label}\n" for label in sorted(self._loaded_now())),
+            encoding="utf-8",
+        )
         env = os.environ.copy()
         env["PATH"] = f"{self.bin}:{env['PATH']}"
         env["AKB2_PARITY_MANIFEST"] = str(manifest)
+        env["FAKE_LAUNCHCTL_LOADED_FILE"] = str(self.loaded_file)
+        env["FAKE_LAUNCHCTL_PIDFILE"] = str(self.pidfile)
+        if probe_timeout_sec is not None:
+            env["AKB2_LAUNCHCTL_TIMEOUT_SEC"] = probe_timeout_sec
         return subprocess.run(
             ["bash", str(self.repo / "scripts" / "verify-launchd-parity.sh")],
             capture_output=True,
             text=True,
             env=env,
-            timeout=120,
+            timeout=timeout,
         )
+
+    def hung_pids(self) -> list[int]:
+        if not self.pidfile.exists():
+            return []
+        return [
+            int(line) for line in self.pidfile.read_text(encoding="utf-8").split()
+            if line.strip()
+        ]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -318,7 +401,12 @@ def test_pending_does_not_block_write_gate(tmp_path: Path) -> None:
     都结构性失败，合法状态下 gate 无解（CADV-G4）。
     """
     # ① 只有已批准 pending → 专用码 3（可诊断但不判失败）
-    pending_only = _Harness(tmp_path / "pending-only")
+    #    loaded_labels 显式给：pending 的 job **必须确认未加载**才配得上"预期的未安装"。
+    #    旧版这里用 _Harness 的默认 launchctl_loaded=True（全部在册），于是断言的其实是
+    #    「plist 未装、job 仍驻留 → exit 3」，把 write gate fail-open 焊成了期望值。
+    pending_only = _Harness(
+        tmp_path / "pending-only", loaded_labels={"com.akb2.ok"}
+    )
     pending_only.add_job(
         "com.akb2.ok",
         template_hours=[(5, 30)],
@@ -357,7 +445,9 @@ def test_pending_does_not_block_write_gate(tmp_path: Path) -> None:
     assert "result=UNEXPECTED_MISSING" in missing.stdout, missing.stdout
 
     # ③ pending + 真 DRIFT 共存 → 仍 exit 1（pending 不掩盖真问题）
-    both = _Harness(tmp_path / "pending-plus-drift")
+    both = _Harness(
+        tmp_path / "pending-plus-drift", loaded_labels={"com.akb2.drifted"}
+    )
     both.add_job(
         "com.akb2.sentinel",
         template_hours=[(9, 0)],
@@ -375,6 +465,276 @@ def test_pending_does_not_block_write_gate(tmp_path: Path) -> None:
     mixed = both.run()
     assert mixed.returncode == EXIT_DRIFT, mixed.stdout
     assert "drift_failures=1 expected_pending=1" in mixed.stdout, mixed.stdout
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SC-R2-04 —— pending 分支必须保留真实 loaded 态：四态互斥，write gate 不被穿过
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.parametrize(
+    ("case", "installed", "loaded", "extra_drift", "expected_exit", "expected_reason"),
+    [
+        ("pending_unloaded", False, False, False, EXIT_EXPECTED_PENDING, "pending_human_install"),
+        ("pending_loaded", False, True, False, EXIT_DRIFT, "pending_but_still_loaded"),
+        ("pending_installed", True, False, False, EXIT_DRIFT, "pending_but_installed_exists"),
+        ("pending_plus_other_drift", False, False, True, EXIT_DRIFT, "schedule_drift"),
+    ],
+    ids=[
+        "pending+unloaded→3",
+        "pending+loaded→1",
+        "pending+installed→1",
+        "pending+其他drift→1",
+    ],
+)
+def test_pending_loaded_states_are_mutually_exclusive(
+    tmp_path: Path,
+    case: str,
+    installed: bool,
+    loaded: bool,
+    extra_drift: bool,
+    expected_exit: int,
+    expected_reason: str,
+) -> None:
+    """已批准的 pending 只有一种态配得上 exit 3：文件缺失 **且** 确认未加载。
+
+    R2 blocker（write gate fail-open）：旧实现算出了 `loaded = _launchctl_loaded(label)`
+    却在 pending 分支无条件 `loaded_status="PENDING"` 并保持 EXPECTED_PENDING —— 于是
+    「plist 已从 LaunchAgents 删掉、job 却仍驻留 launchd」这个异常运行态被伪装成
+    「已批准未安装」：parity 出 exit 3，post-change-pipeline --write 把 3 当通过放行，
+    而**旧配置的 job 继续按老参数跑、继续花额度**，输出里连"它其实还在册"都看不到
+    （唯一能报出这件事的诊断字段被自己盖掉了）。
+
+    这条在全量 3575 passed 下存活，因为 `_Harness.__init__` 默认
+    `launchctl_loaded=True` + 旧 `test_pending_does_not_block_write_gate`
+    正好断言了 pending+loaded → exit 3 —— 错语义被焊成了期望值。
+    所以四态必须**逐态**钉死，且 loaded 态一律显式给出。
+    """
+    harness = _Harness(
+        tmp_path / case,
+        loaded_labels=({"com.akb2.sentinel"} if loaded else set()),
+    )
+    harness.add_job(
+        "com.akb2.sentinel",
+        template_hours=[(9, 0)],
+        manifest_hours=[(9, 0)],
+        installed_hours=[(9, 0)] if installed else None,
+        should_load=False,
+        pending=True,
+    )
+    if extra_drift:
+        harness.add_job(
+            "com.akb2.drifted",
+            template_hours=[(11, 0)],
+            manifest_hours=[(11, 0)],
+            installed_hours=[(12, 5)],
+        )
+        harness.loaded_labels = {"com.akb2.drifted"}
+
+    result = harness.run()
+    combined = f"{result.stdout}\n{result.stderr}"
+
+    assert result.returncode == expected_exit, (
+        f"{case}: 期望 exit={expected_exit}，实际 {result.returncode}\n{combined}"
+    )
+    assert expected_reason in result.stdout, f"{case}: 缺归因 {expected_reason}\n{combined}"
+
+    sentinel_line = next(
+        ln for ln in result.stdout.splitlines() if "label=com.akb2.sentinel" in ln
+    )
+    # 真实 loaded 态必须留在输出里（诊断价值），不得被 "PENDING" 盖掉
+    assert "loaded=PENDING" not in sentinel_line, (
+        f"{case}: pending 分支又把真实 loaded 态盖成了 PENDING:\n{sentinel_line}"
+    )
+    assert f"loaded={'YES' if loaded else 'NO'}" in sentinel_line, sentinel_line
+    # pending 本身始终可诊断（不是静默放过 / 也不是丢掉登记信息）
+    assert "pending_days=" in sentinel_line, sentinel_line
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SC-R2-05 —— launchctl 探针必须有 wall-clock 上限，超时按 fail-closed 处理
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_launchctl_probe_is_wall_clock_bounded(tmp_path: Path) -> None:
+    """挂死的 launchctl（sleep 600）→ parity 在具名上限内非零返回，且不留残余子进程。
+
+    旧实现是裸 `subprocess.run(["launchctl", "print", ...])`，无 `timeout=`：
+    一次挂死的探针就让 parity 永不返回，而 post-change-pipeline --write 把 parity
+    当硬门 —— 门不返回 = 整条 write 流程无声悬挂，没有任何超时留痕。
+
+    「超时」还必须与「未加载」区分：静默当 false 正是 SC-R2-04 那个 fail-open 的形状
+    （问不出来 → 判"未加载" → pending 被当成已批准未安装 → exit 3 放行）。
+    所以超时走 DRIFT + 具名留痕。
+
+    subprocess 侧也给 timeout：没有上限时本用例会**挂住**而不是打红，
+    挂住的测试等于没有测试。
+    """
+    import time
+
+    harness = _Harness(tmp_path / "hang", launchctl_hangs=True)
+    harness.add_job(
+        "com.akb2.probe",
+        template_hours=[(5, 30)],
+        manifest_hours=[(5, 30)],
+        installed_hours=[(5, 30)],
+    )
+
+    wall_clock_budget_s = 60
+    started = time.monotonic()
+    try:
+        result = harness.run(timeout=wall_clock_budget_s, probe_timeout_sec="1")
+    except subprocess.TimeoutExpired as exc:
+        raise AssertionError(
+            f"launchctl 探针没有 wall-clock 上限：parity 在 {wall_clock_budget_s}s 内没返回"
+            f"（write gate 会无声悬挂）。stdout={exc.stdout!r}"
+        ) from exc
+    elapsed = time.monotonic() - started
+    combined = f"{result.stdout}\n{result.stderr}"
+
+    assert result.returncode == EXIT_DRIFT, f"超时没进 fail-closed:\n{combined}"
+    assert "launchctl_probe_unknown=1" in result.stdout, f"超时没具名留痕:\n{combined}"
+    assert "loaded=UNKNOWN" in result.stdout, (
+        f"超时被折叠成了 YES/NO（问不出来 ≠ 已知状态）:\n{combined}"
+    )
+    assert elapsed < wall_clock_budget_s, f"耗时 {elapsed:.1f}s"
+
+    # 非空过：stub 真的被调到了（否则"超时"可能只是别的原因）
+    pids = harness.hung_pids()
+    assert pids, f"挂死的 stub 一次都没被调用，用例证明不了上限:\n{combined}"
+    # 不留残余：subprocess.run 超时后应已 kill + reap 子进程
+    leftover = []
+    for pid in pids:
+        try:
+            os.kill(pid, 0)
+        except (ProcessLookupError, PermissionError):
+            continue
+        leftover.append(pid)
+    assert not leftover, f"超时后残留子进程未被回收: {leftover}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SC-R2-02 —— 带注释的模板不得被判成 parse_error（并吞掉该 job 的真实 diff）
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 真实成因样本：模板的文档注释里含裸 `--`（旗标名）。XML 规范禁注释内 `--`，
+# strict expat 拒解，但 plutil 与 launchd 自身的加载器都接受 —— 实测 launchd/ 下
+# 9 个模板 `plutil -lint` 全 OK。逐字取自 launchd/com.akb2.feishu-sync.plist。
+_BARE_DASH_COMMENT = (
+    "  feishu-briefing-sync 每日 10:00 调度（prod：发 XD WEB 群）。\n"
+    "  注意：本 plist 仅在 merge 部署后才 launchctl load；dev 期手动跑 wrapper"
+    "（默认 --target dm）。"
+)
+
+
+def test_commented_template_is_not_parse_error(tmp_path: Path) -> None:
+    """模板注释含裸 `--` → 不得出 parse_error，且该 job 的真实 diff 必须照常打印。
+
+    R2 blocker：`_load_plist`（读 installed）有剥注释回退，`_render_template`
+    （渲染仓库模板）是裸 plistlib —— 同一个文件在两处得出相反结论。于是
+    feishu-sync 被判 `DRIFT reason=parse_error=not well-formed (line 6, column 64)`，
+    整个 `_diff_dicts` 差异被 except 分支吞掉：drift_failures 计数虚高（4 而非真实的 3），
+    而该 job **真正**的排期/env 漂移一行都看不到 —— 一个专为「运行态与仓库不一致
+    且无人发现」而造的检测器，把自己要报的东西吞了。
+
+    断言绑两件可观测的事：① 没有 parse_error；② 真实 diff 被打出来。
+    只断 ① 会被"整条 job 静默跳过"骗过（那也没有 parse_error）。
+    """
+    harness = _Harness(tmp_path / "commented", loaded_labels={"com.akb2.commented"})
+    harness.add_job(
+        "com.akb2.commented",
+        template_hours=[(10, 0)],
+        manifest_hours=[(10, 0)],
+        installed_hours=[(12, 5)],          # 种一个真实漂移，必须被看见
+        template_comment=_BARE_DASH_COMMENT,
+    )
+
+    result = harness.run()
+    combined = f"{result.stdout}\n{result.stderr}"
+
+    line = next(
+        ln for ln in result.stdout.splitlines() if "label=com.akb2.commented" in ln
+    )
+    assert "parse_error" not in line, (
+        f"带注释的模板被判成解析失败（假 DRIFT，且真实 diff 被吞）:\n{line}"
+    )
+    # 真实漂移必须原样报出来：方向词 + 三方值 + 逐键 diff
+    assert result.returncode == EXIT_DRIFT, combined
+    assert "schedule_drift=installed_stale" in line, line
+    assert "StartCalendarInterval repo=" in line, (
+        f"真实 diff 又被 except 分支吞掉了:\n{line}"
+    )
+
+    # 反向守卫：真正不良构的模板仍必须被判 parse_error（别把咽喉做成"全放过"）
+    broken = _Harness(tmp_path / "broken", loaded_labels={"com.akb2.broken"})
+    broken.add_job(
+        "com.akb2.broken",
+        template_hours=[(10, 0)],
+        manifest_hours=[(10, 0)],
+        installed_hours=[(10, 0)],
+    )
+    template = broken.repo / "launchd" / "com.akb2.broken.plist"
+    template.write_text(
+        template.read_text(encoding="utf-8").replace("</dict>\n</plist>", ""),
+        encoding="utf-8",
+    )
+    broken_result = broken.run()
+    assert broken_result.returncode == EXIT_DRIFT, broken_result.stdout
+    assert "parse_error" in broken_result.stdout, (
+        f"真正不良构的模板被放行了（咽喉宽成了全放过）:\n{broken_result.stdout}"
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SC-R2-16 —— 抑制项缺 reason 时 parity 必须 fail-closed（数据侧断言见
+#             tests/test_launchd_manifest_suppressions.py）
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.parametrize(
+    ("case", "ignore_env"),
+    [
+        ("裸字符串列表（旧 schema）", ["AKB2_TRANSLATE_TIMEOUT"]),
+        ("reason 缺失", [{"key": "AKB2_TRANSLATE_TIMEOUT"}]),
+        ("reason 空白", [{"key": "AKB2_TRANSLATE_TIMEOUT", "reason": "   "}]),
+    ],
+    ids=["bare-string", "no-reason", "blank-reason"],
+)
+def test_parity_rejects_suppression_without_reason(
+    tmp_path: Path, case: str, ignore_env: list[Any]
+) -> None:
+    """无理由的抑制不得被当成合法抑制放行 —— 静默忽略等于默许永久债。"""
+    harness = _Harness(tmp_path / f"sup-{len(case)}", loaded_labels={"com.akb2.probe"})
+    harness.add_job(
+        "com.akb2.probe",
+        template_hours=[(5, 30)],
+        manifest_hours=[(5, 30)],
+        installed_hours=[(5, 30)],
+        ignore_env=ignore_env,
+    )
+    result = harness.run()
+    combined = f"{result.stdout}\n{result.stderr}"
+    assert result.returncode != 0, f"{case}: 无理由抑制被放行了:\n{combined}"
+    assert "reason" in combined, f"{case}: 拒绝了但没说清缺什么:\n{combined}"
+
+    # 反向守卫：带非空 reason 的抑制必须正常工作（抑制掉 installed 侧多出的键）
+    ok = _Harness(tmp_path / "sup-ok", loaded_labels={"com.akb2.probe"})
+    ok.add_job(
+        "com.akb2.probe",
+        template_hours=[(5, 30)],
+        manifest_hours=[(5, 30)],
+        installed_hours=[(5, 30)],
+        ignore_env=[{"key": "AKB2_EXTRA", "reason": "运行态多出的 no-op 键，理由见 manifest"}],
+    )
+    installed = ok.installed_dir / "com.akb2.probe.plist"
+    data = plistlib.loads(installed.read_bytes())
+    data["EnvironmentVariables"]["AKB2_EXTRA"] = "1"
+    installed.write_bytes(plistlib.dumps(data))
+    ok_result = ok.run()
+    assert ok_result.returncode == EXIT_MATCH, (
+        f"带 reason 的抑制没生效（installed 侧多出的键仍判 DRIFT）:\n"
+        f"{ok_result.stdout}{ok_result.stderr}"
+    )
 
 
 def test_post_change_pipeline_treats_pending_exit_code_as_pass() -> None:

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from akb2.common.plist_parse import parse_plist_file
 from src.akb2.quality.smoke_validator import (
     SmokeValidationError,
     validate_distill_failure,
@@ -720,6 +721,76 @@ def test_validate_source_ledger_rejects_generic_failed_error(tmp_path: Path) -> 
 
     with pytest.raises(SmokeValidationError, match="generic source error"):
         validate_source_ledger(ledger, config)
+
+
+def test_default_arguments_do_not_raise(tmp_path: Path) -> None:
+    """SC-R2-12：以全默认参数校验一个"运行态形态"的 plist 必须不抛。
+
+    owner 决策①「保持自动、配置对齐实际」的同一处漏项：`launchd/com.akb2.main-pipeline.plist`
+    与运行态 `~/Library/LaunchAgents/com.akb2.main-pipeline.plist` 都是
+    `AKB2_AUTO_PROMOTE=1`（= active），而 `--expected-mode` / `validate_launchd_static`
+    的默认值仍写 `proposal` —— 于是照文档跑全默认参数必定
+    `SmokeValidationError: launchd mode active != expected proposal`：
+    一个与管线好坏无关、纯配置错位的失败，运维读不出任何信息。
+
+    三条一起钉，缺一条都能让默认值再次漂走：
+      ① 函数默认（不传 expected_mode）不抛，且判出 active；
+      ② CLI 的 --expected-mode 默认值与函数默认值一致（两处默认不得各自漂移）；
+      ③ 前提自证：仓库模板确实是 AUTO_PROMOTE=1 —— 哪天模板改回 proposal 部署，
+         这条会打红，提醒把默认值一起改回去，而不是让默认值继续与现实脱钩。
+    """
+    import inspect
+
+    from src.akb2.quality import smoke_validator as sv
+
+    script = tmp_path / "akb2-main-pipeline.sh"
+    script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    os.chmod(script, 0o755)
+    plist = tmp_path / "com.akb2.main-pipeline.plist"
+    # 运行态形态：AKB2_AUTO_PROMOTE=1（与模板、与 ~/Library/LaunchAgents 实测一致）
+    _write_plist(
+        plist, script, tmp_path, tmp_path / "logs" / "runner.log", auto_promote="1"
+    )
+
+    # ① 函数默认
+    result = validate_launchd_static(plist)
+    assert result["passed"] is True
+    assert result["mode"] == "active"
+
+    # ② CLI 默认（只覆盖 --plist，其余全默认）
+    assert sv.main(["--mode", "launchd-static", "--plist", str(plist)]) == 0
+    assert (
+        inspect.signature(validate_launchd_static).parameters["expected_mode"].default
+        == sv.DEFAULT_EXPECTED_LAUNCHD_MODE
+    ), "函数默认与具名常量脱钩了"
+
+    # ③ 前提自证：仓库模板的部署模式就是 active
+    repo_template = Path(__file__).resolve().parents[2] / "launchd" / plist.name
+    template_env = parse_plist_file(repo_template).get("EnvironmentVariables") or {}
+    assert str(template_env.get("AKB2_AUTO_PROMOTE")) == "1", (
+        "仓库模板已不是 AUTO_PROMOTE=1 —— 默认 expected-mode 必须跟着改回 proposal，"
+        f"实际 env={dict(template_env)}"
+    )
+    assert sv.DEFAULT_EXPECTED_LAUNCHD_MODE == "active"
+
+    # 反向守卫：显式 proposal 仍必须拒 active plist（别把默认值改成"什么都放过"）
+    with pytest.raises(SmokeValidationError, match="mode active"):
+        validate_launchd_static(plist, expected_mode="proposal")
+
+
+def test_launchd_mode_helper_has_no_unused_context_param() -> None:
+    """SC-R2-12 后半：`_launchd_mode_from_env` 的 `context` 参数从未被使用，已移除。
+
+    未使用的必填关键字参数会让每个调用点都得编一个字符串出来 —— 读者以为它进了
+    错误消息（它没有），下一个人照抄时还会继续编。
+    """
+    import inspect
+
+    from src.akb2.quality.smoke_validator import _launchd_mode_from_env
+
+    params = inspect.signature(_launchd_mode_from_env).parameters
+    assert "context" not in params, f"context 参数又回来了: {list(params)}"
+    assert list(params) == ["env"], list(params)
 
 
 def test_validate_launchd_static_proposal(tmp_path: Path) -> None:
