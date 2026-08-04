@@ -23,10 +23,12 @@ L6-2「LLM 输出质量失败必须有界重生成」
 from __future__ import annotations
 
 import inspect
+import io
 import json
 import re
 from datetime import UTC, date, datetime
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 import pytest
 
@@ -777,3 +779,143 @@ class TestSynthesisModelRecordedInArtifact:
         assert rc == gh_pipeline.EXIT_DELIVERED, "缺模型字段不该让交付失败"
         head = vault.today_md.read_text(encoding="utf-8").split("---")[1]
         assert "synthesis_model:" not in head, "不得写出空的 synthesis_model 行"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SC-R1-09 —— 重生成 × 重试的预算对账（声明值 == 真实最坏值；族闩跨轮保持）
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# 这组测试**不 patch synthesize**：族闩和重试循环都在 synthesize 内部，patch 掉它
+# 就等于把要测的东西换走了（本文件其余用例 patch synthesize 是因为它们测 pipeline
+# 的分支判定，不测预算算术）。改打最底层的 urlopen 接缝。
+
+
+def _run_pipeline_counting_requests(tmp_path, monkeypatch, fallback_behaviour):
+    """跑真 synthesize（打 urlopen），返回 (每族请求数, rc, stdout, vault)。
+
+    Args:
+        fallback_behaviour: 备族第 n 次请求（1-based）该怎么应答的回调，
+            返回 None 表示抛 429 限流，返回 bytes 表示 200 响应体。
+    """
+    from akb2.briefing.github import synthesis as syn
+
+    vault = _Vault(tmp_path, monkeypatch)
+    monkeypatch.setenv("AKB2_STATE_ROOT", str(tmp_path / "state"))
+    monkeypatch.setenv("AI_GATEWAY_API_KEY", "gw-test-key")
+    monkeypatch.delenv(syn.FAMILY_FALLBACK_ENV, raising=False)
+    monkeypatch.setattr(syn, "_sleep", lambda _s: None)
+    syn.reset_family_latch()
+
+    seen: list[str] = []
+    fallback_hits = {"n": 0}
+
+    def fake_urlopen(req, timeout=None):
+        model = json.loads(req.data)["model"]
+        seen.append(model)
+        if model == syn.PRIMARY_SYNTHESIS_MODEL:
+            # 主族恒 429 限流（**不是**预算体：预算体首击即抛且不换族，测不到族闩）
+            raise HTTPError(
+                syn.DEEPSEEK_API_URL, 429, "HTTP 429", {},
+                io.BytesIO(b'{"error": {"message": "Too many requests"}}'),
+            )
+        fallback_hits["n"] += 1
+        body = fallback_behaviour(fallback_hits["n"])
+        if body is None:
+            raise HTTPError(
+                syn.DEEPSEEK_API_URL, 429, "HTTP 429", {},
+                io.BytesIO(b'{"error": {"message": "Too many requests"}}'),
+            )
+        return _FakeUrlopenResponse(body)
+
+    monkeypatch.setattr(syn, "urlopen", fake_urlopen)
+
+    with (
+        patch("akb2.briefing.github.pipeline._real_intake",
+              return_value=(_candidates(7), "layer2", {})),
+        patch("akb2.briefing.github.pipeline.enrich", side_effect=_enrich_ok),
+    ):
+        rc = run_pipeline(mock=False)
+
+    counts = {
+        syn.PRIMARY_SYNTHESIS_MODEL: seen.count(syn.PRIMARY_SYNTHESIS_MODEL),
+        syn.FALLBACK_SYNTHESIS_MODEL: seen.count(syn.FALLBACK_SYNTHESIS_MODEL),
+    }
+    return counts, rc, seen, vault
+
+
+class _FakeUrlopenResponse(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+
+_BAD_JSON_200 = b'{"choices": [{"message": {"content": "\\u62b1\\u6b49"}}]}'
+
+
+def test_regeneration_preserves_family_latch_and_budget_claim(
+    tmp_path, monkeypatch, capsys,
+):
+    """两条绑定，缺一条这条缺陷就能复发：
+
+    ① **族闩跨轮保持** —— 主族恒 429 时，整个重生成阶段主族总请求数恒为 MAX_RETRIES，
+       不随轮数放大。旧代码在 `synthesize()` 入口 `_unavailable_families.clear()`，
+       于是每轮重生成都复活判死的主族，实测 3 × MAX_RETRIES。
+    ② **声明预算 == 实测最坏** —— `MAX_LLM_REQUESTS_PER_RUN` 必须等于脚本化最坏路径
+       上真实发生的请求数。旧注释声明「最坏 6 次 LLM 调用」，R1 实测 36。
+    """
+    from akb2.briefing.github import synthesis as syn
+
+    # ── ① 族闩：备族每次都 200 但吐坏 JSON → 逐轮重生成，主族只在第一轮被打 ──
+    counts, rc, seen, vault = _run_pipeline_counting_requests(
+        tmp_path, monkeypatch, lambda _n: _BAD_JSON_200,
+    )
+    out = capsys.readouterr().out
+
+    assert counts[syn.PRIMARY_SYNTHESIS_MODEL] == syn.MAX_RETRIES, (
+        f"主族请求数随重生成轮数放大了（族闩被内层清掉）: {counts}\n序列={seen}"
+    )
+    # 重生成真的跑满了预算（否则上面的"不放大"可能只是因为没重生成）
+    assert _regen_lines(out) == [
+        ("1", str(gh_pipeline.MAX_SYNTHESIS_REGENERATIONS), "json_truncated"),
+        ("2", str(gh_pipeline.MAX_SYNTHESIS_REGENERATIONS), "json_truncated"),
+    ], out
+    # 备族每个调用点 1 次请求 × 6 个调用点
+    assert counts[syn.FALLBACK_SYNTHESIS_MODEL] == gh_pipeline.SYNTHESIS_CALL_POINTS_PER_RUN
+    assert rc == gh_pipeline.EXIT_NOT_DELIVERED
+    assert vault.written_files() == [], "重生成耗尽后仍必须 fail-closed 不写 vault"
+
+    # ── ② 声明预算 == 脚本化最坏路径的实测请求数 ──────────────────────────────
+    # 最坏形状：每个调用点都让**当前在用的那一族**把退避表用满后才 200
+    # （主族 MAX_RETRIES 次全败 → 判死换族；此后每个调用点备族 MAX_RETRIES-1 次
+    #  失败 + 第 MAX_RETRIES 次 200 吐坏 JSON）。
+    worst_counts, worst_rc, worst_seen, _vault2 = _run_pipeline_counting_requests(
+        tmp_path / "worst", monkeypatch,
+        lambda n: _BAD_JSON_200 if n % syn.MAX_RETRIES == 0 else None,
+    )
+    observed_total = sum(worst_counts.values())
+
+    assert gh_pipeline.MAX_LLM_REQUESTS_PER_RUN == observed_total, (
+        f"声明预算 {gh_pipeline.MAX_LLM_REQUESTS_PER_RUN} != 实测最坏 {observed_total}"
+        f"（{worst_counts}）—— 声明的预算必须等于真实可发生的最大请求数（宪法 P4）"
+    )
+    assert worst_counts[syn.PRIMARY_SYNTHESIS_MODEL] == syn.MAX_RETRIES
+    assert worst_rc == gh_pipeline.EXIT_NOT_DELIVERED
+    assert len(worst_seen) == observed_total
+
+
+def test_declared_llm_budget_is_derived_not_hardcoded():
+    """预算常量必须由退避表/轮数推导 —— 改任一项而不同步推导就打红。"""
+    from akb2.briefing.github import synthesis as syn
+
+    assert gh_pipeline.SYNTHESIS_CALL_POINTS_PER_RUN == (
+        (gh_pipeline.MAX_SYNTHESIS_REGENERATIONS + 1) * syn.SYNTHESIZE_CALL_POINTS
+    )
+    assert gh_pipeline.MAX_LLM_REQUESTS_PER_RUN == (
+        (gh_pipeline.SYNTHESIS_CALL_POINTS_PER_RUN + 1) * syn.MAX_RETRIES
+    )
+    assert syn.MAX_REQUESTS_PER_SYNTHESIZE == (
+        (syn.SYNTHESIZE_CALL_POINTS + 1) * syn.MAX_RETRIES
+    )

@@ -74,13 +74,76 @@ FALLBACK_SYNTHESIS_MODEL = _gateway_model_id("gemini-flash")
 # 读到 =1 就**直接从备族开始**（主族刚在第 1 轮打穿预算，再试一次纯属白烧）。
 FAMILY_FALLBACK_ENV = "AKB2_LLM_FAMILY_FALLBACK"
 
-# 本次 synthesize() 运行中已确认不可用的模型族。为什么需要记住：synthesize 的
-# JSON 重试分支会**再调用一次**合成，若不记账，刚被判定「预算耗尽」的主族会被原样
-# 再打一遍 —— 那正是本 lane 要消掉的「明知耗尽还硬试」，只是换了个位置复发。
-# 生命周期 = 单次 synthesize()（入口清空），不跨调用累积；跨**进程**协调不在此处。
-# 有这个闩后，单次 synthesize 的最坏请求数有界：
-#   主族 MAX_RETRIES 次（仅第一次）+ 备族 MAX_RETRIES 次 × 2 个调用点。
+# 共享预算闸里记「谁写下了这条封锁」。与 daily_github_briefing.sh preflight 的
+# `github_briefing_main`（读者标签）刻意不同名：排查时要能一眼分出
+# 「谁撞到 429 布的闸」和「谁被闸拦住」。
+BUDGET_GATE_CONSUMER = "github.synthesize"
+
+# 本次**运行**中已确认不可用的模型族。为什么需要记住：synthesize 的 JSON 重试分支会
+# 再调用一次合成，而 pipeline 的重生成循环还会把整个 synthesize 再调 2 次；不记账的话，
+# 刚被判死的主族会被原样再打一遍 —— 那正是本 lane 要消掉的「明知耗尽还硬试」换位复发。
+#
+# 生命周期 = **一次 pipeline 运行**，不是一次 synthesize()。
+# 此前入口 `_unavailable_families.clear()` 让重生成循环每轮都把闩清掉，于是判死的主族
+# 每轮重打一次（R1 审查 F8：闩在内层建、在外层被清，等于没建）。现在改为由调用方在
+# 进入重生成循环前显式调 `reset_family_latch()`，闩跨轮保持。
 _unavailable_families: set[str] = set()
+
+# ── 单次 synthesize() 的请求数上界（宪法 P4「预算显式」——声明值必须等于真实最坏值）──
+# 逐层推导（每一项都能在本文件里核对，不是估的）：
+#   `_call_deepseek` 单族最坏 = MAX_RETRIES 次请求（退避表用满）
+#   `_call_with_family_fallback` 单调用点最坏 = 主族 MAX_RETRIES + 备族 MAX_RETRIES
+#   `synthesize()` 有 2 个调用点（首次 + JSON 重试）
+# 族闩把「主族已判死」这条路径压窄：判死之后的调用点只打备族。故换族**最多发生一次**，
+# 于是 N 个调用点的总请求数 = (N + 1) × MAX_RETRIES —— 每个调用点打一族，
+# 外加发生族切换的那一个调用点多打一族。
+SYNTHESIZE_CALL_POINTS = 2
+MAX_REQUESTS_PER_CALL_POINT = 2 * MAX_RETRIES
+MAX_REQUESTS_PER_SYNTHESIZE = (SYNTHESIZE_CALL_POINTS + 1) * MAX_RETRIES
+
+
+def reset_family_latch() -> None:
+    """清空族可用性闩 —— 由**一次运行的起点**调用（pipeline 进入重生成循环前）。
+
+    刻意不在 synthesize() 入口清：那会让外层重生成循环每轮复活已判死的族。
+    """
+    _unavailable_families.clear()
+
+
+def _record_shared_budget_gate(
+    diagnosis: ProviderErrorDiagnosis, *, consumer: str, model_id: str
+) -> None:
+    """把预算耗尽写进跨进程共享闸 —— 先撞者为后续入口布闸（SC-R1-06）。
+
+    此前 briefing 两条主链只**读**共享闸（daily_*.sh 的 preflight），从不**写**：
+    事故路径上第一个撞到 429 的进程不留任何跨进程状态，后面每个入口都得自己再撞一次
+    HTTP 才知道额度没了。生产里唯一的写入方是 quality runner —— 而 briefing 恰好是
+    在它之外单独跑的那条链。
+
+    惰性 import：budget_gate 属 common 层，本模块已通过 llm_router 间接依赖它；
+    在函数内 import 既避免任何未来的 import 环，也让测试可以单独打这一个接缝。
+    写闸失败必须可见但**不得**掩盖 provider 错误 —— 后者才是本次调用的主因。
+    """
+    try:
+        from akb2.common.budget_gate import BudgetDiagnostics, record_budget_event
+
+        record_budget_event(
+            BudgetDiagnostics(
+                error_type=diagnosis.error_type,
+                budget_scope=diagnosis.budget_scope,
+                spend=diagnosis.spend,
+                cap=diagnosis.cap,
+                budget_date=diagnosis.budget_date,
+                provider_code=str(diagnosis.provider_code),
+                raw_message=diagnosis.raw_excerpt,
+            ),
+            consumer=consumer,
+        )
+    except Exception as exc:  # noqa: BLE001 — 布闸失败不得吞掉 provider 真因
+        sys.stderr.write(
+            f"WARNING: 共享预算闸写入失败（model={model_id}）: "
+            f"{type(exc).__name__}: {exc}\n"
+        )
 
 # ── 输出预算（宪法 P4「预算显式」+ P1「有界自动化」）─────────────────────────────
 # 2026-07-21/24/27 三次生产失败（logs/github-briefing-stdout.log:421/457/493）的真因
@@ -152,16 +215,27 @@ class SynthesisAPIError(RuntimeError):
         return self.diagnosis.error_type if self.diagnosis else "other"
 
     @property
+    def budget_scope(self) -> str:
+        return self.diagnosis.budget_scope if self.diagnosis else ""
+
+    @property
     def family_fallback_worthwhile(self) -> bool:
         """换模型族还有意义吗。
 
-        预算耗尽（共享账户额度打穿）与重试耗尽（该族持续限流/故障）都属「这一族现在
-        不可用」，换族有效。非可重试硬错（401/403/400）是**配置/鉴权**问题，
-        换族只会在另一族上原样再错一次 —— 不换，立即抛。
+        **预算耗尽 → 不换族**（R1 审查 F13/CADV-A10 纠正了本模块此前的立论）：
+        事故响应体是 `User=zhuzan exceeded UTC daily cap`，额度是**账户级**的，而主族
+        `deepseek/deepseek-v4-pro` 与备族 `gemini-3.5-flash` 都经同一个 _GATEWAY_BASE
+        + 同一个 AI_GATEWAY_API_KEY 出去（llm_router._MODEL_CONFIG 的
+        gateway_model_id_default 只换 model id，不换 user/endpoint）。同一 user 的
+        额度打穿时换族拿不回额度，只是把一次**确定失败**的请求再发一遍。
+        「gemini 支持 json_object 已真机探针确认」证明的是格式兼容，不是备族有额度。
+
+        换族确有价值的是**单族级故障**：持续限流 / 5xx / 超时 → `exhausted=True`。
+        非可重试硬错（401/403/400）是配置/鉴权问题，换族只会原样再错一次 —— 不换。
         """
-        if self.exhausted:
-            return True
-        return bool(self.diagnosis and self.diagnosis.is_budget_exceeded)
+        if self.diagnosis is not None and self.diagnosis.is_budget_exceeded:
+            return False
+        return self.exhausted
 
 
 def _sleep(seconds: float) -> None:
@@ -319,11 +393,18 @@ def _call_deepseek(prompt: str, api_key: str | None = None,
             # 和错误体全丢了 —— 于是 401 和 429 走同一条路，预算耗尽也照样烧满重试。
             diagnosis = classify_provider_error(e.code, _read_error_body(e))
             if diagnosis.is_budget_exceeded:
-                # 额度不会因为等待回来：退避 0 次，5s 内报出真因（L1-2）
+                # 额度不会因为等待回来：退避 0 次，5s 内报出真因（L1-2）。
+                # 首击即为后续入口布共享闸（SC-R1-06）——本进程之后的每个消费者
+                # 都能在 HTTP 之前短路，不用各自再撞一次。
+                _record_shared_budget_gate(
+                    diagnosis, consumer=BUDGET_GATE_CONSUMER, model_id=model_id
+                )
                 raise SynthesisAPIError(
-                    f"synthesis fail-fast: 预算耗尽，重试无用 → 不退避不重试"
+                    f"synthesis fail-fast: 预算耗尽，重试无用 → 不退避不重试不换族"
                     f"（{diagnosis.summary()} model={model_id}）。"
-                    f"补救只有换模型族或等额度重置；本次已跳过全部 {MAX_RETRIES - 1} 次退避。",
+                    f"账户级额度打穿时换族无效（主备同 Gateway 同 key 同 user）；"
+                    f"补救只有等额度重置到具名边界。"
+                    f"本次已跳过全部 {MAX_RETRIES - 1} 次退避与备族尝试。",
                     diagnosis=diagnosis, model=model_id,
                 ) from e
             if not diagnosis.retryable:
@@ -572,9 +653,8 @@ def synthesize(repos: list[dict[str, Any]], api_key: str | None = None,
             f"超出即必然撞顶被截断。要提高条数必须同步重算输出预算。"
         )
 
-    # 每次 synthesize 从干净的族可用性账本开始（闩只在本次调用内有效）
-    _unavailable_families.clear()
-
+    # 注意：**不在这里清族闩**。闩的生命周期是一次 pipeline 运行（含重生成循环），
+    # 由调用方 `reset_family_latch()` 划界 —— 在这里清会让外层每轮重生成复活判死的族。
     response, model_used = _call_with_family_fallback(prompt, api_key, allow_mock=mock)
     if response is None:
         raise RuntimeError("DeepSeek API returned no response")

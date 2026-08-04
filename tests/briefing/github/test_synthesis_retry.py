@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import io
 import json
 import time
@@ -372,39 +373,9 @@ class TestBackoffJitter:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestModelFamilyFallback:
-    def test_primary_budget_exhausted_falls_back_to_second_family(
-        self, monkeypatch, sleeps, no_family_fallback_env, capsys,
-    ):
-        """SC-6：主族恒 429、备族返回合法数组 → 简报照常产出，且降级可见。
-
-        修复前 briefing 侧零降级余量：单点模型故障 = 当日简报 100% 缺失。
-        而预算耗尽时退避完全无效，换族是**唯一**有效补救。
-        """
-        repos = _repos(10)
-        seen_models: list[str] = []
-
-        def fake_urlopen(req, timeout=None):
-            model = json.loads(req.data)["model"]
-            seen_models.append(model)
-            if model == syn.PRIMARY_SYNTHESIS_MODEL:
-                raise _http_error(429, BUDGET_BODY_UTC_DAILY)
-            return _FakeResponse(_valid_items_payload(repos))
-
-        monkeypatch.setattr(syn, "urlopen", fake_urlopen)
-
-        result = syn.synthesize(repos, api_key="k")
-
-        assert len(result["top_repos"]) == 10
-        assert result["synthesis_model"] == syn.FALLBACK_SYNTHESIS_MODEL, (
-            "产出没记下实际使用的模型 → 降级变成静默降级（宪法 P4 禁止）"
-        )
-        assert seen_models == [syn.PRIMARY_SYNTHESIS_MODEL, syn.FALLBACK_SYNTHESIS_MODEL], (
-            f"预算耗尽应只试主族 1 次就换族，实际请求序列: {seen_models}"
-        )
-        out = capsys.readouterr().out
-        assert "SYNTHESIS_FALLBACK" in out, "降级没有 stdout 可见行"
-        assert f"model={syn.FALLBACK_SYNTHESIS_MODEL}" in out
-        assert "reason=budget_exceeded" in out
+    # 「主族预算耗尽 → 换族」这条旧用例已随 SC-R1-08 删除：账户级额度打穿时主备族
+    # 共用同一 Gateway/key/user，换族拿不回额度。取而代之的是模块级
+    # `test_budget_exceeded_does_not_burn_fallback_family`（断言备族**零请求**）。
 
     def test_fallback_also_triggers_after_retry_exhaustion(
         self, monkeypatch, sleeps, no_family_fallback_env, capsys,
@@ -452,13 +423,15 @@ class TestModelFamilyFallback:
     def test_both_families_down_is_fail_closed_with_both_causes_visible(
         self, monkeypatch, sleeps, no_family_fallback_env,
     ):
-        """两族都挂 → 抛错（fail-closed，P3），且两族真因都在文案里（P4）。"""
+        """两族都挂 → 抛错（fail-closed，P3），且两族真因都在文案里（P4）。
+
+        两族都用**限流**体：换族只在「单族级故障」时才发生（SC-R1-08），
+        用预算体喂主族的话备族根本不会被试，这条用例就测不到"两族都挂"。
+        """
         repos = _repos(10)
 
         def fake_urlopen(req, timeout=None):
-            model = json.loads(req.data)["model"]
-            body = BUDGET_BODY_TOTAL if model == syn.PRIMARY_SYNTHESIS_MODEL else RATE_LIMIT_BODY
-            raise _http_error(429, body)
+            raise _http_error(429, RATE_LIMIT_BODY)
 
         monkeypatch.setattr(syn, "urlopen", fake_urlopen)
 
@@ -469,7 +442,7 @@ class TestModelFamilyFallback:
         assert "两个模型族均失败" in msg
         assert syn.PRIMARY_SYNTHESIS_MODEL in msg
         assert syn.FALLBACK_SYNTHESIS_MODEL in msg
-        assert "budget_exceeded" in msg, "主族真因（预算耗尽）不可见"
+        assert "error_type=rate_limit" in msg, "备族真因不可见"
 
     def test_env_flag_starts_from_fallback_family_with_zero_primary_calls(
         self, monkeypatch, sleeps, capsys,
@@ -501,11 +474,11 @@ class TestModelFamilyFallback:
     def test_json_retry_does_not_re_hit_a_family_proven_dead(
         self, monkeypatch, sleeps, no_family_fallback_env, capsys,
     ):
-        """主族已判定预算耗尽后，JSON 重试分支**不得**再打主族一次。
+        """主族已判死后，JSON 重试分支**不得**再打主族一次。
 
-        这是「明知耗尽还硬试」的换位复发：`synthesize()` 的 JSON 重试会二次调用合成，
-        若不记账，刚死的主族会被原样再打一遍 —— 白烧一次请求，且在共享 Gateway 上
-        把别的链路的额度一起拖下水。
+        这是「明知不可用还硬试」的换位复发：`synthesize()` 的 JSON 重试会二次调用合成，
+        若不记账，刚死的主族会被原样再打一整轮 —— 白烧 MAX_RETRIES 次请求，且在共享
+        Gateway 上把别的链路的额度一起拖下水。
         """
         repos = _repos(10)
         seen_models: list[str] = []
@@ -518,7 +491,7 @@ class TestModelFamilyFallback:
             model = json.loads(req.data)["model"]
             seen_models.append(model)
             if model == syn.PRIMARY_SYNTHESIS_MODEL:
-                raise _http_error(429, BUDGET_BODY_TOTAL)
+                raise _http_error(429, RATE_LIMIT_BODY)
             return _FakeResponse(fallback_bodies.pop(0))
 
         monkeypatch.setattr(syn, "urlopen", fake_urlopen)
@@ -526,15 +499,20 @@ class TestModelFamilyFallback:
         result = syn.synthesize(repos, api_key="k")
 
         assert len(result["top_repos"]) == 10
-        assert seen_models.count(syn.PRIMARY_SYNTHESIS_MODEL) == 1, (
-            f"主族已判定预算耗尽却被重试分支再打了一次，请求序列: {seen_models}"
+        assert seen_models.count(syn.PRIMARY_SYNTHESIS_MODEL) == syn.MAX_RETRIES, (
+            f"主族已判死却被重试分支再打了一轮，请求序列: {seen_models}"
         )
         assert "reason=primary_already_known_unavailable" in capsys.readouterr().out
 
-    def test_family_ledger_is_reset_between_synthesize_calls(
+    def test_family_latch_survives_synthesize_until_explicitly_reset(
         self, monkeypatch, sleeps, no_family_fallback_env,
     ):
-        """闩的生命周期是单次 synthesize —— 否则第二次调用会永久跳过主族。"""
+        """闩的生命周期是**一次运行**（含 pipeline 重生成循环），不是一次 synthesize。
+
+        SC-R1-09：此前 `synthesize()` 入口 `_unavailable_families.clear()` 让外层每轮
+        重生成都复活判死的主族 —— 闩在内层建、在外层被清，等于没建。
+        现在只有显式 `reset_family_latch()` 才划新的一次运行。
+        """
         repos = _repos(10)
         syn._unavailable_families.add(syn.PRIMARY_SYNTHESIS_MODEL)
         seen_models: list[str] = []
@@ -545,12 +523,20 @@ class TestModelFamilyFallback:
 
         monkeypatch.setattr(syn, "urlopen", fake_urlopen)
 
-        result = syn.synthesize(repos, api_key="k")
-
-        assert seen_models == [syn.PRIMARY_SYNTHESIS_MODEL], (
-            f"上一次运行的族账本泄漏到本次: {seen_models}"
+        first = syn.synthesize(repos, api_key="k")
+        assert seen_models == [syn.FALLBACK_SYNTHESIS_MODEL], (
+            f"synthesize 又在入口把闩清了（判死的族被复活）: {seen_models}"
         )
-        assert result["synthesis_model"] == syn.PRIMARY_SYNTHESIS_MODEL
+        assert first["synthesis_model"] == syn.FALLBACK_SYNTHESIS_MODEL
+
+        # 显式划界后，新一次运行从主族重新开始
+        syn.reset_family_latch()
+        seen_models.clear()
+        second = syn.synthesize(repos, api_key="k")
+        assert seen_models == [syn.PRIMARY_SYNTHESIS_MODEL], (
+            f"reset_family_latch 没有真的清闩: {seen_models}"
+        )
+        assert second["synthesis_model"] == syn.PRIMARY_SYNTHESIS_MODEL
 
     def test_happy_path_records_primary_model(
         self, monkeypatch, no_family_fallback_env,
@@ -671,3 +657,113 @@ class TestCallLayerHelpers:
         assert slept == []
         syn._sleep(0.01)
         assert slept == [0.01]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SC-R1-06 / SC-R1-08 —— briefing 主链是共享闸的**生产者**；账户级预算不换族
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_budget_429_writes_shared_gate(
+    monkeypatch, tmp_path, sleeps, no_family_fallback_env,
+):
+    """github 主链撞到预算 429 → 必须写共享闸，使后续入口在 HTTP 前短路。
+
+    此前两条 briefing 主链只**读**共享闸（daily_*.sh 的 preflight），从不写：
+    事故路径上第一个撞 429 的进程不留任何跨进程状态，后面每个消费者都得自己再撞一次。
+    生产里唯一写入方是 quality runner —— 而 briefing 正是在它之外单独跑的那条链。
+    """
+    from akb2.common import budget_gate
+
+    monkeypatch.setenv("AKB2_STATE_ROOT", str(tmp_path / "state"))
+    repos = _repos(10)
+    seen_models: list[str] = []
+
+    def fake_urlopen(req, timeout=None):
+        seen_models.append(json.loads(req.data)["model"])
+        raise _http_error(429, BUDGET_BODY_UTC_DAILY)
+
+    monkeypatch.setattr(syn, "urlopen", fake_urlopen)
+
+    with pytest.raises(syn.SynthesisAPIError, match="预算耗尽"):
+        syn.synthesize(repos, api_key="k")
+
+    state = budget_gate.load_state_snapshot()
+    block = state["active_block"]
+    assert block is not None, "撞到预算 429 却没给后续入口布闸"
+    assert block["error_type"] == budget_gate.BUDGET_EXCEEDED
+    assert block["budget_scope"] == budget_gate.UTC_DAILY_SCOPE
+    assert block["consumer"] == syn.BUDGET_GATE_CONSUMER
+    assert block["budget_date"] == "2026-08-01"
+
+    # 后续入口（任何 consumer）在 HTTP 之前就被短路
+    decision = budget_gate.query_budget_gate(
+        now=dt.datetime(2026, 8, 1, 23, 30, tzinfo=dt.UTC),
+        consumer="quality.distill",
+    )
+    assert decision.allowed is False
+    assert decision.reason == "utc_daily_budget_exhausted"
+
+    # 首击即停：主族 1 次请求，零退避
+    assert seen_models == [syn.PRIMARY_SYNTHESIS_MODEL], f"请求序列: {seen_models}"
+    assert sleeps == []
+
+
+def test_budget_exceeded_does_not_burn_fallback_family(
+    monkeypatch, tmp_path, sleeps, no_family_fallback_env, capsys,
+):
+    """账户级预算耗尽 → 备族**零请求**，且异常携带 budget 诊断字段。
+
+    R1 审查 F13/CADV-A10：事故响应体是 `User=… exceeded UTC daily cap`，额度是账户级；
+    主族 deepseek 与备族 gemini 都经同一 _GATEWAY_BASE + 同一 AI_GATEWAY_API_KEY 出去
+    （llm_router 只换 model id，不换 user/endpoint）。换族只是把一次确定失败的请求再发
+    一遍，还会在共享 Gateway 上多占一次并发。
+    """
+    monkeypatch.setenv("AKB2_STATE_ROOT", str(tmp_path / "state"))
+    repos = _repos(10)
+    seen_models: list[str] = []
+
+    def fake_urlopen(req, timeout=None):
+        seen_models.append(json.loads(req.data)["model"])
+        raise _http_error(429, BUDGET_BODY_TOTAL)
+
+    monkeypatch.setattr(syn, "urlopen", fake_urlopen)
+
+    with pytest.raises(syn.SynthesisAPIError) as exc:
+        syn.synthesize(repos, api_key="k")
+
+    assert syn.FALLBACK_SYNTHESIS_MODEL not in seen_models, (
+        f"账户级预算耗尽仍去烧了备族: {seen_models}"
+    )
+    assert seen_models == [syn.PRIMARY_SYNTHESIS_MODEL]
+    assert "SYNTHESIS_FALLBACK" not in capsys.readouterr().out
+
+    # 异常携带 budget 诊断字段（告警据此说"等到什么时候"）
+    err = exc.value
+    assert err.error_type == http_retry.ERROR_TYPE_BUDGET_EXCEEDED
+    assert err.budget_scope == http_retry.BUDGET_SCOPE_TOTAL
+    assert err.diagnosis is not None
+    assert err.diagnosis.cap == 18000.0
+    assert err.family_fallback_worthwhile is False
+    assert "不换族" in str(err)
+
+
+def test_retry_exhaustion_still_worth_a_family_switch():
+    """反向守卫：单族级故障（重试耗尽）仍必须换族，否则 SC-R1-08 修成了"永不降级"。"""
+    exhausted = syn.SynthesisAPIError(
+        "boom",
+        diagnosis=http_retry.classify_provider_error(429, RATE_LIMIT_BODY),
+        model=syn.PRIMARY_SYNTHESIS_MODEL,
+        exhausted=True,
+    )
+    assert exhausted.family_fallback_worthwhile is True
+
+    budget = syn.SynthesisAPIError(
+        "boom",
+        diagnosis=http_retry.classify_provider_error(429, BUDGET_BODY_TOTAL),
+        model=syn.PRIMARY_SYNTHESIS_MODEL,
+        exhausted=True,
+    )
+    assert budget.family_fallback_worthwhile is False, (
+        "预算耗尽即使 exhausted=True 也不得换族（账户级额度）"
+    )

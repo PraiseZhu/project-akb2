@@ -74,6 +74,66 @@ _RE_TOTAL_CAP = re.compile(r"\bBudget\s*=\s*([0-9]+(?:\.[0-9]+)?)", re.IGNORECAS
 _RE_SPEND = re.compile(r"\bSpend\s*=\s*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE)
 _RE_DATE = re.compile(r"\bDate\s*=\s*(\d{4}-\d{2}-\d{2})")
 
+# ---------------------------------------------------------------------------
+# provider 原文脱敏（加固清单第 9 类 / 宪法 P4 —— 「失败可见」不等于「原文落盘」）
+# ---------------------------------------------------------------------------
+# R1 审查实测：把 `sk-probe-secret` 塞进 provider body/message/异常文本后，
+# `quality-ledger.jsonl` 与 `shared-budget-gate.json` 都出现 `contains_secret=True`。
+# 429 原文的**诊断价值**全在结构化字段里（error_type/budget_scope/spend/cap/
+# budget_date），原文只是给人读一眼的上下文 —— 所以原文进异常/日志/状态文件前
+# 一律经本函数：凭证样式与账户身份掩码 + 截断，分类字段一个不动。
+PROVIDER_TEXT_MAX_CHARS: int = 200
+REDACTED_PLACEHOLDER = "<redacted>"
+_TRUNCATION_MARKER = "…<truncated>"
+
+_REDACT_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
+    # 凭证样式（前缀保留，便于判断"是哪类 key 泄了"，值不留）
+    (re.compile(r"sk-[A-Za-z0-9_\-]{3,}"), f"sk-{REDACTED_PLACEHOLDER}"),
+    (re.compile(r"ghp_[A-Za-z0-9_\-]{3,}"), f"ghp_{REDACTED_PLACEHOLDER}"),
+    (re.compile(r"github_pat_[A-Za-z0-9_\-]{3,}"), f"github_pat_{REDACTED_PLACEHOLDER}"),
+    (re.compile(r"AIza[A-Za-z0-9_\-]{3,}"), f"AIza{REDACTED_PLACEHOLDER}"),
+    (re.compile(r"xox[baprs]-[A-Za-z0-9\-]{3,}", re.IGNORECASE), f"xox{REDACTED_PLACEHOLDER}"),
+    (re.compile(r"Bearer\s+\S+", re.IGNORECASE), f"Bearer {REDACTED_PLACEHOLDER}"),
+    (
+        re.compile(
+            r"\b(api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password|passwd)\b"
+            r"\s*[=:]\s*\"?[^\s,;)\]}\"']+\"?",
+            re.IGNORECASE,
+        ),
+        rf"\1={REDACTED_PLACEHOLDER}",
+    ),
+    # 账户身份：Gateway 的预算 429 原文形如 `User=zhuzan over budget. …`
+    # ——「谁打穿了额度」对排查无增量（本机只有一个账户），但它是 PII，不落盘。
+    (
+        re.compile(r"\bUser\s*=\s*\"?[^\s,;)\]}\"']+\"?", re.IGNORECASE),
+        f"User={REDACTED_PLACEHOLDER}",
+    ),
+)
+
+
+def redact_provider_text(text: str | bytes | None, *, limit: int | None = None) -> str:
+    """把 provider 原文脱敏并截断，供落盘/日志/异常文本统一使用。
+
+    幂等：对已脱敏文本再调用一次结果不变（掩码后的字面量不再匹配任何规则）。
+
+    Args:
+        text: provider 响应体 / 异常文本，可为 bytes / str / None。
+        limit: 截断上限，默认 `PROVIDER_TEXT_MAX_CHARS`。
+
+    Returns:
+        脱敏后的单行片段；超长时尾部带 `…<truncated>` 明示被截（不静默丢）。
+    """
+    if isinstance(text, bytes):
+        raw = text.decode("utf-8", errors="replace")
+    else:
+        raw = text or ""
+    for pattern, replacement in _REDACT_RULES:
+        raw = pattern.sub(replacement, raw)
+    max_chars = PROVIDER_TEXT_MAX_CHARS if limit is None else limit
+    if len(raw) > max_chars:
+        return raw[:max_chars] + _TRUNCATION_MARKER
+    return raw
+
 
 @dataclass(frozen=True)
 class ProviderErrorDiagnosis:
@@ -157,7 +217,9 @@ def classify_provider_error(status: int | None, body: str | bytes | None) -> Pro
         text = body.decode("utf-8", errors="replace")
     else:
         text = body or ""
-    excerpt = text[:500]
+    # 分类看**原文**（凭证掩码会破坏 Spend=/Budget= 之外的字面量匹配吗？不会，
+    # 但顺序仍取「先分类再脱敏」以免将来加规则时误伤判据）；落盘只留脱敏片段。
+    excerpt = redact_provider_text(text)
     lowered = text.lower()
 
     if status is None:

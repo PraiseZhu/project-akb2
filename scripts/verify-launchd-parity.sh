@@ -1,13 +1,22 @@
 #!/usr/bin/env bash
 # verify-launchd-parity.sh — readonly launchd parity check for repo templates vs installed agents
-
+#
+# ── 退出码（宪法 P4：不同语义不得共用一个码）─────────────────────────────────
+#   0 = 全部 MATCH（或只有已批准的 pending，见下）
+#   1 = 真 DRIFT / 非预期 MISSING —— 需要修
+#   3 = 只有**已批准的 pending_human_install**，其余全 MATCH。
+#       为什么单列一个码：manifest 把 inflow-sentinel 登记为 pending_human_install
+#       且 docs/allowed-residuals.md 已批准其未安装，而 post-change-pipeline --write
+#       把本脚本当硬门 —— 旧实现对 pending 无条件计 failure，于是**任何**无关的 write
+#       pipeline 都结构性失败，合法状态下 gate 无解（CADV-G4）。
+#       pending 必须可诊断（打印出来、带 pending_days）但不能让无关 gate 永久无解。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # manifest 路径可覆写：仅为让「检查真的会咬人」这件事可被端到端反证
 # （一个扫真实目录、啥也没找到就绿的检查，与一个坏掉的检查在结果上无法区分）。
-# 生产调用不传该变量，行为不变。
+# 生产调用不传该变量，行为不变。反证测试在 tests/test_verify_launchd_parity.py。
 MANIFEST="${AKB2_PARITY_MANIFEST:-$ROOT/launchd/INSTALL-MANIFEST.yaml}"
 
 python3 - "$ROOT" "$MANIFEST" <<'PY'
@@ -89,57 +98,55 @@ def _diff_dicts(repo_dict: dict[str, Any], installed_dict: dict[str, Any]) -> li
     return differences
 
 
-def _schedule_matches(plist_dict: dict[str, Any], expected: dict[str, Any]) -> bool:
-    kind = expected["kind"]
+def _schedule_of(plist_dict: dict[str, Any], kind: str) -> Any:
+    """按 kind 抽出该 plist 的调度值（用于三方归因输出，不做判定）。"""
     if kind == "keepalive":
-        return plist_dict.get("KeepAlive") is True
+        return plist_dict.get("KeepAlive")
     if kind == "interval":
-        return plist_dict.get("StartInterval") == expected["seconds"]
+        return plist_dict.get("StartInterval")
     if kind == "calendar":
         actual = plist_dict.get("StartCalendarInterval")
-        if isinstance(actual, dict):
-            actual_entries = [actual]
-        else:
-            actual_entries = list(actual or [])
-        expected_entries = expected["entries"]
-        return _normalize_value(actual_entries) == _normalize_value(expected_entries)
+        entries = [actual] if isinstance(actual, dict) else list(actual or [])
+        return _normalize_value(entries)
     raise ValueError(f"unknown schedule kind: {kind}")
 
 
-def _infer_vault_root_base(installed_dict: dict[str, Any], manifest_defaults: dict[str, Any]) -> str:
-    env = installed_dict.get("EnvironmentVariables", {})
-    if isinstance(env, dict):
-        for key in ("AKB2_VAULT_ROOT", "AKB2_ROOT"):
-            raw = env.get(key)
-            if isinstance(raw, str) and raw:
-                suffix = "/Praise Space/AKB2.0"
-                return raw[:-len(suffix)] if raw.endswith(suffix) else raw
-    args = installed_dict.get("ProgramArguments", [])
-    if isinstance(args, list):
-        for idx, arg in enumerate(args[:-1]):
-            if arg == "--vault-root" and isinstance(args[idx + 1], str):
-                return args[idx + 1]
-    return str(manifest_defaults["vault_root_base"])
+def _expected_schedule_value(expected: dict[str, Any]) -> Any:
+    kind = expected["kind"]
+    if kind == "keepalive":
+        return True
+    if kind == "interval":
+        return expected["seconds"]
+    if kind == "calendar":
+        return _normalize_value(expected["entries"])
+    raise ValueError(f"unknown schedule kind: {kind}")
 
 
-def _canonical_repo_root(path: Path) -> Path:
-    parts = path.parts
-    if ".cindy-worktrees" in parts:
-        idx = parts.index(".cindy-worktrees")
-        return Path(*parts[:idx])
-    return path
+def _schedule_matches(plist_dict: dict[str, Any], expected: dict[str, Any]) -> bool:
+    return _schedule_of(plist_dict, expected["kind"]) == _expected_schedule_value(expected)
 
 
-def _infer_repo_root(installed_dict: dict[str, Any], fallback_root: Path) -> Path:
-    working_dir = installed_dict.get("WorkingDirectory")
-    if isinstance(working_dir, str) and working_dir.startswith("/"):
-        return Path(working_dir).resolve()
-    args = installed_dict.get("ProgramArguments", [])
-    if isinstance(args, list):
-        for arg in args:
-            if isinstance(arg, str) and arg.startswith("/") and "/scripts/" in arg:
-                return Path(arg).resolve().parents[1]
-    return fallback_root
+def _drift_direction(repo: Any, manifest: Any, installed: Any) -> str:
+    """三方比对的**方向词** —— 让归因不再反向指责仓库。
+
+    旧实现只打 `repo_schedule_mismatch` / `installed_schedule_mismatch` 两个标签，
+    且一旦 file_status 变 DRIFT 就跳过真实 diff 的计算。于是「模板已改 11:00、
+    manifest 与运行态还是 12:05」这种情况下：
+      · installed 与 manifest 相符 → `installed_schedule_mismatch` **不触发**；
+      · `repo_schedule_mismatch` 触发 → 操作员看到的字面结论是「**仓库模板错了**」；
+      · 真正要看的 `repo=11:00 installed=12:05` 永远不被打印。
+    一个专为「运行态与仓库不一致且无人发现」而造的检测器，在自己交付的第一天
+    把归因指向了反方向，并把真实 diff 吞掉。照它的提示"修好" = 撤销事故修复。
+    """
+    if repo == manifest == installed:
+        return "aligned"
+    if repo == manifest and installed != repo:
+        return "installed_stale"        # 模板与期望一致 → 该重装运行态
+    if repo == installed and manifest != repo:
+        return "manifest_stale"        # 运行态与模板一致 → 该更新 manifest
+    if manifest == installed and repo != manifest:
+        return "repo_ahead"            # 模板领先 → manifest + 运行态都要跟上
+    return "all_diverged"
 
 
 def _render_template(
@@ -165,7 +172,22 @@ def _render_template(
 # 运行期也看不出异常。仓库侧已有静态检查（tests/test_bootstrap_launchd.py::
 # TestEscapeHatchesNotPersisted），但那只看仓库模板；本次故障的母题恰恰是
 # 「运行态与仓库不一致且无人发现」，所以运行态这一侧必须由 parity 检查覆盖。
-_ESCAPE_HATCH_ENV_KEYS = ("AKB2_ALLOW_WORKTREE_INSTALL", "AKB2_ALLOW_TMP_VAULT_ROOT")
+# 逃逸口 = 「写进常驻 env 就能静默改变生产行为」的 env 键。
+# 分两类，两类都必须在册（加固清单第 6 类：默认 exact，subset 会让漏项通过）：
+#   ① AKB2_ALLOW_*      —— 放行一道 fail-closed 门
+#   ② *_PIPELINE_BIN / *_RERUN_SCRIPT / *_READER —— **直接指定要执行什么**（更强）
+# 此前只登记了 ①，漏掉的正是更强的 ②：`AKB2_SOCIAL_BRIEFING_PIPELINE_BIN` 能把整条
+# PIPELINE_CMD（连 --date/--vault-root 一起）替换掉，而 launchd 不会报错。
+# 与 tests/test_bootstrap_launchd.py 的 ESCAPE_HATCHES 有逐字相等断言（两处不得漂移）。
+_ESCAPE_HATCH_ENV_KEYS = (
+    "AKB2_ALLOW_TMP_VAULT_ROOT",
+    "AKB2_ALLOW_WORKTREE_INSTALL",
+    "AKB2_BACKSTOP_READER",
+    "AKB2_BRIEFING_RERUN_SCRIPT",
+    "AKB2_GITHUB_BRIEFING_PIPELINE_BIN",
+    "AKB2_GITHUB_RERUN_SCRIPT",
+    "AKB2_SOCIAL_BRIEFING_PIPELINE_BIN",
+)
 
 
 def _escape_hatches_in(plist_dict: dict[str, Any]) -> list[str]:
@@ -185,13 +207,62 @@ def _launchctl_loaded(label: str) -> bool:
     return proc.returncode == 0
 
 
+def _canonical_repo_root(path: Path) -> Path:
+    parts = path.parts
+    if ".cindy-worktrees" in parts:
+        idx = parts.index(".cindy-worktrees")
+        return Path(*parts[:idx])
+    return path
+
+
+def _installed_repo_root(installed_dict: dict[str, Any]) -> str:
+    """installed plist **自称**的 repo 根 —— 只作 actual，绝不当期望值。"""
+    working_dir = installed_dict.get("WorkingDirectory")
+    if isinstance(working_dir, str) and working_dir.startswith("/"):
+        return _normalize_string(working_dir)
+    args = installed_dict.get("ProgramArguments", [])
+    if isinstance(args, list):
+        for arg in args:
+            if isinstance(arg, str) and arg.startswith("/") and "/scripts/" in arg:
+                return _normalize_string(str(Path(arg).parents[1]))
+    return "<unknown>"
+
+
+def _installed_vault_root(installed_dict: dict[str, Any]) -> str:
+    """installed plist **自称**的 vault 根 —— 只作 actual，绝不当期望值。"""
+    env = installed_dict.get("EnvironmentVariables", {})
+    if isinstance(env, dict):
+        for key in ("AKB2_VAULT_ROOT", "AKB2_ROOT"):
+            raw = env.get(key)
+            if isinstance(raw, str) and raw:
+                suffix = "/Praise Space/AKB2.0"
+                return _normalize_string(raw[:-len(suffix)] if raw.endswith(suffix) else raw)
+    args = installed_dict.get("ProgramArguments", [])
+    if isinstance(args, list):
+        for idx, arg in enumerate(args[:-1]):
+            if arg == "--vault-root" and isinstance(args[idx + 1], str):
+                return _normalize_string(args[idx + 1])
+    return "<unknown>"
+
+
 repo_root = Path(sys.argv[1]).resolve()
 manifest_path = Path(sys.argv[2]).resolve()
 manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
 defaults = manifest["defaults"]
-default_compare_root = _canonical_repo_root(repo_root)
+
+# ── 可信期望根**只**来自期望配置，不由待审 installed plist 自举（CADV-G3）───────
+# 旧实现先从 installed plist 反推 repo/vault 根，再用它渲染 repo 模板去和 installed
+# 比 —— 于是一个把 vault 指到 mktemp 目录、或把 repo 指到已删 worktree 的危险 installed
+# 可以**自证 MATCH**（拿自己的值和自己比）。parity 的信任方向必须是单向的：
+# 期望来自仓库配置 + manifest defaults，installed 只能作为 actual。
+EXPECTED_REPO_ROOT = _canonical_repo_root(repo_root)
+EXPECTED_VAULT_ROOT_BASE = _normalize_string(str(defaults["vault_root_base"]))
+
+# 退出码语义见文件头
+PARITY_PENDING_EXIT_CODE = 3
 
 failures = 0
+pending_only = 0
 today = date.today()
 
 for job in manifest["jobs"]:
@@ -214,25 +285,43 @@ for job in manifest["jobs"]:
         if installed_path.exists():
             installed_plist = _load_plist(installed_path)
         elif pending:
-            file_status = "MISSING"
-            result = "MISSING"
+            # 已批准的待人工安装：**独立结果值**（不是 MISSING/DRIFT），可诊断但不判红
+            file_status = "PENDING"
+            result = "EXPECTED_PENDING"
             details.append("pending_human_install")
         else:
             file_status = "MISSING"
-            result = "MISSING"
+            result = "UNEXPECTED_MISSING"
             details.append("installed_file_missing")
 
-        if file_status != "MISSING":
+        if file_status not in ("MISSING", "PENDING"):
             assert installed_plist is not None
-            vault_root_base = _infer_vault_root_base(installed_plist, defaults)
-            render_root = _infer_repo_root(installed_plist, default_compare_root)
+            # 期望值来自仓库配置 + manifest defaults（不由 installed 自举）
             repo_plist = _render_template(
                 template_path,
-                repo_root=render_root,
+                repo_root=EXPECTED_REPO_ROOT,
                 home=Path.home(),
-                vault_root_base=vault_root_base,
+                vault_root_base=EXPECTED_VAULT_ROOT_BASE,
                 manifest_defaults=defaults,
             )
+            # installed 自称的根只作 actual：不一致时**显式点名**，
+            # 而不是让它在下面变成十几行零散路径 diff（那样运维读不出真因）
+            installed_repo_root = _installed_repo_root(installed_plist)
+            if installed_repo_root not in ("<unknown>", str(EXPECTED_REPO_ROOT)):
+                file_status = "DRIFT"
+                result = "DRIFT"
+                details.append(
+                    f"installed_repo_root={installed_repo_root} "
+                    f"expected={EXPECTED_REPO_ROOT} (期望来自仓库配置，不由 installed 自举)"
+                )
+            installed_vault_root = _installed_vault_root(installed_plist)
+            if installed_vault_root not in ("<unknown>", EXPECTED_VAULT_ROOT_BASE):
+                file_status = "DRIFT"
+                result = "DRIFT"
+                details.append(
+                    f"installed_vault_root={installed_vault_root} "
+                    f"expected={EXPECTED_VAULT_ROOT_BASE} (期望来自 manifest defaults)"
+                )
             repo_norm = _normalize_value(deepcopy(repo_plist))
             installed_norm = _normalize_value(deepcopy(installed_plist))
             repo_norm["EnvironmentVariables"] = _env_subset(
@@ -264,21 +353,33 @@ for job in manifest["jobs"]:
                     + ",".join(expected_env)
                 )
 
-            if not _schedule_matches(repo_plist, job["expected_schedule"]):
+            # ── 调度三方归因（SC-R1-13/14）────────────────────────────────
+            # 三个值全打出来 + 明示差异**方向**，而不是只贴一个会被误读成
+            # 「仓库错了」的 repo_schedule_mismatch 标签。
+            schedule_kind = job["expected_schedule"]["kind"]
+            repo_schedule = _schedule_of(repo_plist, schedule_kind)
+            installed_schedule = _schedule_of(installed_plist, schedule_kind)
+            manifest_schedule = _expected_schedule_value(job["expected_schedule"])
+            direction = _drift_direction(
+                repo_schedule, manifest_schedule, installed_schedule
+            )
+            if direction != "aligned":
                 file_status = "DRIFT"
                 result = "DRIFT"
-                details.append("repo_schedule_mismatch")
-            if installed_plist and not _schedule_matches(installed_plist, job["expected_schedule"]):
-                file_status = "DRIFT"
-                result = "DRIFT"
-                details.append("installed_schedule_mismatch")
+                details.append(
+                    f"schedule_drift={direction} "
+                    f"repo={repo_schedule} manifest={manifest_schedule} "
+                    f"installed={installed_schedule}"
+                )
 
-            if file_status == "MATCH":
-                differences = _diff_dicts(repo_norm, installed_norm)
-                if differences:
-                    file_status = "DRIFT"
-                    result = "DRIFT"
-                    details.extend(differences[:4])
+            # diff 计算不再被 file_status 短路：真实差异必须始终被算出来并打印。
+            # 旧实现 `if file_status == "MATCH":` 让「已经 DRIFT」的 job 永远看不到
+            # 真正的 repo↔installed diff —— 检测器把自己要报的东西吞掉了。
+            differences = _diff_dicts(repo_norm, installed_norm)
+            if differences:
+                file_status = "DRIFT"
+                result = "DRIFT"
+                details.extend(differences[:4])
     except Exception as exc:
         file_status = "DRIFT"
         result = "DRIFT"
@@ -294,7 +395,13 @@ for job in manifest["jobs"]:
         pending_days = (today - pending_since).days
         loaded_status = "PENDING"
         details.append(f"pending_days={pending_days}")
-        result = "MISSING"
+        # pending 但**文件竟然存在** = 批准的前提已不成立（已被人装上却没更新 manifest）
+        # —— 那是真 DRIFT，不能继续按"已批准未安装"放过。
+        if result != "EXPECTED_PENDING":
+            result = "DRIFT"
+            details.append(
+                "pending_but_installed_exists (manifest 的 pending 登记已过期，需更新)"
+            )
     elif loaded:
         loaded_status = "YES"
     else:
@@ -312,7 +419,9 @@ for job in manifest["jobs"]:
                 + " (fail-closed 门对生产已失效)"
             )
 
-    if result != "MATCH":
+    if result == "EXPECTED_PENDING":
+        pending_only += 1
+    elif result != "MATCH":
         failures += 1
 
     detail_suffix = ""
@@ -323,5 +432,15 @@ for job in manifest["jobs"]:
         f"file={file_status} loaded={loaded_status}{detail_suffix}"
     )
 
-raise SystemExit(0 if failures == 0 else 1)
+print(f"summary drift_failures={failures} expected_pending={pending_only}")
+if failures:
+    raise SystemExit(1)
+if pending_only:
+    # 专用码：可诊断（调用方能把它当"通过但有待办"）而不让无关 write gate 永久无解
+    print(
+        f"NOTICE: {pending_only} 个已批准的 pending_human_install 未安装；"
+        f"其余全部 MATCH → exit {PARITY_PENDING_EXIT_CODE}（非失败）"
+    )
+    raise SystemExit(PARITY_PENDING_EXIT_CODE)
+raise SystemExit(0)
 PY

@@ -48,8 +48,8 @@ jobs:
       entries:
         - Hour: 8
           Minute: 0
-        - Hour: 12
-          Minute: 5
+        - Hour: 11
+          Minute: 0
     expected_env_keys:
       - AKB2_TRANSLATE_TIMEOUT
       - PATH
@@ -93,8 +93,8 @@ jobs:
       entries:
         - Hour: 7
           Minute: 30
-        - Hour: 12
-          Minute: 5
+        - Hour: 11
+          Minute: 0
     expected_env_keys:
       - PATH
       - PYTHONPATH

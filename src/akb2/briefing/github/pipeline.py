@@ -20,6 +20,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 from ...common.state_paths import resolve_state_file
+from . import synthesis as synthesis_module
 from .dedup_sqlite import DedupStore
 from .enricher import enrich
 from .intake.fallback_judge import decide
@@ -27,7 +28,7 @@ from .intake.trending_html_collector import TrendingHTMLCollector
 from .intake.twitter_collector import TwitterCollector
 from .scoring import engagement_raw, mention_threshold, score_batch
 from .star_history import StarHistory
-from .synthesis import synthesize
+from .synthesis import reset_family_latch, synthesize
 from .url_normalizer import display_slug
 from .validator import validate
 
@@ -91,9 +92,28 @@ RESERVED_EXIT_CODES = frozenset({124, 125})
 # JSON 写坏 = 当天零交付。
 #
 # 预算取 2 次重生成（总计 ≤3 次 synthesize）。为什么不更多：每次重生成都重新烧一整轮
-# LLM 额度，而 synthesize 内部还自带 1 次 JSON 重试 → 最坏 6 次 LLM 调用。这是**显式
-# 代价不是隐藏成本**：配额正是这条链路的稀缺资源（08-02 即因 UTC 日配额打穿而零交付）。
+# LLM 额度。这是**显式代价不是隐藏成本**：配额正是这条链路的稀缺资源
+# （08-02 即因 UTC 日配额打穿而零交付）。
 MAX_SYNTHESIS_REGENERATIONS = 2
+
+# ── 整条重生成阶段的真实最坏 HTTP 请求数（宪法 P4：声明值 == 真实最坏值）──────────
+# 此前这里写「最坏 6 次 LLM 调用」，R1 审查实测最坏 36 —— 差 6 倍。与本文件刚修掉的
+# 「RETRY_BACKOFF 声明 65s 实际 20s」是同一类缺陷：预算声明没跟着实现推导。
+#
+# 重新逐层推导（每一项都可在 synthesis.py 里核对）：
+#   调用点数 = (重生成轮数 + 1) × synthesize 内调用点数 = 3 × 2 = 6
+#   族闩（synthesis.reset_family_latch 划界，跨轮保持）保证换族最多发生一次，
+#   于是每个调用点只打一族，唯独发生族切换的那个调用点打两族：
+#       总请求数 = (调用点数 + 1) × MAX_RETRIES = 7 × 4 = 28
+#   预算耗尽路径远低于此：首击即抛、不退避、不换族（每调用点 1 次请求）。
+# 断言在 tests/briefing/github/test_pipeline_exit_codes.py 里绑实测计数，
+# 改任一常量而不同步推导会立刻打红。
+SYNTHESIS_CALL_POINTS_PER_RUN = (
+    MAX_SYNTHESIS_REGENERATIONS + 1
+) * synthesis_module.SYNTHESIZE_CALL_POINTS
+MAX_LLM_REQUESTS_PER_RUN = (
+    SYNTHESIS_CALL_POINTS_PER_RUN + 1
+) * synthesis_module.MAX_RETRIES
 REGEN_REASON_JSON_TRUNCATED = "json_truncated"
 REGEN_REASON_SCHEMA_INVALID = "schema_invalid"
 
@@ -449,6 +469,9 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
     # 预算耗尽后仍 fail-closed 不写 vault（宪法 P3），不为"有产出"而降级写入。
     briefing: dict | None = None
     regen_reason = ""
+    # 族可用性闩的生命周期 = 整个重生成阶段。在**循环外**划界：判死的族跨轮保持判死，
+    # 否则每轮重生成都把它复活、原样再打一遍（宪法 P2 收敛优先于重跑）。
+    reset_family_latch()
     for regen in range(MAX_SYNTHESIS_REGENERATIONS + 1):
         if regen > 0:
             _ts_print(
@@ -858,10 +881,12 @@ def _remediation(failure_class: str, provider_diagnosis: dict | None) -> tuple[b
             amount = f"（spend={spend} / cap={cap}）" if cap is not None else ""
             if scope == "utc_daily":
                 day = provider_diagnosis.get("budget_date") or "当日"
+                # 不再建议换模型族：额度是**账户级**的，主备族同 Gateway 同 key 同 user，
+                # 换族拿不回额度（R1 审查 F13/CADV-A10）。唯一有效的处置是等边界。
                 return True, (
                     f"共享 Gateway 账户的 UTC 日预算已打穿{amount}，"
-                    f"UTC {day} 内重跑必然再撞同一上限 —— 等 UTC 日预算重置后重试，"
-                    "或改用备用模型族（AKB2_LLM_FAMILY_FALLBACK=1）"
+                    f"UTC {day} 内重跑必然再撞同一上限（换模型族也无效："
+                    "主备族共用同一账户额度）—— 等 UTC 日预算重置后（11:00 CST 补跑窗口）重试"
                 )
             return True, (
                 f"共享 Gateway 账户的总预算已打穿{amount} —— "

@@ -336,3 +336,107 @@ class TestSocialFamilyFallback:
         assert seen_models == [syn._DEFAULT_SYNTHESIS_MODEL], (
             f"上一次运行的族账本泄漏到本次: {seen_models}"
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SC-R1-06 / SC-R1-08（social 侧对席）—— 主链是共享闸生产者；账户级预算不换族
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 2026-08-02 生产实测的真实预算耗尽响应体（逐字）
+_BUDGET_BODY_UTC_DAILY = (
+    "ExceededBudget: User=zhuzan exceeded UTC daily cap. "
+    "Date=2026-08-01, Spend=2701.228476741798, DailyCap=2700.0"
+)
+
+
+class TestSharedBudgetGateProducer:
+    def test_budget_429_writes_shared_gate_and_skips_fallback(
+        self, monkeypatch, tmp_path, capsys,
+    ):
+        """social 主链撞预算 429：布共享闸 + 首击即停 + 备族零请求。
+
+        R1 实测旧行为：对真实 UTC 日预算体发出 DeepSeek×3 + Gemini×3 共 6 次请求才失败，
+        且**不留任何跨进程状态** —— 后面每个入口都得自己再撞一次 HTTP。
+        """
+        import datetime as dt
+
+        from akb2.common import budget_gate
+
+        monkeypatch.setenv("AKB2_STATE_ROOT", str(tmp_path / "state"))
+        monkeypatch.setattr("time.sleep", lambda s: None)
+        seen_models: list[str] = []
+
+        def fake_post(*args, **kwargs):
+            seen_models.append(kwargs["json"]["model"])
+            raise _status_error(429, _BUDGET_BODY_UTC_DAILY)
+
+        monkeypatch.setattr("httpx.post", fake_post)
+
+        with pytest.raises(syn.SynthesisBudgetExceededError, match="预算耗尽"):
+            syn._call_deepseek("prompt")
+
+        assert seen_models == [syn._DEFAULT_SYNTHESIS_MODEL], (
+            f"预算耗尽应首击即停且不换族，实际请求序列: {seen_models}"
+        )
+        assert syn._FALLBACK_SYNTHESIS_MODEL not in seen_models
+        assert "SYNTHESIS_FALLBACK" not in capsys.readouterr().out
+
+        block = budget_gate.load_state_snapshot()["active_block"]
+        assert block is not None, "撞到预算 429 却没给后续入口布闸"
+        assert block["budget_scope"] == budget_gate.UTC_DAILY_SCOPE
+        assert block["consumer"] == syn.BUDGET_GATE_CONSUMER
+        decision = budget_gate.query_budget_gate(
+            now=dt.datetime(2026, 8, 1, 23, 30, tzinfo=dt.UTC), consumer="github.synthesize",
+        )
+        assert decision.allowed is False
+
+    def test_budget_exceeded_is_not_retried_by_quality_loop(self, monkeypatch, tmp_path):
+        """synthesize() 的 3 轮质量重试对预算耗尽必须立即上抛（宪法 P2 收敛优先）。"""
+        monkeypatch.setenv("AKB2_STATE_ROOT", str(tmp_path / "state"))
+        monkeypatch.setattr("time.sleep", lambda s: None)
+        scored = _load_scored()
+        posts: list[str] = []
+
+        def fake_post(*args, **kwargs):
+            posts.append(kwargs["json"]["model"])
+            raise _status_error(429, _BUDGET_BODY_UTC_DAILY)
+
+        monkeypatch.setattr("httpx.post", fake_post)
+
+        with pytest.raises(syn.SynthesisUnavailableError):
+            syn.synthesize(scored, date="2026-08-02")
+
+        assert len(posts) == 1, f"预算耗尽仍被质量重试循环放大成 {len(posts)} 次请求: {posts}"
+
+    def test_transient_rate_limit_still_retries_and_falls_back(self, monkeypatch, tmp_path):
+        """反向守卫：不含预算字样的 429 仍必须退避重试并换族（别把修复做成"永不重试"）。"""
+        monkeypatch.setenv("AKB2_STATE_ROOT", str(tmp_path / "state"))
+        monkeypatch.setattr("time.sleep", lambda s: None)
+        scored = _load_scored()
+        seen_models: list[str] = []
+
+        def fake_post(*args, **kwargs):
+            model = kwargs["json"]["model"]
+            seen_models.append(model)
+            if model == syn._DEFAULT_SYNTHESIS_MODEL:
+                raise _status_error(429, '{"error": {"message": "Too many requests"}}')
+            resp = MagicMock()
+            resp.raise_for_status.return_value = None
+            resp.json.return_value = {
+                "choices": [{"message": {"content": _valid_model_output(scored)}}]
+            }
+            return resp
+
+        monkeypatch.setattr("httpx.post", fake_post)
+
+        result = syn.synthesize(scored, date="2026-08-02")
+
+        assert result["focus_discussions"][0]["topic"] == "智能体长记忆基础设施"
+        assert seen_models.count(syn._DEFAULT_SYNTHESIS_MODEL) == 3, seen_models
+        assert seen_models[-1] == syn._FALLBACK_SYNTHESIS_MODEL
+
+        from akb2.common import budget_gate
+
+        assert budget_gate.load_state_snapshot()["active_block"] is None, (
+            "瞬时限流被误当成预算耗尽布闸了 —— 那会让整机所有链路一起被拦"
+        )

@@ -194,6 +194,33 @@ class TestPipelineLockPath:
         assert "Application Support/akb2/locks/runner.lock" in log
 
 
+def _wrap_as_plist(body: str) -> str:
+    """把 `<string>…</string>` 片段包成**合法 plist**（含 Label + ProgramArguments）。
+
+    为什么必须包（2026-08-04，R1 审查 B2 修复后）：
+      ① 渲染合法性门以 plistlib 为唯一判据（此前"优先 plutil"让 macOS 上放行裸片段，
+         而无 plutil 的 CI 反而更严 —— 门的强度随主机而变）。裸片段两个平台一致被拒。
+      ② `--plist-src` 的身份现在从模板的 `Label` 键派生，缺 Label 直接 fail-closed。
+    本 helper 要验的是 `__AKB2_STATE_ROOT__` 的渲染结果，不是这两道门，故给个合法外壳。
+    """
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+        '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        '<plist version="1.0">\n'
+        "<dict>\n"
+        "  <key>Label</key><string>com.akb2.state-root-render-probe</string>\n"
+        "  <key>ProgramArguments</key>\n"
+        "  <array>\n"
+        "    <string>/bin/bash</string>\n"
+        f"    {body.strip()}\n"
+        "  </array>\n"
+        "  <key>StartInterval</key><integer>900</integer>\n"
+        "</dict>\n"
+        "</plist>\n"
+    )
+
+
 class TestBootstrapStateRootPlaceholder:
     def _render(
         self, tmp_path: Path, template: str, extra_env: dict[str, str] | None = None
@@ -201,7 +228,7 @@ class TestBootstrapStateRootPlaceholder:
         home = tmp_path / "home"
         home.mkdir(exist_ok=True)
         src = tmp_path / "template.plist"
-        src.write_text(template, encoding="utf-8")
+        src.write_text(_wrap_as_plist(template), encoding="utf-8")
         out = tmp_path / "rendered.plist"
         env = os.environ.copy()
         env["HOME"] = str(home)

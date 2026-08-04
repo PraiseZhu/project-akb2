@@ -21,6 +21,7 @@ launchctl 用 PATH stub 假冒，安装目录用 AKB2_LAUNCH_AGENTS_DIR 注入�
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -32,6 +33,23 @@ REPO = Path(__file__).resolve().parents[1]
 
 BRIEFING_LABEL = "com.akb2.briefing"
 INTAKE_LABEL = "com.akb2.intake"
+GITHUB_BRIEFING_LABEL = "com.akb2.github_briefing"
+
+# ── 逃逸口登记表（单一 owner）────────────────────────────────────────────────
+# 「写进常驻 env 就能静默改变生产行为」的 env 键全集。两类都必须在册：
+#   ① AKB2_ALLOW_*  —— 放行一道 fail-closed 门
+#   ② *_PIPELINE_BIN / *_RERUN_SCRIPT / *_READER —— 直接指定要执行什么（更强）
+# scripts/verify-launchd-parity.sh 的 _ESCAPE_HATCH_ENV_KEYS 必须与本表逐字相等，
+# 且本表必须覆盖脚本里实际存在的全部同形态接缝（两条断言见文件末尾）。
+ESCAPE_HATCH_ENV_KEYS: tuple[str, ...] = (
+    "AKB2_ALLOW_TMP_VAULT_ROOT",
+    "AKB2_ALLOW_WORKTREE_INSTALL",
+    "AKB2_BACKSTOP_READER",
+    "AKB2_BRIEFING_RERUN_SCRIPT",
+    "AKB2_GITHUB_BRIEFING_PIPELINE_BIN",
+    "AKB2_GITHUB_RERUN_SCRIPT",
+    "AKB2_SOCIAL_BRIEFING_PIPELINE_BIN",
+)
 
 # 假 launchctl print 的验证输出：分别喂给两个脚本的 Verification 段。
 BRIEFING_PRINT_OK = """com.akb2.briefing = {
@@ -114,11 +132,25 @@ esac
 """
 
 
-def _prepare_fake_repo(tmp_path: Path, *, subdir: str = "repo") -> Path:
-    """把安装脚本 + 共用 lib + plist 模板复制到一个隔离的假仓根。
+def _git_init(work: Path) -> None:
+    """把假仓根初始化成真 git 仓。
 
-    假仓根不是 git 仓,`git rev-parse` 返回空 → worktree 守卫的 git 判据自然跳过,
-    正好让我们单独测路径判据与 git 判据。
+    为什么必须 init：worktree 守卫现在对**git 判定失败**也 fail-closed（SC-R1-22）——
+    「问不出来」不能被推断成「这是主仓」。于是假仓根必须是个能回答 rev-parse 的
+    真仓，否则测的就不再是各条守卫本身，而全变成 git-unavailable 拒绝路径。
+    """
+    subprocess.run(
+        ["git", "init", "--quiet", str(work)],
+        check=True, capture_output=True, text=True,
+    )
+
+
+def _prepare_fake_repo(
+    tmp_path: Path, *, subdir: str = "repo", git_init: bool = True
+) -> Path:
+    """把安装脚本 + 共用 lib + plist 模板复制到一个隔离的假仓根（默认 git init）。
+
+    `git_init=False` 留给专门测「非 git 环境必须被拒」的用例。
     """
     work = tmp_path / subdir
     (work / "scripts" / "lib").mkdir(parents=True)
@@ -130,8 +162,11 @@ def _prepare_fake_repo(tmp_path: Path, *, subdir: str = "repo") -> Path:
         "scripts/lib/state-root.sh",
         f"launchd/{BRIEFING_LABEL}.plist",
         f"launchd/{INTAKE_LABEL}.plist",
+        f"launchd/{GITHUB_BRIEFING_LABEL}.plist",
     ):
         shutil.copy2(REPO / rel, work / rel)
+    if git_init:
+        _git_init(work)
     return work
 
 
@@ -149,7 +184,19 @@ def _prepare_env(
     _write_executable(fake_bin / "launchctl", FAKE_LAUNCHCTL)
     # intake preflight 需要的两个外部依赖桩
     _write_executable(fake_bin / "defuddle", "#!/usr/bin/env bash\nexit 0\n")
-    _write_executable(fake_bin / "python3", "#!/usr/bin/env bash\nexit 0\n")
+    # python3 桩：intake preflight 的 `import akb2...` 一律放行（exit 0），但**plist 解析
+    # 必须走真 python3** —— 身份派生（akb2_plist_identity）与 plist 合法性门都靠 plistlib，
+    # 一刀切 exit 0 会让 Label 解析恒空，测的就不再是脚本逻辑而是桩的形状。
+    _write_executable(
+        fake_bin / "python3",
+        "#!/usr/bin/env bash\n"
+        "for arg in \"$@\"; do\n"
+        "  case \"$arg\" in\n"
+        f"    -|*plistlib*) exec {shutil.which('python3')} \"$@\" ;;\n"
+        "  esac\n"
+        "done\n"
+        "exit 0\n",
+    )
 
     state = tmp_path / f"launchctl-state-{tag}"
     state.mkdir()
@@ -326,11 +373,34 @@ class TestTeardownWaitStatic:
         assert not offenders, f"launchctl 调用仍在吞 stderr: {offenders}"
 
     def test_lib_bootstrap_wrapper_reports_code_and_stderr(self) -> None:
-        """共用包装必须同时打出 exit code 与 stderr（宪法 P4「失败可见」）。"""
+        """共用包装必须同时打出 exit code 与 stderr，且**每次外部调用都有界**。
+
+        断言从"包装里出现某段字面量"改成"包装经 akb2_run_bounded 走 + 仍打 exit/stderr"：
+        SC-R1-20 给三个 launchctl 调用都加了 wall-clock 上限，原字面量已不复存在，
+        但要守住的不变量没变（失败可见 + 有界）。
+        """
         text = (REPO / "scripts" / "lib" / "launchctl.sh").read_text(encoding="utf-8")
         assert "akb2_launchctl_bootstrap()" in text
         assert "akb2_wait_for_launchctl_teardown()" in text
-        assert 'launchctl bootstrap "$domain" "$plist" 2>&1 >/dev/null' in text
+        assert "akb2_run_bounded()" in text
+        # 三个外部调用一个都不许裸跑（都必须经有界 runner）。
+        # 只看**真正执行** launchctl 的行：printf/echo 里的文案会提到同样的字样。
+        for probe in ("launchctl bootout", "launchctl print", "launchctl bootstrap"):
+            calls = [
+                line.strip()
+                for line in text.splitlines()
+                if probe in line
+                and not line.lstrip().startswith("#")
+                and not line.lstrip().startswith(("printf", "echo"))
+            ]
+            assert calls, f"{probe} 的调用点消失了？"
+            for call in calls:
+                assert "akb2_run_bounded" in call, (
+                    f"{probe} 存在未加 wall-clock 上限的裸调用: {call}"
+                )
+        # 失败留痕：exit code 与 stderr 都要进错误文案
+        assert 'exit=%s' in text
+        assert "AKB2_BOUNDED_OUTPUT" in text
         assert "exit=%s" in text
 
     def test_teardown_budget_is_named_not_literal(self) -> None:
@@ -726,8 +796,13 @@ class TestVerificationAndSemantics:
 
         assert result.returncode != 0, result.stdout + result.stderr
         assert "StartInterval=900" in result.stderr, result.stderr
-        # bootstrap 本身是成功的 → 失败纯粹来自验证断言
-        assert (launch_agents / f"{INTAKE_LABEL}.plist").exists()
+        # bootstrap 本身是成功的 → 失败纯粹来自验证断言；
+        # 且验证失败必须**回滚**（SC-R1-17）：首装场景下新 plist 被移除，
+        # 不留「新版已装未验证」态。
+        assert "回滚到执行前状态" in result.stderr, result.stderr
+        assert not (launch_agents / f"{INTAKE_LABEL}.plist").exists(), (
+            "验证失败后新 plist 仍留在 LaunchAgents（未回滚）"
+        )
 
     def test_intake_verification_fails_when_orchestrator_missing(self, tmp_path: Path) -> None:
         """launchctl print 有 900 但无 orchestrator → 同样非 0 退出。"""
@@ -812,7 +887,14 @@ class TestEscapeHatchesNotPersisted:
     这条守卫防的是"门装好之后又被静默绕开"。
     """
 
-    ESCAPE_HATCHES = ("AKB2_ALLOW_WORKTREE_INSTALL", "AKB2_ALLOW_TMP_VAULT_ROOT")
+    # 两类逃逸口，两类都必须在册（加固清单第 6 类：默认 exact，subset 让漏项通过）：
+    #   ① AKB2_ALLOW_*  —— 放行一道 fail-closed 门
+    #   ② *_PIPELINE_BIN / *_RERUN_SCRIPT / *_READER —— **直接指定要执行什么**（更强）
+    # 此前只登记了 ①：守卫覆盖了弱的、漏了强的。`AKB2_SOCIAL_BRIEFING_PIPELINE_BIN`
+    # 能把整条 PIPELINE_CMD（连 --date/--vault-root 一起）替换掉，而 launchd 不报错。
+    # 清单与「脚本实际读取的 env 集合」由
+    # test_escape_hatch_registry_covers_all_override_envs 对账，不靠人工同步。
+    ESCAPE_HATCHES = ESCAPE_HATCH_ENV_KEYS
 
     @classmethod
     def _scan(cls, plist_dir: Path) -> list[str]:
@@ -862,6 +944,582 @@ class TestEscapeHatchesNotPersisted:
         for hatch in self.ESCAPE_HATCHES:
             assert any(hatch in o for o in offenders), f"扫描漏掉了种入的 {hatch}: {offenders}"
         assert not any("clean" in o for o in offenders), f"干净 plist 被误报: {offenders}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SC-R1-15..23 —— 安装事务：身份派生 / 回滚 / 等价 lint / 有界探针 / 三门 fail-closed
+# ═══════════════════════════════════════════════════════════════════════════
+
+GITHUB_PRINT_OK = """com.akb2.github_briefing = {
+	arguments = {
+		/bin/bash
+		/fake/repo/scripts/launchd_wrapper.sh
+	}
+	hour = 5
+	minute = 30
+}
+"""
+
+
+def test_plist_src_derives_identity_from_template_label(tmp_path: Path) -> None:
+    """--plist-src 传 github 模板 → 全链身份为 com.akb2.github_briefing，零 social 痕迹。
+
+    这是本组的 blocker：`--plist-src` 是新增参数，而 Label / 目标文件名 / launchctl 域
+    标签 / 验证断言在旧版里**全是硬编码的 com.akb2.briefing**。照 INSTALL-MANIFEST 执行
+    那条命令的实际序列是：备份并覆写 com.akb2.briefing.plist → bootout social →
+    从该路径 bootstrap（注册进去的 Label 却是 github_briefing）→ 按 social 判据验证
+    （必然失败）→ 回滚。净效果 = 把 social 主跑 bounce 一遍，github 一次也没装上。
+    同一个脚本 2026-07-28 刚把 com.akb2.briefing 卸掉 5 天 22 小时。
+    """
+    work = _prepare_fake_repo(tmp_path, subdir="repo-identity")
+    env, launch_agents, call_log, _home = _prepare_env(
+        tmp_path, verify_out=GITHUB_PRINT_OK, tag="identity"
+    )
+
+    result = _run(
+        work / "scripts" / "bootstrap_launchd.sh",
+        env,
+        ["--plist-src", str(work / "launchd" / f"{GITHUB_BRIEFING_LABEL}.plist")],
+    )
+    combined = result.stdout + result.stderr
+
+    assert result.returncode == 0, combined
+    # ① 目标文件名 = 模板 Label
+    assert (launch_agents / f"{GITHUB_BRIEFING_LABEL}.plist").exists(), combined
+    # ② social 的 plist 一个字节都没被碰
+    assert not (launch_agents / f"{BRIEFING_LABEL}.plist").exists(), (
+        "装 github 却写出/覆写了 social 的 plist"
+    )
+    # ③ launchctl 的域标签（bootout/bootstrap/print）全部是 github 身份，零 social
+    calls = call_log.read_text(encoding="utf-8")
+    assert GITHUB_BRIEFING_LABEL in calls, calls
+    assert BRIEFING_LABEL not in calls, f"launchctl 被喂了 social 身份:\n{calls}"
+    # ④ 验证断言用的是 github 模板派生的 token（launchd_wrapper.sh + hour = 5）
+    assert "launchd_wrapper.sh detected" in result.stdout, result.stdout
+    assert "hour = 5" in result.stdout, result.stdout
+    assert "daily_briefing.sh" not in combined, combined
+
+
+def test_manifest_installer_line_installs_declared_label(tmp_path: Path) -> None:
+    """按 INSTALL-MANIFEST 记载的 installer 原文执行 → 装出的必须是它声明的那个 label。
+
+    操作手册记载的命令必须真能安装该 label，不得覆写另一个生产 job（SC-R1-16）。
+    本用例直接读 manifest，不复述命令 —— 手册改了这里会跟着变。
+    """
+    import shlex
+
+    import yaml
+
+    manifest = yaml.safe_load(
+        (REPO / "launchd" / "INSTALL-MANIFEST.yaml").read_text(encoding="utf-8")
+    )
+    jobs = manifest["jobs"] if isinstance(manifest, dict) and "jobs" in manifest else manifest
+    targets = [
+        job for job in jobs
+        if isinstance(job.get("installer"), str)
+        and "bootstrap_launchd.sh" in job["installer"]
+        and "--plist-src" in job["installer"]
+    ]
+    assert targets, "manifest 里没有 --plist-src 形态的 installer —— 断言会恒真"
+
+    verify_by_label = {
+        BRIEFING_LABEL: BRIEFING_PRINT_OK,
+        GITHUB_BRIEFING_LABEL: GITHUB_PRINT_OK,
+    }
+    for index, job in enumerate(targets):
+        label = job["label"]
+        assert label in verify_by_label, f"manifest 新增了未覆盖的 label: {label}"
+        work = _prepare_fake_repo(tmp_path, subdir=f"repo-manifest-{index}")
+        env, launch_agents, call_log, _home = _prepare_env(
+            tmp_path, verify_out=verify_by_label[label], tag=f"manifest-{index}"
+        )
+        # 原文里的相对路径按假仓根解析（脚本自身也在假仓根内）
+        parts = shlex.split(job["installer"])
+        script = work / parts[0].split("scripts/", 1)[1] if False else work / parts[0]
+        args = [
+            str(work / arg) if arg.startswith("launchd/") else arg
+            for arg in parts[1:]
+        ]
+
+        result = _run(script, env, args)
+        combined = result.stdout + result.stderr
+
+        assert result.returncode == 0, f"manifest 命令跑不通（{label}）:\n{combined}"
+        assert (launch_agents / f"{label}.plist").exists(), (
+            f"manifest 声明装 {label}，实际产物不是它:\n{combined}"
+        )
+        installed = sorted(p.name for p in launch_agents.iterdir())
+        assert installed == [f"{label}.plist"], (
+            f"manifest 命令顺手动了别的 job 的 plist: {installed}"
+        )
+        assert label in call_log.read_text(encoding="utf-8")
+
+
+def test_postverify_failure_rolls_back(tmp_path: Path) -> None:
+    """后置验证失败 → 恢复执行前 plist + 重新 bootstrap 旧 job + 非 0 退出。
+
+    旧版验证失败是直接 `exit 2`：报告了失败，却把**已知有问题的新 job 留在册**，
+    同时 EXIT trap 把 last-good 备份删掉 —— 「新版已装未验证」正是 lane 4 要消掉的态。
+    """
+    work = _prepare_fake_repo(tmp_path, subdir="repo-postverify")
+    env, launch_agents, call_log, _home = _prepare_env(
+        tmp_path,
+        # print 里 daily_briefing.sh 有、但 hour 是 3（模板是 7）→ 调度断言失败
+        verify_out="com.akb2.briefing = {\n\t/x/scripts/daily_briefing.sh\n\thour = 3\n}\n",
+        tag="postverify",
+    )
+    dst = launch_agents / f"{BRIEFING_LABEL}.plist"
+    dst.write_text("<plist>OLD-GOOD</plist>\n", encoding="utf-8")
+
+    result = _run(work / "scripts" / "bootstrap_launchd.sh", env)
+    combined = result.stdout + result.stderr
+
+    assert result.returncode != 0, combined
+    assert "回滚到执行前状态" in result.stderr, result.stderr
+    assert dst.read_text(encoding="utf-8") == "<plist>OLD-GOOD</plist>\n", (
+        f"验证失败后没把旧 plist 恢复回去:\n{combined}"
+    )
+    # 旧 job 被重新 bootstrap（不留"无 job 在册"）
+    assert len(_bootstrap_calls(call_log)) >= 2, call_log.read_text(encoding="utf-8")
+    # 备份临时文件不该留在 LaunchAgents 里
+    leftovers = [p.name for p in launch_agents.iterdir() if ".bak." in p.name]
+    assert not leftovers, f"回滚后仍留着备份残留: {leftovers}"
+
+
+def test_rollback_mv_failure_preserves_backup(tmp_path: Path) -> None:
+    """回滚补偿（mv 备份回安装位）失败 → 保住备份 + 打手动恢复指引，绝不静默。
+
+    旧实现是裸 `mv -f`：`set -e` 下失败会**整函数中断**，「手动补装」一行都不打印，
+    随后 EXIT trap 因为备份变量仍非空把**唯一的旧 good 副本 rm 掉**。
+    留下的态是「新 plist 在册位 + 无 job 在册 + 旧 plist 副本已删」——
+    恰好落在 lane 4 要修的那个事故的补偿路径上（加固清单第 1 类第 ⑤ 支）。
+    """
+    work = _prepare_fake_repo(tmp_path, subdir="repo-mvfail")
+    env, launch_agents, _log, _home = _prepare_env(
+        tmp_path, verify_out=BRIEFING_PRINT_OK, always_fail_bootstrap=True, tag="mvfail"
+    )
+    dst = launch_agents / f"{BRIEFING_LABEL}.plist"
+    dst.write_text("<plist>OLD-GOOD</plist>\n", encoding="utf-8")
+    # 注入 mv 失败：PATH 前置一个恒失败的 mv（脚本里的 mv 只有备份恢复这一处用到）
+    fail_bin = tmp_path / "fail-bin-mvfail"
+    fail_bin.mkdir()
+    # 只让**移备份**那一步失败：脚本里另有一处 `mv -f "$rendered" "$dst"`（原子安装），
+    # 一刀切失败会让脚本死在安装步，根本走不到回滚补偿路径。
+    _write_executable(
+        fail_bin / "mv",
+        "#!/usr/bin/env bash\n"
+        "for arg in \"$@\"; do\n"
+        "  case \"$arg\" in\n"
+        "    *.bak.*) echo 'mv: Operation not permitted' >&2; exit 1 ;;\n"
+        "  esac\n"
+        "done\n"
+        "exec /bin/mv \"$@\"\n",
+    )
+    env["PATH"] = f"{fail_bin}:{env['PATH']}"
+
+    result = _run(work / "scripts" / "bootstrap_launchd.sh", env)
+    combined = result.stdout + result.stderr
+
+    assert result.returncode != 0, combined
+    assert "回滚补偿失败" in result.stderr, f"补偿失败被静默了:\n{combined}"
+    assert "手动恢复" in result.stderr, f"没给人工恢复指引:\n{combined}"
+    backups = sorted(p for p in launch_agents.iterdir() if ".bak." in p.name)
+    assert backups, f"备份被 EXIT trap 删掉了（唯一的旧 good 副本丢失）:\n{combined}"
+    assert backups[0].read_text(encoding="utf-8") == "<plist>OLD-GOOD</plist>\n"
+    # 指引里必须含备份的真实路径，否则"手动恢复"无从下手
+    assert str(backups[0]) in result.stderr, result.stderr
+
+
+def _fragment_plist_body() -> str:
+    """裸 `<string>` 片段 —— plutil -lint 会说 OK，plistlib 会拒（实测的判定分叉点）。"""
+    return "<string>a</string>\n<string>b</string>\n"
+
+
+def _path_without_plutil(tmp_path: Path, tag: str) -> str:
+    """构造一个**不含 plutil** 的最小 PATH（模拟 CI 的 ubuntu runner）。"""
+    clean_bin = tmp_path / f"clean-bin-{tag}"
+    clean_bin.mkdir(exist_ok=True)
+    for tool in (
+        "bash", "sed", "grep", "mktemp", "id", "cat", "rm", "mkdir", "cp", "mv",
+        "sort", "tr", "sleep", "kill", "dirname", "basename", "git", "python3",
+    ):
+        found = shutil.which(tool)
+        if found and not (clean_bin / tool).exists():
+            (clean_bin / tool).symlink_to(found)
+    assert shutil.which("plutil", path=str(clean_bin)) is None
+    return str(clean_bin)
+
+
+@pytest.mark.parametrize("with_plutil", [True, False], ids=["with-plutil", "no-plutil"])
+def test_lint_gate_rejects_fragment_on_both_platforms(
+    tmp_path: Path, with_plutil: bool
+) -> None:
+    """同一道门在有/无 plutil 两种环境下判定必须一致（都拒裸片段）。
+
+    实测（R1 审查 B2）：`plutil -lint frag.plist` → OK(exit 0)，
+    `python3 -c 'plistlib.load(...)'` → InvalidFileException(exit 1)。
+    旧实现「优先 plutil，无 plutil 才退 plistlib」于是让**生产平台（macOS）上这道
+    fail-closed 门放行了根本不是 plist 的内容**，而 CI（ubuntu，无 plutil）反而更严
+    —— 门的强度随主机而变，且声称强度 > 实际强度。
+
+    断言打在**函数级**（直接调 akb2_assert_render_clean）：脚本级的整链里
+    `akb2_plist_identity` 排在这道门之前，也会拒掉裸片段 —— 那样即使把 lint 门改回
+    plutil 优先，脚本仍然非 0 退出，测试会因为**另一个**原因变绿（本轮实测过这个假绿）。
+    """
+    lib = REPO / "scripts" / "lib" / "launchctl.sh"
+    fragment = tmp_path / f"fragment-{int(with_plutil)}.plist"
+    fragment.write_text("<string>a</string>\n<string>b</string>\n", encoding="utf-8")
+
+    if with_plutil:
+        plutil = shutil.which("plutil")
+        if plutil is None:
+            pytest.skip("本机无 plutil（Linux）——no-plutil 分支已覆盖同一判定")
+        # 先自证前提：plutil 单独判这个片段确实是 OK（否则本用例证明不了什么）
+        lint = subprocess.run(
+            [plutil, "-lint", str(fragment)], capture_output=True, text=True
+        )
+        assert lint.returncode == 0, (
+            f"前提不成立：本机 plutil 已经会拒裸片段，用例失去意义\n{lint.stdout}{lint.stderr}"
+        )
+        path = os.environ["PATH"]
+    else:
+        path = _path_without_plutil(tmp_path, f"lint-{int(with_plutil)}")
+
+    probe = subprocess.run(
+        ["bash", "-c", f'. "{lib}"\nakb2_assert_render_clean "{fragment}"'],
+        capture_output=True, text=True,
+        env={**os.environ, "PATH": path},
+    )
+    assert probe.returncode != 0, (
+        "裸片段被这道 fail-closed 门放行了"
+        f"（with_plutil={with_plutil}）：\n{probe.stdout}{probe.stderr}"
+    )
+    assert "不合法" in probe.stderr, probe.stderr
+
+    # 反向守卫：合法 plist 在两种环境下都必须放行（别把门做成"全拒"）
+    valid = tmp_path / f"valid-{int(with_plutil)}.plist"
+    valid.write_text(
+        (REPO / "launchd" / f"{BRIEFING_LABEL}.plist").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    ok = subprocess.run(
+        ["bash", "-c", f'. "{lib}"\nakb2_assert_render_clean "{valid}"'],
+        capture_output=True, text=True,
+        env={**os.environ, "PATH": path},
+    )
+    # 模板里还有占位符 → 会被第一道门（占位符残留）拒，正好也是要守的行为
+    assert "未替换占位符" in ok.stderr, ok.stderr
+    rendered = tmp_path / f"rendered-{int(with_plutil)}.plist"
+    rendered.write_text(
+        valid.read_text(encoding="utf-8")
+        .replace("__AKB2_REPO_ROOT__", str(tmp_path))
+        .replace("__AKB2_VAULT_ROOT__", str(tmp_path))
+        .replace("__AKB2_STATE_ROOT__", str(tmp_path))
+        .replace("__AKB2_HOME__", str(tmp_path)),
+        encoding="utf-8",
+    )
+    ok2 = subprocess.run(
+        ["bash", "-c", f'. "{lib}"\nakb2_assert_render_clean "{rendered}"'],
+        capture_output=True, text=True,
+        env={**os.environ, "PATH": path},
+    )
+    assert ok2.returncode == 0, (
+        f"合法且已渲染的 plist 被拒（门做成全拒了）：\n{ok2.stdout}{ok2.stderr}"
+    )
+
+    # 脚本级同样必须拒（纵深：门在碰 launchctl 之前）
+    work = _prepare_fake_repo(tmp_path, subdir=f"repo-lint-{int(with_plutil)}")
+    env, _la, call_log, _home = _prepare_env(
+        tmp_path, verify_out=BRIEFING_PRINT_OK, tag=f"lint-{int(with_plutil)}"
+    )
+    env["PATH"] = f"{env['PATH'].split(':')[0]}:{path}"
+    result = _run(
+        work / "scripts" / "bootstrap_launchd.sh", env, ["--plist-src", str(fragment)]
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert not call_log.read_text(encoding="utf-8").strip(), (
+        f"非法模板已经动了 launchctl:\n{call_log.read_text(encoding='utf-8')}"
+    )
+
+
+def test_launchctl_probes_have_wall_clock_limit(tmp_path: Path) -> None:
+    """launchctl 挂死时探针必须在 wall-clock 上限内返回失败，而不是永久悬挂。
+
+    `AKB2_TEARDOWN_MAX_ATTEMPTS × SLEEP` 限的是**循环次数**，不是单次调用的墙钟：
+    一次挂死的 `launchctl print` 就能让脚本永久停在「bootout 已生效 / bootstrap
+    还没做」这个破坏性中间态上（CADV-A12）。
+
+    用 subprocess 的 timeout 兜底：没有上限时脚本会等满 stub 的 sleep（600s），
+    不设 timeout 的话本用例会**挂住**而不是打红 —— 挂住的测试等于没有测试。
+    """
+    import time
+
+    work = _prepare_fake_repo(tmp_path, subdir="repo-hang")
+    env, _la, _log, _home = _prepare_env(tmp_path, verify_out=BRIEFING_PRINT_OK, tag="hang")
+    hang_bin = tmp_path / "hang-bin"
+    hang_bin.mkdir()
+    # 挂死的 launchctl：sleep 远超上限，不自行退出
+    _write_executable(hang_bin / "launchctl", "#!/usr/bin/env bash\nsleep 600\n")
+    env["PATH"] = f"{hang_bin}:{env['PATH']}"
+    env["AKB2_LAUNCHCTL_TIMEOUT_SEC"] = "1"
+    env["AKB2_TEARDOWN_MAX_ATTEMPTS"] = "2"
+    env["AKB2_TEARDOWN_SLEEP_SEC"] = "0"
+
+    # 上限 1s × (bootout + 2 次探针 + 回滚里的 bootout/探针) ≈ 个位数秒；给 60s 余量。
+    wall_clock_budget_s = 60
+    started = time.monotonic()
+    try:
+        result = subprocess.run(
+            ["bash", str(work / "scripts" / "bootstrap_launchd.sh")],
+            env=env, capture_output=True, text=True, timeout=wall_clock_budget_s,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AssertionError(
+            f"launchctl 探针没有 wall-clock 上限：脚本在 {wall_clock_budget_s}s 内没返回"
+            f"（停在破坏性中间态）。stdout={exc.stdout!r}"
+        ) from exc
+    elapsed = time.monotonic() - started
+    combined = result.stdout + result.stderr
+
+    assert result.returncode != 0, combined
+    assert "launchctl_timeout=1" in combined, f"超时没被具名留痕:\n{combined}"
+    assert elapsed < wall_clock_budget_s, f"耗时 {elapsed:.1f}s"
+
+
+def _vault_gate_probe(vault_root: Path, *, prefixes: str) -> subprocess.CompletedProcess:
+    """函数级调 akb2_assert_vault_root_sane，前缀表由调用方指定。
+
+    为什么必须函数级：测试沙箱里唯一可写的地方（tmp_path）**本身就在 /var/folders 下**，
+    于是"symlink 的原始字符串"和"解析后的真实路径"都命中默认前缀表 —— 脚本级用例
+    在「按字符串判」与「按真实路径判」两种实现下**结果相同**，证明不了任何东西
+    （本轮实测踩过这个假绿）。这里把前缀表换成只含真实目标的父目录，
+    让两种实现的判定必然分叉。
+    """
+    lib = REPO / "scripts" / "lib" / "launchctl.sh"
+    return subprocess.run(
+        [
+            "bash", "-c",
+            f'. "{lib}"\n'
+            "unset TMPDIR\n"
+            f"AKB2_TMP_PATH_PREFIXES=({prefixes})\n"
+            f'akb2_assert_vault_root_sane "{vault_root}"',
+        ],
+        capture_output=True, text=True,
+        env={k: v for k, v in os.environ.items() if k != "AKB2_ALLOW_TMP_VAULT_ROOT"},
+    )
+
+
+def test_vault_root_gate_resolves_symlinks(tmp_path: Path) -> None:
+    """symlink 指向临时目录的 VAULT_ROOT 必须被门 3 拒绝（按**真实路径**判定）。
+
+    旧实现先跟随 symlink 做 `-d`（门 2），再拿**原始字符串**比前缀（门 3）——
+    R1 实测 `~/vault-link → /var/folders/.../real-vault` 一路 guard_rc=0 放行。
+    """
+    banned_root = tmp_path / "banned-tmp-root"
+    real_vault = banned_root / "real-vault"
+    (real_vault / "Praise Space" / "AKB2.0").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = outside / "vault-link"
+    link.symlink_to(real_vault)
+
+    # ① symlink 原始字符串不在禁用前缀内，真实路径在 → 必须拒
+    rejected = _vault_gate_probe(link, prefixes=str(banned_root))
+    assert rejected.returncode != 0, (
+        "symlink 伪装的临时目录 VAULT_ROOT 被放行（门 3 仍按原始字符串判）：\n"
+        f"{rejected.stdout}{rejected.stderr}"
+    )
+    assert "临时目录" in rejected.stderr, rejected.stderr
+    assert str(real_vault) in rejected.stderr, (
+        f"错误文案没打出真实路径，运维无从判断为什么被拒:\n{rejected.stderr}"
+    )
+
+    # ② 反向守卫：真实路径不在禁用前缀内时，symlink 仍必须放行
+    #    （门是"按真实路径判临时目录"，不是"禁 symlink"）
+    allowed = _vault_gate_probe(link, prefixes="/no-such-tmp-prefix")
+    assert allowed.returncode == 0, (
+        f"门变成了禁 symlink：\n{allowed.stdout}{allowed.stderr}"
+    )
+
+    # ③ 脚本级纵深：拒绝必须发生在碰 launchctl 之前
+    work = _prepare_fake_repo(tmp_path, subdir="repo-symlink")
+    env, _la, call_log, _home = _prepare_env(tmp_path, tag="symlink")
+    env["VAULT_ROOT"] = str(link)
+    env.pop("AKB2_ALLOW_TMP_VAULT_ROOT", None)
+    result = _run(work / "scripts" / "bootstrap_launchd.sh", env)
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert not call_log.read_text(encoding="utf-8").strip(), "拒绝前已经动了 launchctl"
+
+
+@pytest.mark.parametrize(
+    "script_rel",
+    ["scripts/bootstrap_launchd.sh", "scripts/bootstrap_intake_launchd.sh"],
+)
+def test_worktree_guard_rejects_on_git_failure(tmp_path: Path, script_rel: str) -> None:
+    """git 判定失败（不可用 / 报错 / 非 git 环境）→ 拒绝安装，不当主仓。
+
+    旧写法两次 `rev-parse` 都带 `|| true`，空结果一路走到 `return 0` —— git 不可用 /
+    dubious ownership / 只吐一半输出 / 压根不是 git 仓，全被当成「这是主仓，放行」。
+    守卫的语义是「确认不在 worktree」，无法确认时不能推断为确认（CADV-F2）。
+    """
+    script_name = Path(script_rel).name
+    # ① 非 git 环境
+    work = _prepare_fake_repo(tmp_path, subdir=f"repo-nogit-{script_name}", git_init=False)
+    env, _la, call_log, _home = _prepare_env(tmp_path, tag=f"nogit-{script_name}")
+    result = _run(work / script_rel, env)
+    combined = result.stdout + result.stderr
+    assert result.returncode != 0, f"非 git 环境被当成主仓放行:\n{combined}"
+    assert "rev-parse" in result.stderr or "git" in result.stderr, result.stderr
+    assert not call_log.read_text(encoding="utf-8").strip(), "拒绝前已经动了 launchctl"
+
+    # ② git 存在但恒报错（模拟 dubious ownership / 仓库损坏）
+    work2 = _prepare_fake_repo(tmp_path, subdir=f"repo-giterr-{script_name}")
+    env2, _la2, call_log2, _home2 = _prepare_env(tmp_path, tag=f"giterr-{script_name}")
+    err_bin = tmp_path / f"git-err-bin-{script_name}"
+    err_bin.mkdir()
+    _write_executable(
+        err_bin / "git",
+        "#!/usr/bin/env bash\n"
+        "echo \"fatal: detected dubious ownership in repository\" >&2\nexit 128\n",
+    )
+    env2["PATH"] = f"{err_bin}:{env2['PATH']}"
+    result2 = _run(work2 / script_rel, env2)
+    combined2 = result2.stdout + result2.stderr
+    assert result2.returncode != 0, f"git 报错被当成主仓放行:\n{combined2}"
+    assert "dubious ownership" in result2.stderr or "rev-parse" in result2.stderr, (
+        result2.stderr
+    )
+    assert not call_log2.read_text(encoding="utf-8").strip()
+
+    # ③ 反向守卫：显式放行口仍必须生效（否则守卫变成"无 git 就永远装不了"）
+    env3, _la3, _log3, _home3 = _prepare_env(tmp_path, tag=f"nogit-ok-{script_name}")
+    env3["AKB2_ALLOW_WORKTREE_INSTALL"] = "1"
+    result3 = _run(
+        work / script_rel, env3, ["--render-only", str(tmp_path / f"r-{script_name}.plist")]
+    ) if script_name == "bootstrap_launchd.sh" else None
+    if result3 is not None:
+        assert result3.returncode == 0, result3.stdout + result3.stderr
+
+
+@pytest.mark.parametrize(
+    "script_rel",
+    ["scripts/bootstrap_launchd.sh", "scripts/bootstrap_intake_launchd.sh"],
+)
+def test_missing_home_fails_closed(tmp_path: Path, script_rel: str) -> None:
+    """unset HOME → 非 0 退出，且不静默替换成任何字面家目录（SC-R1-23）。"""
+    work = _prepare_fake_repo(tmp_path, subdir=f"repo-nohome-{Path(script_rel).name}")
+    env, _la, call_log, _home = _prepare_env(
+        tmp_path, tag=f"nohome-{Path(script_rel).name}"
+    )
+    env.pop("HOME", None)
+
+    result = _run(work / script_rel, env)
+    combined = result.stdout + result.stderr
+
+    assert result.returncode != 0, f"HOME 缺失仍继续安装:\n{combined}"
+    assert "HOME 未设置" in result.stderr, result.stderr
+    assert not call_log.read_text(encoding="utf-8").strip(), "拒绝前已经动了 launchctl"
+
+
+def test_no_personal_home_literal_in_installer_scripts() -> None:
+    """仓库 scripts/ 的**代码**里不得写死 owner 个人家目录（SC-R1-23 后半）。
+
+    同一提交新增的 tests/test_launchd_plists.py 明令 plist 里不得出现 `/Users/`；
+    渲染这些 plist 的脚本自己却带 `${HOME:-/Users/praise}` —— 门画在模板上、漏在渲染器上。
+    """
+    offenders: list[str] = []
+    for script in sorted((REPO / "scripts").rglob("*.sh")):
+        for lineno, line in enumerate(
+            script.read_text(encoding="utf-8").splitlines(), 1
+        ):
+            code = line.split("#", 1)[0]
+            if "/Users/" in code:
+                offenders.append(f"{script.relative_to(REPO)}:{lineno}: {code.strip()}")
+    allowed_prefixes = (
+        # 安全守卫：判据本身就是"目标是否落在 owner 的 live 目录"，路径是判据不是硬编码
+        "scripts/sync-skills-to-claude-backup.sh",
+        # mac mini 专用部署脚本：按 HOME 判本机身份，属平台专用（与 plist 渲染无关）
+        "scripts/deploy-mac-mini.sh",
+    )
+    unexpected = [o for o in offenders if not o.startswith(allowed_prefixes)]
+    assert not unexpected, (
+        "安装/渲染脚本里出现个人家目录字面量（会被渲染进 plist 或改变解析结果）：\n  "
+        + "\n  ".join(unexpected)
+    )
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SC-R1-32 —— 逃逸口清单必须覆盖脚本里**全部**可替换生产命令的 env 接缝
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 判定"这是一个逃逸口"的形态规则（而不是手工枚举）：清单要能自己发现新接缝。
+#   AKB2_ALLOW_*        放行一道门
+#   *_PIPELINE_BIN      替换整条 pipeline 命令
+#   *_RERUN_SCRIPT      替换补跑入口
+#   *_READER            替换判据读者
+_OVERRIDE_ENV_RE = re.compile(
+    r"\bAKB2_(?:ALLOW_[A-Z0-9_]+|[A-Z0-9_]*(?:PIPELINE_BIN|RERUN_SCRIPT|READER))\b"
+)
+# 测试专用接缝豁免：只被测试注入、不改变**生产执行的是什么**（换日志/锁/探针位置）。
+# 豁免必须显式列出并写明理由 —— 豁免是决定，不是遗漏。
+_NOT_ESCAPE_HATCHES: dict[str, str] = {}
+
+
+def _discovered_override_envs() -> set[str]:
+    """扫 scripts/ 里实际被读取的逃逸口形态 env（去注释后扫，注释里会引用它们做说明）。"""
+    found: set[str] = set()
+    scripts = sorted((REPO / "scripts").rglob("*.sh"))
+    assert len(scripts) >= 10, f"scripts/*.sh 扫描结果异常少: {len(scripts)}"
+    for script in scripts:
+        for line in script.read_text(encoding="utf-8").splitlines():
+            code = line.split("#", 1)[0]
+            found.update(_OVERRIDE_ENV_RE.findall(code))
+    return found - set(_NOT_ESCAPE_HATCHES)
+
+
+def test_escape_hatch_registry_covers_all_override_envs() -> None:
+    """清单 == 脚本实际接缝集合（exact，不是 subset），且两处登记表逐字一致。
+
+    此前清单只有 AKB2_ALLOW_* 两项，而同一提交往生产脚本里新增了 5 个**更强**的接缝
+    （能直接指定要执行什么）——守卫覆盖了弱的、漏了强的。
+    这条断言的价值在于：以后再加第 8 个接缝而忘了登记，它会立刻打红。
+    """
+    discovered = _discovered_override_envs()
+    registered = set(ESCAPE_HATCH_ENV_KEYS)
+
+    missing = discovered - registered
+    assert not missing, (
+        f"脚本里存在未登记的逃逸口（能静默替换生产行为却不被守卫扫描）: {sorted(missing)}"
+    )
+    stale = registered - discovered
+    assert not stale, (
+        f"清单里有脚本已不再读取的键（清单必须反映现状，不是历史）: {sorted(stale)}"
+    )
+
+    # 两处登记表不得漂移（同一语义两份数据 = 加固清单第 10 类）
+    parity_src = (REPO / "scripts" / "verify-launchd-parity.sh").read_text(encoding="utf-8")
+    block = re.search(
+        r"_ESCAPE_HATCH_ENV_KEYS\s*=\s*\(([^)]*)\)", parity_src, re.S
+    )
+    assert block, "verify-launchd-parity.sh 里找不到 _ESCAPE_HATCH_ENV_KEYS"
+    parity_keys = set(re.findall(r'"([A-Z0-9_]+)"', block.group(1)))
+    assert parity_keys == registered, (
+        "verify-launchd-parity.sh 与测试侧的逃逸口清单漂移了：\n"
+        f"  仅 parity 有: {sorted(parity_keys - registered)}\n"
+        f"  仅测试有:   {sorted(registered - parity_keys)}"
+    )
+
+
+def test_registry_scan_actually_finds_the_strong_hatches() -> None:
+    """非空过：扫描必须真的把 5 个"直接指定执行什么"的接缝找出来。"""
+    discovered = _discovered_override_envs()
+    for strong in (
+        "AKB2_SOCIAL_BRIEFING_PIPELINE_BIN",
+        "AKB2_GITHUB_BRIEFING_PIPELINE_BIN",
+        "AKB2_GITHUB_RERUN_SCRIPT",
+        "AKB2_BRIEFING_RERUN_SCRIPT",
+        "AKB2_BACKSTOP_READER",
+    ):
+        assert strong in discovered, f"扫描没找到 {strong} —— 形态规则太窄"
 
 
 if __name__ == "__main__":

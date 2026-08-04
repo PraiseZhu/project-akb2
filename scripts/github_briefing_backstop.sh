@@ -60,11 +60,18 @@ readonly GIVE_UP_EXIT_CODE=125
 # 所以预算取 2 而不是 3，且第 2 轮**必须换模型族**（见 AKB2_LLM_FAMILY_FALLBACK）。
 readonly RERUN_ATTEMPT_BUDGET="${AKB2_GITHUB_RERUN_ATTEMPTS:-2}"
 readonly RERUN_BACKOFF_SECONDS="${AKB2_GITHUB_RERUN_BACKOFF:-600}"
-# 换模型族**救不了**的退出码 → 不进第 2 轮（宪法 P4 预算显式）。github pipeline 的
-# 码位只有 0=已交付 / 1=未交付（见 src/akb2/briefing/github/pipeline.py EXIT_*），
-# 所以这里只需拦 124：pipeline 被 run_with_deadline 到点终止后再跑一轮同样跑不完，
-# 只会把 backstop 自己推过 deadline。1 仍然重试（可能是 LLM 输出质量或 429，换族有救）。
-readonly RERUN_NONRETRYABLE_EXIT_CODES="124"
+# 换模型族**救不了**的退出码 → 不进第 2 轮（宪法 P4 预算显式）。
+#   124 = pipeline 被 run_with_deadline 到点终止 —— 再跑一轮同样跑不完，
+#         只会把 backstop 自己推过 deadline。
+#    65 = 共享预算闸已短路（daily_github_briefing.sh 的 SHARED_BUDGET_BLOCKED_EXIT_CODE）。
+#         注意：这条码位**不是** pipeline 产的，是 wrapper 在 pipeline 启动**之前**
+#         由预算闸拦下的 —— 此前这里的注释写「github pipeline 的码位只有 0/1，所以只需
+#         拦 124」，那个前提已被同一提交推翻。它对 AKB2_LLM_FAMILY_FALLBACK 结构性无效
+#         （闸门跟模型族无关），不拦的后果是明知无望仍空睡 RERUN_BACKOFF=600s，
+#         而这 600s 一直占着补跑锁。
+# 1 仍然重试（可能是 LLM 输出质量，换族有救）。
+readonly SHARED_BUDGET_BLOCKED_EXIT_CODE=65
+readonly RERUN_NONRETRYABLE_EXIT_CODES="124 $SHARED_BUDGET_BLOCKED_EXIT_CODE"
 
 # is_nonretryable_rc <rc> → 0=该码换族救不了(别重试), 1=可以再试一轮
 is_nonretryable_rc() {
@@ -126,8 +133,26 @@ deadline_missed_after() {
 LOCK_FILE=""
 LOCK_HELD=0
 LOCK_PID_HELD_BY=""
+LOCK_SETUP_ERROR=""
+# 释放锁：**删前重读**，内容 == 自己的 pid 才删（所有者校验）。
+# 为什么 `LOCK_HELD=1` 不够：acquire 是 check-then-write，两个同刻实例可以都判定
+# 「无锁/陈旧锁」并各自 `echo $$ >`，于是**双方 LOCK_HELD 都是 1**；后写者覆盖前者，
+# 前者退出时无条件 rm 就把**后者**（当前真持有者）的锁删了。
+# 内容比对不消除 acquire 侧的竞态窗口，但保证「只有所有者释放锁」。
+release_rerun_lock() {
+  local current
+  [[ "$LOCK_HELD" -eq 1 && -n "$LOCK_FILE" ]] || return 0
+  LOCK_HELD=0
+  current="$(cat "$LOCK_FILE" 2>/dev/null || echo '')"
+  if [[ "$current" != "$$" ]]; then
+    log "warn — 锁已被他人接管，不删除 lock_owner_now=${current:-none} lock_self=$$ lock_file=$LOCK_FILE (${DATE_TODAY:-})" || true
+    return 0
+  fi
+  rm -f "$LOCK_FILE"
+  return 0
+}
 cleanup() {
-  [[ "$LOCK_HELD" -eq 1 && -n "$LOCK_FILE" ]] && rm -f "$LOCK_FILE"
+  release_rerun_lock
   return 0
 }
 trap cleanup EXIT
@@ -214,9 +239,16 @@ if akb2_state_root_is_synced "$(dirname "$LOCK_FILE")"; then
   log "warn — 锁目录在跨机同步范围内，互斥保证降级 lock_sync_risk=1 lock_file=$LOCK_FILE ($DATE_TODAY)"
 fi
 
+# 返回值三态（不是两态）：0=拿到锁 / 1=别人持锁 / 2=**建不了锁**。
+# 建不了锁必须与「别人持锁」分开：后者是正常让路（exit 0），前者是**无法建立互斥**，
+# 此时继续跑就是以互斥语义启动一次付费补跑而实际上没有互斥（宪法 P3 fail-closed）。
 acquire_rerun_lock() {
-  local lock_pid
-  mkdir -p "$(dirname "$LOCK_FILE")"
+  local lock_pid lock_dir
+  lock_dir="$(dirname "$LOCK_FILE")"
+  if ! mkdir -p "$lock_dir" 2>/dev/null; then
+    LOCK_SETUP_ERROR="锁目录不可创建: $lock_dir"
+    return 2
+  fi
   if [[ -f "$LOCK_FILE" ]]; then
     lock_pid="$(cat "$LOCK_FILE" 2>/dev/null || echo '')"
     if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
@@ -225,12 +257,26 @@ acquire_rerun_lock() {
     fi
     rm -f "$LOCK_FILE"      # 陈旧锁：持有者已死，接管
   fi
-  echo $$ > "$LOCK_FILE"
+  if ! echo $$ > "$LOCK_FILE" 2>/dev/null; then
+    LOCK_SETUP_ERROR="锁文件不可写: $LOCK_FILE"
+    return 2
+  fi
   LOCK_HELD=1
   return 0
 }
 
-if ! acquire_rerun_lock; then
+set +e
+acquire_rerun_lock
+lock_rc=$?
+set -e
+if (( lock_rc == 2 )); then
+  # fail-closed：无法建立机器本地互斥 → 不启动付费补跑。裸跑的后果是双跑烧双份额度，
+  # 而"少跑一次"可由下一个 backstop 时段兜。
+  log_terminal failed \
+    "FAILED — 无法建立补跑互斥锁（${LOCK_SETUP_ERROR}），拒绝以互斥语义启动付费补跑 lock_setup=failed exit_code=1 ($DATE_TODAY)"
+  exit 1
+fi
+if (( lock_rc != 0 )); then
   log_terminal skip "skip — already-running: 另一个 github backstop 补跑正持锁 lock_pid=$LOCK_PID_HELD_BY lock_file=$LOCK_FILE ($DATE_TODAY)"
   exit 0
 fi

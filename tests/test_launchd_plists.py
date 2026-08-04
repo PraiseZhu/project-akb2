@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import ast
 import os
 import plistlib
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -103,7 +105,19 @@ def _module_target_exists(module_name: str) -> bool:
 
 @pytest.mark.parametrize("plist_name", PLIST_NAMES)
 def test_plist_lints_with_plutil(plist_name: str) -> None:
+    """plutil -lint（macOS 专有）—— 缺 plutil 时 skip，由 plistlib 用例兜底。
+
+    守卫必须带 `shutil.which`：`plutil` 是 Apple 专有二进制，Linux 上不存在，而
+    `subprocess.run` 对不存在的可执行文件**在 `check=False` 下依然抛 FileNotFoundError**
+    —— 于是 CI 的 ubuntu runner（阻断 job）会在这条参数化用例上红 9 项。
+    同 commit 的兄弟文件本来就做对了（tests/test_bootstrap_launchd.py 用 which 守卫，
+    tests/test_intake_launchd.py 直接用 plistlib），本文件是三者中唯一漏掉的。
+    skip 不留缺口：同名的 plistlib 用例（test_plist_parses_with_plistlib）无条件跑，
+    plist 合法性在两个平台上都有人守。
+    """
     _maybe_xfail(plist_name, "lint")
+    if shutil.which("plutil") is None:
+        pytest.skip("本机无 plutil（非 macOS）——合法性由 test_plist_parses_with_plistlib 兜底")
     plist_path = LAUNCHD_DIR / plist_name
     result = subprocess.run(
         ["plutil", "-lint", str(plist_path)],
@@ -112,6 +126,94 @@ def test_plist_lints_with_plutil(plist_name: str) -> None:
         check=False,
     )
     assert result.returncode == 0, result.stderr or result.stdout
+
+
+@pytest.mark.parametrize("plist_name", PLIST_NAMES)
+def test_plist_parses_with_plistlib(plist_name: str) -> None:
+    """plist 合法性的**跨平台**判据（plutil 缺失时它就是唯一的守门人）。"""
+    _maybe_xfail(plist_name, "lint")
+    text = _render_plist_text(LAUNCHD_DIR / plist_name)
+    data = plistlib.loads(text.encode("utf-8"))
+    assert isinstance(data, dict), plist_name
+    assert data.get("Label"), f"{plist_name}: 缺 Label"
+
+
+def _functions_running_plutil(path: Path) -> list[str]:
+    """返回该文件里**真正 subprocess 调用 plutil** 的函数名（按 AST 判，不按文本）。
+
+    为什么必须按 AST：按文本 grep 会让守卫**自我豁免** —— 守卫自己的判据里就写着
+    `which("plutil")` 这个字面量，于是「文件内是否出现 which 守卫」对宿主文件恒真，
+    把守卫本身摘掉也照样绿（本轮实测踩过这个假绿）。
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    hits: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        runs_plutil = False
+        has_which_guard = False
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Call):
+                func = inner.func
+                # subprocess.run([... "plutil" ...]) —— 真正会 FileNotFoundError 的形态
+                if isinstance(func, ast.Attribute) and func.attr == "run":
+                    for arg in inner.args:
+                        if isinstance(arg, ast.List) and any(
+                            isinstance(el, ast.Constant) and el.value == "plutil"
+                            for el in arg.elts
+                        ):
+                            runs_plutil = True
+                # shutil.which("plutil")
+                if isinstance(func, ast.Attribute) and func.attr == "which":
+                    if any(
+                        isinstance(arg, ast.Constant) and arg.value == "plutil"
+                        for arg in inner.args
+                    ):
+                        has_which_guard = True
+        if runs_plutil and not has_which_guard:
+            hits.append(node.name)
+    return hits
+
+
+def test_plutil_cases_guarded_for_ci() -> None:
+    """静态守卫：全仓测试里不得有**无 which 守卫**的 plutil 直调。
+
+    这条防的是 R1 blocker B1 再犯：`plutil` 是 Apple 专有二进制，Linux 上不存在，
+    而 `subprocess.run` 对不存在的可执行文件**在 `check=False` 下依然抛
+    FileNotFoundError** —— 于是 ubuntu CI（阻断 job）会在参数化用例上红一片。
+    plutil 直调在 macOS 全绿、只在 CI 炸，而新文件从未进过 CI 时作者看不到红。
+    """
+    offenders: list[str] = []
+    scanned = 0
+    for test_file in sorted((REPO / "tests").rglob("test_*.py")):
+        unguarded = _functions_running_plutil(test_file)
+        if unguarded:
+            offenders.append(f"{test_file.relative_to(REPO)}: {', '.join(unguarded)}")
+        if "plutil" in test_file.read_text(encoding="utf-8"):
+            scanned += 1
+    assert not offenders, (
+        "以下测试函数无 which 守卫直调 plutil（ubuntu CI 上会 FileNotFoundError 打红）：\n  "
+        + "\n  ".join(offenders)
+    )
+    # 非空过：至少扫到本文件（否则这条断言恒真）
+    assert scanned >= 1, "全仓没扫到任何提到 plutil 的测试文件 —— 守卫失去意义"
+
+
+def test_plutil_guard_actually_catches_an_unguarded_call(tmp_path: Path) -> None:
+    """反证：把无守卫的 plutil 直调种进去，_functions_running_plutil 必须抓出来。"""
+    planted = tmp_path / "test_planted.py"
+    planted.write_text(
+        "import subprocess\n"
+        "def test_bad():\n"
+        "    subprocess.run(['plutil', '-lint', 'x'], check=False)\n"
+        "def test_good():\n"
+        "    import shutil\n"
+        "    if shutil.which('plutil') is None:\n"
+        "        return\n"
+        "    subprocess.run(['plutil', '-lint', 'x'], check=False)\n",
+        encoding="utf-8",
+    )
+    assert _functions_running_plutil(planted) == ["test_bad"]
 
 
 @pytest.mark.parametrize("plist_name", PLIST_NAMES)
@@ -269,3 +371,104 @@ class TestBackstopScheduleWithinDeadline:
             f"{label} 的这些时段不早于 deadline "
             f"{deadline // 60:02d}:{deadline % 60:02d}，只能巡检不能补跑: {late}"
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SC-R1-11 / SC-R1-12 —— manifest 的参照数据必须与同提交的 plist 模板一致
+# ═══════════════════════════════════════════════════════════════════════════
+
+MANIFEST_PATH = REPO / "launchd" / "INSTALL-MANIFEST.yaml"
+
+
+def _manifest_jobs() -> list[dict[str, Any]]:
+    import yaml
+
+    manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
+    jobs = manifest["jobs"]
+    assert jobs, "manifest 没有 jobs —— 断言会恒真"
+    return jobs
+
+
+def _plist_schedule_value(data: dict[str, Any], kind: str) -> Any:
+    if kind == "keepalive":
+        return data.get("KeepAlive")
+    if kind == "interval":
+        return data.get("StartInterval")
+    if kind == "calendar":
+        slots = data.get("StartCalendarInterval")
+        return [slots] if isinstance(slots, dict) else list(slots or [])
+    raise AssertionError(f"manifest 出现未知 schedule kind: {kind}")
+
+
+def _manifest_schedule_value(expected: dict[str, Any]) -> Any:
+    kind = expected["kind"]
+    if kind == "keepalive":
+        return True
+    if kind == "interval":
+        return expected["seconds"]
+    if kind == "calendar":
+        return list(expected["entries"])
+    raise AssertionError(f"manifest 出现未知 schedule kind: {kind}")
+
+
+def test_manifest_schedule_matches_templates() -> None:
+    """manifest 的 expected_schedule 必须与同提交的 plist 模板**逐槽相等**。
+
+    R1 审查 blocker：两个 backstop 模板的第二时段本提交由 12:05 改成 11:00，
+    manifest 的 expected_schedule 仍写 12:05 —— 而 verify-launchd-parity.sh 拿 manifest
+    同时比对仓库模板与运行态，任一不符即 DRIFT → exit 1，且 post-change-pipeline
+    在 write 模式把它当硬门。也就是说新装的漂移检测**出厂即产 2 条恒定假阳性**，
+    「假阳性降到 0 之前不能接告警通道」与「运行态与仓库不一致要能被发现」两条立论
+    同时被自己破掉。
+    此前零测试覆盖 manifest↔模板一致性（TestBackstopScheduleWithinDeadline 只读 plist，
+    manifest 不在它视野内），所以 3481 条全绿也没人知道。
+    """
+    mismatches: list[str] = []
+    for job in _manifest_jobs():
+        template = REPO / job["template"]
+        assert template.exists(), f"manifest 指的模板不存在: {job['template']}"
+        data = _load_rendered_plist(template)
+        kind = job["expected_schedule"]["kind"]
+        actual = _plist_schedule_value(data, kind)
+        expected = _manifest_schedule_value(job["expected_schedule"])
+        if actual != expected:
+            mismatches.append(
+                f"{job['label']}: template={actual} manifest_expected={expected}"
+            )
+    assert not mismatches, (
+        "manifest 的参照数据与同提交的模板不一致 —— 漂移检测会反向指责仓库：\n  "
+        + "\n  ".join(mismatches)
+    )
+
+
+def test_manifest_env_keys_match_templates() -> None:
+    """同族：manifest 的 expected_env_keys 也必须与模板一致（同一类漂移的另一半）。"""
+    mismatches: list[str] = []
+    for job in _manifest_jobs():
+        data = _load_rendered_plist(REPO / job["template"])
+        template_keys = sorted((data.get("EnvironmentVariables") or {}).keys())
+        expected_keys = sorted(job.get("expected_env_keys", []))
+        if template_keys != expected_keys:
+            mismatches.append(
+                f"{job['label']}: template={template_keys} manifest_expected={expected_keys}"
+            )
+    assert not mismatches, "manifest 的 expected_env_keys 与模板漂移：\n  " + "\n  ".join(mismatches)
+
+
+def test_manifest_covers_every_repo_plist() -> None:
+    """三处清单（PLIST_NAMES / launchd/*.plist / manifest.jobs）必须互相覆盖。
+
+    手工清单 × 3 且互不对账 = 新增一个 plist 时三处都可能漏，而漏掉的那处正好是
+    漂移检测的视野盲区。
+    """
+    on_disk = sorted(p.name for p in (REPO / "launchd").glob("*.plist"))
+    assert sorted(PLIST_NAMES) == on_disk, (
+        f"PLIST_NAMES 与 launchd/*.plist 不一致: names={sorted(PLIST_NAMES)} disk={on_disk}"
+    )
+    manifest_templates = sorted(Path(job["template"]).name for job in _manifest_jobs())
+    assert manifest_templates == on_disk, (
+        f"manifest.jobs 与 launchd/*.plist 不一致: "
+        f"manifest={manifest_templates} disk={on_disk}"
+    )
+    manifest_labels = sorted(job["label"] for job in _manifest_jobs())
+    assert manifest_labels == sorted(n.removesuffix(".plist") for n in on_disk)

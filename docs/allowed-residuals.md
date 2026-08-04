@@ -239,6 +239,30 @@ step-2 量规外置正当升级 `skillpack/quality/rubric/10-dimensions.md`（�
 
 ---
 
+### backstop 第二时段 11:00：模板已改，运行态待 owner 重装（2026-08-04 登记）
+
+| 项 | 值 |
+|---|---|
+| 影响 label | `com.akb2.briefing.backstop`、`com.akb2.github_briefing.backstop` |
+| 仓库模板 | 第二时段已由 `12:05` 改为 `11:00`（owner 2026-08-03 确认） |
+| manifest | `launchd/INSTALL-MANIFEST.yaml` 的 `expected_schedule` 已同步为 `11:00`（2026-08-04） |
+| 运行态 | `~/Library/LaunchAgents/*.backstop.plist` 仍为 `12:05` |
+| 为什么留 | 两个 label 的 `installer` 是 `manual_existing_runtime` —— 本仓**没有任何脚本**会重装它们；宪法边界要求人工确认注册，agent 不得私自 bootstrap |
+| 可见性 | `scripts/verify-launchd-parity.sh` 会报 `schedule_drift=installed_stale` 并同时打出 repo/manifest/installed 三个值 + 方向词，归因指向**运行态**而不是仓库（这正是 2026-08-04 修掉的反向指责缺陷） |
+| 风险 | 「UTC 预算日重置后唯一有额度的补跑窗口」在生产上仍不存在（现有第二时段 12:05 晚于 12:00 deadline，只能巡检不能补跑）；这是事故核心修复**尚未生效**的部分 |
+| 后续动作 | owner 手工重装这两个 label（或在 manifest 里给它们提供真实 installer），重装后 parity 自动回到 MATCH，本条残留即可删除 |
+
+### `.stignore` 入仓但按其自身生效前提不生效（2026-08-04 登记）
+
+| 项 | 值 |
+|---|---|
+| 影响文件 | 仓库根 `.stignore` |
+| 生效前提 | Syncthing 只读**folder 根**的 `.stignore` |
+| 实测 folder 根 | `~/AI-Agent/.stfolder` 存在；`~/AI-Agent/Claude/.stfolder` 与本仓根均不存在 → folder 根是 `~/AI-Agent`，真正起作用的 `.stignore` 在那里 |
+| 结论 | 入仓这份位于**非** folder 根，Syncthing 不读它 —— 按其自身判据不生效 |
+| 为什么仍入仓 | 它是模式清单的权威来源与评审对象（含 `briefing-failed.json` / `briefing-skipped.json` 这类告警唯一归因素材）；owner 合入 `~/AI-Agent/.stignore` 后即生效 |
+| 后续动作 | owner 把本文件的模式合入 `~/AI-Agent/.stignore`（该文件不在本仓管理范围内，agent 不写工作区外文件）；合入后本条残留即可删除 |
+
 ## llm_resilience_lane1（2026-08-03，LLM 调用韧性修复批次 1）
 
 > 来源：`_tmp/fix-plan/lane-1-llm-resilience.md`（2026-08-02 GitHub 简报未交付的分赛道排查结论）。

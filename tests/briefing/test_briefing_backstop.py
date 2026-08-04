@@ -251,6 +251,14 @@ FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
 PRODUCTION_FRONTMATTER = FIXTURE_DIR / "social_briefing_frontmatter_20260730.md"
 
 
+def _today_briefing_path(vault: Path) -> Path:
+    """当日 social 简报落点（与 briefing_backstop.sh 的 SOCIAL_FILE 同源）。"""
+    return (
+        vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social"
+        / f"{_today()} Daily Briefing.md"
+    )
+
+
 def _write_today_briefing(vault: Path, text: str | bytes) -> Path:
     out_dir = vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -809,12 +817,18 @@ def test_concurrent_backstop_blocked_by_pid_lock(tmp_path):
     lock = tmp_path / "shared-backstop.lock"
     marker = tmp_path / "pipeline-marker.txt"
     release = tmp_path / "release"
-    # 持锁者：记账后等待 release（有界，最多 20s），模拟一次真在跑的补跑
+    target = _today_briefing_path(vault)
+    # 持锁者：记账 → 等 release（有界，最多 20s，模拟一次真在跑的补跑）→ **写出达 pass
+    # 的产物**再 exit 0。写产物是必需的：recovered 现在必须由产物状态证明
+    # （假 recovered 闸），只 exit 0 不写产物会被判 false_recovery 并再补跑一轮，
+    # 那样 stub 会被调用 2 次，把本用例真正要测的「锁挡住了第二个进程」搅浑。
     holder_stub = _write_exec(
         tmp_path / "holder-stub.sh",
         f'''echo "invoked" >> "{marker}"
 i=0
 while [ ! -f "{release}" ] && [ "$i" -lt 100 ]; do sleep 0.2; i=$(( i + 1 )); done
+mkdir -p "{target.parent}"
+printf -- "---\\naudit_verdict: pass\\n---\\n" > "{target}"
 exit 0''',
     )
     second_stub = _write_exec(
@@ -880,7 +894,16 @@ def test_stale_lock_is_reclaimed(tmp_path):
     dead.wait()
     lock.write_text(f"{dead.pid}\n", encoding="utf-8")
     marker = tmp_path / "marker.txt"
-    stub = _write_exec(tmp_path / "stub.sh", f'echo invoked >> "{marker}"\nexit 0')
+    target = _today_briefing_path(vault)
+    # stub 必须写出达 pass 的产物：recovered 由产物状态证明（假 recovered 闸），
+    # 只 exit 0 不写产物会被判 false_recovery —— 那是另一条用例的主题。
+    stub = _write_exec(
+        tmp_path / "stub.sh",
+        f'echo invoked >> "{marker}"\n'
+        f'mkdir -p "{target.parent}"\n'
+        f'printf -- "---\\naudit_verdict: pass\\n---\\n" > "{target}"\n'
+        "exit 0",
+    )
 
     result = _run_backstop(
         vault,
@@ -1065,15 +1088,34 @@ def _fixed_rc_stub(tmp_path: Path, rc: int) -> Path:
     )
 
 
-def test_nonretryable_exit_codes_skip_second_attempt(run_script, tmp_path):
-    """3 / 5 / 124 必须只跑 1 轮，并把停因写进日志（不是静默少跑一轮）。"""
-    script = BACKSTOP_SH.read_text(encoding="utf-8")
+def _declared_nonretryable_codes(script_path: Path) -> set[str]:
+    """读脚本里声明的非重试码集合，并解析其中的具名常量引用。
+
+    清单里允许出现 `$SHARED_BUDGET_BLOCKED_EXIT_CODE` 这类引用（宪法 P4 要求预算/
+    退出码常量具名），所以断言不能只按字面量比 —— 但也不能因为"有变量"就放弃校验：
+    这里把同文件内的 `readonly NAME=<数字>` 声明解析出来做替换，得到**有效集合**。
+    """
+    script = script_path.read_text(encoding="utf-8")
     declared = re.search(
         r'^readonly RERUN_NONRETRYABLE_EXIT_CODES="([^"]*)"$', script, re.M
     )
     assert declared, "非重试码必须是具名常量（宪法 P4 预算显式）"
-    codes = declared.group(1).split()
-    assert set(codes) == {"124", "3", "5"}, f"非重试码清单意外变化: {codes}"
+    consts = dict(re.findall(r'^readonly ([A-Z_][A-Z0-9_]*)=(\d+)$', script, re.M))
+    resolved: set[str] = set()
+    for token in declared.group(1).split():
+        if token.startswith("$"):
+            name = token[1:].strip("{}")
+            assert name in consts, f"非重试码引用了未声明的常量: {token}"
+            resolved.add(consts[name])
+        else:
+            resolved.add(token)
+    return resolved
+
+
+def test_nonretryable_exit_codes_skip_second_attempt(run_script, tmp_path):
+    """3 / 5 / 124 / 65 必须只跑 1 轮，并把停因写进日志（不是静默少跑一轮）。"""
+    codes = _declared_nonretryable_codes(BACKSTOP_SH)
+    assert codes == {"124", "3", "5", "65"}, f"非重试码清单意外变化: {sorted(codes)}"
 
     for rc in (3, 5, 124):
         case_dir = tmp_path / f"case{rc}"
@@ -1355,3 +1397,215 @@ esac""",
     assert "attempt=2/2" in content, content
     env_lines = (tmp_path / "rerun-env.txt").read_text(encoding="utf-8").splitlines()
     assert "AKB2_LLM_FAMILY_FALLBACK=1" in env_lines[1], env_lines
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SC-R1-07 / 29 / 30 / 31 —— 退出码 65 不可重试 / 锁所有权 / 建锁 fail-closed /
+#                              recovered 必须由产物证明
+# ═══════════════════════════════════════════════════════════════════════════
+
+SHARED_BUDGET_BLOCKED_EXIT_CODE = 65
+
+
+def test_exit_65_budget_blocked_is_nonretryable(run_script, tmp_path):
+    """65（共享预算闸已短路）必须单轮停止：不退避、不换族、不空睡 600s。
+
+    65 由 daily_briefing.sh 的预算闸在 **pipeline 启动之前** 产出，跟模型族无关 ——
+    `AKB2_LLM_FAMILY_FALLBACK=1` 对它结构性无效。此前它不在非重试集合里，
+    生产默认 RERUN_BACKOFF=600 会明知无望地空睡 600s，而这 600s 一直占着补跑锁。
+    """
+    assert SHARED_BUDGET_BLOCKED_EXIT_CODE in {
+        int(code) for code in _declared_nonretryable_codes(BACKSTOP_SH)
+    }
+    # 两个 backstop 都必须拦（同一个 wrapper 码位，漏一个就漏一条链）
+    assert SHARED_BUDGET_BLOCKED_EXIT_CODE in {
+        int(code)
+        for code in _declared_nonretryable_codes(
+            PROJECT_ROOT / "scripts" / "github_briefing_backstop.sh"
+        )
+    }
+
+    case_dir = tmp_path / "case65"
+    case_dir.mkdir()
+    vault = case_dir / "vault"
+    (vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
+    stub = _fixed_rc_stub(case_dir, SHARED_BUDGET_BLOCKED_EXIT_CODE)
+    result, log = _run_via_fixture(
+        run_script, vault, case_dir,
+        extra_env={
+            "AKB2_BRIEFING_RERUN_SCRIPT": str(stub),
+            "AKB2_BRIEFING_RERUN_ATTEMPTS": "2",
+            # 故意给一个"真睡就会让用例超时"的退避值：只要还进第 2 轮就会暴露
+            "AKB2_BRIEFING_RERUN_BACKOFF": "600",
+        },
+        args=[],
+    )
+    content = log.read_text(encoding="utf-8")
+    assert _rerun_calls(case_dir) == 1, f"65 应只补跑 1 轮:\n{content}"
+    assert "rerun_stop=nonretryable_exit" in content, content
+    assert "attempt=2/2" not in content, f"65 不该进第 2 轮:\n{content}"
+    assert "next_attempt=" not in content, f"65 不该进退避:\n{content}"
+    assert result.returncode == SHARED_BUDGET_BLOCKED_EXIT_CODE
+
+
+def test_cleanup_only_removes_own_lock(tmp_path):
+    """锁被他进程覆盖后，本进程退出时的 cleanup **不得**删掉新持有者的锁。
+
+    `LOCK_HELD=1` 不足以判定所有权：acquire 是 check-then-write，两个同刻实例可以
+    都判定「无锁」并各自 `echo $$ >`，于是双方 LOCK_HELD 都是 1；先退出的那个无条件
+    rm 就把当前真持有者的锁删了，第三个实例随即冲进来 —— 双跑防线被自己拆掉。
+    """
+    vault = tmp_path / "vault"
+    (vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
+    lock = tmp_path / "own.lock"
+    marker = tmp_path / "marker.txt"
+    target = _today_briefing_path(vault)
+    intruder_pid = "999001"
+    # stub 在补跑期间把锁内容改成别人的 pid（模拟"锁被他进程覆盖"），
+    # 随后写出达 pass 的产物并 exit 0 → backstop 走 recovered 分支并触发 cleanup。
+    stub = _write_exec(
+        tmp_path / "stub.sh",
+        f'echo invoked >> "{marker}"\n'
+        f'echo "{intruder_pid}" > "{lock}"\n'
+        f'mkdir -p "{target.parent}"\n'
+        f'printf -- "---\\naudit_verdict: pass\\n---\\n" > "{target}"\n'
+        "exit 0",
+    )
+
+    result = _run_backstop(
+        vault,
+        env_overrides={
+            "AKB2_BACKSTOP_LOCK_FILE": str(lock),
+            "AKB2_BRIEFING_RERUN_SCRIPT": str(stub),
+            "AKB2_BRIEFING_RERUN_BACKOFF": "0",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert marker.exists(), "补跑应被触发过"
+    assert lock.exists(), (
+        "cleanup 删掉了他人持有的锁 —— 所有权校验缺失（删前未重读内容）"
+    )
+    assert lock.read_text(encoding="utf-8").strip() == intruder_pid, (
+        f"锁内容被改写: {lock.read_text(encoding='utf-8')!r}"
+    )
+    assert "lock_owner_now=" in result.stderr, (
+        f"放弃删锁必须留痕（宪法 P4 失败可见）:\n{result.stderr}"
+    )
+
+
+def test_lock_setup_failure_refuses_rerun(tmp_path):
+    """建不了锁 → 拒绝以互斥语义启动付费补跑（fail-closed），且**不调** pipeline。
+
+    与「别人持锁」严格区分：后者是正常让路 exit 0，前者是无法建立互斥。
+    裸跑的后果是双跑烧双份额度（38 天双跑事故的成型条件），而"少跑一次"可由
+    下一个 backstop 时段兜。
+    """
+    vault = tmp_path / "vault"
+    (vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
+    # 不可写的锁目录：把锁指到一个 0500 目录下的子路径 → mkdir -p 必然失败
+    readonly_root = tmp_path / "readonly-state"
+    readonly_root.mkdir()
+    readonly_root.chmod(0o500)
+    marker = tmp_path / "marker.txt"
+    stub = _write_exec(tmp_path / "stub.sh", f'echo invoked >> "{marker}"\nexit 0')
+    try:
+        result = _run_backstop(
+            vault,
+            env_overrides={
+                "AKB2_BACKSTOP_LOCK_FILE": str(readonly_root / "locks" / "b.lock"),
+                "AKB2_BRIEFING_RERUN_SCRIPT": str(stub),
+                "AKB2_BRIEFING_RERUN_BACKOFF": "0",
+            },
+        )
+    finally:
+        readonly_root.chmod(0o700)
+
+    assert result.returncode != 0, f"建不了锁却成功退出:\n{result.stderr}"
+    assert result.returncode not in (0, 125), result.returncode
+    assert "lock_setup=failed" in result.stderr, (
+        f"建锁失败必须具名可见:\n{result.stderr}"
+    )
+    assert "terminal=failed" in result.stderr, result.stderr
+    assert not marker.exists(), "建不了锁却还是启动了付费补跑"
+
+
+def test_social_recovered_requires_artifact(tmp_path):
+    """rc=0 且零产物 → 终态**不得**是 recovered（假 recovered 闸）。
+
+    github 侧本来就有这道复查（`SC-5: recovered 必须复查文件`），social 侧此前是
+    `(( rc == 0 )) && break` 后直接打 terminal=recovered，不做任何产物复查。
+    同一文件头部花 8 行论证「假阳性降到 0 之前不能接告警通道」，指的是假 FAILED；
+    这里留下的是同族的**假 recovered**，而 terminal= 正是告警通道要读的那个键。
+    """
+    vault = tmp_path / "vault"
+    (vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
+    marker = tmp_path / "marker.txt"
+    stub = _write_exec(tmp_path / "stub.sh", f'echo invoked >> "{marker}"\nexit 0')
+
+    result = _run_backstop(
+        vault,
+        env_overrides={
+            "AKB2_BRIEFING_RERUN_SCRIPT": str(stub),
+            "AKB2_BRIEFING_RERUN_BACKOFF": "0",
+            "AKB2_BRIEFING_RERUN_ATTEMPTS": "1",
+        },
+    )
+
+    log = result.stderr
+    assert "terminal=recovered" not in log, f"零产物却报了 recovered:\n{log}"
+    assert "terminal=failed" in log, log
+    assert "reason=false_recovery" in log, f"终态归因必须如实说明:\n{log}"
+    assert "post_status=missing" in log, log
+    assert result.returncode != 0, "未交付即非零"
+    assert marker.exists(), "补跑应真的被触发过（否则这条断言恒真）"
+
+
+def test_social_recovered_when_artifact_reaches_pass(tmp_path):
+    """反向守卫：产物真的达 pass 时仍必须报 recovered（别把闸做成"永不 recovered"）。"""
+    vault = tmp_path / "vault"
+    (vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
+    target = _today_briefing_path(vault)
+    stub = _write_exec(
+        tmp_path / "stub.sh",
+        f'mkdir -p "{target.parent}"\n'
+        f'printf -- "---\\naudit_verdict: pass\\n---\\n" > "{target}"\n'
+        "exit 0",
+    )
+
+    result = _run_backstop(
+        vault,
+        env_overrides={
+            "AKB2_BRIEFING_RERUN_SCRIPT": str(stub),
+            "AKB2_BRIEFING_RERUN_BACKOFF": "0",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "terminal=recovered" in result.stderr, result.stderr
+
+
+def test_social_recovered_rejects_artifact_still_failing_audit(tmp_path):
+    """rc=0 但产物 audit_verdict=fail → 不是 recovered（判据是 pass，不是"文件存在"）。"""
+    vault = tmp_path / "vault"
+    (vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
+    target = _today_briefing_path(vault)
+    stub = _write_exec(
+        tmp_path / "stub.sh",
+        f'mkdir -p "{target.parent}"\n'
+        f'printf -- "---\\naudit_verdict: fail\\n---\\n" > "{target}"\n'
+        "exit 0",
+    )
+
+    result = _run_backstop(
+        vault,
+        env_overrides={
+            "AKB2_BRIEFING_RERUN_SCRIPT": str(stub),
+            "AKB2_BRIEFING_RERUN_BACKOFF": "0",
+            "AKB2_BRIEFING_RERUN_ATTEMPTS": "1",
+        },
+    )
+
+    assert "terminal=recovered" not in result.stderr, result.stderr
+    assert "post_status=warn_or_fail" in result.stderr, result.stderr
+    assert result.returncode != 0

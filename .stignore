@@ -1,7 +1,7 @@
 // Syncthing ignore patterns — Project AKB2
 //
-// 为什么需要这个文件（2026-08-03 实测）：Syncthing（pid 32225，设备
-// 7PNW6PK / TIA7T3A）在同步**整个仓库**，包括 git 索引与 SQLite 状态库。产物是
+// 为什么需要这个文件（2026-08-03 实测）：Syncthing 在**两台设备**之间同步
+// **整个仓库**，包括 git 索引与 SQLite 状态库。产物是
 // 13,076 个 .sync-conflict-* 副本，其中包括：
 //   .git/index.sync-conflict-20260605/0630/0710/0725-*   ← git 索引跨机分叉
 //   .git/logs/HEAD.sync-conflict-*                        ← reflog 分叉
@@ -21,9 +21,20 @@
 // 语法（Syncthing）：一行一个模式；`//` 是注释；不含 `/` 的模式在任意层级匹配；
 // 命中目录时其内容一并忽略。
 //
-// ⚠ 生效前提：本文件只在**该目录就是 Syncthing folder 根**时被读取。若 folder 根是
-// 上层目录（如 ~/AI-Agent 或 ~/AI-Agent/Claude），这些模式必须加到那个根的
-// .stignore（路径前缀相应改写）。owner 需在 Syncthing Web UI 核对 folder 根位置。
+// ⚠ 生效前提（**本仓已实测，结论是"本文件当前不生效"**）：Syncthing 只读
+// **folder 根**的 .stignore。本机实测：
+//     ~/AI-Agent/.stfolder                              存在  ← folder 根在此
+//     ~/AI-Agent/Claude/.stfolder                        不存在
+//     ~/AI-Agent/Claude/projects/Project AKB2/.stfolder   不存在
+// 也就是说 folder 根是 `~/AI-Agent`，真正起作用的 .stignore 已存在于该处；
+// **入仓这一份位于非 folder 根，Syncthing 不读它**。仓库内其它注释早已断定过同一事实
+//（scripts/briefing_backstop.sh、scripts/akb2-main-pipeline.sh 的「~/AI-Agent/.stfolder
+// 实证」），所以这里不写成"待 owner 核对"。
+// 本文件的角色 = **模式清单的权威来源与评审对象**；要真生效需 owner 把这些模式
+// （路径前缀改写为 `Claude/projects/Project AKB2/...`）合入 ~/AI-Agent/.stignore
+// —— 那个文件在本仓管理范围外，agent 不写工作区外文件。
+// 该口径已登记为残留：docs/allowed-residuals.md 的
+// 「`.stignore` 入仓但按其自身生效前提不生效（2026-08-04 登记）」。
 //
 // ⚠ 本文件**不会**清理已存在的 .sync-conflict-* 副本 —— 它们是排查证据，且
 // data/star_history.sync-conflict-*.sqlite 需先与主库比对才能决定去留（owner 的活）。
@@ -57,6 +68,17 @@ __pycache__
 .claude/worktrees
 .cindy-worktrees
 
-// ── 6. 已产生的冲突副本本身：不要再让它们跨机繁殖 ──
+// ── 6. 告警的唯一归因素材：**必须**出同步范围 ──
+//    本文件头部第 11-16 行把这两个文件点名为"尤其要命"，却一个模式都没写 ——
+//    为了保护告警真相来源而加的文件，恰恰没保护它（R1 审查 F6）。
+//    它们写在**仓库根**（src/akb2/briefing/github/pipeline.py 的
+//    `_PROJECT_ROOT / "briefing-skipped.json"`；读取侧 feishu_sync/blocked.py 用同一
+//    根相对路径），既不在 logs 也不在 _tmp 下，所以上面的目录模式都盖不到。
+//    注意 `*.sync-conflict-*` 只阻止**已产生的**冲突副本继续繁殖，
+//    不阻止 live 文件再次分叉 —— 两者不是一回事。
+briefing-failed.json
+briefing-skipped.json
+
+// ── 7. 已产生的冲突副本本身：不要再让它们跨机繁殖 ──
 //    （只是停止同步；文件保留在本机供 owner 处置）
 *.sync-conflict-*

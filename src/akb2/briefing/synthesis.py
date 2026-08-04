@@ -19,6 +19,8 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+from akb2.common.http_retry import ProviderErrorDiagnosis, classify_provider_error
+
 
 class SynthesisUnavailableError(RuntimeError):
     """LLM 合成不可用（主族 + 备族均失败）→ fail-closed，不产出任何 payload。
@@ -29,6 +31,18 @@ class SynthesisUnavailableError(RuntimeError):
     读者无从分辨今天是真没内容还是模型挂了。同一仓库的 github 链遇到同样情形是
     `_write_failed` + exit 1、vault 零写入（github/pipeline.py:356-362）——
     两条链语义正好相反且都未登记豁免。现统一为 github 侧的 fail-closed（宪法 P3）。
+    """
+
+
+class SynthesisBudgetExceededError(SynthesisUnavailableError):
+    """共享 Gateway 账户预算耗尽 —— 不退避、不换族、不重试（首击即抛）。
+
+    继承 SynthesisUnavailableError 有两个实际作用，都是复用既有形状而不是新造：
+      1. `_call_deepseek` 的 `except SynthesisUnavailableError: raise` 分支已经在那儿
+         —— 预算耗尽自动获得「不换族」语义（账户级额度换族拿不回，见 github 侧
+         SynthesisAPIError.family_fallback_worthwhile 的论证）。
+      2. `synthesize()` 的质量重试循环同样对 SynthesisUnavailableError 立即上抛，
+         不会再白烧 3 轮（宪法 P2 收敛优先于重跑）。
     """
 
 
@@ -58,8 +72,15 @@ _SYNTHESIS_MODEL = os.environ.get("AKB2_SYNTHESIS_MODEL", _DEFAULT_SYNTHESIS_MOD
 # 两族都挂才 fail-closed —— 「降级用尽后才拒」而不是「一挂就拒」。
 _FALLBACK_SYNTHESIS_MODEL = _reject_preview_model("gemini-3.5-flash", "fallback_default")
 
-# COMMON.md 契约 1：读到 =1 直接从备族开始（主族刚打穿预算，再试纯属白烧）
+# COMMON.md 契约 1：读到 =1 直接从备族开始。适用场景是**单族级故障**（持续限流 /
+# 5xx / 超时）；账户级预算耗尽换族无效（主备族同 Gateway 同 key 同 user），那条路径
+# 由共享预算闸在 HTTP 之前短路，不靠这个开关。
 _FAMILY_FALLBACK_ENV = "AKB2_LLM_FAMILY_FALLBACK"
+
+# 共享预算闸里记「谁写下了这条封锁」。与 daily_briefing.sh preflight 的
+# `social_briefing_main`（读者标签）刻意不同名：排查时要能一眼分出
+# 「谁撞到 429 布的闸」和「谁被闸拦住」。
+BUDGET_GATE_CONSUMER = "social.synthesize"
 
 # 本次 synthesize() 运行中已确认不可用的模型族。synthesize 对**质量退化**重试 3 次
 # （见 max_attempts），每次都重新调 _call_deepseek；不记账的话，刚判定不可用的主族
@@ -135,12 +156,69 @@ def _call_llm(
             raw = resp.json()["choices"][0]["message"]["content"]
             _log_raw_response(model=model, raw=raw)
             return raw
-        except Exception:
+        except SynthesisUnavailableError:
+            raise
+        except Exception as exc:
+            # 预算耗尽首击即停：退避与换族都拿不回账户额度，继续打只是把确定失败的
+            # 请求再发几遍（R1 实测本链对真实 UTC 日预算体发出 DeepSeek×3 + Gemini×3
+            # 共 6 次请求才失败）。同时为后续入口布共享闸（SC-R1-06）。
+            diagnosis = _classify_llm_exception(exc)
+            if diagnosis is not None and diagnosis.is_budget_exceeded:
+                _record_shared_budget_gate(diagnosis, model_id=model)
+                raise SynthesisBudgetExceededError(
+                    f"synthesis fail-fast: 共享 Gateway 预算耗尽，"
+                    f"重试与换族均无效（{diagnosis.summary()} model={model}）——"
+                    f"跳过剩余 {max_retries - attempt} 次重试；"
+                    f"补救只有等额度重置到具名边界。"
+                ) from exc
             if attempt == max_retries:
                 raise
             time.sleep(2 ** attempt)
 
     raise RuntimeError(f"_call_llm({model}): exhausted retries")  # pragma: no cover
+
+
+def _classify_llm_exception(exc: Exception) -> ProviderErrorDiagnosis | None:
+    """把 httpx 异常归因成共享契约 2 结构；无响应可分类时返回 None。
+
+    分类走 `http_retry.classify_provider_error` 这**唯一一处**实现 —— 本模块不自己
+    认字符串（github 侧与 quality 侧各写一份的后果已经在 R1 审查里付过代价）。
+    """
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    if not isinstance(status, int):
+        return None
+    try:
+        body = response.text
+    except Exception:  # noqa: BLE001 — 响应体读不到不影响状态码分类
+        body = ""
+    return classify_provider_error(status, body)
+
+
+def _record_shared_budget_gate(
+    diagnosis: ProviderErrorDiagnosis, *, model_id: str
+) -> None:
+    """把预算耗尽写进跨进程共享闸（惰性 import，见 github 侧同名函数的论证）。"""
+    try:
+        from akb2.common.budget_gate import BudgetDiagnostics, record_budget_event
+
+        record_budget_event(
+            BudgetDiagnostics(
+                error_type=diagnosis.error_type,
+                budget_scope=diagnosis.budget_scope,
+                spend=diagnosis.spend,
+                cap=diagnosis.cap,
+                budget_date=diagnosis.budget_date,
+                provider_code=str(diagnosis.provider_code),
+                raw_message=diagnosis.raw_excerpt,
+            ),
+            consumer=BUDGET_GATE_CONSUMER,
+        )
+    except Exception as exc:  # noqa: BLE001 — 布闸失败不得吞掉 provider 真因
+        sys.stderr.write(
+            f"WARNING: 共享预算闸写入失败（model={model_id}）: "
+            f"{type(exc).__name__}: {exc}\n"
+        )
 
 
 def _log_raw_response(model: str, raw: str) -> None:

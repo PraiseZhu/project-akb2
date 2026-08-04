@@ -42,11 +42,6 @@ MAX_RETRIES: int = 2
 _DEFAULT_REASONING_EFFORT = "__default__"
 DEEPSEEK_BETA_BASE_URL = "https://api.deepseek.com/beta"
 QUALITY_LEDGER_FILE = "quality-ledger.jsonl"
-_BUDGET_ERROR_DATE_RE = re.compile(r"\bDate=(\d{4}-\d{2}-\d{2})\b", re.IGNORECASE)
-_BUDGET_ERROR_SPEND_RE = re.compile(r"\b(?:Spend|Spent)=(\d+(?:\.\d+)?)\b", re.IGNORECASE)
-_BUDGET_ERROR_CAP_RE = re.compile(
-    r"\b(?:DailyCap|TotalCap|Cap)=(\d+(?:\.\d+)?)\b", re.IGNORECASE
-)
 
 logger = logging.getLogger(__name__)
 
@@ -56,11 +51,15 @@ try:  # pragma: no cover - runtime path
         OTHER_ERROR,
         PROVIDER_CODE_429,
         RATE_LIMIT,
-        TOTAL_SCOPE,
-        UTC_DAILY_SCOPE,
         BudgetDiagnostics,
+        UnscopedBudgetEventError,
         query_budget_gate,
         record_budget_event,
+    )
+    from src.akb2.common.http_retry import (
+        ERROR_TYPE_BUDGET_EXCEEDED,
+        ERROR_TYPE_RATE_LIMIT,
+        classify_provider_error,
     )
     from src.akb2.common.state_paths import LEDGER_SUBDIR, resolve_state_file
     from src.akb2.loops.ledger import append_event
@@ -70,11 +69,15 @@ except ImportError:  # pragma: no cover - script runtime path
         OTHER_ERROR,
         PROVIDER_CODE_429,
         RATE_LIMIT,
-        TOTAL_SCOPE,
-        UTC_DAILY_SCOPE,
         BudgetDiagnostics,
+        UnscopedBudgetEventError,
         query_budget_gate,
         record_budget_event,
+    )
+    from akb2.common.http_retry import (
+        ERROR_TYPE_BUDGET_EXCEEDED,
+        ERROR_TYPE_RATE_LIMIT,
+        classify_provider_error,
     )
     from akb2.common.state_paths import LEDGER_SUBDIR, resolve_state_file
     from akb2.loops.ledger import append_event
@@ -188,44 +191,39 @@ def _provider_error_text(exc: Exception) -> str:
     return " | ".join(part for part in parts if part).strip()
 
 
-def _extract_float(pattern: re.Pattern[str], text: str) -> float | None:
-    match = pattern.search(text)
-    if match is None:
-        return None
-    return float(match.group(1))
-
-
 def _diagnostics_from_provider_error(exc: Exception) -> BudgetDiagnostics:
+    """把 provider 异常归因成 BudgetDiagnostics —— 分类**只有一个实现**。
+
+    此前这里另写了一份 429 文本解析，与 `http_retry.classify_provider_error` 漂移：
+    真实的总预算形态是 `ExceededBudget: User=… over budget. Spend=…, Budget=…`
+    （**不含** "total cap"/"total budget" 字样），本地解析器一条都不命中 → scope=''
+    → cooldown 算不出 → 闸门永不短路。而 briefing 侧用共享分类器的同一响应体归出
+    scope='total'。同一语义两份实现，其中一份已经错了 —— 现在统一委派给共享分类器
+    （加固清单第 10 类形态①：判据该有唯一 owner）。
+
+    本函数只做「共享诊断 → 落盘 dataclass」的形状转换：
+    provider_code 在本模块是字符串（PROVIDER_CODE_429 语义是「这是 429 事件吗」），
+    在 http_retry 是 int 状态码，故显式换形，不把 int 直接塞进字符串字段。
+    """
     status_code = _extract_status_code(exc)
     text = _provider_error_text(exc)
-    lowered = text.lower()
-    provider_code = PROVIDER_CODE_429 if status_code == 429 else ""
+    diagnosis = classify_provider_error(status_code, text)
 
-    error_type = OTHER_ERROR
-    scope = ""
-    budget_date = ""
-
-    if status_code == 429:
-        if "budget" in lowered or "exceededbudget" in lowered:
-            error_type = BUDGET_EXCEEDED
-            if "utc daily cap" in lowered or "utc_daily" in lowered or "daily cap" in lowered:
-                scope = UTC_DAILY_SCOPE
-                match = _BUDGET_ERROR_DATE_RE.search(text)
-                if match is not None:
-                    budget_date = match.group(1)
-            elif "total cap" in lowered or "total budget" in lowered:
-                scope = TOTAL_SCOPE
-        elif "rate limit" in lowered or "too many requests" in lowered:
-            error_type = RATE_LIMIT
+    error_type = {
+        ERROR_TYPE_BUDGET_EXCEEDED: BUDGET_EXCEEDED,
+        ERROR_TYPE_RATE_LIMIT: RATE_LIMIT,
+    }.get(diagnosis.error_type, OTHER_ERROR)
 
     return BudgetDiagnostics(
         error_type=error_type,
-        budget_scope=scope,
-        spend=_extract_float(_BUDGET_ERROR_SPEND_RE, text),
-        cap=_extract_float(_BUDGET_ERROR_CAP_RE, text),
-        budget_date=budget_date,
-        provider_code=provider_code,
-        raw_message=text,
+        budget_scope=diagnosis.budget_scope,
+        spend=diagnosis.spend,
+        cap=diagnosis.cap,
+        budget_date=diagnosis.budget_date,
+        provider_code=PROVIDER_CODE_429 if status_code == 429 else "",
+        # 原文脱敏后才落盘/进异常（加固清单第 9 类）——
+        # classify_provider_error 已在 raw_excerpt 上做过，这里直接用它。
+        raw_message=diagnosis.raw_excerpt,
     )
 
 
@@ -818,15 +816,28 @@ def route_llm(
         ) from exc
     except openai.APIError as exc:
         diagnostics = _diagnostics_from_provider_error(exc)
+        gate_write_note = ""
         if diagnostics.provider_code == PROVIDER_CODE_429:
             _append_quality_budget_event(
                 diagnostics=diagnostics,
                 model_family=model_family,
                 consumer=budget_consumer,
             )
-            record_budget_event(diagnostics, consumer=budget_consumer)
+            try:
+                record_budget_event(diagnostics, consumer=budget_consumer)
+            except UnscopedBudgetEventError as gate_exc:
+                # fail-loud 但不吞掉 provider 错误：分类器坏了要响亮暴露（ERROR 级 +
+                # 进抛出的异常文本），同时保留「这次调用因 provider 429 失败」这条
+                # 主因，否则运维只看到一个 ValueError 却不知道 provider 发生了什么。
+                logger.error("shared budget gate refused unscoped event: %s", gate_exc)
+                gate_write_note = f" | budget_gate_write_refused={gate_exc}"
+        # 异常文本用脱敏后的归因，不用 str(exc)：str(exc) 含 provider 原文
+        # （R1 实测能把 sk-* 探针字面量带进日志）。
         raise LLMProviderError(
-            f"LLM API 错误: {model_family} — {exc}"
+            f"LLM API 错误: {model_family} — error_type={diagnostics.error_type}"
+            f" budget_scope={diagnostics.budget_scope or 'n/a'}"
+            f" provider_code={diagnostics.provider_code or 'n/a'}"
+            f" detail={diagnostics.raw_message}{gate_write_note}"
         ) from exc
 
     raw = response.choices[0].message.content or ""

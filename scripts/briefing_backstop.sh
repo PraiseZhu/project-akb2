@@ -30,23 +30,22 @@
 #   两天 —— 全部源于把 unreadable 一路断言成 failed。假阳性降到 0 之前不能接告警
 #   通道，否则必然告警疲劳。
 #
-# ── 已知结构性约束（需人工决策，勿由 agent 私自改 launchd 调度）─────────────
-#   com.akb2.briefing.backstop 的第二个 StartCalendarInterval 是 12:05，而默认
-#   deadline 是 12:00 —— 该时段调用按设计只能巡检报告、永远无法真正补跑。
-#
-#   而这个 5 分钟的错位比"少一次补跑机会"严重得多，因为它和**共享 Gateway 的 UTC
-#   日预算重置点**耦合在一起：
+# ── 补跑时段与 UTC 预算日的耦合（已由 owner 决策并改模板，勿再私自改调度）────
+#   为什么第二补跑时段必须早于 deadline，且必须落在 UTC 预算日重置之后：
 #     · 本机时区 Asia/Shanghai = UTC+8。
 #     · 05:30 主跑 = UTC 21:30、07:30/08:00 backstop = UTC 23:30/00:00 —— 都落在
 #       **UTC 预算日的尾部**，日配额通常已被前 22 小时消耗殆尽（2026-08-01 实证：
 #       `ExceededBudget: exceeded UTC daily cap. Date=2026-08-01, Spend=2701.23,
 #       DailyCap=2700.0`，主跑与 backstop 双双 429）。
-#     · 12:05 = UTC 04:05 —— UTC 预算日刚重置 4 小时，额度最充裕。
-#   也就是说：**唯一有额度的补跑窗口，恰好被 deadline 结构性锁死。**
+#     · 11:00 = UTC 03:00 —— UTC 预算日已重置 3 小时，额度充裕，且早于 12:00 deadline。
 #
-#   供 owner 决策（本脚本不改，见 lane-3 L3-6）：
-#     推荐把第二补跑时段**提前到 11:00**（早于 deadline），而**不是**把 deadline
-#     往后推 —— 简报价值随时间衰减，deadline 后移等于降低产出价值本身。
+#   历史形态：该时段曾是 **12:05**，晚于默认 deadline 12:00 —— 于是"唯一有额度的补跑
+#   窗口"被 deadline 结构性锁死，按设计只能巡检报告、永远无法真正补跑。
+#   现状：owner 2026-08-03 确认，**仓库模板已改为 11:00**（launchd/*.backstop.plist）。
+#   注意运行态与模板可能仍不一致：这两个 label 的 manifest installer 是
+#   `manual_existing_runtime`，需 owner 人工重装才生效；未重装期间
+#   scripts/verify-launchd-parity.sh 会报 installed_stale（方向指向运行态，不是仓库），
+#   该残留已在 docs/allowed-residuals.md 登记。
 #
 # 用法：briefing_backstop.sh --vault-root <path> [--dry-run] [--log-path <path>]
 set -euo pipefail
@@ -109,9 +108,15 @@ readonly RERUN_BACKOFF_SECONDS="${AKB2_BRIEFING_RERUN_BACKOFF:-600}"
 #         只会把 backstop 自己的运行时间推过 deadline
 #     3 = intake 降级到测试 fixture、硬阻断 —— 确定性阻断，与模型族无关
 #     5 = 跨日去重账本不可用 —— 基础设施故障，换族不解决
+#    65 = 共享预算闸已短路（daily_briefing.sh 的 SHARED_BUDGET_BLOCKED_EXIT_CODE）——
+#         闸门在 pipeline **启动之前**就拦下了，跟模型族毫无关系：
+#         `AKB2_LLM_FAMILY_FALLBACK=1` 对它结构性无效。不拦这个码的后果是生产默认
+#         `RERUN_BACKOFF=600` 明知无望仍空睡 600s，而这 600s 一直**占着补跑锁**
+#         （正是 deadline_missed_after 要消掉的那种浪费，只是换了触发源）。
 # 仍然重试的：1（通用未交付 / gate reject / vault 不可用）、2（audit fail）、
 #   4（gate 不收敛）—— 这三类都可能由 LLM 输出质量驱动，换族确有机会救回。
-readonly RERUN_NONRETRYABLE_EXIT_CODES="124 3 5"
+readonly SHARED_BUDGET_BLOCKED_EXIT_CODE=65
+readonly RERUN_NONRETRYABLE_EXIT_CODES="124 3 5 $SHARED_BUDGET_BLOCKED_EXIT_CODE"
 if ! [[ "$RERUN_ATTEMPT_BUDGET" =~ ^[0-9]+$ ]] || (( RERUN_ATTEMPT_BUDGET < 1 )); then
   echo "ERROR: AKB2_BRIEFING_RERUN_ATTEMPTS 必须是 >=1 的整数，实际 '$RERUN_ATTEMPT_BUDGET'" >&2
   exit 1
@@ -290,9 +295,30 @@ PUBLISHED_READ_ATTEMPTS=0   # 主读者本次实际尝试轮次（结构性不�
 VERDICT_ERR_FILE=""
 LOCK_FILE=""
 LOCK_HELD=0
+# 补跑后复查得到的产物状态。初值刻意不是 "pass"：若 rc=0 却没走过复查（结构性不可能，
+# 但真发生时属编程错误），假 recovered 闸按 fail-closed 报 FAILED 而不是放行 recovered。
+RERUN_POST_STATUS="unset"
+# 释放锁：**删前重读**，内容 == 自己的 pid 才删（所有者校验）。
+# 为什么 `LOCK_HELD=1` 不够：acquire 是 check-then-write，两个同刻实例可以都判定
+# 「无锁/陈旧锁」并各自 `echo $$ >`，于是**双方 LOCK_HELD 都是 1**；后写者覆盖前者，
+# 前者退出时无条件 rm 就把**后者**（当前真持有者）的锁删了 —— 第三个实例随即冲进来。
+# 内容比对不能消除 acquire 侧的竞态窗口，但能保证「只有所有者释放锁」，
+# 把「误删他人锁」这一半彻底关掉。
+release_rerun_lock() {
+  local current
+  [[ "$LOCK_HELD" -eq 1 && -n "$LOCK_FILE" ]] || return 0
+  LOCK_HELD=0
+  current="$(cat "$LOCK_FILE" 2>/dev/null || echo '')"
+  if [[ "$current" != "$$" ]]; then
+    log "warn — 锁已被他人接管，不删除 lock_owner_now=${current:-none} lock_self=$$ lock_file=$LOCK_FILE (${DATE:-})" || true
+    return 0
+  fi
+  rm -f "$LOCK_FILE"
+  return 0
+}
 cleanup() {
   [[ -n "$VERDICT_ERR_FILE" ]] && rm -f "$VERDICT_ERR_FILE"
-  [[ "$LOCK_HELD" -eq 1 && -n "$LOCK_FILE" ]] && rm -f "$LOCK_FILE"
+  release_rerun_lock
   return 0
 }
 trap cleanup EXIT
@@ -521,9 +547,17 @@ if akb2_state_root_is_synced "$(dirname "$LOCK_FILE")"; then
 fi
 
 LOCK_PID_HELD_BY=""
+LOCK_SETUP_ERROR=""
+# 返回值三态（不是两态）：0=拿到锁 / 1=别人持锁 / 2=**建不了锁**。
+# 建不了锁必须与「别人持锁」分开：后者是正常让路（exit 0），前者是**无法建立互斥**，
+# 此时继续跑就是以互斥语义启动一次付费补跑而实际上没有互斥（宪法 P3 fail-closed）。
 acquire_rerun_lock() {
-  local lock_pid
-  mkdir -p "$(dirname "$LOCK_FILE")"
+  local lock_pid lock_dir
+  lock_dir="$(dirname "$LOCK_FILE")"
+  if ! mkdir -p "$lock_dir" 2>/dev/null; then
+    LOCK_SETUP_ERROR="锁目录不可创建: $lock_dir"
+    return 2
+  fi
   if [[ -f "$LOCK_FILE" ]]; then
     lock_pid="$(cat "$LOCK_FILE" 2>/dev/null || echo '')"
     if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
@@ -532,12 +566,26 @@ acquire_rerun_lock() {
     fi
     rm -f "$LOCK_FILE"      # 陈旧锁：持有者已死，接管
   fi
-  echo $$ > "$LOCK_FILE"
+  if ! echo $$ > "$LOCK_FILE" 2>/dev/null; then
+    LOCK_SETUP_ERROR="锁文件不可写: $LOCK_FILE"
+    return 2
+  fi
   LOCK_HELD=1
   return 0
 }
 
-if ! acquire_rerun_lock; then
+set +e
+acquire_rerun_lock
+lock_rc=$?
+set -e
+if (( lock_rc == 2 )); then
+  # fail-closed：无法建立机器本地互斥 → 不启动付费补跑。裸跑的后果是双跑烧双份额度
+  # （38 天双跑事故的成型条件），而"少跑一次"可由下一个 backstop 时段兜。
+  log_terminal failed \
+    "FAILED — 无法建立补跑互斥锁（${LOCK_SETUP_ERROR}），拒绝以互斥语义启动付费补跑 lock_setup=failed status=$status exit_code=1 ($DATE)"
+  exit 1
+fi
+if (( lock_rc != 0 )); then
   log_terminal skip "skip — already-running: 另一个 backstop 补跑正持锁 lock_pid=$LOCK_PID_HELD_BY lock_file=$LOCK_FILE status=$status ($DATE)"
   exit 0
 fi
@@ -571,12 +619,26 @@ while (( attempt <= RERUN_ATTEMPT_BUDGET )); do
     bash "$RERUN_SCRIPT" --date "$DATE" --vault-root "$VAULT_ROOT"
   rc=$?
   set -e
-  (( rc == 0 )) && break
-  if is_nonretryable_rc "$rc"; then
+  # recovered 必须由**产物状态**证明，不得只凭子进程退出码（抄 github 侧 SC-5 的形状）。
+  # social 侧的正确判据不是"文件存在"而是 `resolve_published_state` 回到 pass ——
+  # 触发补跑的条件本来就包含 warn_or_fail / no_verdict / unreadable，
+  # 光判文件存在会把"重跑完还是 audit fail"也叫成 recovered。
+  # 本文件头部花了 8 行论证「假阳性降到 0 之前不能接告警通道」，指的是假 FAILED；
+  # 这里关掉的是同族的**假 recovered**，而 terminal= 正是告警通道要读的那个键。
+  if (( rc == 0 )); then
+    resolve_published_state "$SOCIAL_FILE"
+    RERUN_POST_STATUS="$PUBLISHED_STATUS"
+    if [[ "$RERUN_POST_STATUS" == "pass" ]]; then
+      break
+    fi
+    # rc=0 却没达 pass = pipeline 的「未交付即非零」不变式被破，属真异常，值得再试一轮
+    log "warn — 补跑 rc=0 但产物未达 pass（假成功，pipeline 不变式被破）post_status=$RERUN_POST_STATUS read_path=$PUBLISHED_READ_PATH attempt=$attempt/$RERUN_ATTEMPT_BUDGET ($DATE)"
+  elif is_nonretryable_rc "$rc"; then
     log "warn — 补跑未成功 attempt=$attempt/$RERUN_ATTEMPT_BUDGET rc=$rc rerun_stop=nonretryable_exit（该退出码换模型族救不了，不再重试）($DATE)"
     break
+  else
+    log "warn — 补跑未成功 attempt=$attempt/$RERUN_ATTEMPT_BUDGET rc=$rc ($DATE)"
   fi
-  log "warn — 补跑未成功 attempt=$attempt/$RERUN_ATTEMPT_BUDGET rc=$rc ($DATE)"
   attempt=$(( attempt + 1 ))
   if (( attempt <= RERUN_ATTEMPT_BUDGET )); then
     backoff=$(( RERUN_BACKOFF_SECONDS * (2 ** (attempt - 2)) ))
@@ -591,6 +653,15 @@ while (( attempt <= RERUN_ATTEMPT_BUDGET )); do
 done
 
 attempts_used=$(( attempt > RERUN_ATTEMPT_BUDGET ? RERUN_ATTEMPT_BUDGET : attempt ))
+
+# 假 recovered 闸：rc=0 但产物没回到 pass → 终态**不得**是 recovered。
+# 退出码仍用 1 而不另开码位：pipeline.py 的 EXIT_* 注释已论证过「码位不该按分支扩散，
+# 分支语义由日志/诊断字段承载」；这里靠 reason=false_recovery 让归因自证。
+if (( rc == 0 )) && [[ "$RERUN_POST_STATUS" != "pass" ]]; then
+  log_terminal failed \
+    "FAILED — 补跑子进程 exit 0 但产物未达 pass，拒绝报 recovered attempt=$attempts_used/$RERUN_ATTEMPT_BUDGET post_status=$RERUN_POST_STATUS read_path=$PUBLISHED_READ_PATH reason=false_recovery exit_code=1 ($DATE)"
+  exit 1
+fi
 # 文案与 src/akb2/briefing/pipeline.py 的 EXIT_* 常量逐条对齐。旧实现把 1 一律叫
 # "gate reject"（实际 1 还覆盖上游硬失败与 vault 不可用），并把 3/4/5 一起丢进
 # "异常" —— 它们是 pipeline **已定义**的结局，不是异常。误标的归因会把排查带偏

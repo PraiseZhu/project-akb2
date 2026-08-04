@@ -22,21 +22,27 @@
 #   - bootout → **等待 teardown** → bootstrap；bootstrap 失败**回滚**并把 launchctl
 #     的 exit code + stderr 全部打出来（2026-07-28 事故：bootout 成功 + bootstrap
 #     失败 + 不回滚 → com.akb2.briefing 被卸掉 5 天 22 小时无人发现）
-#   - VAULT_ROOT 三门 fail-closed（绝对路径 / 目录存在 / 不在临时目录）
-#   - worktree 守卫 fail-closed
+#   - VAULT_ROOT 三门 fail-closed（绝对路径 / 目录存在 / 不在临时目录，按真实路径判定）
+#   - worktree 守卫 fail-closed（git 判定失败也拒绝，不当主仓）
+#   - HOME 缺失 fail-closed（不静默替换成任何字面家目录）
+#   - **身份从模板的 Label 键派生**：`--plist-src` 换模板时，Label / 目标文件 /
+#     launchctl 域标签 / 验证断言四者同一身份。旧版这些量全硬编码 com.akb2.briefing，
+#     于是 INSTALL-MANIFEST 里那条「--plist-src 装 github_briefing」的命令实际会
+#     覆写并 bounce 掉 social 主跑，而目标 job 一次也没装上。
+#   - 后置验证失败 → **回滚**（不留「新版已装未验证」态）
 #   共用实现见 scripts/lib/launchctl.sh。
 set -euo pipefail
-
-PLIST_LABEL="com.akb2.briefing"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VAULT_ROOT="${VAULT_ROOT:-/Volumes/AKB2/Obsidian}"
-HOME_ROOT="${HOME:-/Users/praise}"
 # shellcheck source=scripts/lib/state-root.sh
 . "$SCRIPT_DIR/lib/state-root.sh"
 # shellcheck source=scripts/lib/launchctl.sh
 . "$SCRIPT_DIR/lib/launchctl.sh"
+# HOME fail-closed 必须在任何用到 $HOME 的地方之前（state root / LaunchAgents 都用它）
+akb2_assert_home_set || exit 2
+HOME_ROOT="$HOME"
 akb2_resolve_state_root
 PLIST_SRC="$SCRIPT_DIR/../launchd/com.akb2.briefing.plist"
 RENDER_ONLY_OUT=""
@@ -63,25 +69,42 @@ fi
 akb2_assert_not_worktree "$PROJECT_ROOT" || exit 2
 akb2_assert_vault_root_sane "$VAULT_ROOT" || exit 2
 
-if [ -n "$RENDER_ONLY_OUT" ]; then
-    echo "=== Rendering $PLIST_LABEL (render-only, 不注册) ==="
-else
-    echo "=== Bootstrapping $PLIST_LABEL ==="
-fi
-
 if [ ! -f "$PLIST_SRC" ]; then
     echo "ERROR: plist 模板不存在: $PLIST_SRC" >&2
     exit 2
 fi
 
+# 身份派生：Label 是这次安装的唯一真相来源（--plist-src 换模板时随之变）。
+# 从**模板**（而不是运行态）取，符合 parity 的信任方向：可信期望来自仓库配置。
+akb2_plist_identity "$PLIST_SRC" || exit 2
+PLIST_LABEL="$AKB2_PLIST_LABEL"
+VERIFY_PROGRAM_TOKEN="$AKB2_PLIST_PROGRAM_TOKEN"
+VERIFY_SCHEDULE_TOKEN="$AKB2_PLIST_SCHEDULE_TOKEN"
+
+if [ -n "$RENDER_ONLY_OUT" ]; then
+    echo "=== Rendering $PLIST_LABEL (render-only, 不注册) ==="
+else
+    echo "=== Bootstrapping $PLIST_LABEL ==="
+fi
+echo "  Label（自模板 $PLIST_SRC 派生）: $PLIST_LABEL"
+
 # Generate temp plist with dynamic paths (avoid hardcoded paths)
-PLIST_TMP="$(mktemp -t com.akb2.briefing.XXXXXX.plist)"
+PLIST_TMP="$(mktemp -t akb2-bootstrap-plist.XXXXXX)"
 BACKUP_PLIST=""
+AKB2_ROLLBACK_PRESERVE_BACKUP=0
 # 任何退出路径都清临时件与备份件（2026-07-28 之所以能考古到死点，正是因为旧版
-# 在 set -e 半途退出时把 mktemp 产物留在了 $TMPDIR；留残留不该是取证手段）
-trap 'rm -f "${PLIST_TMP:-}" "${BACKUP_PLIST:-}" 2>/dev/null || true' EXIT
+# 在 set -e 半途退出时把 mktemp 产物留在了 $TMPDIR；留残留不该是取证手段）。
+# 例外：回滚补偿失败时备份是**唯一的旧 good 副本**，必须保住（见 akb2_rollback_plist）。
+cleanup_artifacts() {
+    rm -f "${PLIST_TMP:-}" 2>/dev/null || true
+    if [ "${AKB2_ROLLBACK_PRESERVE_BACKUP:-0}" != "1" ]; then
+        rm -f "${BACKUP_PLIST:-}" 2>/dev/null || true
+    fi
+    return 0
+}
+trap cleanup_artifacts EXIT
 # __AKB2_HOME__ 也必须渲染：2026-08-03 briefing plist 的 PATH 从硬编码
-# /Users/praise/.pyenv/... 改成 __AKB2_HOME__/.pyenv/...，本脚本当时没跟着加这条
+# 个人家目录 .pyenv/... 改成 __AKB2_HOME__/.pyenv/...，本脚本当时没跟着加这条
 # 替换 —— 若照旧装上去，job 的 PATH 会是字面量 "__AKB2_HOME__/.pyenv/shims:…"，
 # pyenv python3 解析不到，主跑运行期才炸。由渲染双门在安装前拦下。
 sed \
@@ -117,25 +140,10 @@ akb2_install_plist_atomic "$PLIST_TMP" "$PLIST_DST"
 PLIST_TMP=""
 BACKUP_PLIST="$AKB2_PLIST_BACKUP"
 
-# 回滚：恢复上次 good（首装则移除新 plist，不留半安装态）。
-# 范式来自 scripts/deploy-mac-mini.sh:309-324。
+# 回滚：恢复上次 good（首装则移除新 plist，不留半安装态）。共用实现在 lib
+# （两份各自漂移过一次就够了）。补偿失败时它会保住备份并打手动恢复指引。
 rollback() {
-    akb2_launchctl_bootout "$DOMAIN_LABEL"
-    akb2_wait_for_launchctl_teardown "$DOMAIN_LABEL" || true
-    if [ -n "$BACKUP_PLIST" ] && [ -f "$BACKUP_PLIST" ]; then
-        mv -f "$BACKUP_PLIST" "$PLIST_DST"
-        BACKUP_PLIST=""
-        if akb2_launchctl_bootstrap "$DOMAIN" "$PLIST_DST"; then
-            echo "↩️  已恢复旧 plist 并重新 bootstrap 成功：$PLIST_DST" >&2
-        else
-            echo "↩️  已恢复旧 plist，但重新 bootstrap 失败——服务当前无 job 在册！" >&2
-            echo "    手动补装：launchctl bootstrap $DOMAIN $PLIST_DST" >&2
-        fi
-    else
-        rm -f "$PLIST_DST"
-        echo "↩️  此前无旧 plist，已移除新 plist（不留半安装态）：$PLIST_DST" >&2
-        echo "    服务当前无 job 在册（与执行前一致）。" >&2
-    fi
+    akb2_rollback_plist "$DOMAIN" "$PLIST_LABEL" "$PLIST_DST" BACKUP_PLIST || true
 }
 
 # bootout 旧 + 等待 teardown + bootstrap 新（stderr 与退出码全部留痕）
@@ -153,21 +161,37 @@ fi
 
 # Verify — AND 语义：两条断言分别 grep，任一不满足即失败。
 # 旧版是 `grep -E 'daily_briefing\.sh|hour = 7'`（OR），只要引用了脚本就算过，
-# 调度断言实际从未生效。
+# 调度断言实际从未生效；且两个 token 都硬编码成 social 的值，`--plist-src` 换模板后
+# 必然验证失败。现在两个 token 都从**模板**派生（见 akb2_plist_identity）。
+#
+# 验证失败 → **回滚**（SC-R1-17）。旧版是直接 `exit 2`：报告了失败，却把
+# 已知有问题的新 job 留在册，同时 EXIT trap 把 last-good 备份删掉 ——
+# 「新版已装未验证」正是本 lane 要消掉的那类中间态。
 echo ""
 echo "=== Verification ==="
-PRINT_OUT="$(launchctl print "$DOMAIN_LABEL" 2>&1 || true)"
-if ! printf '%s\n' "$PRINT_OUT" | grep -q 'daily_briefing\.sh'; then
-    echo "ERROR: Verification failed — 注册的 job 未引用 daily_briefing.sh" >&2
-    printf '%s\n' "$PRINT_OUT" >&2
+verify_failed() {
+    echo "ERROR: Verification failed — $1 → 回滚到执行前状态" >&2
+    printf '%s\n' "${AKB2_BOUNDED_OUTPUT:-<no output>}" >&2
+    rollback
     exit 2
+}
+if ! akb2_launchctl_print_bounded "$DOMAIN_LABEL"; then
+    verify_failed "launchctl print 未能读到 ${DOMAIN_LABEL}（含超时）"
 fi
-if ! printf '%s\n' "$PRINT_OUT" | grep -q 'hour = 7'; then
-    echo "ERROR: Verification failed — 注册的 job 调度不是 hour = 7（本地 7:30）" >&2
-    printf '%s\n' "$PRINT_OUT" >&2
-    exit 2
+PRINT_OUT="$AKB2_BOUNDED_OUTPUT"
+if [ -z "$VERIFY_PROGRAM_TOKEN" ]; then
+    verify_failed "模板未能派生出程序锚（ProgramArguments 缺脚本/模块）"
 fi
-echo "  OK: daily_briefing.sh detected + hour = 7 (本地 7:30，与社媒 7:30/8:30 错峰)"
+if ! printf '%s\n' "$PRINT_OUT" | grep -qF "$VERIFY_PROGRAM_TOKEN"; then
+    verify_failed "注册的 job 未引用 $VERIFY_PROGRAM_TOKEN"
+fi
+if [ -z "$VERIFY_SCHEDULE_TOKEN" ]; then
+    verify_failed "模板未能派生出调度锚（既无 StartCalendarInterval.Hour 也无 StartInterval）"
+fi
+if ! printf '%s\n' "$PRINT_OUT" | grep -qF "$VERIFY_SCHEDULE_TOKEN"; then
+    verify_failed "注册的 job 调度不是 ${VERIFY_SCHEDULE_TOKEN}"
+fi
+echo "  OK: $VERIFY_PROGRAM_TOKEN detected + ${VERIFY_SCHEDULE_TOKEN}（与模板一致）"
 
 # Env 完整性检查
 echo ""
