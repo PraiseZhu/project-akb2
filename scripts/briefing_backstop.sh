@@ -70,6 +70,7 @@ if [[ -z "$VAULT_ROOT" ]]; then
   echo "ERROR: --vault-root is required" >&2
   exit 1
 fi
+readonly BACKSTOP_FLOCK_HELD="${AKB2_BACKSTOP_FLOCK_HELD:-0}"
 
 # 日志解析优先级：--log-path > AKB2_BACKSTOP_LOG > 默认生产日志
 # 测试/手工调用可经 AKB2_BACKSTOP_LOG 隔离到 tmp，绝不污染仓库 logs/backstop.log
@@ -82,6 +83,11 @@ mkdir -p "$(dirname "$LOG")"
 # 本脚本自己放弃时用 125，两者必须不同值，否则 launchd 层永远分不出来。
 readonly DEADLINE_EXIT_CODE=124
 readonly GIVE_UP_EXIT_CODE=125
+# flock_exec.py 的协议码：busy 是正常让路；helper/setup 失败必须响亮 fail-closed。
+readonly LOCK_BUSY_EXIT_CODE=73
+readonly LOCK_HELPER_ERROR_EXIT_CODE=74
+readonly BACKSTOP_PYTHON="${AKB2_BACKSTOP_PYTHON:-python3}"
+readonly FLOCK_EXEC_HELPER="$SCRIPT_DIR/lib/flock_exec.py"
 
 # 读盘重试：外置 APFS 卷（/Volumes/AKB2）偶发**卷级瞬时 open() 失败**，单次失败不该
 # 把健康的一天翻成 FAILED；重试次数有界，每次尝试都落日志。
@@ -134,7 +140,7 @@ RERUN_SCRIPT="${AKB2_BRIEFING_RERUN_SCRIPT:-$SCRIPT_DIR/daily_briefing.sh}"
 # "同一轮自相矛盾" 的伪装（多个 backstop 进程写同一日志时 run_id 不同 = 不同轮）。
 # host：~/AI-Agent 是 Syncthing 共享目录，logs/backstop.log 会被两台机器同时追加。
 # 不带 host 时两机日志混排，看起来像"同一天先 recovered 又 FAILED"的自相矛盾。
-RUN_ID="$(TZ=Asia/Shanghai date +%Y%m%d%H%M%S)-$$"
+RUN_ID="${AKB2_BACKSTOP_RUN_ID:-$(TZ=Asia/Shanghai date +%Y%m%d%H%M%S)-$$}"
 SOURCE="${BACKSTOP_SOURCE:-schedule}"   # schedule / manual / test
 HOST="$(hostname -s 2>/dev/null || echo unknown)"
 
@@ -293,29 +299,11 @@ PUBLISHED_READ_ERROR=""
 PUBLISHED_READ_PATH=""
 PUBLISHED_READ_ATTEMPTS=0   # 主读者本次实际尝试轮次（结构性不可用时为 1，不是预算值）
 VERDICT_ERR_FILE=""
-LOCK_FILE=""
-LOCK_HELD=0
 # 补跑后复查得到的产物状态。初值刻意不是 "pass"：若 rc=0 却没走过复查（结构性不可能，
 # 但真发生时属编程错误），假 recovered 闸按 fail-closed 报 FAILED 而不是放行 recovered。
 RERUN_POST_STATUS="unset"
-# 释放锁：**删前重读**，内容 == 自己的 pid 才删（所有者校验）。acquire 侧现已用
-# noclobber/O_EXCL 保证同刻只有一个创建者；这里仍必须校验，因为锁路径可能在持锁期间
-# 被外部进程替换，旧持有者退出时不得删除新持有者的 PID 文件。
-release_rerun_lock() {
-  local current
-  [[ "$LOCK_HELD" -eq 1 && -n "$LOCK_FILE" ]] || return 0
-  LOCK_HELD=0
-  current="$(cat "$LOCK_FILE" 2>/dev/null || echo '')"
-  if [[ "$current" != "$$" ]]; then
-    log "warn — 锁已被他人接管，不删除 lock_owner_now=${current:-none} lock_self=$$ lock_file=$LOCK_FILE (${DATE:-})" || true
-    return 0
-  fi
-  rm -f "$LOCK_FILE"
-  return 0
-}
 cleanup() {
   [[ -n "$VERDICT_ERR_FILE" ]] && rm -f "$VERDICT_ERR_FILE"
-  release_rerun_lock
   return 0
 }
 trap cleanup EXIT
@@ -452,20 +440,26 @@ status="$PUBLISHED_STATUS"
 # bash 3.2 退化成单字节 locale，`$VAR，` 的 0xEF 会被并进变量名 → set -u 直接
 # "unbound variable" 崩掉整个 backstop（此前 warn/fail 分支一直踩在这颗雷上）。
 if should_rerun "$status"; then
-  case "$status" in
-    warn_or_fail)
-      log "rerun — 今日已发布但 audit_verdict=${PUBLISHED_VERDICT}，触发质量重跑 status=$status read_path=$PUBLISHED_READ_PATH ($DATE)" ;;
-    unknown_verdict)
-      log "rerun — 今日已发布但 audit_verdict=$PUBLISHED_VERDICT 非已知取值，保守重跑 status=$status read_path=$PUBLISHED_READ_PATH ($DATE)" ;;
-    no_verdict)
-      log "rerun — 今日文件可读但 frontmatter 无 audit_verdict 字段，保守重跑 status=$status read_path=$PUBLISHED_READ_PATH ($DATE)" ;;
-    unreadable)
-      log "rerun — 今日文件存在但双读者均读盘失败（awk ${PUBLISHED_READ_ATTEMPTS} 轮 + 纯 bash 回退）err=\"$PUBLISHED_READ_ERROR\"，保守重跑 status=$status read_path=$PUBLISHED_READ_PATH ($DATE)" ;;
-    missing)
-      log "rerun — 今日未发布，触发补跑 status=$status ($DATE)" ;;
-  esac
+  if [[ "$BACKSTOP_FLOCK_HELD" != "1" ]]; then
+    case "$status" in
+      warn_or_fail)
+        log "rerun — 今日已发布但 audit_verdict=${PUBLISHED_VERDICT}，触发质量重跑 status=$status read_path=$PUBLISHED_READ_PATH ($DATE)" ;;
+      unknown_verdict)
+        log "rerun — 今日已发布但 audit_verdict=$PUBLISHED_VERDICT 非已知取值，保守重跑 status=$status read_path=$PUBLISHED_READ_PATH ($DATE)" ;;
+      no_verdict)
+        log "rerun — 今日文件可读但 frontmatter 无 audit_verdict 字段，保守重跑 status=$status read_path=$PUBLISHED_READ_PATH ($DATE)" ;;
+      unreadable)
+        log "rerun — 今日文件存在但双读者均读盘失败（awk ${PUBLISHED_READ_ATTEMPTS} 轮 + 纯 bash 回退）err=\"$PUBLISHED_READ_ERROR\"，保守重跑 status=$status read_path=$PUBLISHED_READ_PATH ($DATE)" ;;
+      missing)
+        log "rerun — 今日未发布，触发补跑 status=$status ($DATE)" ;;
+    esac
+  fi
 else
-  log_terminal skip "skip — 今日已发布且 audit_verdict=pass，无需补跑 status=$status read_path=$PUBLISHED_READ_PATH ($DATE)"
+  if [[ "$BACKSTOP_FLOCK_HELD" == "1" ]]; then
+    log_terminal skip "skip — 拿锁后重检发现产物已达 pass，不启动补跑 lock_artifact_recheck=pass status=$status read_path=$PUBLISHED_READ_PATH ($DATE)"
+  else
+    log_terminal skip "skip — 今日已发布且 audit_verdict=pass，无需补跑 status=$status read_path=$PUBLISHED_READ_PATH ($DATE)"
+  fi
   exit 0
 fi
 
@@ -484,6 +478,9 @@ else
   GIVE_UP_DETAIL=""
 fi
 
+# 外层做便宜的进程/deadline/dry-run 预检；helper exec 回来的内层已经持有 flock，
+# 只做产物重检并进入补跑，避免重复读取时钟改变既有 deadline 语义。
+if [[ "$BACKSTOP_FLOCK_HELD" != "1" ]]; then
 # 守卫 ②：主跑进程仍在运行 → 让它先跑完，本次跳过
 #
 # 探针模式做成具名 + 可覆写：`pgrep -f` 是**全机器范围**的模糊匹配，同机器上任何一条
@@ -515,6 +512,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   log_terminal dry_run "dry-run — 当日简报未达 pass，将会触发补跑（实际未执行）status=$status ($DATE)"
   exit 0
 fi
+fi
 
 # ── 补跑互斥锁（L3-4）──────────────────────────────────────────────────────
 # 为什么 pgrep 结构性救不了双跑：social 主跑调度 07:30、backstop 08:00，间隔 30
@@ -523,13 +521,15 @@ fi
 # （便宜的早退），但真正的互斥必须落在锁上。另有两处 TOCTOU 也只有锁能收：
 #   pgrep 判定 → 启动 pipeline 之间无原子性；`[[ -f ]]` → 读文件之间可被替换。
 #
-# 锁实现直接复用 scripts/akb2-main-pipeline.sh 已验证的范式（PID 文件 +
-# `kill -0` 存活校验 + 陈旧锁清理）—— 宪法「约定优于新奇」，不引入第二种锁。
+# 锁实现使用仓库既有的 `fcntl.flock` 共享 inode 范式。锁文件只作为永久 inode，
+# 不承载 PID、不删除、不做陈旧接管；内核把锁绑定到继承的 fd，并在最后一个持 fd 的
+# 执行进程退出时释放。
+# macOS 没有 flock(1)，所以由 python helper 完成 LOCK_EX|LOCK_NB + exec。
 #
 # 锁**位置**上刻意偏离 lane 计划里写的 `staging/locks/`，理由是仓库已经踩过并修好
 # 这个坑：REPO_ROOT 在 ~/AI-Agent（Syncthing folder，`.stfolder` 实证）内，锁放仓库
-# 会被跨机同步 → 两台机器互看/互删对方的 PID 文件，`kill -0` 对另一台的 PID 毫无
-# 意义（akb2-main-pipeline.sh:26-30 已把锁从 staging/locks 迁到机器本地状态根）。
+# 会被跨机同步，而 `fcntl.flock` 只在本机内核生效，不能协调另一台机器上的同路径。
+# akb2-main-pipeline.sh:26-30 已把锁从 staging/locks 迁到机器本地状态根。
 # 把 backstop 的锁放回 staging/locks 等于重新引入那个已修的缺陷。
 # STATE_ROOT 解析复用 scripts/lib/state-root.sh（shell 侧唯一实现，与 python 侧
 # state_paths.get_state_root() 有 parity 断言）。
@@ -543,56 +543,29 @@ if akb2_state_root_is_synced "$(dirname "$LOCK_FILE")"; then
   log "warn — 锁目录在跨机同步范围内，互斥保证降级 lock_sync_risk=1 lock_file=$LOCK_FILE ($DATE)"
 fi
 
-LOCK_PID_HELD_BY=""
-LOCK_SETUP_ERROR=""
-# 返回值三态（不是两态）：0=拿到锁 / 1=别人持锁 / 2=**建不了锁**。
-# 建不了锁必须与「别人持锁」分开：后者是正常让路（exit 0），前者是**无法建立互斥**，
-# 此时继续跑就是以互斥语义启动一次付费补跑而实际上没有互斥（宪法 P3 fail-closed）。
-acquire_rerun_lock() {
-  local lock_pid lock_dir
-  lock_dir="$(dirname "$LOCK_FILE")"
-  if ! mkdir -p "$lock_dir" 2>/dev/null; then
-    LOCK_SETUP_ERROR="锁目录不可创建: $lock_dir"
-    return 2
+if [[ "$BACKSTOP_FLOCK_HELD" != "1" ]]; then
+  if ! command -v "$BACKSTOP_PYTHON" >/dev/null 2>&1; then
+    log_terminal failed "FAILED — python3 不可用，无法建立 fcntl.flock 互斥，拒绝无锁补跑 lock_setup=failed status=$status exit_code=1 ($DATE)"
+    exit 1
   fi
-  while true; do
-    # noclobber 把「不存在 → 写入自身 PID」合成一次 O_EXCL 获取；失败后才读取现持有者。
-    # PID 文件格式仍是单行十进制 PID，不引入 flock/mkdir 等第二种锁协议。
-    if ( set -o noclobber; printf '%s\n' "$$" > "$LOCK_FILE" ) 2>/dev/null; then
-      LOCK_HELD=1
-      return 0
-    fi
-    if [[ ! -f "$LOCK_FILE" ]]; then
-      LOCK_SETUP_ERROR="锁文件不可写: $LOCK_FILE"
-      return 2
-    fi
-    lock_pid="$(cat "$LOCK_FILE" 2>/dev/null || echo '')"
-    if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
-      LOCK_PID_HELD_BY="$lock_pid"
-      return 1
-    fi
-    if ! rm -f "$LOCK_FILE" 2>/dev/null; then
-      LOCK_SETUP_ERROR="陈旧锁不可移除: $LOCK_FILE"
-      return 2
-    fi
-    # 陈旧锁已移除后回到 O_EXCL 获取点；若另一实例先抢到，本轮不会覆盖它。
-  done
-}
-
-set +e
-acquire_rerun_lock
-lock_rc=$?
-set -e
-if (( lock_rc == 2 )); then
-  # fail-closed：无法建立机器本地互斥 → 不启动付费补跑。裸跑的后果是双跑烧双份额度
-  # （38 天双跑事故的成型条件），而"少跑一次"可由下一个 backstop 时段兜。
-  log_terminal failed \
-    "FAILED — 无法建立补跑互斥锁（${LOCK_SETUP_ERROR}），拒绝以互斥语义启动付费补跑 lock_setup=failed status=$status exit_code=1 ($DATE)"
-  exit 1
-fi
-if (( lock_rc != 0 )); then
-  log_terminal skip "skip — already-running: 另一个 backstop 补跑正持锁 lock_pid=$LOCK_PID_HELD_BY lock_file=$LOCK_FILE status=$status ($DATE)"
-  exit 0
+  set +e
+  AKB2_BACKSTOP_FLOCK_HELD=1 AKB2_BACKSTOP_RUN_ID="$RUN_ID" \
+    "$BACKSTOP_PYTHON" "$FLOCK_EXEC_HELPER" \
+    --lock-file "$LOCK_FILE" \
+    --busy-exit-code "$LOCK_BUSY_EXIT_CODE" \
+    --error-exit-code "$LOCK_HELPER_ERROR_EXIT_CODE" \
+    -- /bin/bash "$0" --vault-root "$VAULT_ROOT" --log-path "$LOG"
+  lock_rc=$?
+  set -e
+  if (( lock_rc == LOCK_BUSY_EXIT_CODE )); then
+    log_terminal skip "skip — already-running: 另一个 backstop 补跑正持 flock lock_file=$LOCK_FILE status=$status ($DATE)"
+    exit 0
+  fi
+  if (( lock_rc == LOCK_HELPER_ERROR_EXIT_CODE )); then
+    log_terminal failed "FAILED — 无法建立 fcntl.flock 互斥，拒绝无锁补跑 lock_setup=failed status=$status exit_code=1 ($DATE)"
+    exit 1
+  fi
+  exit "$lock_rc"
 fi
 
 # 初次产物判断与拿锁之间，主跑可能刚好完成。成为唯一锁 owner 后必须重检，避免对

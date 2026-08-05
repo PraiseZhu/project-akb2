@@ -116,3 +116,49 @@ def test_record_failure_escalation_line_keeps_0600(tmp_path: Path) -> None:
     assert _mode(failures) == 0o600
     # 3 条签名行 + 1 条 escalation 行
     assert len(failures.read_text(encoding="utf-8").strip().splitlines()) == 4
+
+
+# ---------------------------------------------------------------------------
+# SC-R4-03 —— 不变量的**脱敏**那一半
+# ---------------------------------------------------------------------------
+# R2 轮把「node 会带入库源 URL，URL 可能含 query 凭证」写进了 signatures.py 的
+# docstring，然后只修了 0600（权限）。不变量要求的是「统一**脱敏** *且* 按 0600 创建」
+# 两半 —— 脱敏那半从未落地：node 从没经过 redactor，含 `?access_token=…` 的 URL 原样
+# 写进 failures.jsonl 的三处（签名行 / escalation 行 / 返回的 signature）。
+#
+# 哨兵同样不含已知前缀：只有 redactor 的**键名**规则能救它。若哪天有人把 signatures.py
+# 的 redact 调用去掉、或把键名规则改回不认引号，本测试三条断言会同时红。
+_NODE_SENTINEL = "opaque-node-sentinel-7b1c4e05"
+_NODE_BASE = "intake.extract.https://example.com/a?access_token="
+
+
+@pytest.mark.usefixtures("_umask_022")
+def test_failures_node_field_is_redacted(tmp_path: Path) -> None:
+    """node 的凭证样式 query 参数必须在落盘前脱敏，且去重逻辑本身不受影响。"""
+    failures = tmp_path / "ledgers" / "failures.jsonl"
+
+    # 同一 URL、仅 token 不同的三次失败：脱敏后归并为同一签名 → 计到 3 → 触发升级。
+    # 这既证明脱敏生效，也证明**去重/计数逻辑仍然工作**（脱敏改了签名身份，
+    # 但比对与累计仍在同一个值上进行）。
+    for suffix in ("", "-rotated", "-again"):
+        result = record_failure(
+            str(failures), "fetch_fail", f"{_NODE_BASE}{_NODE_SENTINEL}{suffix}&x=1"
+        )
+
+    body = failures.read_text(encoding="utf-8")
+
+    # ① 落盘文件（含 escalation 行）不得出现哨兵原文
+    assert _NODE_SENTINEL not in body, f"failures.jsonl 仍带 node 凭证原文:\n{body}"
+    # ② 返回给调用方的 signature 也不得带原文（它会进日志/异常文本）
+    assert _NODE_SENTINEL not in result["signature"]
+    assert "<redacted>" in result["signature"], result["signature"]
+    # ③ 去重仍然工作：三次同签名累计到 3 并升级，行数 = 3 签名行 + 1 escalation 行
+    assert result["count"] == 3, "脱敏后同签名未归并，去重/升级计数被打坏"
+    assert result["escalated"] is True
+    assert len(body.strip().splitlines()) == 4
+    # 权限那一半不得因本次改动回退
+    assert _mode(failures) == 0o600
+
+    # ④ 脱敏**不是**把所有 node 抹成同一个值：不同来源仍是不同签名，各自从 1 起算。
+    other = record_failure(str(failures), "fetch_fail", "intake.extract.https://other.test/z")
+    assert other["count"] == 1, "不同来源被误并成同一签名 —— 脱敏过度，升级判据失效"

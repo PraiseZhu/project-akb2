@@ -379,6 +379,61 @@ def test_deepseek_direct_routes_do_not_leak_raw_provider_text(monkeypatch):
         assert "Error code: 400" in str(err)
 
 
+# ---------------------------------------------------------------------------
+# SC-R4-03 ——「凭证键名」规则必须独立成立，不许靠前缀规则代偿
+# ---------------------------------------------------------------------------
+# 哨兵刻意**不含任何已知前缀**（无 `sk-` / `ghp_` / `AIza` / `xox` / `Bearer`）：
+# 上一轮的测试用的是 `api_key=sk-probe-secret-2026`，它能通过是因为前面那条 `sk-*`
+# **前缀规则**先把值吃掉了 —— 键名规则整条失配（引号包裹时 `\b` 后紧跟 `"` 而非 `[=:]`）
+# 却没有任何测试变红。用不透明哨兵之后，只有键名规则能救它，掩盖不再可能。
+_OPAQUE_SENTINEL = "opaque-cred-sentinel-9f3a2b71"
+
+# 三种真实形态（provider 响应体是 JSON、异常 repr 是 Python dict、query/env 是裸 kv）
+_QUOTED_KEY_FORMS = (
+    ("bare-kv", "%(k)s=%(v)s"),
+    ("json-double-quoted", '{"%(k)s":"%(v)s"}'),
+    ("json-spaced", '{"%(k)s": "%(v)s"}'),
+    ("python-repr-single-quoted", "{'%(k)s': '%(v)s'}"),
+    ("yaml-ish-colon", "%(k)s: '%(v)s'"),
+)
+_CRED_KEYS = ("api_key", "api-key", "access_token", "auth_token", "token", "secret", "password")
+
+
+def test_redactor_matches_quoted_json_keys():
+    """引号包裹的凭证键名必须被脱敏，且不得依赖前缀规则代偿。"""
+    # 前提断言：哨兵单独出现时**原样穿透** —— 证明下面每一个 pass 都是键名规则的功劳。
+    # 若哪天有人给哨兵加了个 `sk-` 前缀，这条会先红，掩盖回归被挡在门口。
+    assert http_retry.redact_provider_text(_OPAQUE_SENTINEL) == _OPAQUE_SENTINEL, (
+        "哨兵本身被某条前缀规则命中了 —— 它就无法证明键名规则是否工作，请换一个不透明哨兵"
+    )
+
+    leaked: list[str] = []
+    for key in _CRED_KEYS:
+        for form_name, template in _QUOTED_KEY_FORMS:
+            raw = template % {"k": key, "v": _OPAQUE_SENTINEL}
+            out = http_retry.redact_provider_text(raw)
+            if _OPAQUE_SENTINEL in out:
+                leaked.append(f"{key}/{form_name}: {raw!r} -> {out!r}")
+            elif http_retry.REDACTED_PLACEHOLDER not in out:
+                leaked.append(f"{key}/{form_name}: 值消失但无掩码标记 -> {out!r}")
+    assert not leaked, "以下形态未被脱敏（键名规则漏了引号包裹形态）:\n" + "\n".join(leaked)
+
+    # 账户身份 PII 走同一口径：`User=` 与 `{"User":"…"}` 都得掩掉，不许只修一半。
+    for raw in (
+        f"User={_OPAQUE_SENTINEL}",
+        f'{{"User":"{_OPAQUE_SENTINEL}"}}',
+        f"{{'User': '{_OPAQUE_SENTINEL}'}}",
+    ):
+        assert _OPAQUE_SENTINEL not in http_retry.redact_provider_text(raw), raw
+
+    # 脱敏不得吃掉 429 归因判据（宪法 P4：失败可见 —— 掩码后仍要能算出 scope/spend/cap）。
+    diagnosis = http_retry.classify_provider_error(429, FORM_A_TOTAL_BODY)
+    assert diagnosis.error_type == http_retry.ERROR_TYPE_BUDGET_EXCEEDED
+    assert diagnosis.budget_scope == http_retry.BUDGET_SCOPE_TOTAL
+    assert (diagnosis.spend, diagnosis.cap) == (18000.62608448676, 18000.0)
+    assert "zhuzan" not in diagnosis.raw_excerpt
+
+
 def test_redact_provider_text_is_idempotent_and_bounded():
     once = http_retry.redact_provider_text(
         "User=zhuzan token=abc123 Bearer sk-live-xyz " + "x" * 400

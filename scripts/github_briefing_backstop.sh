@@ -40,6 +40,7 @@ if [[ -z "$VAULT_ROOT" ]]; then
   echo "ERROR: --vault-root is required" >&2
   exit 1
 fi
+readonly BACKSTOP_FLOCK_HELD="${AKB2_BACKSTOP_FLOCK_HELD:-0}"
 
 # 日志解析优先级：--log-path > AKB2_GITHUB_BACKSTOP_LOG > 默认生产日志
 # 与 briefing_backstop.sh 对齐。缺这一口时测试直接写生产日志，把测试场景伪装成
@@ -52,6 +53,11 @@ mkdir -p "$(dirname "$LOG")"
 # GIVE_UP_EXIT_CODE 是本脚本主动放弃。两者必须不同值（语义见文件头）。
 readonly DEADLINE_EXIT_CODE=124
 readonly GIVE_UP_EXIT_CODE=125
+# flock_exec.py 的协议码：busy 是正常让路；helper/setup 失败必须响亮 fail-closed。
+readonly LOCK_BUSY_EXIT_CODE=73
+readonly LOCK_HELPER_ERROR_EXIT_CODE=74
+readonly BACKSTOP_PYTHON="${AKB2_BACKSTOP_PYTHON:-python3}"
+readonly FLOCK_EXEC_HELPER="$SCRIPT_DIR/lib/flock_exec.py"
 
 # 补跑重试：**该变的是模型族，不是次数**。2026-08-02 实证 —— pipeline 的 synthesis
 # 阶段内部已有 3 次重试（`DeepSeek API failed after 3 retries`），主跑 05:59 用掉 3
@@ -93,7 +99,7 @@ fi
 # run_id/host：同一日志里区分多进程与多机器。~/AI-Agent 是 Syncthing 共享目录，
 # logs/github-backstop.log 会被两台机器同时追加，不带归属字段就看不出
 # "FAILED 与 recovered 交替" 其实是不同 run。
-RUN_ID="$(TZ=Asia/Shanghai date +%Y%m%d%H%M%S)-$$"
+RUN_ID="${AKB2_GITHUB_BACKSTOP_RUN_ID:-$(TZ=Asia/Shanghai date +%Y%m%d%H%M%S)-$$}"
 SOURCE="${GITHUB_BACKSTOP_SOURCE:-schedule}"   # schedule / manual / test
 HOST="$(hostname -s 2>/dev/null || echo unknown)"
 
@@ -130,31 +136,6 @@ deadline_missed_after() {
   (( projected >= dl_min ))
 }
 
-LOCK_FILE=""
-LOCK_HELD=0
-LOCK_PID_HELD_BY=""
-LOCK_SETUP_ERROR=""
-# 释放锁：**删前重读**，内容 == 自己的 pid 才删（所有者校验）。acquire 侧现已用
-# noclobber/O_EXCL 保证同刻只有一个创建者；这里仍必须校验，因为锁路径可能在持锁期间
-# 被外部进程替换，旧持有者退出时不得删除新持有者的 PID 文件。
-release_rerun_lock() {
-  local current
-  [[ "$LOCK_HELD" -eq 1 && -n "$LOCK_FILE" ]] || return 0
-  LOCK_HELD=0
-  current="$(cat "$LOCK_FILE" 2>/dev/null || echo '')"
-  if [[ "$current" != "$$" ]]; then
-    log "warn — 锁已被他人接管，不删除 lock_owner_now=${current:-none} lock_self=$$ lock_file=$LOCK_FILE (${DATE_TODAY:-})" || true
-    return 0
-  fi
-  rm -f "$LOCK_FILE"
-  return 0
-}
-cleanup() {
-  release_rerun_lock
-  return 0
-}
-trap cleanup EXIT
-
 # GitHub briefing 文件名对齐 pipeline.py：today = 抓取日（去掉旧的 +1 偏移）
 DATE_TODAY="$(TZ=Asia/Shanghai date +%Y-%m-%d)"
 GITHUB_FILE="$VAULT_ROOT/Praise Space/AKB2.0/AI TRENDS/GitHub/$DATE_TODAY GitHub Briefing.md"
@@ -164,10 +145,17 @@ DEADLINE_LABEL="$(printf '%02d:%02d' "${AKB2_GITHUB_DEADLINE_HOUR:-12}" "${AKB2_
 
 # 幂等守卫 ①：今日 briefing 已产出 → 跳过
 if [[ -f "$GITHUB_FILE" ]]; then
-  log_terminal skip "skip — GitHub briefing 已产出，无需补跑 ($DATE_TODAY)"
+  if [[ "$BACKSTOP_FLOCK_HELD" == "1" ]]; then
+    log_terminal skip "skip — 拿锁后重检发现 GitHub briefing 已产出，不启动补跑 lock_artifact_recheck=pass ($DATE_TODAY)"
+  else
+    log_terminal skip "skip — GitHub briefing 已产出，无需补跑 ($DATE_TODAY)"
+  fi
   exit 0
 fi
 
+# 外层做便宜的进程/deadline/dry-run 预检；helper exec 回来的内层已经持有 flock，
+# 只做产物重检并进入补跑，避免重复读取时钟改变既有 deadline 语义。
+if [[ "$BACKSTOP_FLOCK_HELD" != "1" ]]; then
 # 守卫 ②：主跑进程仍在运行 → 让它先跑完
 #
 # 探针模式做成具名 + 可覆写：`pgrep -f` 是**全机器范围**的模糊匹配，同机器上任何一条
@@ -193,6 +181,7 @@ fi
 if [[ "$DRY_RUN" -eq 1 ]]; then
   log_terminal dry_run "dry-run — 今日 GitHub briefing 缺失，将会触发补跑（实际未执行）($DATE_TODAY)"
   exit 0
+fi
 fi
 
 # SC-5: 补跑复用主管线环境 — source 同一 env（GITHUB_PAT/AI_GATEWAY_API_KEY/VAULT_ROOT），
@@ -222,11 +211,13 @@ export GITHUB_FILE  # 供 rerun/stub 复查落点
 # 30 分钟）大于主跑实际耗时（历史 8–16 分钟），到 backstop 触发时 pgrep **必然扑
 # 空**。pgrep 守卫保留（便宜的早退），真正的互斥必须落在锁上。
 #
-# 锁实现复用 scripts/akb2-main-pipeline.sh 已验证的范式（PID 文件 + `kill -0` 存活
-# 校验 + 陈旧锁清理）—— 宪法「约定优于新奇」，不引入第二种锁。
+# 锁实现使用仓库既有的 `fcntl.flock` 共享 inode 范式。锁文件只作为永久 inode，
+# 不承载 PID、不删除、不做陈旧接管；内核把锁绑定到继承的 fd，并在最后一个持 fd 的
+# 执行进程退出时释放。
+# macOS 没有 flock(1)，所以由 python helper 完成 LOCK_EX|LOCK_NB + exec。
 # 锁**位置**用机器本地状态根而不是仓库 staging/locks/：REPO_ROOT 在 ~/AI-Agent
-# （Syncthing folder）内，锁放仓库会被跨机同步 → 两机互看/互删对方的 PID 文件，
-# `kill -0` 对另一台的 PID 毫无意义（该坑 akb2-main-pipeline.sh:26-30 已修过）。
+# （Syncthing folder）内，锁放仓库会被跨机同步，而 `fcntl.flock` 只在本机内核生效，
+# 不能协调另一台机器上的同路径（该坑 akb2-main-pipeline.sh:26-30 已修过）。
 # shellcheck source=scripts/lib/state-root.sh
 . "$SCRIPT_DIR/lib/state-root.sh"
 akb2_resolve_state_root
@@ -237,54 +228,29 @@ if akb2_state_root_is_synced "$(dirname "$LOCK_FILE")"; then
   log "warn — 锁目录在跨机同步范围内，互斥保证降级 lock_sync_risk=1 lock_file=$LOCK_FILE ($DATE_TODAY)"
 fi
 
-# 返回值三态（不是两态）：0=拿到锁 / 1=别人持锁 / 2=**建不了锁**。
-# 建不了锁必须与「别人持锁」分开：后者是正常让路（exit 0），前者是**无法建立互斥**，
-# 此时继续跑就是以互斥语义启动一次付费补跑而实际上没有互斥（宪法 P3 fail-closed）。
-acquire_rerun_lock() {
-  local lock_pid lock_dir
-  lock_dir="$(dirname "$LOCK_FILE")"
-  if ! mkdir -p "$lock_dir" 2>/dev/null; then
-    LOCK_SETUP_ERROR="锁目录不可创建: $lock_dir"
-    return 2
+if [[ "$BACKSTOP_FLOCK_HELD" != "1" ]]; then
+  if ! command -v "$BACKSTOP_PYTHON" >/dev/null 2>&1; then
+    log_terminal failed "FAILED — python3 不可用，无法建立 fcntl.flock 互斥，拒绝无锁补跑 lock_setup=failed exit_code=1 ($DATE_TODAY)"
+    exit 1
   fi
-  while true; do
-    # noclobber 把「不存在 → 写入自身 PID」合成一次 O_EXCL 获取；失败后才读取现持有者。
-    # PID 文件格式仍是单行十进制 PID，不引入 flock/mkdir 等第二种锁协议。
-    if ( set -o noclobber; printf '%s\n' "$$" > "$LOCK_FILE" ) 2>/dev/null; then
-      LOCK_HELD=1
-      return 0
-    fi
-    if [[ ! -f "$LOCK_FILE" ]]; then
-      LOCK_SETUP_ERROR="锁文件不可写: $LOCK_FILE"
-      return 2
-    fi
-    lock_pid="$(cat "$LOCK_FILE" 2>/dev/null || echo '')"
-    if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
-      LOCK_PID_HELD_BY="$lock_pid"
-      return 1
-    fi
-    if ! rm -f "$LOCK_FILE" 2>/dev/null; then
-      LOCK_SETUP_ERROR="陈旧锁不可移除: $LOCK_FILE"
-      return 2
-    fi
-    # 陈旧锁已移除后回到 O_EXCL 获取点；若另一实例先抢到，本轮不会覆盖它。
-  done
-}
-
-set +e
-acquire_rerun_lock
-lock_rc=$?
-set -e
-if (( lock_rc == 2 )); then
-  # fail-closed：无法建立机器本地互斥 → 不启动付费补跑。裸跑的后果是双跑烧双份额度，
-  # 而"少跑一次"可由下一个 backstop 时段兜。
-  log_terminal failed \
-    "FAILED — 无法建立补跑互斥锁（${LOCK_SETUP_ERROR}），拒绝以互斥语义启动付费补跑 lock_setup=failed exit_code=1 ($DATE_TODAY)"
-  exit 1
-fi
-if (( lock_rc != 0 )); then
-  log_terminal skip "skip — already-running: 另一个 github backstop 补跑正持锁 lock_pid=$LOCK_PID_HELD_BY lock_file=$LOCK_FILE ($DATE_TODAY)"
-  exit 0
+  set +e
+  AKB2_BACKSTOP_FLOCK_HELD=1 AKB2_GITHUB_BACKSTOP_RUN_ID="$RUN_ID" \
+    "$BACKSTOP_PYTHON" "$FLOCK_EXEC_HELPER" \
+    --lock-file "$LOCK_FILE" \
+    --busy-exit-code "$LOCK_BUSY_EXIT_CODE" \
+    --error-exit-code "$LOCK_HELPER_ERROR_EXIT_CODE" \
+    -- /bin/bash "$0" --vault-root "$VAULT_ROOT" --log-path "$LOG"
+  lock_rc=$?
+  set -e
+  if (( lock_rc == LOCK_BUSY_EXIT_CODE )); then
+    log_terminal skip "skip — already-running: 另一个 github backstop 补跑正持 flock lock_file=$LOCK_FILE ($DATE_TODAY)"
+    exit 0
+  fi
+  if (( lock_rc == LOCK_HELPER_ERROR_EXIT_CODE )); then
+    log_terminal failed "FAILED — 无法建立 fcntl.flock 互斥，拒绝无锁补跑 lock_setup=failed exit_code=1 ($DATE_TODAY)"
+    exit 1
+  fi
+  exit "$lock_rc"
 fi
 
 # 初次产物判断与拿锁之间，主跑可能刚好完成。成为唯一锁 owner 后必须重检，避免对

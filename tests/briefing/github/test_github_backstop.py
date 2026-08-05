@@ -1,5 +1,6 @@
 """Tests for github_briefing_backstop.sh — SC-2: github链路补跑守卫。"""
 
+import fcntl
 import os
 import re
 import subprocess
@@ -7,6 +8,12 @@ import tempfile
 import time
 from datetime import date
 from pathlib import Path
+
+import pytest
+
+from tests.briefing.backstop_lock_test_support import (
+    assert_flock_interleaving_matrix,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 BACKSTOP_SH = PROJECT_ROOT / "scripts" / "github_briefing_backstop.sh"
@@ -17,10 +24,6 @@ BACKSTOP_SH = PROJECT_ROOT / "scripts" / "github_briefing_backstop.sh"
 GIVE_UP_EXIT_CODE = 125
 DEADLINE_EXIT_CODE = 124
 
-# 必然不会出现在任何真实命令行里的探针模式（见 _run_backstop 里的说明）
-_IMPOSSIBLE_PGREP = "akb2-backstop-selftest-no-such-process-a7f3c1"
-
-
 def _today() -> str:
     """Return today's date in YYYY-MM-DD (mirrors pipeline.py today_str)."""
     return date.today().isoformat()
@@ -30,6 +33,15 @@ def _write_exec(path: Path, body: str) -> Path:
     path.write_text(f"#!/usr/bin/env bash\n{body}\n", encoding="utf-8")
     path.chmod(0o755)
     return path
+
+
+@pytest.fixture(autouse=True)
+def _stub_pgrep_probe(tmp_path, monkeypatch):
+    """Keep every test independent of the machine-global process table."""
+    stub_bin = tmp_path / "hermetic-pgrep-bin"
+    stub_bin.mkdir()
+    _write_exec(stub_bin / "pgrep", "exit 1")
+    monkeypatch.setenv("PATH", f"{stub_bin}{os.pathsep}{os.environ['PATH']}")
 
 
 def _run_backstop(
@@ -62,10 +74,6 @@ def _run_backstop(
         "AKB2_GITHUB_BACKSTOP_LOG": isolated_log.name,
         "AKB2_GITHUB_BACKSTOP_LOCK_FILE": isolated_lock.name,
         "AKB2_GITHUB_RERUN_BACKOFF": "0",
-        # pgrep -f 是全机器模糊匹配：同机器上任何一条含
-        # `akb2.briefing.github.pipeline` 的命令行都会让"主跑仍在运行"守卫命中，
-        # 把用例集体推进 skip 分支（并行开发时实测复现）。测试固定指向不可能命中的模式。
-        "AKB2_GITHUB_BACKSTOP_PGREP_PATTERN": _IMPOSSIBLE_PGREP,
         **(env_overrides or {}),
     }
     return subprocess.run(args, capture_output=True, text=True, env=env)
@@ -527,7 +535,7 @@ class TestGithubBackstopRerunBudget:
 
 
 class TestGithubBackstopLock:
-    """SC-8: 补跑必须有 PID 锁 —— pgrep 在 backstop 触发时必然扑空。"""
+    """SC-8: 补跑必须有 flock —— pgrep 在 backstop 触发时必然扑空。"""
 
     def test_concurrent_backstop_blocked_by_pid_lock(self, tmp_path):
         vault = tmp_path / "vault"
@@ -553,7 +561,6 @@ exit 1''',
             "AKB2_GITHUB_ENV_FILE": "/dev/null",
             "AKB2_GITHUB_RERUN_ATTEMPTS": "1",
             "AKB2_GITHUB_RERUN_BACKOFF": "0",
-            "AKB2_GITHUB_BACKSTOP_PGREP_PATTERN": _IMPOSSIBLE_PGREP,
         }
         first = subprocess.Popen(
             ["/bin/bash", str(BACKSTOP_SH), "--vault-root", str(vault)],
@@ -569,7 +576,7 @@ exit 1''',
                     break
                 time.sleep(0.1)
             assert lock.exists(), "第一个 backstop 应已建立锁文件"
-            assert lock.read_text().strip().isdigit(), "锁文件内容必须是 PID"
+            assert lock.exists(), "flock 的共享 inode 必须在持锁期间存在"
 
             blocked = subprocess.run(
                 ["/bin/bash", str(BACKSTOP_SH), "--vault-root", str(vault)],
@@ -610,7 +617,15 @@ exit 1''',
             },
         )
         assert result.returncode == 0, result.stderr
-        assert not lock.exists(), "正常退出必须清掉锁文件"
+        assert lock.exists(), "共享 flock inode 必须保留，禁止 unlink/replace"
+        with lock.open("a+") as lock_fh:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+
+
+def test_stale_takeover_interleaving_matrix(tmp_path):
+    """Flock has no rename takeover: stale inode, N-way start, and owner death are safe."""
+    assert_flock_interleaving_matrix(tmp_path, "github", PROJECT_ROOT)
 
 
 def test_exit_codes_are_distinct_named_constants():
@@ -735,6 +750,7 @@ esac""",
             env_overrides={
                 "PATH": f"{fake_bin}:{os.environ['PATH']}",
                 "AKB2_GITHUB_BACKSTOP_LOG": str(log),
+                "AKB2_GITHUB_BACKSTOP_LOCK_FILE": str(tmp_path / "gh.lock"),
                 "AKB2_GITHUB_RERUN_SCRIPT": str(stub),
                 "AKB2_GITHUB_ENV_FILE": "/dev/null",
                 "AKB2_GITHUB_RERUN_ATTEMPTS": "2",
@@ -750,7 +766,11 @@ esac""",
         assert "reason=deadline_would_pass" in content, content
         assert _marker_calls(tmp_path) == 1, f"只应补跑 1 轮:\n{content}"
         assert elapsed < 60, f"不得先睡再放弃，实测 {elapsed:.1f}s"
-        assert not (tmp_path / "gh.lock").exists()
+        lock = tmp_path / "gh.lock"
+        assert lock.exists(), "共享 flock inode 不得删除"
+        with lock.open("a+") as lock_fh:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
 
     def test_still_sleeps_when_margin_sufficient(self, tmp_path):
         """反面：余量充足时照常退避并跑第 2 轮（投影判据不得过宽）。"""

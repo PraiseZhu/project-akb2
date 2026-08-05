@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import os
 import re
 import subprocess
@@ -12,6 +13,10 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+
+from tests.briefing.backstop_lock_test_support import (
+    assert_flock_interleaving_matrix,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BACKSTOP_SH = PROJECT_ROOT / "scripts" / "briefing_backstop.sh"
@@ -853,7 +858,7 @@ esac""",
 
 
 def test_concurrent_backstop_blocked_by_pid_lock(tmp_path):
-    """SC-8: 第二个 backstop 必须被 PID 锁挡住，补跑 stub 只被调用 1 次。"""
+    """SC-8: 第二个 backstop 必须被 flock 挡住，补跑 stub 只被调用 1 次。"""
     vault = tmp_path / "vault"
     (vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
     lock = tmp_path / "shared-backstop.lock"
@@ -901,7 +906,7 @@ exit 0''',
                 break
             time.sleep(0.1)
         assert lock.exists(), "第一个 backstop 应已建立锁文件"
-        assert lock.read_text().strip().isdigit(), "锁文件内容必须是 PID"
+        assert lock.exists(), "flock 的共享 inode 必须在持锁期间存在"
 
         second = subprocess.run(
             ["/bin/bash", str(BACKSTOP_SH), "--vault-root", str(vault)],
@@ -927,11 +932,11 @@ exit 0''',
 
 
 def test_stale_lock_is_reclaimed(tmp_path):
-    """SC-8 配套: 持有者已死的陈旧锁必须能被接管，否则一次崩溃永久锁死补跑。"""
+    """SC-8 配套: 残留 inode/旧 PID 内容不能阻塞没有内核 owner 的后继者。"""
     vault = tmp_path / "vault"
     (vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
     lock = tmp_path / "stale.lock"
-    # 一个必然不存在的 PID：用一个已回收的子进程 pid
+    # 保留旧协议形状的内容；flock 不读取它，唯一权威是内核是否仍有 owner。
     dead = subprocess.Popen(["/bin/bash", "-c", "exit 0"])
     dead.wait()
     lock.write_text(f"{dead.pid}\n", encoding="utf-8")
@@ -1071,7 +1076,7 @@ exit 0''',
             if completed >= process_count - 1:
                 break
             time.sleep(0.02)
-        assert lock.read_text(encoding="utf-8").strip().isdigit()
+        assert lock.exists()
         release.write_text("go", encoding="utf-8")
         results = [proc.communicate(timeout=15) for proc in processes]
     finally:
@@ -1087,12 +1092,17 @@ exit 0''',
 
 
 def test_lock_acquire_is_atomic_under_barrier_start(tmp_path):
-    """O_EXCL acquisition permits one rerun owner under a true barrier start."""
+    """fcntl.flock acquisition permits one rerun owner under a true barrier start."""
     for script in (BACKSTOP_SH, GITHUB_BACKSTOP_SH):
         source = script.read_text(encoding="utf-8")
-        assert "set -o noclobber" in source, f"{script.name}: lock creation is not O_EXCL"
+        assert "flock_exec.py" in source, f"{script.name}: missing flock helper"
     for kind in ("social", "github"):
         _run_atomic_lock_barrier_case(tmp_path, kind)
+
+
+def test_stale_takeover_interleaving_matrix(tmp_path):
+    """Flock has no rename takeover: stale inode, N-way start, and owner death are safe."""
+    assert_flock_interleaving_matrix(tmp_path, "social", PROJECT_ROOT)
 
 
 def test_artifact_is_rechecked_after_lock_acquisition(tmp_path):
@@ -1600,8 +1610,12 @@ esac""",
     assert len(run_lines) == 1, f"只应有 1 条开跑行:\n{chr(10).join(run_lines)}"
     # 没有真的睡 600s —— 这是本条的核心（宽松阈值，只要远小于退避即可）
     assert elapsed < 60, f"不得先睡再放弃，实测耗时 {elapsed:.1f}s"
-    # 锁必须已释放（睡着时占锁会把 12:05 那趟一起挡掉）
-    assert not (tmp_path / "backstop.lock").exists(), "放弃后必须释放补跑锁"
+    # inode 永久保留，但内核锁必须已释放（睡着时占锁会把下一趟一起挡掉）。
+    lock = tmp_path / "backstop.lock"
+    assert lock.exists(), "共享 flock inode 不得删除"
+    with lock.open("a+") as lock_fh:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
 
 
 def test_backoff_still_sleeps_when_margin_is_sufficient(run_script, tmp_path):
@@ -1721,25 +1735,19 @@ def test_exit_65_is_classified_not_unknown(run_script, tmp_path):
     assert "不在 pipeline 已定义集合" not in content, content
 
 
-def test_cleanup_only_removes_own_lock(tmp_path):
-    """锁被他进程覆盖后，本进程退出时的 cleanup **不得**删掉新持有者的锁。
-
-    `LOCK_HELD=1` 不足以判定所有权：acquire 是 check-then-write，两个同刻实例可以
-    都判定「无锁」并各自 `echo $$ >`，于是双方 LOCK_HELD 都是 1；先退出的那个无条件
-    rm 就把当前真持有者的锁删了，第三个实例随即冲进来 —— 双跑防线被自己拆掉。
-    """
+def test_flock_inode_is_never_unlinked_on_exit(tmp_path):
+    """flock 文件是永久共享 inode；进程退出只能释放内核锁，绝不能 unlink。"""
     vault = tmp_path / "vault"
     (vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
     lock = tmp_path / "own.lock"
     marker = tmp_path / "marker.txt"
     target = _today_briefing_path(vault)
-    intruder_pid = "999001"
-    # stub 在补跑期间把锁内容改成别人的 pid（模拟"锁被他进程覆盖"），
-    # 随后写出达 pass 的产物并 exit 0 → backstop 走 recovered 分支并触发 cleanup。
+    inert_payload = "contents-are-not-lock-ownership"
+    # 即使文件内容改变，互斥归属也只由内核 fd 决定；退出后 inode 仍须原样存在。
     stub = _write_exec(
         tmp_path / "stub.sh",
         f'echo invoked >> "{marker}"\n'
-        f'echo "{intruder_pid}" > "{lock}"\n'
+        f'echo "{inert_payload}" > "{lock}"\n'
         f'mkdir -p "{target.parent}"\n'
         f'printf -- "---\\naudit_verdict: pass\\n---\\n" > "{target}"\n'
         "exit 0",
@@ -1756,15 +1764,13 @@ def test_cleanup_only_removes_own_lock(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert marker.exists(), "补跑应被触发过"
-    assert lock.exists(), (
-        "cleanup 删掉了他人持有的锁 —— 所有权校验缺失（删前未重读内容）"
-    )
-    assert lock.read_text(encoding="utf-8").strip() == intruder_pid, (
+    assert lock.exists(), "backstop 删除了永久共享 flock inode"
+    assert lock.read_text(encoding="utf-8").strip() == inert_payload, (
         f"锁内容被改写: {lock.read_text(encoding='utf-8')!r}"
     )
-    assert "lock_owner_now=" in result.stderr, (
-        f"放弃删锁必须留痕（宪法 P4 失败可见）:\n{result.stderr}"
-    )
+    with lock.open("a+") as lock_fh:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
 
 
 def test_lock_setup_failure_refuses_rerun(tmp_path):

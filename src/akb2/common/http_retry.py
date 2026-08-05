@@ -86,6 +86,20 @@ PROVIDER_TEXT_MAX_CHARS: int = 200
 REDACTED_PLACEHOLDER = "<redacted>"
 _TRUNCATION_MARKER = "…<truncated>"
 
+# 键名/值可能被引号包住 —— 三种真实形态必须同时命中，否则「脱敏」只在一部分站点成立：
+#   裸 kv:            `api_key=<value>`            （env / query string / 裸日志行）
+#   JSON:             `{"api_key":"<value>"}`      （provider 响应体、httpx 异常 body）
+#   Python dict repr: `{'api_key': '<value>'}`     （异常 repr、traceback 里的 kwargs）
+# R4 实测（旧规则）：键名规则写成 `\b<key>\b\s*[=:]`，键被引号包住时 `\b` 之后紧跟的是
+# `"` 而不是 `[=:]` → **整条规则失配**，`{"api_key":"<opaque>"}` 原样落盘。当时之所以
+# 没被测出，是因为旧测试用的哨兵带 `sk-` 前缀，被前一条**前缀规则**兜住了 ——
+# 一条规则的命中掩盖了另一条规则的洞。故这里把「可选引号」抽成共享片段，键名侧与值侧
+# 用同一份定义，物理上不可能只补一半（加固清单：同一判据只允许有一个 owner）。
+_OPT_QUOTE = r"['\"]?"
+# 值以空白 / 结构分隔符 / 引号为边界；`}` 与 `]` 排除掉才不会把 JSON 收尾符吃进掩码。
+_KV_VALUE = r"[^\s,;)\]}'\"]+"
+_CRED_KEY_NAMES = r"api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password|passwd"
+
 _REDACT_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     # 凭证样式（前缀保留，便于判断"是哪类 key 泄了"，值不留）
     (re.compile(r"sk-[A-Za-z0-9_\-]{3,}"), f"sk-{REDACTED_PLACEHOLDER}"),
@@ -94,18 +108,23 @@ _REDACT_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"AIza[A-Za-z0-9_\-]{3,}"), f"AIza{REDACTED_PLACEHOLDER}"),
     (re.compile(r"xox[baprs]-[A-Za-z0-9\-]{3,}", re.IGNORECASE), f"xox{REDACTED_PLACEHOLDER}"),
     (re.compile(r"Bearer\s+\S+", re.IGNORECASE), f"Bearer {REDACTED_PLACEHOLDER}"),
+    # 键名规则：**不依赖任何前缀**，这是唯一能兜住不透明凭证（自签 token / UUID 形态）的一条。
     (
         re.compile(
-            r"\b(api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password|passwd)\b"
-            r"\s*[=:]\s*\"?[^\s,;)\]}\"']+\"?",
+            r"\b(" + _CRED_KEY_NAMES + r")\b" + _OPT_QUOTE + r"\s*[=:]\s*"
+            + _OPT_QUOTE + _KV_VALUE + _OPT_QUOTE,
             re.IGNORECASE,
         ),
         rf"\1={REDACTED_PLACEHOLDER}",
     ),
     # 账户身份：Gateway 的预算 429 原文形如 `User=zhuzan over budget. …`
     # ——「谁打穿了额度」对排查无增量（本机只有一个账户），但它是 PII，不落盘。
+    # 引号形态与 `[=:]` 与上面同口径：同一失败形状不允许在两条规则里各修一半。
     (
-        re.compile(r"\bUser\s*=\s*\"?[^\s,;)\]}\"']+\"?", re.IGNORECASE),
+        re.compile(
+            r"\bUser\b" + _OPT_QUOTE + r"\s*[=:]\s*" + _OPT_QUOTE + _KV_VALUE + _OPT_QUOTE,
+            re.IGNORECASE,
+        ),
         f"User={REDACTED_PLACEHOLDER}",
     ),
 )
