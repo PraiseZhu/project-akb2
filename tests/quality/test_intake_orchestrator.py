@@ -176,8 +176,8 @@ def test_dry_run_no_network_no_raw(tmp_path):
             return_value=mock_result,
         ),
         patch("httpx.get", side_effect=_fail_httpx),
-        patch("scrapling.Fetcher", side_effect=_fail_scrapling),
-        patch("scrapling.StealthyFetcher", side_effect=_fail_scrapling),
+        patch("scrapling.Fetcher", side_effect=_fail_scrapling, create=True),
+        patch("scrapling.StealthyFetcher", side_effect=_fail_scrapling, create=True),
     ):
         stats = run_intake(
             sources_config=sources_config,

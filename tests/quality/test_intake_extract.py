@@ -489,7 +489,7 @@ class TestExtractViaScrapling:
 
         # mock _extract_via_defuddle 返空，强制走 _html_to_clean_text fallback
         # （隔离 defuddle 是否安装的环境依赖，测 scrapling 调 Fetcher 的行为本身）
-        with patch("scrapling.Fetcher") as MockFetcher, patch(
+        with patch("scrapling.Fetcher", create=True) as MockFetcher, patch(
             "src.akb2.quality.intake.extract._extract_via_defuddle", return_value={}
         ):
             MockFetcher.get.return_value = mock_page
@@ -515,7 +515,7 @@ class TestExtractViaScrapling:
         mock_page.title = "Article From Scrapling StealthyFetcher"
 
         # mock _extract_via_defuddle 返空，强制走 fallback（隔离 defuddle 安装依赖）
-        with patch("scrapling.StealthyFetcher") as MockStealthy, patch(
+        with patch("scrapling.StealthyFetcher", create=True) as MockStealthy, patch(
             "src.akb2.quality.intake.extract._extract_via_defuddle", return_value={}
         ):
             MockStealthy.fetch.return_value = mock_page
@@ -548,7 +548,7 @@ class TestExtractViaScrapling:
 
         from src.akb2.quality.intake.extract import _extract_via_scrapling
 
-        with patch("scrapling.Fetcher") as MockFetcher:
+        with patch("scrapling.Fetcher", create=True) as MockFetcher:
             MockFetcher.return_value.fetch.side_effect = RuntimeError("connection refused")
             result = _extract_via_scrapling("https://example.com/article", browser_mode=False)
 
@@ -579,7 +579,7 @@ class TestExtractViaScrapling:
         original = extract_mod._extract_via_defuddle
         try:
             extract_mod._extract_via_defuddle = lambda url, html=None: clean
-            with patch("scrapling.StealthyFetcher") as MockStealthy:
+            with patch("scrapling.StealthyFetcher", create=True) as MockStealthy:
                 # classmethod 形式（scrapling 0.4.8）：StealthyFetcher.fetch(url)，非实例 .fetch
                 MockStealthy.fetch.return_value = mock_page
                 result = _extract_via_scrapling("https://cf.example/a", browser_mode=True)
