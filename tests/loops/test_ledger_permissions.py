@@ -300,3 +300,41 @@ def test_failures_node_value_with_ampersand_fully_redacted(tmp_path: Path) -> No
     assert result["signature"].endswith("&x=1/fetch_fail"), result["signature"]
     # ④ 权限那一半不得回退
     assert _mode(failures) == 0o600
+
+
+# ---------------------------------------------------------------------------
+# SC-R8-01 —— 结构定界符在真实落盘路径上也整段掩码（值边界判据归一）
+# ---------------------------------------------------------------------------
+_R8_NODE_HEAD = "opaque-r8-node-head-2e7a91d4"
+_R8_NODE_TAIL = "opaque-r8-node-tail-6c05b3f8"
+
+
+@pytest.mark.usefixtures("_umask_022")
+def test_failures_node_structural_delimiter_fully_redacted(tmp_path: Path) -> None:
+    """node 里凭证值含结构定界符（; ) 等）时，落盘的 failures.jsonl 不得留明文尾巴。"""
+    failures = tmp_path / "ledgers" / "failures.jsonl"
+
+    from akb2.common.http_retry import redact_provider_text
+
+    # 防掩盖前提：尾部哨兵单独出现原样穿透
+    assert redact_provider_text(_R8_NODE_TAIL) == _R8_NODE_TAIL
+
+    results = [
+        record_failure(
+            str(failures),
+            "fetch_fail",
+            f"intake.extract.https://ex.test/a?client_secret={_R8_NODE_HEAD}{delim}{_R8_NODE_TAIL}",
+        )
+        for delim in (";", ")", ",", "}")
+    ]
+
+    body = failures.read_text(encoding="utf-8")
+    # 头尾哨兵都不得出现在落盘文件里（R7 之前尾巴哨兵会原样落盘）
+    assert _R8_NODE_HEAD not in body and _R8_NODE_TAIL not in body, (
+        f"failures.jsonl 仍带结构定界符后的明文尾巴:\n{body}"
+    )
+    for result in results:
+        assert _R8_NODE_TAIL not in result["signature"], result["signature"]
+        assert "<redacted>" in result["signature"], result["signature"]
+    # 权限那一半不得退化
+    assert _mode(failures) == 0o600

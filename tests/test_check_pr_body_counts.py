@@ -143,3 +143,75 @@ def test_gate_recomputes_from_artifacts(tmp_path: Path) -> None:
     body.write_text(_body([_row("R9 delta", "9999999", 7, 6)]), encoding="utf-8")
     result = _run(body, artifacts)
     assert result.returncode == 0, result.stderr
+
+
+# ---------------------------------------------------------------------------
+# SC-R8-03 —— 解析整篇所有轨迹表，不停在第一张；核验行数可见（禁止静默上限）
+# ---------------------------------------------------------------------------
+def test_all_matching_rows_verified_not_only_first_table(tmp_path: Path) -> None:
+    """首张合法表之后追加的第二张同表头表格（含错误计数）必须被检出，不得静默漏验。
+
+    R8 复审的原始攻击：旧实现遇第一张表后的非 `|` 行就 break，第二张表写「999 条」仍 rc=0。
+    """
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    _write_artifacts(
+        artifacts,
+        consensus={"r1": _consensus("1111111111111111111111111111111111abcd", "chash-1", 3)},
+        sc_manifests={"r2": _sc_manifest("chash-1", 2)},
+    )
+
+    # 首张表全部合规；隔一段正文后追加第二张同表头表格，其数字全错。
+    first_table = _body([_row("R1", "1111111", 3, 2)])
+    second_table = (
+        "\n## 追加的第二张表（攻击：闸是否会漏验？）\n\n"
+        + TABLE_HEADER
+        + _row("R1", "1111111", 999, 888)
+        + "\n"
+    )
+    body = tmp_path / "two-tables.md"
+    body.write_text(first_table + second_table, encoding="utf-8")
+
+    result = _run(body, artifacts)
+    assert result.returncode == 1, (
+        "第二张表的错误计数被静默漏验 —— 解析停在了第一张表:\n" + result.stdout
+    )
+    # 两侧数值都要被指名（finding 999≠3、SC 888≠2）
+    assert "999 条" in result.stderr and "实算 3 条" in result.stderr
+    assert "888 条 SC" in result.stderr and "实算 2 条" in result.stderr
+
+    # 对照：把第二张表的数字也改对，则整篇放行（证明不是"有第二张表就拒"，而是逐行对账）
+    good = tmp_path / "two-tables-good.md"
+    good.write_text(
+        first_table + "\n## 第二张表（数字正确）\n\n" + TABLE_HEADER + _row("R1", "1111111", 3, 2) + "\n",
+        encoding="utf-8",
+    )
+    assert _run(good, artifacts).returncode == 0, _run(good, artifacts).stderr
+
+
+def test_reports_verified_row_count_no_silent_cap(tmp_path: Path) -> None:
+    """闸必须打印实际核验的行数——"核了几行"可见，才不会让"只查第一张表"伪装成全覆盖。"""
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    _write_artifacts(
+        artifacts,
+        consensus={
+            "r1": _consensus("1111111111111111111111111111111111abcd", "chash-1", 3),
+            "r2": _consensus("2222222222222222222222222222222222abcd", "chash-2", 4),
+        },
+        sc_manifests={"m1": _sc_manifest("chash-1", 2), "m2": _sc_manifest("chash-2", 5)},
+    )
+    body = tmp_path / "two-rows.md"
+    body.write_text(
+        _body([_row("R1", "1111111", 3, 2), _row("R2", "2222222", 4, 5)]),
+        encoding="utf-8",
+    )
+    result = _run(body, artifacts)
+    assert result.returncode == 0, result.stderr
+    # 成功输出里必须带实际核验行数（本例 2 行），且数字随行数变化
+    assert "2 行" in result.stdout, f"成功输出未报核验行数: {result.stdout!r}"
+
+    one_row = tmp_path / "one-row.md"
+    one_row.write_text(_body([_row("R1", "1111111", 3, 2)]), encoding="utf-8")
+    result = _run(one_row, artifacts)
+    assert result.returncode == 0 and "1 行" in result.stdout, result.stdout

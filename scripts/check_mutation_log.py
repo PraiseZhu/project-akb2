@@ -10,9 +10,18 @@
 判据（全部 fail-closed，任一违规即非零退出并指名条目）：
   ① 日志文件存在；
   ② `--sc-manifest` 派生的每条 SC 在日志中有条目（含该 SC id 的 markdown 标题行）；
-  ③ 每条条目内「选择范围」「预测红集」「实测红集」三个字段都存在且非空；
-  ④ 任何声称红集等价的表述都必须同行带「选择范围」。
-     等价声称词（机械对账）：exact、exactly、精确、恰好、恰为、完全一致。
+  ③ 结构规则（R8 判据归一）：每条 SC 条目内每个「实测红集」都界定一个变异窗口
+     （从上一个「实测红集」之后到本行为止），该窗口必须同时含非空「选择范围」与
+     「预测红集」；条目至少有一个「实测红集」。选择范围与红集因此**逐变异**绑定。
+
+R8（SC-R8-02，收敛检查点）判据从**词法**改成**结构**：早先有一条词法判据用有限词表
+（exact/精确/恰好/…）去检测「这行是不是在声称等价」，而自然语言的等价表述没有上界——
+R6 补英文、R7 补中文，R7 复审仍能用「相等/相同/匹配/一致/一一对应/precisely/identical」
+绕过。有限词表永远无法兑现 docstring 声称的「任何等价声称」。现在**不再检测措辞**：只要
+每个实测红集所在的变异窗口都声明了选择范围（③），无论它用什么词描述红集，「无范围的
+等价声称」这个失败形态在结构上就不可能存在。词表整体删除，docstring 的判据描述随之
+变成可兑现的真话；附带好处：R6/R7 两轮咬中日志自身元文本（「引用了等价声称词」）的
+误报模式一并消失。
 
 SC id 全集只从 manifest 派生；可选 `--sc-ids` 仅用于兼容调用方自检，若提供则必须
 与 manifest 派生的逗号清单逐字相等，不能缩小、增补或重排。
@@ -32,17 +41,12 @@ import re
 import sys
 from pathlib import Path
 
-REQUIRED_FIELDS = ("选择范围", "预测红集", "实测红集")
-EQUIVALENCE_CLAIMS = ("exact", "exactly", "精确", "恰好", "恰为", "完全一致")
-_RE_EQUIVALENCE_CLAIM = re.compile(
-    "|".join(
-        rf"(?<![A-Za-z0-9_]){re.escape(claim)}(?![A-Za-z0-9_])"
-        if claim.isascii()
-        else re.escape(claim)
-        for claim in EQUIVALENCE_CLAIMS
-    ),
-    re.IGNORECASE,
-)
+# 结构判据的三个字段。R8 起没有独立的「等价声称词表」——判据从词法改成结构，
+# 「实测红集」界定变异窗口，「选择范围」「预测红集」必须落在同一窗口内（见模块 docstring）。
+SCOPE_FIELD = "选择范围"
+PREDICTED_FIELD = "预测红集"
+ACTUAL_FIELD = "实测红集"
+REQUIRED_FIELDS = (SCOPE_FIELD, PREDICTED_FIELD, ACTUAL_FIELD)
 _RE_HEADING = re.compile(r"^#{1,6}\s+(.*)$")
 # 字段行：`- 选择范围: …` / `选择范围：…`（冒号中英皆可），内容须非空
 _FIELD_RE = {
@@ -93,6 +97,10 @@ def load_manifest_sc_ids(manifest_path: Path) -> list[str]:
     return sc_ids
 
 
+def _has_field(body: list[str], field: str) -> bool:
+    return any(_FIELD_RE[field].search(line) for line in body)
+
+
 def check(log_path: Path, sc_ids: list[str]) -> list[str]:
     violations: list[str] = []
     lines = log_path.read_text(encoding="utf-8").splitlines()
@@ -103,17 +111,30 @@ def check(log_path: Path, sc_ids: list[str]) -> list[str]:
             violations.append(f"{sc_id}: 日志中无该 SC 的条目（判据②）")
             continue
         body = entries[sc_id]
-        for field in REQUIRED_FIELDS:
-            if not any(_FIELD_RE[field].search(line) for line in body):
-                violations.append(f"{sc_id}: 字段「{field}」缺失或为空（判据③）")
-
-    for lineno, line in enumerate(lines, start=1):
-        claim = _RE_EQUIVALENCE_CLAIM.search(line)
-        if claim and "选择范围" not in line:
+        # 结构判据③（R8 归一）：按「实测红集」把条目切成变异窗口，逐窗口要求同时有
+        # 选择范围与预测红集。这样选择范围与红集是**逐变异**绑定的，不再靠扫描等价声称词。
+        window: list[str] = []
+        window_index = 0
+        saw_actual = False
+        for line in body:
+            window.append(line)
+            if _FIELD_RE[ACTUAL_FIELD].search(line):
+                saw_actual = True
+                window_index += 1
+                if not _has_field(window, SCOPE_FIELD):
+                    violations.append(
+                        f"{sc_id}: 第 {window_index} 个「{ACTUAL_FIELD}」所在变异窗口缺"
+                        f"非空「{SCOPE_FIELD}」（判据③：选择范围必须逐变异声明）"
+                    )
+                if not _has_field(window, PREDICTED_FIELD):
+                    violations.append(
+                        f"{sc_id}: 第 {window_index} 个「{ACTUAL_FIELD}」所在变异窗口缺"
+                        f"非空「{PREDICTED_FIELD}」（判据③）"
+                    )
+                window = []
+        if not saw_actual:
             violations.append(
-                f"line {lineno}: 无范围的等价声称（含裸 exact）`{claim.group(0)}` —— "
-                "红集表述必须同行写明选择范围（判据④）: "
-                f"{line.strip()[:80]}"
+                f"{sc_id}: 条目内无「{ACTUAL_FIELD}」，无法核对变异结果（判据③）"
             )
     return violations
 

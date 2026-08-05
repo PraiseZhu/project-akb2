@@ -691,3 +691,87 @@ def test_query_string_keys_still_split_at_ampersand():
         "以下 query string 的键未在 `&` 处正确分家（值把分隔符与后续键一起吞了）:\n"
         + "\n\n".join(drift)
     )
+
+
+# ---------------------------------------------------------------------------
+# SC-R8-01 —— 值边界判据归一：吃到真正的载体边界，歧义一律过掩
+# ---------------------------------------------------------------------------
+# 同一族第三次（R6 塞 &? 进黑名单 / R7 只把 &? 改条件边界 / R8 复审发现 ; , ) ] } ' "
+# 仍无条件截断）。R8 不再逐字符补，改为一条对所有定界符一视同仁的规则；下面用不透明哨兵
+# 覆盖全部定界符与引号，并钉住「过掩」这个安全方向。
+_R8_HEAD = "opaque-r8-head-4d19a2f7"
+_R8_TAIL = "opaque-r8-tail-8b3c5e60"
+
+
+def test_value_boundary_is_unified_across_all_delimiters():
+    """凭证值里嵌任一结构定界符（; , & ? ) ] }）都必须整段掩码，无明文尾巴。"""
+    # 防掩盖前提：两个哨兵单独出现都原样穿透 —— 证明掩掉它们靠的是键名+值边界规则。
+    assert http_retry.redact_provider_text(_R8_HEAD) == _R8_HEAD
+    assert http_retry.redact_provider_text(_R8_TAIL) == _R8_TAIL
+
+    leaked: list[str] = []
+    for delim in (";", ",", "&", "?", ")", "]", "}"):
+        raw = f"password={_R8_HEAD}{delim}{_R8_TAIL}"
+        out = http_retry.redact_provider_text(raw)
+        # 关键断言：尾巴哨兵不得出现在输出里（R7 之前正是它原样落盘）
+        if _R8_TAIL in out:
+            leaked.append(f"定界符 {delim!r}: {raw!r} -> {out!r}（明文尾巴残留）")
+        elif _R8_HEAD in out:
+            leaked.append(f"定界符 {delim!r}: {raw!r} -> {out!r}（头部也没掩）")
+    assert not leaked, "以下定界符仍造成明文尾巴（值边界未归一）:\n" + "\n".join(leaked)
+
+    # 引号包裹的值里嵌结构字符（JSON / dict repr）：吃到配对收尾引号，`}` 不再截断
+    for raw in (
+        f'{{"password":"{_R8_HEAD}}}{_R8_TAIL}"}}',
+        f"{{'api_key': '{_R8_HEAD}]{_R8_TAIL}'}}",
+    ):
+        out = http_retry.redact_provider_text(raw)
+        assert _R8_HEAD not in out and _R8_TAIL not in out, (
+            f"引号内的凭证尾部被结构字符截断: {raw!r} -> {out!r}"
+        )
+
+
+def test_ambiguity_defaults_to_over_masking():
+    """歧义方向必须朝过掩倒：定界符后面不像新键 → 吃进去；像新键或空白 → 才分家。
+
+    这条钉住 R8 的核心判据「脱敏器的歧义默认必须是过掩而非欠掩」。只测"分家"不测
+    "过掩"会漏掉整个缺陷——欠掩（留明文尾巴）恰恰是分家逻辑过度触发的结果。
+    """
+    # 过掩侧：定界符后是普通字符（不像 kv 键）→ 整段吃掉
+    over = {
+        f"token={_R8_HEAD}&{_R8_TAIL}": "&后非键",
+        f"token={_R8_HEAD};{_R8_TAIL}": ";后非键",
+        f"token={_R8_HEAD},{_R8_TAIL}": ",后非键",
+    }
+    for raw, tag in over.items():
+        out = http_retry.redact_provider_text(raw)
+        assert _R8_TAIL not in out, f"{tag}: 应过掩却留明文 {raw!r} -> {out!r}"
+
+    # 分家侧（不得因过掩而退化）：定界符后形如另一个 kv 键 / 空白 → 边界成立
+    assert (
+        http_retry.redact_provider_text(f"a=1&client_secret={_R8_HEAD}")
+        == f"a=1&client_secret={http_retry.REDACTED_PLACEHOLDER}"
+    )
+    assert (
+        http_retry.redact_provider_text(f"password={_R8_HEAD}; path=/")
+        == f"password={http_retry.REDACTED_PLACEHOLDER}; path=/"
+    )
+
+    # 非凭证键不因过掩规则被误掩（位置语义仍主管"是不是凭证键"）
+    for benign in ("secret_id", "token_id", "user_id", "username", "content_hash", "mysecret"):
+        raw = f"{benign}={_R8_HEAD};{_R8_TAIL}"
+        assert http_retry.redact_provider_text(raw) == raw, (
+            f"非凭证键被误掩: {raw!r} -> {http_retry.redact_provider_text(raw)!r}"
+        )
+
+
+def test_value_boundary_has_no_catastrophic_backtracking():
+    """长值 + 密集定界符下耗时必须近线性（新边界的两分支首字符互斥，无回溯放大）。"""
+    import time
+
+    payload = "password=" + ("a&" * 5000) + "b"
+    start = time.monotonic()
+    out = http_retry.redact_provider_text(payload, limit=100000)
+    elapsed = time.monotonic() - start
+    assert http_retry.REDACTED_PLACEHOLDER in out
+    assert elapsed < 1.0, f"5000 段 `a&` 耗时 {elapsed:.3f}s，疑似指数回溯"

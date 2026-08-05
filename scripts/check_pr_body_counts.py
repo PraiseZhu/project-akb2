@@ -95,25 +95,31 @@ class ParsedRow:
 
 
 def find_review_trail_rows(lines: list[str]) -> list[ParsedRow]:
-    """定位并解析「复核轨迹」表的数据行（表头/分隔行不计入）。"""
+    """解析**整篇**里所有复核轨迹表的数据行（表头/分隔行不计入）。
+
+    R8（SC-R8-03，收敛检查点）：旧实现在遇到第一张表后的第一个非 `|` 行就 `break`，
+    于是**第二张同表头表格、或首表之后追加的轨迹行全部静默漏验** —— 追加一张写「999 条」
+    的表仍 rc=0。族 C 的根因与族 A/B 同构：用「第一张表」代表「正文里所有该对账的行」。
+    修法不是再打补丁，而是扫全篇：一张表在非 `|` 行处结束，但**继续向下扫描**寻找下一张
+    轨迹表（再次命中轨迹表头即重新进表），把每一张轨迹表的每一行都收进来逐行对账。
+    这样"被跳过的东西"在结构上不存在，配合 check() 输出实际核验行数（宪法 P4 / 加固清单
+    「禁止静默上限」）。
+    """
     rows: list[ParsedRow] = []
-    header_seen = False
-    in_table = False
+    in_trail_table = False
     for lineno, line in enumerate(lines, start=1):
         stripped = line.strip()
         if not stripped.startswith("|"):
-            if in_table:
-                break
+            in_trail_table = False  # 本表结束，但不停止扫描——继续找下一张轨迹表
             continue
         cols = _split_row(stripped)
-        if not header_seen:
-            if _is_header_row(cols):
-                header_seen = True
-                in_table = True
+        if _is_header_row(cols):
+            in_trail_table = True  # 命中（可能是第 2、第 3 张）轨迹表头，重新进表
             continue
         if _is_separator_row(stripped):
             continue
-        rows.append(ParsedRow(lineno, cols))
+        if in_trail_table:
+            rows.append(ParsedRow(lineno, cols))
     return rows
 
 
@@ -164,12 +170,13 @@ def load_sc_manifest_records(artifacts_dir: Path) -> list[dict]:
     return records
 
 
-def check(body_path: Path, artifacts_dir: Path) -> list[str]:
+def check(body_path: Path, artifacts_dir: Path) -> tuple[list[str], int]:
+    """返回 (违规列表, 实际核验的轨迹行数)。行数供调用方打印，杜绝静默上限。"""
     violations: list[str] = []
     lines = body_path.read_text(encoding="utf-8").splitlines()
     rows = find_review_trail_rows(lines)
     if not rows:
-        return ["未在 body 中找到复核轨迹表（表头须含「轮次」「candidate」「共识确认」三列）"]
+        return (["未在 body 中找到复核轨迹表（表头须含「轮次」「candidate」「共识确认」三列）"], 0)
 
     consensus_records = load_consensus_records(artifacts_dir)
     sc_records = load_sc_manifest_records(artifacts_dir)
@@ -238,7 +245,7 @@ def check(body_path: Path, artifacts_dir: Path) -> list[str]:
                 f"与 {sc['path'].name} 实算 {sc['n_scs']} 条不符"
             )
 
-    return violations
+    return (violations, len(rows))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -262,16 +269,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"check_pr_body_counts: artifacts-dir 不存在: {artifacts_dir}", file=sys.stderr)
         return 2
 
-    violations = check(body_path, artifacts_dir)
+    violations, verified_rows = check(body_path, artifacts_dir)
     if violations:
         for violation in violations:
             print(f"check_pr_body_counts: {violation}", file=sys.stderr)
         print(
-            f"check_pr_body_counts: FAIL — {len(violations)} 条违规 ({body_path})",
+            f"check_pr_body_counts: FAIL — {len(violations)} 条违规 / 已核 {verified_rows} 行"
+            f" ({body_path})",
             file=sys.stderr,
         )
         return 1
-    print(f"check_pr_body_counts: OK — 复核轨迹表计数与机器来源一致 ({body_path})")
+    # 打印实际核验行数（禁止静默上限）：让"核了几行"可见，避免"只查第一张表"再次伪装成全覆盖
+    print(
+        f"check_pr_body_counts: OK — 复核轨迹表 {verified_rows} 行计数与机器来源一致 ({body_path})"
+    )
     return 0
 
 
