@@ -1,8 +1,4 @@
-"""LangGraph agent — discover → gate → render → send 线性图。
-
-图刻意保持最小，节点边界清晰，便于后续扩展（加简报源 / 重试分支 / 摘要节点）。
-核心逻辑都在各模块的纯函数里，agent 只做编排，便于单测。
-"""
+"""LangGraph agent — discover → gate → render → send。"""
 
 from __future__ import annotations
 
@@ -12,8 +8,86 @@ from langgraph.graph import END, START, StateGraph
 
 from . import blocked, config, gate, idempotency, notify, render
 from . import discover as discover_mod
-from .feishu.send import send_card, send_card_dm
+from .feishu.send import FeishuSendError, send_card, send_card_dm
 from .state import SyncState
+
+
+def _missing_reason(kind: str, date: str, vault_root: Path) -> str:
+    reason = blocked.blocking_reason(kind, date) or "expected_briefing_missing"
+    artifact = blocked.backstop_artifact_status(kind, date, vault_root)
+    next_step = blocked.next_step_command(kind, date, vault_root)
+    parts = [reason, f"backstop产物: {artifact}"]
+    if next_step:
+        parts.append(f"下一步: {next_step}")
+    return "；".join(parts)
+
+
+def _record_missing_pending(
+    state: SyncState,
+    missing_expected: list[tuple[str, str]],
+    errors: list[str],
+    log: list[str],
+) -> tuple[list[str], list[str], bool]:
+    dry_run = bool(state.get("dry_run", False))
+    vault_root = Path(state["vault_root"])
+    failed_persist = False
+    state_path_value = state.get("state_path")
+    state_path = Path(state_path_value) if state_path_value else None
+
+    for kind, path in missing_expected:
+        reason = _missing_reason(kind, state["date"], vault_root)
+        msg = f"{kind} 缺失（期望路径: {path}）；真因: {reason}"
+        errors.append(msg)
+        log.append(msg)
+        if dry_run or state_path is None:
+            continue
+        try:
+            idempotency.mark_missing_expected(
+                state_path,
+                date=state["date"],
+                kind=kind,
+                target=state.get("target", "dm"),
+                expected_path=path,
+                reason=reason,
+            )
+        except Exception as exc:  # noqa: BLE001
+            failed_persist = True
+            persist_msg = f"{kind} missing_expected 状态落盘失败: {exc}"
+            errors.append(persist_msg)
+            log.append(f"{kind} fail-pending-write")
+    return errors, log, failed_persist
+
+
+def _filter_reconcile_candidates(
+    state: SyncState,
+    briefings,
+    errors: list[str],
+    log: list[str],
+):
+    state_path = Path(state["state_path"])
+    pending = idempotency.pending_items(
+        state_path,
+        date=state["date"],
+        target=state.get("target", "dm"),
+        statuses=(idempotency.PENDING_MISSING_EXPECTED,),
+    )
+    pending_by_kind = {item.get("kind"): item for item in pending}
+    if not pending_by_kind:
+        log.append(f"reconcile-missing: {state['date']} 无待补发项")
+        return [], errors, log
+
+    kept = []
+    found_kinds = set()
+    for briefing in briefings:
+        if briefing.kind in pending_by_kind:
+            kept.append(briefing)
+            found_kinds.add(briefing.kind)
+
+    for kind, item in pending_by_kind.items():
+        if kind not in found_kinds:
+            expected_path = item.get("expected_path", "")
+            log.append(f"{kind} reconcile-pending（仍缺失: {expected_path}）")
+    return kept, errors, log
 
 
 def discover_node(state: SyncState) -> dict:
@@ -23,35 +97,43 @@ def discover_node(state: SyncState) -> dict:
         vault, state["date"], expected=expected
     )
     log = list(state.get("log", []))
-    # SC-7: strict 模式下期望简报缺失 → 明确错误（含期望路径）+ 记日志，不静默跳过
+
+    if state.get("reconcile_missing"):
+        briefings, errors, log = _filter_reconcile_candidates(state, briefings, errors, log)
+        return {"briefings": briefings, "errors": errors, "log": log}
+
     if state.get("strict") and missing_expected:
-        for kind, path in missing_expected:
-            msg = f"{kind} 缺失（期望路径: {path}）"
-            # 缺失往往不是"文件丢了"而是"上游被阻断/失败了"，真因已由各链路落盘。
-            # 不带真因的告警在 2026-07-28 事故里让运维连续两天无法定位（只看到"缺失"）。
-            reason = blocked.blocking_reason(kind, state["date"])
-            if reason:
-                msg = f"{msg}；真因: {reason}"
-            errors.append(msg)
-            log.append(msg)
+        errors, log, failed_persist = _record_missing_pending(state, missing_expected, errors, log)
+        if state.get("missing_policy") == config.MISSING_POLICY_FAIL_ALL or failed_persist:
+            briefings = []
+
     return {"briefings": briefings, "errors": errors, "log": log}
 
 
 def gate_node(state: SyncState) -> dict:
     kept = []
     log = list(state.get("log", []))
-    for b in state.get("briefings", []):
-        if gate.passes_gate(b):
-            kept.append(b)
-        else:
-            log.append(f"{b.kind} skip-gate（audit/gate 未过）")
-    return {"briefings": kept, "log": log}
+    errors = list(state.get("errors", []))
+
+    for briefing in state.get("briefings", []):
+        passed, reason = gate.gate_decision(briefing)
+        if passed:
+            kept.append(briefing)
+            continue
+        if briefing.kind == "github":
+            msg = f"github skip-gate（{reason}）"
+            log.append(msg)
+            errors.append(msg)
+            continue
+        log.append(f"{briefing.kind} skip-gate（{reason}）")
+
+    return {"briefings": kept, "log": log, "errors": errors}
 
 
 def render_node(state: SyncState) -> dict:
     briefings = state.get("briefings", [])
-    for b in briefings:
-        b.cards = render.render_cards(b)
+    for briefing in briefings:
+        briefing.cards = render.render_cards(briefing)
     return {"briefings": briefings}
 
 
@@ -63,57 +145,93 @@ def send_node(state: SyncState) -> dict:
     log = list(state.get("log", []))
     errors = list(state.get("errors", []))
 
-    for b in state.get("briefings", []):
+    for briefing in state.get("briefings", []):
         if dry_run:
-            log.append(f"{b.kind} dry-run → {target}")
+            log.append(f"{briefing.kind} dry-run → {target}")
             continue
         try:
-            is_dup = idempotency.already_sent(state_path, date, b.kind, target)
+            reservation = idempotency.reserve_if_unsent(
+                state_path, date, briefing.kind, target
+            )
         except idempotency.StateCorruptError as exc:
-            # fail-closed：状态损坏时拒发，避免重复刷群（Codex P1）
-            errors.append(f"{b.kind} 幂等状态损坏，拒发以防重复: {exc}")
-            log.append(f"{b.kind} fail-state-corrupt")
+            errors.append(f"{briefing.kind} 幂等状态损坏，拒发以防重复: {exc}")
+            log.append(f"{briefing.kind} fail-state-corrupt")
             continue
-        if is_dup:
-            log.append(f"{b.kind} skip-dup（{date}/{target} 已发）")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{briefing.kind} 预留状态失败，未发送: {exc}")
+            log.append(f"{briefing.kind} fail-reserve")
             continue
-        # 发送前预留状态（Codex P2）：先持久化再发送，消除"已发成功但状态没写→重跑重发"窗口
+        if reservation is None:
+            log.append(f"{briefing.kind} skip-dup-or-inflight（{date}/{target} 已发或发送中）")
+            continue
+
+        preserve_reservation = False
         try:
-            idempotency.mark_sent(state_path, date, b.kind, target)
-        except Exception as exc:  # noqa: BLE001 — 预留失败就不发（fail-closed）
-            errors.append(f"{b.kind} 预留状态失败，未发送: {exc}")
-            log.append(f"{b.kind} fail-reserve")
-            continue
-        try:
-            for card in b.cards:
+            sent_indexes = idempotency.sent_card_indexes(
+                state_path, date, briefing.kind, target
+            )
+            total_cards = len(briefing.cards)
+            for card_index, card in enumerate(briefing.cards):
+                if card_index in sent_indexes:
+                    log.append(f"{briefing.kind} skip-card-dup（card={card_index}）")
+                    continue
                 if target == "group":
                     send_card(config.push_chat_id(), card)
                 else:
                     send_card_dm(config.dm_open_id(), card)
-            log.append(f"{b.kind} sent → {target}")
-        except Exception as exc:  # noqa: BLE001 — 发送失败：回滚预留，使重跑可重试
-            try:
-                idempotency.unmark_sent(state_path, date, b.kind, target)
-            except Exception:  # noqa: BLE001
-                pass
-            errors.append(f"{b.kind} 发送失败: {exc}")
-            log.append(f"{b.kind} fail")
+                try:
+                    idempotency.mark_card_sent(
+                        state_path,
+                        date,
+                        briefing.kind,
+                        target,
+                        card_index=card_index,
+                        total_cards=total_cards,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    # transport 已成功，若此时释放 CAS 会允许重发该卡；保留预留 fail-closed。
+                    preserve_reservation = True
+                    raise RuntimeError(
+                        f"card={card_index} 已发送但进度状态落盘失败: {exc}"
+                    ) from exc
+            idempotency.mark_sent(state_path, date, briefing.kind, target)
+            log.append(f"{briefing.kind} sent → {target}")
+        except Exception as exc:  # noqa: BLE001
+            if not preserve_reservation and not idempotency.release_reservation(reservation):
+                log.append(f"{briefing.kind} fail-reserve-release")
+            if isinstance(exc, FeishuSendError) and (exc.retryable or exc.exhausted):
+                try:
+                    idempotency.mark_send_failed_retryable(
+                        state_path,
+                        date=date,
+                        kind=briefing.kind,
+                        target=target,
+                        reason=str(exc),
+                        retry_after=exc.retry_after,
+                    )
+                except Exception:  # noqa: BLE001
+                    log.append(f"{briefing.kind} fail-pending-write")
+            errors.append(f"{briefing.kind} 发送失败: {exc}")
+            log.append(f"{briefing.kind} fail")
+        else:
+            if not idempotency.release_reservation(reservation):
+                log.append(f"{briefing.kind} reserve-release-skipped")
 
     return {"log": log, "errors": errors}
 
 
 def build_agent():
-    g = StateGraph(SyncState)
-    g.add_node("discover", discover_node)
-    g.add_node("gate", gate_node)
-    g.add_node("render", render_node)
-    g.add_node("send", send_node)
-    g.add_edge(START, "discover")
-    g.add_edge("discover", "gate")
-    g.add_edge("gate", "render")
-    g.add_edge("render", "send")
-    g.add_edge("send", END)
-    return g.compile()
+    graph = StateGraph(SyncState)
+    graph.add_node("discover", discover_node)
+    graph.add_node("gate", gate_node)
+    graph.add_node("render", render_node)
+    graph.add_node("send", send_node)
+    graph.add_edge(START, "discover")
+    graph.add_edge("discover", "gate")
+    graph.add_edge("gate", "render")
+    graph.add_edge("render", "send")
+    graph.add_edge("send", END)
+    return graph.compile()
 
 
 def run_sync(
@@ -125,12 +243,9 @@ def run_sync(
     dry_run: bool = False,
     expected: list[str] | None = None,
     strict: bool = False,
+    reconcile_missing: bool = False,
+    missing_policy: str | None = None,
 ) -> int:
-    """运行同步，返回退出码（0=成功/静默无内容，1=有失败）。
-
-    SC-7: strict=True 时 expected 中期望简报缺失 → fail-visible（exit 1）。
-    dry_run 时不触达飞书告警通道（不访问飞书、不写 state）。
-    """
     agent = build_agent()
     init: SyncState = {
         "date": date,
@@ -139,6 +254,8 @@ def run_sync(
         "state_path": str(state_path),
         "dry_run": dry_run,
         "strict": strict,
+        "reconcile_missing": reconcile_missing,
+        "missing_policy": missing_policy or config.missing_policy(),
         "expected": expected or [],
         "briefings": [],
         "errors": [],
@@ -150,18 +267,13 @@ def run_sync(
         notify.log_line(line)
 
     errors = final.get("errors", [])
-    acted_any = any(
-        "sent →" in line or "dry-run →" in line
-        for line in final.get("log", [])
-    )
-
+    acted_any = any("sent →" in line or "dry-run →" in line for line in final.get("log", []))
     if not acted_any and not errors:
         notify.log_line(f"今日无可发布简报，静默退出 ({date}/{target})")
 
     if errors:
         msg = f"{date} 简报同步 {len(errors)} 项失败: " + "; ".join(errors)
         if dry_run:
-            # SC-7: dry-run 不触达飞书告警通道（不访问飞书）
             notify.log_line(f"FAILED — {msg}")
         else:
             notify.alert_failure(msg)

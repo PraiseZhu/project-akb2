@@ -4,12 +4,28 @@ title = "AKB2 gitleaks config"
 [extend]
 useDefault = true
 
-# SC PRE-2：raw-html fixtures 是抓回的网页快照（测试数据），含 sk- 前缀 CSS 类
-# （sk-assistant-code-block-button / sk-dark / sk-icon 等，最长 29 字符），会被默认
-# generic-api-key 规则按长度+熵误报为密钥。整目录 allowlist——该目录是测试 fixture，
-# 不放真密钥；真密钥扫描仍覆盖仓内其余全部路径。
+# 全局 allowlist：以下条件**任一命中**即豁免该 finding（不影响默认规则集本身）。
+# 真密钥扫描仍覆盖仓内全部路径与全部 commit diff，只是命中的 secret 值若匹配
+# 下面任一 regex/path 则不报。
 [allowlist]
-description = "raw-html 测试 fixture 含 sk- 前缀 CSS 类（非密钥）"
+description = "测试 fixture 与脱敏器伪造哨兵（非真密钥）"
+
+# SC PRE-2：raw-html fixtures 是抓回的网页快照（测试数据），含 sk- 前缀 CSS 类
+# （sk-assistant-code-block-button / sk-dark / sk-icon 等），会被默认 generic-api-key
+# 规则按长度+熵误报。整目录豁免——该目录是测试 fixture，不放真密钥。
 paths = [
     'evals/main-pipeline-quality/fixtures/raw-html/.*',
+]
+
+# 脱敏器测试的**伪造哨兵**：`sk-probe-*-2026` 是刻意构造的假凭证，用途正是断言
+# redactor 会把它掩掉（`assert "sk-probe-secret-2026" not in ledger_text` 等）。
+# 默认 generic-api-key 规则按「sk- 前缀 + 长度 + 熵」误报为真密钥（2026-08-05
+# PR #74 首次 push CI 命中 2 处，其中 1 处只是中文注释在讲哨兵历史）。
+#
+# 用 **regex 而非 paths** 豁免：只放行这一个哨兵字面量，**不豁免整个测试文件** ——
+# 该文件若日后真的写进别的密钥，扫描仍会抓到。哨兵本身不能改成不像密钥的形态：
+# 带 `sk-` 前缀正是为了测试「前缀规则」分支（改掉会削弱测试，见该文件里
+# 「哨兵刻意不含任何已知前缀」那段注释所记的 R4 教训——两类哨兵各有用途）。
+regexes = [
+    'sk-probe-[a-z]+-2026',
 ]

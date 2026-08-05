@@ -1,0 +1,158 @@
+generated_at: 2026-08-03
+defaults:
+  launch_agents_dir: ~/Library/LaunchAgents
+  repo_root_placeholder: __AKB2_REPO_ROOT__
+  home_placeholder: __AKB2_HOME__
+  vault_root_placeholder: __AKB2_VAULT_ROOT__
+  vault_root_base: /Volumes/AKB2/Obsidian
+jobs:
+  - label: com.akb2.main-pipeline
+    template: launchd/com.akb2.main-pipeline.plist
+    installed: ~/Library/LaunchAgents/com.akb2.main-pipeline.plist
+    installer: scripts/deploy-mac-mini.sh
+    should_load: true
+    pending_human_install: false
+    expected_schedule:
+      kind: keepalive
+    expected_env_keys:
+      - AKB2_AMENDMENT_APPLIED
+      - AKB2_AUTO_PROMOTE
+      - AKB2_MAKER_FALLBACK
+      - AKB2_VAULT_ROOT
+      - PATH
+      - PYTHONPATH
+  - label: com.akb2.briefing
+    template: launchd/com.akb2.briefing.plist
+    installed: ~/Library/LaunchAgents/com.akb2.briefing.plist
+    installer: scripts/bootstrap_launchd.sh
+    should_load: true
+    pending_human_install: false
+    expected_schedule:
+      kind: calendar
+      entries:
+        - Hour: 7
+          Minute: 30
+    expected_env_keys:
+      - PATH
+      - PYTHONPATH
+    # 抑制项 schema：每条都是 {key, reason}，理由与键物理不可分离。
+    # 抑制 = 「明知运行态与模板不一致、决定不报」的例外；不写为什么，下次没人敢删
+    # → 成永久债。解析口在 scripts/verify-launchd-parity.sh::_ignore_env_keys
+    # （缺 reason 直接抛错，不静默当合法抑制）；守卫在
+    # tests/test_launchd_manifest_suppressions.py。
+    ignore_installed_env_keys:
+      - key: AKB2_TRANSLATE_TIMEOUT
+        reason: >-
+          运行态多出 AKB2_TRANSLATE_TIMEOUT=300，而它正是代码默认值
+          （src/akb2/briefing/translate.py 的 _DEFAULT_TRANSLATE_TIMEOUT 取
+          os.environ.get("AKB2_TRANSLATE_TIMEOUT", "300")），所以这条差异行为上是
+          no-op：模板不带它、运行态带它，跑出来的超时都是 300s。不为一个 no-op 去
+          bootout/bootstrap social 主跑 —— 2026-07-28 正是这个脚本把 com.akb2.briefing
+          卸掉 5 天 22 小时。清除条件：下次因其他原因重装 com.akb2.briefing 时该键会
+          随渲染消失，届时把本条抑制一并删掉。
+  - label: com.akb2.briefing.backstop
+    template: launchd/com.akb2.briefing.backstop.plist
+    installed: ~/Library/LaunchAgents/com.akb2.briefing.backstop.plist
+    installer: manual_existing_runtime
+    should_load: true
+    pending_human_install: false
+    expected_schedule:
+      kind: calendar
+      entries:
+        - Hour: 8
+          Minute: 0
+        - Hour: 11
+          Minute: 0
+    expected_env_keys:
+      - AKB2_TRANSLATE_TIMEOUT
+      - PATH
+      - PYTHONPATH
+  - label: com.akb2.feishu-sync
+    template: launchd/com.akb2.feishu-sync.plist
+    installed: ~/Library/LaunchAgents/com.akb2.feishu-sync.plist
+    installer: manual_existing_runtime
+    should_load: true
+    pending_human_install: false
+    expected_schedule:
+      kind: calendar
+      entries:
+        - Hour: 10
+          Minute: 0
+    expected_env_keys:
+      - PATH
+      - PYTHONPATH
+  - label: com.akb2.github_briefing
+    template: launchd/com.akb2.github_briefing.plist
+    installed: ~/Library/LaunchAgents/com.akb2.github_briefing.plist
+    installer: scripts/bootstrap_launchd.sh --plist-src launchd/com.akb2.github_briefing.plist
+    should_load: true
+    pending_human_install: false
+    expected_schedule:
+      kind: calendar
+      entries:
+        - Hour: 5
+          Minute: 30
+    expected_env_keys:
+      - PATH
+      - PYTHONPATH
+  - label: com.akb2.github_briefing.backstop
+    template: launchd/com.akb2.github_briefing.backstop.plist
+    installed: ~/Library/LaunchAgents/com.akb2.github_briefing.backstop.plist
+    installer: manual_existing_runtime
+    should_load: true
+    pending_human_install: false
+    expected_schedule:
+      kind: calendar
+      entries:
+        - Hour: 7
+          Minute: 30
+        - Hour: 11
+          Minute: 0
+    expected_env_keys:
+      - PATH
+      - PYTHONPATH
+  - label: com.akb2.inflow-sentinel
+    template: launchd/com.akb2.inflow-sentinel.plist
+    installed: ~/Library/LaunchAgents/com.akb2.inflow-sentinel.plist
+    installer: manual_human_review_required
+    should_load: false
+    pending_human_install: true
+    pending_since: 2026-07-30
+    expected_schedule:
+      kind: calendar
+      entries:
+        - Hour: 9
+          Minute: 0
+        - Hour: 21
+          Minute: 0
+    expected_env_keys:
+      - PATH
+      - PYTHONPATH
+  - label: com.akb2.intake
+    template: launchd/com.akb2.intake.plist
+    installed: ~/Library/LaunchAgents/com.akb2.intake.plist
+    installer: scripts/bootstrap_intake_launchd.sh
+    should_load: true
+    pending_human_install: false
+    expected_schedule:
+      kind: interval
+      seconds: 900
+    expected_env_keys:
+      - AKB2_VAULT_ROOT
+      - PATH
+      - PYTHONPATH
+  - label: com.akb2.video
+    template: launchd/com.akb2.video.plist
+    installed: ~/Library/LaunchAgents/com.akb2.video.plist
+    installer: manual_existing_runtime
+    should_load: true
+    pending_human_install: false
+    expected_schedule:
+      kind: calendar
+      entries:
+        - Hour: 2
+          Minute: 0
+    expected_env_keys:
+      - AKB2_ROOT
+      - PATH
+      - PYTHONPATH

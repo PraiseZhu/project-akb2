@@ -10,10 +10,24 @@ export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:$PYTHONPATH}"
 
 # Source secrets（含 FEISHU_*；绝不 log 值；文件须 chmod 600）
 _SECRETS_FILE="${HOME:-}/.akb2-secrets.sh"
+SECRETS_STATUS="missing_file"
 if [[ -n "${HOME:-}" ]] && [[ -f "$_SECRETS_FILE" ]]; then
     # shellcheck disable=SC1090
-    source "$_SECRETS_FILE"
+    set +e
+    source "$_SECRETS_FILE" >/dev/null 2>&1
+    source_rc=$?
+    set -e
+    if [[ "$source_rc" -eq 0 ]]; then
+        SECRETS_STATUS="loaded"
+    else
+        echo "ERROR: failed to source $_SECRETS_FILE" >&2
+        exit 1
+    fi
+elif [[ -z "${HOME:-}" ]]; then
+    SECRETS_STATUS="home_missing"
 fi
+export AKB2_FEISHU_SECRETS_STATUS="$SECRETS_STATUS"
+export AKB2_FEISHU_SECRETS_FILE="$_SECRETS_FILE"
 
 PYTHON_BIN="$(bash "${SCRIPT_DIR}/find-python311.sh")"
 
@@ -22,6 +36,7 @@ VAULT_ROOT=""
 TARGET="dm"
 STATE_PATH=""
 DRY_RUN=0
+RECONCILE_MISSING=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -30,6 +45,7 @@ while [[ $# -gt 0 ]]; do
     --target) TARGET="$2"; shift 2 ;;
     --state-path) STATE_PATH="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
+    --reconcile-missing) RECONCILE_MISSING=1; shift ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -49,6 +65,9 @@ if [[ -n "$STATE_PATH" ]]; then
 fi
 if [[ "$DRY_RUN" -eq 1 ]]; then
   CMD+=(--dry-run)
+fi
+if [[ "$RECONCILE_MISSING" -eq 1 ]]; then
+  CMD+=(--reconcile-missing)
 fi
 
 exec "${CMD[@]}"

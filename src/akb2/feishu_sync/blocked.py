@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from . import discover as discover_mod
+
 # 仓库根：src/akb2/feishu_sync/blocked.py → parents[3]
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -45,6 +47,15 @@ def _load(path: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def diagnostic_payload(kind: str, repo_root: Path | None = None) -> dict | None:
+    root = repo_root or REPO_ROOT
+    for rel in _DIAG_FILES.get(kind, ()):
+        data = _load(root / rel)
+        if data:
+            return data
+    return None
+
+
 def blocking_reason(kind: str, date: str, repo_root: Path | None = None) -> str | None:
     """返回该 kind 在 date 当天被阻断/失败的一句话真因；无可用诊断则 None。
 
@@ -72,3 +83,32 @@ def blocking_reason(kind: str, date: str, repo_root: Path | None = None) -> str 
             text = f"{text}（{detail}）"
         return text
     return None
+
+
+def backstop_artifact_status(kind: str, date: str, vault_root: Path) -> str:
+    path = discover_mod.expected_path(vault_root, date, kind)
+    if path and path.exists():
+        return f"已发现 {path.name}"
+    if path:
+        return f"未发现 {path.name}"
+    return "不适用"
+
+
+def next_step_command(kind: str, date: str, vault_root: Path) -> str | None:
+    if kind != "github":
+        return None
+    product_exists = False
+    path = discover_mod.expected_path(vault_root, date, kind)
+    if path and path.exists():
+        product_exists = True
+
+    reconcile = (
+        f"bash scripts/feishu_sync.sh --vault-root '{vault_root}' --date {date} "
+        "--target group --reconcile-missing"
+    )
+    if product_exists:
+        return reconcile
+    return (
+        f"bash scripts/github_briefing_backstop.sh --vault-root '{vault_root}'"
+        f" && {reconcile}"
+    )

@@ -6,9 +6,33 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 VAULT_STUB = PROJECT_ROOT / "tests" / "fixtures" / "vault-stub"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_diagnostic_root(tmp_path, monkeypatch):
+    """把诊断落点隔离到 tmp_path —— 本文件的 in-process 测试此前写进真实仓库根。
+
+    2026-08-03 实测：`TestSC4FailVisible::test_failed_exit_on_synthesis_failure` 是
+    in-process 调 `run_pipeline`，只 monkeypatch 了 env、没管 `_PROJECT_ROOT`，于是
+    `_write_failed()` 把 `briefing-failed.json` 写到了仓库根（残留文件的 reason 字段里
+    还留着那个测试的 `<locals>` 函数名，可直接指认）。两个后果：
+
+    1. **跨测试共享可变状态** —— 任何断言诊断内容的测试都可能读到别的测试的产物，
+       表现为顺序/并发相关的偶发失败（本轮观察到过一次不可复现的红）。
+    2. **被 Syncthing 跨机同步** —— 这两个文件在 `.gitignore` 里（不进 git），但 Syncthing
+       不看 gitignore，仓库根因此积累了 `briefing-*.sync-conflict-*.json`。
+
+    subprocess 形态的测试（`_run_pipeline`）不受影响：它们靠 `cwd` + env 隔离，
+    读不到本进程的模块全局。此处只补 in-process 那条路径。
+    """
+    from akb2.briefing.github import pipeline as _gh_pipeline
+
+    monkeypatch.setattr(_gh_pipeline, "_PROJECT_ROOT", tmp_path, raising=False)
 
 
 def _run_pipeline(env_overrides: dict, cwd: Path | None = None) -> subprocess.CompletedProcess:
@@ -83,12 +107,29 @@ class TestPipelineEdgeCases:
         assert (tmp_path / "briefing-skipped.json").exists()
 
     def test_relative_vault_root_skips(self, tmp_path):
-        """VAULT_ROOT relative → briefing-skipped.json."""
-        result = _run_pipeline({"VAULT_ROOT": "relative/path"}, cwd=tmp_path)
+        """VAULT_ROOT relative → briefing-skipped.json。
+
+        `PROJECT_ROOT` 必须一起隔离：不给的话 `_PROJECT_ROOT` 回落到真实仓库根
+        （`pipeline.py:34-38`），诊断 JSON 就写进仓库根 = 跨测试共享可变状态。
+        本用例走 preflight 早退、不读 `POOL_CONFIG`，所以重定向是安全的。
+        """
+        result = _run_pipeline(
+            {"VAULT_ROOT": "relative/path", "PROJECT_ROOT": str(tmp_path)}, cwd=tmp_path
+        )
         assert "SKIPPED" in result.stdout
+        assert (tmp_path / "briefing-skipped.json").exists(), "诊断应落隔离根"
 
     def test_vault_root_absolute_proceeds(self, tmp_path):
-        """VAULT_ROOT absolute → proceeds to output."""
+        """VAULT_ROOT absolute → proceeds to output.
+
+        ⚠️ 这条**故意不隔离** `PROJECT_ROOT`：它要走到产出，途中需要真实仓库里的
+        `POOL_CONFIG`（`config/github_curator_pool.yaml`，由 `_PROJECT_ROOT` 解析）。
+        重定向会让 pool 配置读不到 → 走 SKIPPED 分支 → 断言仍然通过但**理由是错的**
+        （断言容忍 WROTE 或 SKIPPED），变成空过测试。代价是它会往仓库根写一份
+        `briefing-skipped.json`（已在 .gitignore，不进 git）。
+        彻底解法是把诊断落点从仓库根挪到状态根，但那会改动 feishu_sync 的读取侧
+        （`feishu_sync/blocked.py` 依赖仓库根路径），属跨模块变更，不在本轮范围。
+        """
         vault = tmp_path / "vault"
         vault.mkdir()
         result = _run_pipeline({"VAULT_ROOT": str(vault)})
@@ -104,10 +145,21 @@ class TestSC8Launchd:
             assert path.exists(), f"Missing: {path}"
             assert os.access(path, os.X_OK), f"Not executable: {path}"
 
-    def test_plist_no_environment_variables(self):
+    def test_plist_environment_variables_guard_new_contract(self):
+        """SC-8 于 2026-08-03 已废弃，原因见 docs/allowed-residuals.md；本用例现守卫相反契约。
+
+        原名 test_plist_no_environment_variables 断言该 plist **不得**含 EnvironmentVariables
+        （SC-8 原契约：连 VAULT_ROOT 也走 wrapper 注入）。现契约相反：生产依赖 plist 级
+        PYTHONPATH 与 ~/.local/bin，故断言这些键**必须存在**。已随契约反转一并改名 ——
+        保留原名会让 `pytest -k no_environment_variables` 的读者得出与事实相反的结论。
+        """
         plist_path = PROJECT_ROOT / "launchd" / "com.akb2.github_briefing.plist"
         content = plist_path.read_text()
-        assert "<key>EnvironmentVariables</key>" not in content
+        assert "<key>EnvironmentVariables</key>" in content
+        assert "<key>PYTHONPATH</key>" in content
+        assert "<string>__AKB2_REPO_ROOT__/src</string>" in content
+        assert "<key>PATH</key>" in content
+        assert "__AKB2_HOME__/.local/bin" in content
 
     def test_plist_points_to_wrapper(self):
         plist_path = PROJECT_ROOT / "launchd" / "com.akb2.github_briefing.plist"

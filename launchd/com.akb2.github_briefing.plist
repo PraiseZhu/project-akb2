@@ -7,10 +7,10 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/praise/AI-Agent/Claude/projects/Project AKB2/scripts/launchd_wrapper.sh</string>
+        <string>__AKB2_REPO_ROOT__/scripts/launchd_wrapper.sh</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>/Users/praise/AI-Agent/Claude/projects/Project AKB2/</string>
+    <string>__AKB2_REPO_ROOT__</string>
     <key>StartCalendarInterval</key>
     <dict>
         <key>Hour</key>
@@ -21,8 +21,15 @@
     <key>RunAtLoad</key>
     <false/>
     <key>StandardOutPath</key>
-    <string>/Users/praise/AI-Agent/Claude/projects/Project AKB2/logs/github-briefing-stdout.log</string>
+    <string>__AKB2_REPO_ROOT__/logs/github-briefing-stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/praise/AI-Agent/Claude/projects/Project AKB2/logs/github-briefing-stderr.log</string>
+    <string>__AKB2_REPO_ROOT__/logs/github-briefing-stderr.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONPATH</key>
+        <string>__AKB2_REPO_ROOT__/src</string>
+        <key>PATH</key>
+        <string>__AKB2_HOME__/.pyenv/shims:__AKB2_HOME__/.pyenv/bin:__AKB2_HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
 </dict>
 </plist>

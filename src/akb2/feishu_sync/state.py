@@ -30,6 +30,8 @@ class SyncState(TypedDict, total=False):
     state_path: str
     dry_run: bool
     strict: bool  # SC-7: strict 模式下期望简报缺失 → fail-visible
+    reconcile_missing: bool
+    missing_policy: str
     expected: list  # SC-7: 期望齐全的 kind 列表（["ai_trends","github"]）
     briefings: list  # list[Briefing]
     errors: list  # list[str]：解析/发送失败（非空 → exit 1 + 告警）

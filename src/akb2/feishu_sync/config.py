@@ -16,6 +16,15 @@ FEISHU_API_BASE = os.environ.get(
 # HTTP 超时（秒）
 HTTP_TIMEOUT = float(os.environ.get("FEISHU_HTTP_TIMEOUT", "15"))
 
+MISSING_POLICY_FAIL_ALL = "fail_all"
+MISSING_POLICY_PARTIAL_OK_RECOVERABLE = "partial_ok_recoverable"
+DEFAULT_MISSING_POLICY = MISSING_POLICY_PARTIAL_OK_RECOVERABLE
+MISSING_POLICY_ENV = "AKB2_FEISHU_MISSING_POLICY"
+
+SECRETS_STATUS_ENV = "AKB2_FEISHU_SECRETS_STATUS"
+SECRETS_FILE_ENV = "AKB2_FEISHU_SECRETS_FILE"
+SECRETS_STATUS_LOADED = "loaded"
+
 
 def _require(name: str) -> str:
     """读取必需环境变量，缺失时抛出（错误信息只含变量名，不含值）。"""
@@ -47,3 +56,31 @@ def missing_feishu_vars() -> list[str]:
     """返回缺失的飞书相关环境变量名列表（用于启动前自检，不打印值）。"""
     req = ["FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_PUSH_CHAT_ID", "FEISHU_DM_OPEN_ID"]
     return [k for k in req if not os.environ.get(k)]
+
+
+def missing_policy() -> str:
+    policy = os.environ.get(MISSING_POLICY_ENV, DEFAULT_MISSING_POLICY).strip()
+    if policy in {MISSING_POLICY_FAIL_ALL, MISSING_POLICY_PARTIAL_OK_RECOVERABLE}:
+        return policy
+    return DEFAULT_MISSING_POLICY
+
+
+def secrets_status() -> str:
+    return os.environ.get(SECRETS_STATUS_ENV, "")
+
+
+def secrets_file() -> str:
+    return os.environ.get(SECRETS_FILE_ENV, os.path.expanduser("~/.akb2-secrets.sh"))
+
+
+def missing_env_hint(missing: list[str]) -> str:
+    vars_text = ",".join(missing)
+    status = secrets_status()
+    secrets = secrets_file()
+    if status != SECRETS_STATUS_LOADED:
+        status_text = status or "unknown"
+        return (
+            f"缺少飞书环境变量: {vars_text}"
+            f"（secrets 未装载: {secrets} status={status_text}）"
+        )
+    return f"缺少飞书环境变量: {vars_text}（secrets 已装载，但运行期 env 仍缺失）"

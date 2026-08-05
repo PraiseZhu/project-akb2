@@ -50,6 +50,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="同 --non-strict 别名",
     )
+    parser.add_argument(
+        "--reconcile-missing",
+        action="store_true",
+        help="只补发 state 中当日/显式 --date 标记为 missing_expected 且现已存在的项",
+    )
     args = parser.parse_args(argv)
 
     vault_root = Path(args.vault_root).expanduser().resolve()
@@ -62,9 +67,7 @@ def main(argv: list[str] | None = None) -> int:
 
     missing = config.missing_feishu_vars()
     if missing and not args.dry_run:
-        notify.alert_failure(
-            f"缺少飞书环境变量: {','.join(missing)}（请 source ~/.akb2-secrets.sh）"
-        )
+        notify.alert_failure(config.missing_env_hint(missing))
         return 1
 
     # SC-7: 生产默认 strict + expected=[ai_trends, github]；--non-strict/--allow-missing 放宽
@@ -81,6 +84,8 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=args.dry_run,
             expected=expected,
             strict=strict,
+            reconcile_missing=args.reconcile_missing,
+            missing_policy=config.missing_policy(),
         )
     except Exception as exc:  # noqa: BLE001 — 顶层兜底，未捕获异常也要告警 + exit 1
         notify.alert_failure(f"{date} 未捕获异常: {exc}")

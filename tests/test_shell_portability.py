@@ -134,3 +134,69 @@ def test_stat_format_usage_is_platform_paired(script: Path) -> None:
     assert UNAME_BRANCH_RE.search(script.read_text(encoding="utf-8")), (
         f"{script.name} 两种 stat 写法都在但没有 uname 分支 —— 需显式按平台择一"
     )
+
+
+# ---------------------------------------------------------------------------
+# 变量展开紧跟非 ASCII 字符 → set -u 下 "unbound variable"
+# ---------------------------------------------------------------------------
+# 这是**已被文档记录过、又被复犯**的坑（briefing_backstop.sh 的文案约定注释：
+# 「变量后紧跟中文标点时必须写成 ${VAR}」）。原因：launchd 不带 LANG，bash 退化成
+# 单字节 locale，`$VAR（` 里 `（` 的首字节 0xEF 被并进变量名 → set -u 直接崩掉整个
+# 脚本。`bash -n` **抓不到**（语法合法），只有真跑到那一行才炸 —— 而崩的正是
+# fail-closed 分支（平时不走），所以能一路活到生产。
+#
+# 修法只有一种：写 `${VAR}`。所以这里做静态守卫，而不是只留一条注释。
+_BARE_EXPANSION_BEFORE_NON_ASCII = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*(?=[^\x00-\x7F])")
+
+
+def _shell_scripts_recursive() -> list[Path]:
+    """含 `scripts/lib/*.sh` 的全量 shell 脚本。
+
+    本文件既有的三条守卫只扫顶层 `scripts/*.sh`（它们的范围是既有决定，本轮不动）。
+    但下面这条守卫必须覆盖 `scripts/lib/`：那里正是共用原语的所在地，
+    `launchctl.sh` 里就有多处「变量紧跟中文标点」的文案 —— 崩的会是**所有**调用方。
+    """
+    scripts = sorted(p for p in SCRIPTS_DIR.rglob("*.sh") if p.is_file())
+    assert len(scripts) > len(_shell_scripts()), "递归范围没比顶层大 —— 范围写错了"
+    return scripts
+
+
+@pytest.mark.parametrize(
+    "script", _shell_scripts_recursive(), ids=lambda p: str(p.relative_to(SCRIPTS_DIR))
+)
+def test_expansion_before_non_ascii_is_braced(script: Path) -> None:
+    """`$VAR` 紧跟中文/全角字符必须写成 `${VAR}`（set -u 下否则 unbound variable）。"""
+    offenders: list[str] = []
+    for lineno, code in _code_lines(script):
+        for match in _BARE_EXPANSION_BEFORE_NON_ASCII.finditer(code):
+            offenders.append(f"{script.name}:{lineno}: {match.group(0)} → 应写 ${{...}}")
+    assert not offenders, (
+        "变量展开紧跟非 ASCII 字符，单字节 locale 下会把首字节并进变量名：\n"
+        + "\n".join(offenders)
+    )
+
+
+def test_expansion_guard_actually_catches_a_planted_violation(tmp_path: Path) -> None:
+    """反证：守卫必须真会咬人（不是一个扫不到东西就绿的空检查）。"""
+    planted = tmp_path / "planted.sh"
+    planted.write_text(
+        '#!/usr/bin/env bash\nset -euo pipefail\necho "锁（$LOCK_SETUP_ERROR）"\n',
+        encoding="utf-8",
+    )
+    hits = [
+        match.group(0)
+        for _lineno, code in _code_lines(planted)
+        for match in _BARE_EXPANSION_BEFORE_NON_ASCII.finditer(code)
+    ]
+    assert hits == ["$LOCK_SETUP_ERROR"], hits
+    # 加了花括号就该放行（守卫不是"禁止在中文旁边用变量"）
+    fixed = tmp_path / "fixed.sh"
+    fixed.write_text(
+        '#!/usr/bin/env bash\nset -euo pipefail\necho "锁（${LOCK_SETUP_ERROR}）"\n',
+        encoding="utf-8",
+    )
+    assert not [
+        match.group(0)
+        for _lineno, code in _code_lines(fixed)
+        for match in _BARE_EXPANSION_BEFORE_NON_ASCII.finditer(code)
+    ]

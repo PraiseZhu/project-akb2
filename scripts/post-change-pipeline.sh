@@ -8,7 +8,8 @@
 #   3. sync-mcp-server             (dry-run)
 #   4. dry-run no-write invariant  (before/after SHA snapshot 对比)
 #   5. verify-no-drift             (SHA alignment check)
-#   6. pytest smoke                (如果全 skip → pytest_skipped_until_step5)
+#   6. verify-launchd-parity       (write 模式为硬门；exit 3 = 仅已批准 pending，不判失败)
+#   7. pytest smoke                (如果全 skip → pytest_skipped_until_step5)
 #
 # --write 模式：步骤 1-3 实际写入，步骤 4 改为 write-mode invariant 验证
 #
@@ -33,7 +34,7 @@ while [[ $# -gt 0 ]]; do
       echo "Usage: $0 [--write]"
       echo "  --write   sync scripts actually copy (default: dry-run pipeline)"
       echo ""
-      echo "Pipeline: sync-codex → sync-claude-backup → sync-mcp → invariant → verify → pytest"
+      echo "Pipeline: sync-codex → sync-claude-backup → sync-mcp → invariant → verify-no-drift → launchd-parity → pytest"
       exit 0 ;;
     *) echo -e "${RED}[ERROR]${NC} Unknown arg: $1"; exit 1 ;;
   esac
@@ -193,7 +194,43 @@ else
   echo -e "${CYN}[$STEP INFO]${NC} verify-no-drift (drift in dry-run is expected if targets not yet synced)"
 fi
 
-# === Step 6: pytest smoke ===
+# === Step 6: verify-launchd-parity ===
+# write 模式是硬门，但 exit 3 = 「只有已批准的 pending_human_install」不算失败：
+# manifest 把 inflow-sentinel 登记为 pending 且 docs/allowed-residuals.md 已批准，
+# 旧实现让它无条件计 failure → **任何**无关的 write pipeline 都结构性 FAIL，
+# 合法状态下 gate 无解（CADV-G4）。真 DRIFT 仍 exit 1 → 仍然 FAIL。
+PARITY_PENDING_EXIT_CODE=3
+run_step_parity() {
+  STEP=$((STEP + 1))
+  local rc=0
+  echo ""
+  echo -e "${CYN}[$STEP] verify-launchd-parity${NC}"
+  echo "    cmd: $SCRIPT_DIR/verify-launchd-parity.sh"
+  echo ""
+  "$SCRIPT_DIR/verify-launchd-parity.sh" || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    echo -e "${GRN}[$STEP PASS]${NC} verify-launchd-parity"
+  elif [[ "$rc" -eq "$PARITY_PENDING_EXIT_CODE" ]]; then
+    echo -e "${YEL}[$STEP PASS-WITH-PENDING]${NC} verify-launchd-parity（仅已批准的待人工安装）"
+  else
+    echo -e "${RED}[$STEP FAIL]${NC} verify-launchd-parity (exit=$rc)"
+    PIPELINE_PASS=false
+  fi
+}
+
+if [[ "$MODE" == "write" ]]; then
+  run_step_parity
+else
+  STEP=$((STEP + 1))
+  echo ""
+  echo -e "${CYN}[$STEP] verify-launchd-parity (informational in dry-run)${NC}"
+  echo "    cmd: $SCRIPT_DIR/verify-launchd-parity.sh"
+  echo ""
+  "$SCRIPT_DIR/verify-launchd-parity.sh" || true
+  echo -e "${CYN}[$STEP INFO]${NC} verify-launchd-parity (launchd drift in dry-run is reported, not enforced)"
+fi
+
+# === Step 7: pytest smoke ===
 STEP=$((STEP + 1))
 echo ""
 echo -e "${CYN}[$STEP] pytest smoke${NC}"

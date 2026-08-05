@@ -36,7 +36,7 @@
         <key>PYTHONPATH</key>
         <string>__AKB2_REPO_ROOT__/src</string>
         <key>PATH</key>
-        <string>/Users/praise/.pyenv/shims:/Users/praise/.pyenv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <string>__AKB2_HOME__/.pyenv/shims:__AKB2_HOME__/.pyenv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     </dict>
 </dict>
 </plist>

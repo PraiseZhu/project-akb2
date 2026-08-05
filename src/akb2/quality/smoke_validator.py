@@ -9,13 +9,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import plistlib
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from akb2.common.plist_parse import parse_plist_file
 
 LAUNCHD_LABEL = "com.akb2.main-pipeline"
 TERMINAL_EVENTS = {"grade_llm", "promote", "finalize"}
@@ -24,6 +25,7 @@ SENSITIVE_PATH_MARKERS = (
     "/Users/praise/Library/Mobile Documents",
 )
 DEFAULT_SOURCE_LEDGER_MAX_AGE_HOURS = 72
+DEFAULT_MAIN_PLIST = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
 SOURCE_FAILURE_CLASSES = {
     "config_stale",
     "network_timeout",
@@ -35,6 +37,56 @@ SOURCE_FAILURE_CLASSES = {
 
 class SmokeValidationError(RuntimeError):
     """Smoke validation failed."""
+
+
+# Default expected launchd mode. Must track the deployed reality, not the
+# historical proposal-only rollout: both launchd/com.akb2.main-pipeline.plist and
+# the installed ~/Library/LaunchAgents copy carry AKB2_AUTO_PROMOTE=1, so a
+# "proposal" default made every all-defaults invocation raise SmokeValidationError
+# — an operator running the documented command got a failure that says nothing
+# about the pipeline. Explicit --expected-mode proposal still works for the
+# isolated proposal-mode replay.
+DEFAULT_EXPECTED_LAUNCHD_MODE = "active"
+
+
+def _launchd_mode_from_env(env: dict[str, Any]) -> str:
+    auto_promote = str(env.get("AKB2_AUTO_PROMOTE", "0"))
+    # AKB2_AMENDMENT_APPLIED is a calibration-side marker only. Runtime execution
+    # and smoke validation must classify active/proposal from AKB2_AUTO_PROMOTE
+    # alone so detection matches what promote.py / runner.py actually execute.
+    return "active" if auto_promote == "1" else "proposal"
+
+
+def _assert_repo_plist_matches_installed(
+    installed_plist_path: str | Path,
+    repo_plist_path: str | Path | None,
+) -> None:
+    if repo_plist_path is None:
+        return
+
+    installed_path = Path(installed_plist_path)
+    repo_path = Path(repo_plist_path)
+    installed = _load_plist(installed_path)
+    repo = _load_plist(repo_path)
+    installed_env = installed.get("EnvironmentVariables", {})
+    repo_env = repo.get("EnvironmentVariables", {})
+    if not isinstance(installed_env, dict):
+        raise SmokeValidationError("installed launchd EnvironmentVariables invalid")
+    if not isinstance(repo_env, dict):
+        raise SmokeValidationError("repo launchd EnvironmentVariables invalid")
+
+    drift_parts: list[str] = []
+    for key in ("AKB2_AUTO_PROMOTE", "AKB2_AMENDMENT_APPLIED"):
+        repo_value = str(repo_env.get(key, "0"))
+        installed_value = str(installed_env.get(key, "0"))
+        if repo_value != installed_value:
+            drift_parts.append(f"{key} repo={repo_value} installed={installed_value}")
+    if drift_parts:
+        raise SmokeValidationError(
+            "launchd env drift between repo and installed plist: "
+            + ", ".join(drift_parts)
+            + f" repo_path={repo_path} installed_path={installed_path}"
+        )
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -210,8 +262,12 @@ def _load_plist(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise SmokeValidationError(f"plist missing: {path}")
     try:
-        with path.open("rb") as fh:
-            data = plistlib.load(fh)
+        # Single parse chokepoint (see akb2.common.plist_parse): --repo-plist points
+        # at a repo template whose doc comments may contain bare "--", which expat
+        # rejects but launchd/CoreFoundation accepts. A bare plistlib.load here made
+        # this the 5th parse point with its own comment policy — the exact drift the
+        # chokepoint exists to prevent.
+        data = parse_plist_file(path)
     except Exception as exc:
         raise SmokeValidationError(f"plist invalid: {path}") from exc
     if not isinstance(data, dict):
@@ -323,8 +379,9 @@ def validate_source_ledger(
 
 def validate_launchd_static(
     plist_path: str | Path,
-    expected_mode: str = "proposal",
+    expected_mode: str = DEFAULT_EXPECTED_LAUNCHD_MODE,
     require_label_absent: bool = False,
+    repo_plist_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Validate main-pipeline launchd plist without loading it."""
     plist = _load_plist(Path(plist_path))
@@ -356,9 +413,8 @@ def validate_launchd_static(
     env = plist.get("EnvironmentVariables", {})
     if not isinstance(env, dict):
         raise SmokeValidationError("launchd EnvironmentVariables invalid")
-    auto_promote = str(env.get("AKB2_AUTO_PROMOTE", "0"))
-    amendment = str(env.get("AKB2_AMENDMENT_APPLIED", "0"))
-    actual_mode = "active" if auto_promote == "1" and amendment == "1" else "proposal"
+    _assert_repo_plist_matches_installed(plist_path, repo_plist_path)
+    actual_mode = _launchd_mode_from_env(env)
     if expected_mode not in {"proposal", "active"}:
         raise SmokeValidationError(f"expected_mode invalid: {expected_mode}")
     if actual_mode != expected_mode:
@@ -398,23 +454,16 @@ def validate_env_parity(
     smoke_auto_promote: str,
     smoke_amendment_applied: str = "0",
     active_ready: bool = False,
+    repo_plist_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Ensure smoke result is not confused with the plist deployment mode."""
     plist = _load_plist(Path(plist_path))
     env = plist.get("EnvironmentVariables", {})
     if not isinstance(env, dict):
         raise SmokeValidationError("launchd EnvironmentVariables invalid")
-    plist_mode = (
-        "active"
-        if str(env.get("AKB2_AUTO_PROMOTE", "0")) == "1"
-        and str(env.get("AKB2_AMENDMENT_APPLIED", "0")) == "1"
-        else "proposal"
-    )
-    smoke_mode = (
-        "active"
-        if smoke_auto_promote == "1" and smoke_amendment_applied == "1"
-        else "proposal"
-    )
+    _assert_repo_plist_matches_installed(plist_path, repo_plist_path)
+    plist_mode = _launchd_mode_from_env(env)
+    smoke_mode = "active" if smoke_auto_promote == "1" else "proposal"
     if plist_mode == "active" and smoke_mode != "active" and not active_ready:
         raise SmokeValidationError(
             "plist is active but smoke is proposal; isolated active/rollback gate required"
@@ -644,7 +693,10 @@ def validate_root_isolation(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Validate AKB2 isolated smoke output")
+    parser = argparse.ArgumentParser(
+        description="Validate AKB2 isolated smoke output",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
     parser.add_argument(
         "--mode",
         choices=[
@@ -660,8 +712,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ledger")
     parser.add_argument("--vault-root")
     parser.add_argument("--config", default="config/main_sources.yaml")
-    parser.add_argument("--plist", default="launchd/com.akb2.main-pipeline.plist")
-    parser.add_argument("--expected-mode", choices=["proposal", "active"], default="proposal")
+    parser.add_argument(
+        "--plist",
+        default=str(DEFAULT_MAIN_PLIST),
+        help="Installed launchd plist to validate",
+    )
+    parser.add_argument("--repo-plist", help="Optional repo template plist to compare")
+    parser.add_argument(
+        "--expected-mode",
+        choices=["proposal", "active"],
+        default=DEFAULT_EXPECTED_LAUNCHD_MODE,
+    )
     parser.add_argument("--require-label-absent", action="store_true")
     parser.add_argument("--max-age-hours", type=int, default=DEFAULT_SOURCE_LEDGER_MAX_AGE_HOURS)
     parser.add_argument("--require-candidate-quality", action="store_true")
@@ -700,6 +761,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.plist,
                 expected_mode=args.expected_mode,
                 require_label_absent=args.require_label_absent,
+                repo_plist_path=args.repo_plist,
             )
         elif args.mode == "env-parity":
             result = validate_env_parity(
@@ -707,6 +769,7 @@ def main(argv: list[str] | None = None) -> int:
                 smoke_auto_promote=args.smoke_auto_promote,
                 smoke_amendment_applied=args.smoke_amendment_applied,
                 active_ready=args.active_ready,
+                repo_plist_path=args.repo_plist,
             )
         else:
             if not args.before_metadata or not args.after_metadata:

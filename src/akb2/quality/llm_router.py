@@ -24,7 +24,9 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -39,6 +41,48 @@ TIMEOUT_S: float = 120.0
 MAX_RETRIES: int = 2
 _DEFAULT_REASONING_EFFORT = "__default__"
 DEEPSEEK_BETA_BASE_URL = "https://api.deepseek.com/beta"
+QUALITY_LEDGER_FILE = "quality-ledger.jsonl"
+
+logger = logging.getLogger(__name__)
+
+try:  # pragma: no cover - runtime path
+    from src.akb2.common.budget_gate import (
+        BUDGET_EXCEEDED,
+        OTHER_ERROR,
+        PROVIDER_CODE_429,
+        RATE_LIMIT,
+        BudgetDiagnostics,
+        UnscopedBudgetEventError,
+        query_budget_gate,
+        record_budget_event,
+    )
+    from src.akb2.common.http_retry import (
+        ERROR_TYPE_BUDGET_EXCEEDED,
+        ERROR_TYPE_RATE_LIMIT,
+        classify_provider_error,
+        redact_provider_text,
+    )
+    from src.akb2.common.state_paths import LEDGER_SUBDIR, resolve_state_file
+    from src.akb2.loops.ledger import append_event
+except ImportError:  # pragma: no cover - script runtime path
+    from akb2.common.budget_gate import (
+        BUDGET_EXCEEDED,
+        OTHER_ERROR,
+        PROVIDER_CODE_429,
+        RATE_LIMIT,
+        BudgetDiagnostics,
+        UnscopedBudgetEventError,
+        query_budget_gate,
+        record_budget_event,
+    )
+    from akb2.common.http_retry import (
+        ERROR_TYPE_BUDGET_EXCEEDED,
+        ERROR_TYPE_RATE_LIMIT,
+        classify_provider_error,
+        redact_provider_text,
+    )
+    from akb2.common.state_paths import LEDGER_SUBDIR, resolve_state_file
+    from akb2.loops.ledger import append_event
 
 # ---------------------------------------------------------------------------
 # 模型家族 → 环境变量 / 端点映射
@@ -119,6 +163,126 @@ class LLMProviderError(RuntimeError):
 # ---------------------------------------------------------------------------
 # 内部辅助
 # ---------------------------------------------------------------------------
+
+
+def _extract_status_code(exc: Exception) -> int | None:
+    for attr in ("status_code", "status"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int):
+            return value
+    response = getattr(exc, "response", None)
+    if response is not None:
+        status_code = getattr(response, "status_code", None)
+        if isinstance(status_code, int):
+            return status_code
+    return None
+
+
+def _provider_error_text(exc: Exception) -> str:
+    body = getattr(exc, "body", None)
+    parts: list[str] = []
+    if isinstance(body, dict):
+        parts.append(json.dumps(body, ensure_ascii=False, sort_keys=True))
+    elif body:
+        parts.append(str(body))
+
+    message = getattr(exc, "message", None)
+    if message:
+        parts.append(str(message))
+    parts.append(str(exc))
+    return " | ".join(part for part in parts if part).strip()
+
+
+def _public_provider_detail(exc: Exception) -> str:
+    """provider 异常 → 可公开的单行摘要：异常类型名 + 脱敏原文。
+
+    唯一 owner（加固清单第 10 类形态①）：本模块所有把 provider 异常包成
+    ``LLMProviderError`` / ``LLMTimeoutError`` 的点都经这里，任何一处都不再直接内插
+    ``{exc}``、也不再 ``raise ... from exc``。理由是 SC-R2-11① 实测的两条打印路径：
+
+    - ``str(err)`` —— 公开文本（旧代码这条已脱敏）；
+    - ``traceback.format_exception(err)`` —— 会把 ``__cause__`` 全链打印出来。
+      ``from exc`` 让**未脱敏的 provider 原始异常**留在链上（对抗席探针实测
+      ``outer_secret=False`` 但 ``cause_secret=True`` / ``traceback_secret=True``；
+      R1 也实测 provider 原文能带出 ``sk-*`` 字面量）。
+
+    只覆盖其中一条不算脱敏，所以改用 ``from None``：``__cause__`` 清空、
+    ``__suppress_context__`` 置真，两条路径同时干净。
+
+    保留异常类型名有两个理由：它不敏感；而且是 **load-bearing** ——
+    ``runner._INFRA_ERROR_MARKERS`` 用 ``"BadRequestError"`` 这类类名把上游 400 归成
+    infra 走 F39 重审，原文被 200 字截断时类型名是唯一稳定的指纹。
+    """
+    return f"{type(exc).__name__}: {redact_provider_text(_provider_error_text(exc))}"
+
+
+def _diagnostics_from_provider_error(exc: Exception) -> BudgetDiagnostics:
+    """把 provider 异常归因成 BudgetDiagnostics —— 分类**只有一个实现**。
+
+    此前这里另写了一份 429 文本解析，与 `http_retry.classify_provider_error` 漂移：
+    真实的总预算形态是 `ExceededBudget: User=… over budget. Spend=…, Budget=…`
+    （**不含** "total cap"/"total budget" 字样），本地解析器一条都不命中 → scope=''
+    → cooldown 算不出 → 闸门永不短路。而 briefing 侧用共享分类器的同一响应体归出
+    scope='total'。同一语义两份实现，其中一份已经错了 —— 现在统一委派给共享分类器
+    （加固清单第 10 类形态①：判据该有唯一 owner）。
+
+    本函数只做「共享诊断 → 落盘 dataclass」的形状转换：
+    provider_code 在本模块是字符串（PROVIDER_CODE_429 语义是「这是 429 事件吗」），
+    在 http_retry 是 int 状态码，故显式换形，不把 int 直接塞进字符串字段。
+    """
+    status_code = _extract_status_code(exc)
+    text = _provider_error_text(exc)
+    diagnosis = classify_provider_error(status_code, text)
+
+    error_type = {
+        ERROR_TYPE_BUDGET_EXCEEDED: BUDGET_EXCEEDED,
+        ERROR_TYPE_RATE_LIMIT: RATE_LIMIT,
+    }.get(diagnosis.error_type, OTHER_ERROR)
+
+    return BudgetDiagnostics(
+        error_type=error_type,
+        budget_scope=diagnosis.budget_scope,
+        spend=diagnosis.spend,
+        cap=diagnosis.cap,
+        budget_date=diagnosis.budget_date,
+        provider_code=PROVIDER_CODE_429 if status_code == 429 else "",
+        # 原文脱敏后才落盘/进异常（加固清单第 9 类）——
+        # classify_provider_error 已在 raw_excerpt 上做过，这里直接用它。
+        raw_message=diagnosis.raw_excerpt,
+    )
+
+
+def _quality_ledger_path() -> str:
+    return str(resolve_state_file(QUALITY_LEDGER_FILE, subdir=LEDGER_SUBDIR))
+
+
+def _append_quality_budget_event(
+    *,
+    diagnostics: BudgetDiagnostics,
+    model_family: str,
+    consumer: str,
+) -> None:
+    if diagnostics.provider_code != PROVIDER_CODE_429:
+        return
+    try:
+        append_event(
+            _quality_ledger_path(),
+            {
+                "ts": dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "event": "llm_gateway_429",
+                "model_family": model_family,
+                "consumer": consumer,
+                "provider_code": diagnostics.provider_code,
+                "error_type": diagnostics.error_type,
+                "budget_scope": diagnostics.budget_scope,
+                "spend": diagnostics.spend,
+                "cap": diagnostics.cap,
+                "budget_date": diagnostics.budget_date,
+                "message": diagnostics.raw_message,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - diagnostics must not hide provider error
+        logger.warning("failed to append quality budget diagnostic: %s", exc)
 
 # F20: enable_thinking 是 DeepSeek/Qwen 系参数,gpt-5.4(Azure via litellm)/gemini 不认。
 # 无差别注入导致 gpt-5.4 端点 400 Unknown parameter(账本 169 条 distill_extract 7-03/7-04,
@@ -477,10 +641,15 @@ def route_deepseek_beta_tool(
         response = client.chat.completions.create(**payload)
     except openai.APITimeoutError as exc:
         raise LLMTimeoutError(
-            f"DeepSeek beta tool 调用超时 ({actual_timeout}s)"
-        ) from exc
+            f"DeepSeek beta tool 调用超时 ({actual_timeout}s):"
+            f" {_public_provider_detail(exc)}"
+        ) from None
     except openai.APIError as exc:
-        raise LLMProviderError(f"DeepSeek beta tool API 错误: {exc}") from exc
+        # SC-R2-11① 审计连带修复：旧代码把 `{exc}` **直接**内插进公开消息（比被点名
+        # 的 route_llm 那处更露），且 `from exc` 又把原文留在链上。两条路径一起收口。
+        raise LLMProviderError(
+            f"DeepSeek beta tool API 错误: {_public_provider_detail(exc)}"
+        ) from None
 
     message = response.choices[0].message
     tool_calls = getattr(message, "tool_calls", None) or []
@@ -537,10 +706,14 @@ def route_deepseek_json_object(
         response = client.chat.completions.create(**payload)
     except openai.APITimeoutError as exc:
         raise LLMTimeoutError(
-            f"DeepSeek JSON mode 调用超时 ({actual_timeout}s)"
-        ) from exc
+            f"DeepSeek JSON mode 调用超时 ({actual_timeout}s):"
+            f" {_public_provider_detail(exc)}"
+        ) from None
     except openai.APIError as exc:
-        raise LLMProviderError(f"DeepSeek JSON mode API 错误: {exc}") from exc
+        # SC-R2-11① 审计连带修复：同 route_deepseek_beta_tool，原文既进公开消息又挂链上。
+        raise LLMProviderError(
+            f"DeepSeek JSON mode API 错误: {_public_provider_detail(exc)}"
+        ) from None
 
     raw = response.choices[0].message.content or ""
     try:
@@ -572,6 +745,7 @@ def route_llm(
     strict_schema: bool = True,
     max_tokens: int | None = None,
     extra_body: dict[str, Any] | None = None,
+    budget_consumer: str = "quality.llm_router",
 ) -> LLMResponse:
     """OpenAI 兼容端点路由入口。
 
@@ -588,6 +762,7 @@ def route_llm(
         extra_body: 透传到 OpenAI-compatible 端点的额外字段（如 DeepSeek 推理模型的
             ``{"enable_thinking": False}``，关闭思维链，让 token 预算落到 content 而非
             reasoning，避免 repair 重写被 reasoning 吃光 token / 拖超时）。None 时不发送。
+        budget_consumer: 预算闸/诊断里的调用方标签，默认统一记为 quality.llm_router。
 
     Returns:
         LLMResponse: 含 content / model_used / calls_used。
@@ -608,6 +783,10 @@ def route_llm(
 
     actual_timeout = TIMEOUT_S if timeout_s is None else timeout_s
     actual_max_retries = MAX_RETRIES if max_retries is None else max_retries
+
+    gate_decision = query_budget_gate(consumer=budget_consumer)
+    if not gate_decision.allowed:
+        raise LLMProviderError(gate_decision.shell_message())
 
     client = openai.OpenAI(
         api_key=api_key,
@@ -668,11 +847,36 @@ def route_llm(
     except openai.APITimeoutError as exc:
         raise LLMTimeoutError(
             f"LLM 调用超时 ({actual_timeout}s): {model_family}"
-        ) from exc
+            f" — {_public_provider_detail(exc)}"
+        ) from None
     except openai.APIError as exc:
+        diagnostics = _diagnostics_from_provider_error(exc)
+        gate_write_note = ""
+        if diagnostics.provider_code == PROVIDER_CODE_429:
+            _append_quality_budget_event(
+                diagnostics=diagnostics,
+                model_family=model_family,
+                consumer=budget_consumer,
+            )
+            try:
+                record_budget_event(diagnostics, consumer=budget_consumer)
+            except UnscopedBudgetEventError as gate_exc:
+                # fail-loud 但不吞掉 provider 错误：分类器坏了要响亮暴露（ERROR 级 +
+                # 进抛出的异常文本），同时保留「这次调用因 provider 429 失败」这条
+                # 主因，否则运维只看到一个 ValueError 却不知道 provider 发生了什么。
+                logger.error("shared budget gate refused unscoped event: %s", gate_exc)
+                gate_write_note = f" | budget_gate_write_refused={gate_exc}"
+        # 异常文本用脱敏后的归因，不用 str(exc)：str(exc) 含 provider 原文
+        # （R1 实测能把 sk-* 探针字面量带进日志）。
+        # SC-R2-11①：`from None` 而非 `from exc` —— 公开文本脱敏了但 `from exc` 把
+        # 未脱敏的 provider 异常留在 __cause__ 里，traceback.format_exception() 全链
+        # 打印照样泄漏（对抗席探针实测 cause_secret=True / traceback_secret=True）。
         raise LLMProviderError(
-            f"LLM API 错误: {model_family} — {exc}"
-        ) from exc
+            f"LLM API 错误: {model_family} — error_type={diagnostics.error_type}"
+            f" budget_scope={diagnostics.budget_scope or 'n/a'}"
+            f" provider_code={diagnostics.provider_code or 'n/a'}"
+            f" detail={_public_provider_detail(exc)}{gate_write_note}"
+        ) from None
 
     raw = response.choices[0].message.content or ""
 

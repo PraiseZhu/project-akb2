@@ -25,7 +25,13 @@
   但在处理中的单篇做完不中断。
 
   ==== 环境变量 ====
-  AKB2_AUTO_PROMOTE=0  — 部署前安全形态，只写 proposal manifest，不自动升格 active
+  AKB2_AUTO_PROMOTE=1  — 自动升格：五闸 PASS 后直接写 active 页到
+                         vault_root/wiki/sources/<slug>.md（promote.py 读该变量）。
+                         2026-08-03 由 owner 确认：运行态自 2026-07-04 起即为 1，
+                         本模板此前一直是 0，导致 smoke_validator 默认校验模板时
+                         出具「proposal 模式」的通过证明，而 daemon 实际在自动写
+                         active 知识（一个月 66 篇，均合规过闸）。现对齐运行态。
+                         改回 0 会退回 proposal-only（只写 manifest，不写 active 页）。
   PYTHONPATH           — 指向 src/ 目录
   AKB2_VAULT_ROOT      — vault AKB2.0 根目录（从 vault.toml 解析的绝对路径）
 
@@ -75,7 +81,7 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>AKB2_AUTO_PROMOTE</key>
-        <string>0</string>
+        <string>1</string>
         <key>AKB2_AMENDMENT_APPLIED</key>
         <string>0</string>
         <key>AKB2_MAKER_FALLBACK</key>

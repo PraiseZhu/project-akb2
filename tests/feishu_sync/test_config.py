@@ -33,3 +33,22 @@ def test_require_raises_without_value(monkeypatch):
 
 def test_api_base_default():
     assert config.FEISHU_API_BASE.startswith("https://")
+
+
+def test_missing_policy_defaults_to_partial_ok(monkeypatch):
+    monkeypatch.delenv(config.MISSING_POLICY_ENV, raising=False)
+    assert config.missing_policy() == config.MISSING_POLICY_PARTIAL_OK_RECOVERABLE
+
+
+def test_missing_env_hint_distinguishes_secrets_not_loaded(monkeypatch):
+    monkeypatch.setenv(config.SECRETS_STATUS_ENV, "missing_file")
+    monkeypatch.setenv(config.SECRETS_FILE_ENV, "/tmp/.akb2-secrets.sh")
+    hint = config.missing_env_hint(["FEISHU_APP_ID"])
+    assert "未装载" in hint
+    assert "/tmp/.akb2-secrets.sh" in hint
+
+
+def test_missing_env_hint_distinguishes_runtime_env_loss(monkeypatch):
+    monkeypatch.setenv(config.SECRETS_STATUS_ENV, config.SECRETS_STATUS_LOADED)
+    hint = config.missing_env_hint(["FEISHU_APP_ID"])
+    assert "运行期 env 仍缺失" in hint

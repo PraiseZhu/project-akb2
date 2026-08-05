@@ -135,6 +135,15 @@ class TestBootstrapScript:
         env = os.environ.copy()
         env["PATH"] = "/usr/bin:/bin"  # 不含 defuddle
         env["HOME"] = str(tmp_path)
+        # 2026-08-03(Lane 4):安装位置守卫(worktree)与 VAULT_ROOT 三门排在依赖 preflight
+        # 之前——它们判定的是"这次安装本身合不合法",不该等装依赖检查完才发现装错地方。
+        # 本用例要断言的是 defuddle 分支,所以显式把那两道门喂合规:
+        #   - 仓库 checkout 可能是 worktree(本机就是),不放行会先被安装位置守卫拦下
+        #   - tmp_path 在 macOS 上就落在 /var/folders 下,会撞 VAULT_ROOT 门 3
+        # 两者仍是 exit 3 / fail-closed,只是报的原因不同;这里锁定 defuddle 那条。
+        env["VAULT_ROOT"] = str(tmp_path)
+        env["AKB2_ALLOW_TMP_VAULT_ROOT"] = "1"
+        env["AKB2_ALLOW_WORKTREE_INSTALL"] = "1"
         r = subprocess.run([str(SCRIPT)], env=env, capture_output=True, text=True)
         assert r.returncode == 3, (
             f"defuddle 缺失应 exit 3(fail-closed),实际 {r.returncode}\n"
@@ -176,14 +185,23 @@ class TestBootstrapScript:
             plistlib.load(f)
 
     def test_script_has_bootout_bootstrap_verify(self) -> None:
-        """脚本含 bootout + bootstrap + launchctl print 验证(家法同 bootstrap_launchd.sh)。"""
+        """脚本含 bootout + teardown 等待 + bootstrap + launchctl print 验证。
+
+        2026-08-03(Lane 4)两处更新:
+        1. launchctl 原语收口到 scripts/lib/launchctl.sh,脚本侧改调 akb2_launchctl_*
+           包装(带 rollback 与 exit code/stderr 留痕)。裸 `launchctl bootout/bootstrap`
+           字面量已不在本脚本内,断言随之改绑包装名 + 新增 teardown 等待这一环。
+        2. 调度断言的值从每 2 小时那版改成 900:commit 115554f 已把 StartInterval
+           改为 900(每 15 分钟),旧值在脚本里留着只会让断言指向不存在的调度。
+        """
         text = SCRIPT.read_text(encoding="utf-8")
-        assert "launchctl bootout" in text
-        assert "launchctl bootstrap" in text
+        assert "akb2_launchctl_bootout" in text
+        assert "akb2_wait_for_launchctl_teardown" in text
+        assert "akb2_launchctl_bootstrap" in text
         assert "launchctl print" in text
-        # 验证断言绑本 plist 可观测特征(orchestrator + StartInterval=7200)
+        # 验证断言绑本 plist 可观测特征(orchestrator + StartInterval=900)
         assert "intake.orchestrator" in text
-        assert "7200" in text
+        assert "900" in text
 
 
 if __name__ == "__main__":
