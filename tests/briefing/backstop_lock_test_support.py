@@ -1,16 +1,42 @@
-"""Process-level flock matrix shared by the two backstop test modules."""
+"""Process-level flock matrix shared by the two backstop test modules.
+
+R6 起锁形状 = 本 shell 内联持有（`exec 9>` + python 代调 flock(2)，无 helper、无
+re-exec、无重入凭据）。本模块只做**行为**断言：互斥、归因、fail-closed、后代不扣锁。
+不得断言实现细节（helper 文件名、协议码、framing 字符串）—— 那类断言在 R6 重写里
+全部作废过一次。
+"""
 
 from __future__ import annotations
 
+import fcntl
 import os
 import subprocess
-import sys
 import time
 from datetime import date
 from pathlib import Path
+from typing import NamedTuple
 
-LOCK_BUSY_EXIT_CODE = 73
-LOCK_HELPER_ERROR_EXIT_CODE = 74
+# 73/74 是**已删除**的旧锁协议码。保留数值只为证明「与历史协议撞码的子进程退出码
+# 不再被特殊解释」—— 它们如今只是两个普通的失败退出码。
+HISTORIC_BUSY_LOOKALIKE_RC = 73
+HISTORIC_HELPER_ERROR_LOOKALIKE_RC = 74
+
+# 已删除的重入凭据 env 名，用拼接构造：实现区（scripts/src/docs）对完整名字的
+# git grep 必须保持 0 命中，测试自己也不许成为命中来源。
+LEGACY_HELD_ENV = "AKB2_BACKSTOP_FLOCK" + "_HELD"
+LEGACY_FD_ENV = "AKB2_BACKSTOP_FLOCK" + "_FD"
+
+
+class BackstopCase(NamedTuple):
+    script: Path
+    vault: Path
+    lock: Path
+    marker: Path
+    release: Path
+    env: dict
+    rerun_key: str
+    target: Path
+    artifact: str  # printf -- 就绪的转义形态
 
 
 def _write_exec(path: Path, body: str) -> Path:
@@ -26,79 +52,7 @@ def _wait_for(path: Path, *, timeout: float = 15) -> None:
     assert path.exists(), f"timed out waiting for {path}"
 
 
-def _assert_fd_survives_exec_and_death_releases(
-    case_dir: Path, flock_helper: Path
-) -> None:
-    """PEP 446 must not drop the lock at exec; SIGKILL must release it."""
-    lock = case_dir / "helper.lock"
-    ready = case_dir / "helper-ready"
-    blocked_marker = case_dir / "blocked-marker"
-    recovered_marker = case_dir / "recovered-marker"
-    common = [
-        sys.executable,
-        str(flock_helper),
-        "--lock-file",
-        str(lock),
-        "--busy-exit-code",
-        str(LOCK_BUSY_EXIT_CODE),
-        "--error-exit-code",
-        str(LOCK_HELPER_ERROR_EXIT_CODE),
-        "--",
-    ]
-    holder = subprocess.Popen(
-        [
-            *common,
-            sys.executable,
-            "-c",
-            "import pathlib,sys,time; pathlib.Path(sys.argv[1]).touch(); time.sleep(60)",
-            str(ready),
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    try:
-        _wait_for(ready)
-        blocked = subprocess.run(
-            [
-                *common,
-                sys.executable,
-                "-c",
-                "import pathlib,sys; pathlib.Path(sys.argv[1]).touch()",
-                str(blocked_marker),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        assert blocked.returncode == LOCK_BUSY_EXIT_CODE, blocked.stderr
-        assert "flock_exec: busy" in blocked.stderr.splitlines(), blocked.stderr
-        assert not blocked_marker.exists(), "PEP 446 closed the lock fd during exec"
-
-        holder.kill()
-        holder.communicate(timeout=10)
-        recovered = subprocess.run(
-            [
-                *common,
-                sys.executable,
-                "-c",
-                "import pathlib,sys; pathlib.Path(sys.argv[1]).touch()",
-                str(recovered_marker),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        assert recovered.returncode == 0, recovered.stderr
-        assert recovered_marker.exists(), "dead flock owner blocked its successor"
-        assert lock.exists(), "shared flock inode must persist after owner death"
-    finally:
-        if holder.poll() is None:
-            holder.kill()
-            holder.communicate(timeout=10)
-
-
-def _backstop_case(kind: str, case_dir: Path, project_root: Path) -> tuple:
+def _backstop_case(kind: str, case_dir: Path, project_root: Path) -> BackstopCase:
     vault = case_dir / "vault"
     lock = case_dir / "backstop.lock"
     marker = case_dir / "rerun-marker"
@@ -158,7 +112,31 @@ printf -- "{artifact}" > "{target}"
 exit 0''',
     )
     env[rerun_key] = str(runner)
-    return script, vault, lock, marker, release, env, rerun_key
+    return BackstopCase(script, vault, lock, marker, release, env, rerun_key, target, artifact)
+
+
+def _log_key(kind: str) -> str:
+    return "AKB2_BACKSTOP_LOG" if kind == "social" else "AKB2_GITHUB_BACKSTOP_LOG"
+
+
+def _run_backstop(
+    case: BackstopCase, kind: str, case_dir: Path, *, extra_env: dict | None = None, **kwargs
+) -> subprocess.CompletedProcess:
+    env = {
+        **os.environ,
+        **case.env,
+        "AKB2_MATRIX_ACTOR": "solo",
+        _log_key(kind): str(case_dir / "solo.log"),
+        **(extra_env or {}),
+    }
+    return subprocess.run(
+        ["/bin/bash", str(case.script), "--vault-root", str(case.vault)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+        **kwargs,
+    )
 
 
 def _assert_n_contenders_have_one_owner(
@@ -169,9 +147,8 @@ def _assert_n_contenders_have_one_owner(
     credential_env: dict[str, str] | None = None,
     pass_fds: tuple[int, ...] = (),
 ) -> None:
-    script, vault, lock, marker, release, common_env, _ = _backstop_case(
-        kind, case_dir, project_root
-    )
+    case = _backstop_case(kind, case_dir, project_root)
+    lock, marker, release = case.lock, case.marker, case.release
     # A dead PID payload is deliberately left behind. flock ignores file contents;
     # only a live kernel lock can block a successor, so no stale-takeover path exists.
     lock.write_text("999999\n", encoding="utf-8")
@@ -183,17 +160,12 @@ def _assert_n_contenders_have_one_owner(
     processes: list[subprocess.Popen] = []
     contender_count = 12
     for index in range(contender_count):
-        log_key = (
-            "AKB2_BACKSTOP_LOG"
-            if kind == "social"
-            else "AKB2_GITHUB_BACKSTOP_LOG"
-        )
         env = {
             **os.environ,
-            **common_env,
+            **case.env,
             **(credential_env or {}),
             "AKB2_MATRIX_ACTOR": str(index),
-            log_key: str(case_dir / f"backstop-{index}.log"),
+            _log_key(kind): str(case_dir / f"backstop-{index}.log"),
         }
         processes.append(
             subprocess.Popen(
@@ -201,9 +173,9 @@ def _assert_n_contenders_have_one_owner(
                     str(barrier_runner),
                     str(barrier),
                     "/bin/bash",
-                    str(script),
+                    str(case.script),
                     "--vault-root",
-                    str(vault),
+                    str(case.vault),
                 ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -244,13 +216,21 @@ def _assert_n_contenders_have_one_owner(
     assert lock.exists(), "the shared flock inode must never be unlinked"
 
 
-def assert_flock_reentry_rejects_forged_env(
+def assert_no_forgeable_reentry_credential_exists(
     tmp_path: Path, kind: str, project_root: Path
 ) -> None:
-    """Neither the retired boolean nor an unopened fd number may bypass flock."""
+    """SC-R6-01: 重入凭据这个概念已不存在，任何 env 伪造都改变不了互斥结果。
+
+    · 旧布尔 / 旧 fd 号 / 已删除的解释器旋钮（/usr/bin/true 组合）全部是惰性 env：
+      N 个同刻竞争者仍恰好 1 个进入付费补跑；
+    · 传真实 fd（错误 inode / 同 inode 未持锁）同样不构成 owner 授权；
+    · 实现区对旧凭据名的 git grep 必须 0 命中（名字都不存在的东西无法被伪造）。
+    """
     cases = {
-        "legacy-bool": {"AKB2_BACKSTOP_FLOCK_HELD": "1"},
-        "closed-fd": {"AKB2_BACKSTOP_FLOCK_FD": "7"},
+        "legacy-bool": {LEGACY_HELD_ENV: "1"},
+        "closed-fd": {LEGACY_FD_ENV: "7"},
+        # R5 的打穿姿势原样重放：解释器旋钮 + fd 号。R6 里两者都必须是惰性 env。
+        "interpreter-combo": {"AKB2_BACKSTOP_PYTHON": "/usr/bin/true", LEGACY_FD_ENV: "7"},
     }
     for name, credential_env in cases.items():
         case_dir = tmp_path / name
@@ -270,7 +250,7 @@ def assert_flock_reentry_rejects_forged_env(
             wrong_inode_case,
             kind,
             project_root,
-            credential_env={"AKB2_BACKSTOP_FLOCK_FD": str(wrong_fd)},
+            credential_env={LEGACY_FD_ENV: str(wrong_fd)},
             pass_fds=(wrong_fd,),
         )
     finally:
@@ -280,48 +260,60 @@ def assert_flock_reentry_rejects_forged_env(
     same_inode_case.mkdir()
     _assert_unlocked_same_inode_fd_cannot_bypass(same_inode_case, kind, project_root)
 
+    # 凭据面消失的静态半：实现与文档不得再引用旧凭据名（测试侧用拼接构造，
+    # 所以整棵 tracked 树的完整名字命中数必须为 0）。
+    for legacy_name in (LEGACY_HELD_ENV, LEGACY_FD_ENV):
+        grep = subprocess.run(
+            ["git", "grep", "-l", "-F", legacy_name, "--", "."],
+            capture_output=True,
+            text=True,
+            cwd=project_root,
+            timeout=60,
+        )
+        assert grep.returncode == 1 and grep.stdout == "", (
+            f"legacy credential name {legacy_name} still referenced in: {grep.stdout}"
+        )
+
 
 def _assert_unlocked_same_inode_fd_cannot_bypass(
     case_dir: Path, kind: str, project_root: Path
 ) -> None:
     """An open-but-unlocked descriptor for the lock inode is not owner authority."""
-    script, vault, lock, marker, release, common_env, rerun_key = _backstop_case(
-        kind, case_dir, project_root
-    )
-    log_key = "AKB2_BACKSTOP_LOG" if kind == "social" else "AKB2_GITHUB_BACKSTOP_LOG"
+    case = _backstop_case(kind, case_dir, project_root)
+    marker, release = case.marker, case.release
     holder = subprocess.Popen(
-        ["/bin/bash", str(script), "--vault-root", str(vault)],
+        ["/bin/bash", str(case.script), "--vault-root", str(case.vault)],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         env={
             **os.environ,
-            **common_env,
+            **case.env,
             "AKB2_MATRIX_ACTOR": "owner",
-            log_key: str(case_dir / "owner.log"),
+            _log_key(kind): str(case_dir / "owner.log"),
         },
     )
     forged_fd: int | None = None
     try:
         _wait_for(marker)
-        forged_fd = os.open(lock, os.O_RDWR)
+        forged_fd = os.open(case.lock, os.O_RDWR)
         contender = _write_exec(
             case_dir / "forged-contender.sh",
             f'echo "forged" >> "{marker}"\nexit 1',
         )
         blocked = subprocess.run(
-            ["/bin/bash", str(script), "--vault-root", str(vault)],
+            ["/bin/bash", str(case.script), "--vault-root", str(case.vault)],
             capture_output=True,
             text=True,
             timeout=20,
             pass_fds=(forged_fd,),
             env={
                 **os.environ,
-                **common_env,
-                "AKB2_BACKSTOP_FLOCK_FD": str(forged_fd),
+                **case.env,
+                LEGACY_FD_ENV: str(forged_fd),
                 "AKB2_MATRIX_ACTOR": "forged",
-                rerun_key: str(contender),
-                log_key: str(case_dir / "forged.log"),
+                case.rerun_key: str(contender),
+                _log_key(kind): str(case_dir / "forged.log"),
             },
         )
         assert blocked.returncode == 0, blocked.stderr
@@ -335,71 +327,169 @@ def _assert_unlocked_same_inode_fd_cannot_bypass(
             holder.communicate(timeout=20)
 
 
-def assert_child_exit_codes_passthrough(
+def assert_child_exit_attribution_unambiguous(
     tmp_path: Path, kind: str, project_root: Path
 ) -> None:
-    """Protected child rc 73/74 lacks helper framing and must pass through unchanged."""
-    for child_rc in (LOCK_BUSY_EXIT_CODE, LOCK_HELPER_ERROR_EXIT_CODE):
+    """SC-R6-02: pipeline 的 rc 就是它自己的 rc，不存在协议码/framing 可撞。
+
+    · 子进程真实 exit 73/74 → 终态是真实失败归因（terminal=failed），原码透传；
+    · 子进程往 stderr 写历史 framing 字符串 → 终态不受影响（framing 通道不存在）；
+    · 真 busy（另一实例持锁）→ 正确让路 exit 0 + already-running。
+    """
+    for child_rc in (HISTORIC_BUSY_LOOKALIKE_RC, HISTORIC_HELPER_ERROR_LOOKALIKE_RC):
         case_dir = tmp_path / f"child-{child_rc}"
         case_dir.mkdir()
-        script, vault, _, marker, _, common_env, rerun_key = _backstop_case(
-            kind, case_dir, project_root
-        )
-        common_env[rerun_key] = _write_exec(
+        case = _backstop_case(kind, case_dir, project_root)
+        case.env[case.rerun_key] = _write_exec(
             case_dir / "child.sh",
-            f'echo "invoked" >> "{marker}"\nexit {child_rc}',
+            f'echo "invoked" >> "{case.marker}"\nexit {child_rc}',
         ).as_posix()
-        result = subprocess.run(
-            ["/bin/bash", str(script), "--vault-root", str(vault)],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            env={**os.environ, **common_env},
-        )
+        result = _run_backstop(case, kind, case_dir)
         assert result.returncode == child_rc, result.stderr
-        assert marker.read_text(encoding="utf-8").splitlines() == ["invoked"]
+        assert case.marker.read_text(encoding="utf-8").splitlines() == ["invoked"]
         combined = result.stdout + result.stderr
+        assert "terminal=failed" in combined, combined
         assert "already-running" not in combined, combined
         assert "lock_setup=failed" not in combined, combined
 
+    spoof_dir = tmp_path / "stderr-spoof"
+    spoof_dir.mkdir()
+    case = _backstop_case(kind, spoof_dir, project_root)
+    case.env[case.rerun_key] = _write_exec(
+        spoof_dir / "spoof.sh",
+        f'''echo "invoked" >> "{case.marker}"
+echo "flock_exec: busy" >&2
+printf -- "{case.artifact}" > "{case.target}"
+exit 0''',
+    ).as_posix()
+    result = _run_backstop(case, kind, spoof_dir)
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, result.stderr
+    assert "terminal=recovered" in combined, combined
+    assert "already-running" not in combined, combined
 
-def _assert_missing_python_fails_closed(
-    case_dir: Path, kind: str, project_root: Path
-) -> None:
-    script, vault, lock, marker, _, common_env, _ = _backstop_case(
-        kind, case_dir, project_root
-    )
-    result = subprocess.run(
-        ["/bin/bash", str(script), "--vault-root", str(vault)],
-        capture_output=True,
+    busy_dir = tmp_path / "true-busy"
+    busy_dir.mkdir()
+    case = _backstop_case(kind, busy_dir, project_root)
+    holder = subprocess.Popen(
+        ["/bin/bash", str(case.script), "--vault-root", str(case.vault)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=20,
         env={
             **os.environ,
-            **common_env,
-            "AKB2_BACKSTOP_PYTHON": "akb2-python3-missing-for-test",
+            **case.env,
+            "AKB2_MATRIX_ACTOR": "owner",
+            _log_key(kind): str(busy_dir / "owner.log"),
         },
     )
-    assert result.returncode != 0, result.stderr
-    assert "python3" in result.stderr and "lock_setup=failed" in result.stderr
-    assert not marker.exists(), "missing python3 silently launched an unlocked rerun"
-    assert not lock.exists(), "the flock helper ran despite missing python3"
+    try:
+        _wait_for(case.marker)
+        blocked = _run_backstop(
+            case, kind, busy_dir, extra_env={"AKB2_MATRIX_ACTOR": "latecomer"}
+        )
+        assert blocked.returncode == 0, blocked.stderr
+        assert "already-running" in blocked.stderr, blocked.stderr
+        assert case.marker.read_text(encoding="utf-8").splitlines() == ["owner"]
+    finally:
+        case.release.touch(exist_ok=True)
+        if holder.poll() is None:
+            holder.communicate(timeout=20)
+
+
+def assert_descendant_cannot_pin_lock(
+    tmp_path: Path, kind: str, project_root: Path
+) -> None:
+    """SC-R6-03: `9<&-` 让 pipeline 及其后代从根上拿不到锁 fd。
+
+    · 起一个活过 backstop 的后代，backstop 退出后锁必须立即可取（不再 errno=35）；
+    · 该后代自报的 fd 表中不含指向锁 inode 的 fd。
+    """
+    case_dir = tmp_path / "descendant"
+    case_dir.mkdir()
+    case = _backstop_case(kind, case_dir, project_root)
+    fd_audit = case_dir / "fd-audit.txt"
+    daemon_pid_file = case_dir / "daemon.pid"
+    audit_py = (
+        "import os, sys, time\n"
+        "lines = []\n"
+        'for name in os.listdir("/dev/fd"):\n'
+        "    try:\n"
+        "        st = os.fstat(int(name))\n"
+        "        lines.append(name + \" \" + str(st.st_dev) + \" \" + str(st.st_ino))\n"
+        "    except OSError:\n"
+        "        pass\n"
+        'open(sys.argv[1], "w").write("\\n".join(lines))\n'
+        "time.sleep(45)\n"
+    )
+    case.env[case.rerun_key] = _write_exec(
+        case_dir / "spawner.sh",
+        f'''python3 -c '{audit_py}' "{fd_audit}" </dev/null >/dev/null 2>&1 &
+echo $! > "{daemon_pid_file}"
+printf -- "{case.artifact}" > "{case.target}"
+exit 0''',
+    ).as_posix()
+
+    daemon_pid: int | None = None
+    try:
+        result = _run_backstop(case, kind, case_dir)
+        assert result.returncode == 0, result.stderr
+        assert "terminal=recovered" in result.stdout + result.stderr, result.stderr
+        _wait_for(daemon_pid_file)
+        daemon_pid = int(daemon_pid_file.read_text(encoding="utf-8").strip())
+        os.kill(daemon_pid, 0)  # 后代必须仍然活着，否则本测试没有测到"活过 backstop"
+
+        # backstop 已退出而后代仍活 → 锁必须立即可取。
+        with open(case.lock, "a+") as lock_fh:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+
+        # 后代自报 fd 表中不得出现锁 inode（不是"没锁上"，是"根本拿不到 fd"）。
+        _wait_for(fd_audit)
+        lock_stat = os.stat(case.lock)
+        for line in fd_audit.read_text(encoding="utf-8").splitlines():
+            _, dev, ino = line.split()
+            assert (int(dev), int(ino)) != (lock_stat.st_dev, lock_stat.st_ino), (
+                f"descendant still holds an fd to the lock inode: {line}"
+            )
+    finally:
+        if daemon_pid is not None:
+            try:
+                os.kill(daemon_pid, 9)
+            except ProcessLookupError:
+                pass
+
+
+def _assert_broken_python_fails_closed(
+    case_dir: Path, kind: str, project_root: Path
+) -> None:
+    """解释器损坏（可解析但不是 python）→ fail-closed，绝不误判成 busy 让路。"""
+    case = _backstop_case(kind, case_dir, project_root)
+    stub_bin = case_dir / "bin"
+    stub_bin.mkdir()
+    _write_exec(stub_bin / "python3", "exit 7")  # 无输出、非零退出：探针无法确认锁状态
+    result = _run_backstop(
+        case,
+        kind,
+        case_dir,
+        extra_env={"PATH": f"{stub_bin}:{os.environ.get('PATH', '')}"},
+    )
+    assert result.returncode == 1, result.stderr
+    assert "lock_setup=failed" in result.stderr, result.stderr
+    assert "already-running" not in result.stderr, (
+        "a broken interpreter must fail closed, not be misread as lock contention"
+    )
+    assert not case.marker.exists(), "broken python silently launched an unlocked rerun"
 
 
 def assert_flock_interleaving_matrix(
     tmp_path: Path, kind: str, project_root: Path
 ) -> None:
-    """Exercise inherited-fd, stale-file, N-way, crash, and setup-failure states."""
-    helper_case = tmp_path / "helper"
-    helper_case.mkdir()
-    _assert_fd_survives_exec_and_death_releases(
-        helper_case, project_root / "scripts" / "lib" / "flock_exec.py"
-    )
-
+    """Exercise stale-file, N-way barrier start, and interpreter-failure states."""
     competition_case = tmp_path / "competition"
     competition_case.mkdir()
     _assert_n_contenders_have_one_owner(competition_case, kind, project_root)
 
-    missing_python_case = tmp_path / "missing-python"
-    missing_python_case.mkdir()
-    _assert_missing_python_fails_closed(missing_python_case, kind, project_root)
+    broken_python_case = tmp_path / "broken-python"
+    broken_python_case.mkdir()
+    _assert_broken_python_fails_closed(broken_python_case, kind, project_root)

@@ -72,7 +72,8 @@ def test_entry_count_is_derived_not_hardcoded(tmp_path):
     原因不是它声称在守的那条性质）。
 
     本用例用一份条目数与真实文档不同的合成文档，堵死这个洞：任何硬编码常量
-    都不可能同时满足真实文档（9 条）和这份合成文档（3 条）两个断言。
+    都不可能同时满足真实文档与这份合成文档两个断言（docstring 刻意不写具体条数，
+    数字只活在断言里 —— 写在注释/文档里的数字没有测试守护，必然随文档演进漂移）。
     """
     synthetic_doc = tmp_path / "synthetic-allowed-residuals.md"
     synthetic_doc.write_text(
@@ -102,3 +103,50 @@ def test_entry_count_is_derived_not_hardcoded(tmp_path):
     )
 
     assert render_residuals_summary.count_entries(synthetic_doc) == 3
+
+
+def test_section_count_matches_rendered_entries():
+    """SC-R6-06：文档里每个"本节 N 条"声称必须等于该节实际 `### ` 条目数。
+
+    该数字曾手抄失真（原文写着与实际条目数不同的值仍长期通过评审）——
+    声称与实况的一致性必须由机器核对，不能靠写的人自觉。
+    """
+    text = _DOC_PATH.read_text(encoding="utf-8")
+    sections = re.split(r"^## ", text, flags=re.MULTILINE)[1:]
+    checked = 0
+    for section in sections:
+        claim = re.search(r"本节\s*(\d+)\s*条", section)
+        if not claim:
+            continue
+        claimed = int(claim.group(1))
+        actual = len(re.findall(r"^### (?!#)", section, flags=re.MULTILINE))
+        assert claimed == actual, (
+            f"节「{section.splitlines()[0][:40]}」声称本节 {claimed} 条，"
+            f"实际 ### 条目 {actual} 条 —— 声称漂移"
+        )
+        checked += 1
+    assert checked > 0, "文档里没有任何'本节 N 条'声称可核，测试本身失效"
+
+
+def test_docstring_examples_avoid_concrete_counts():
+    """SC-R6-06：本模块所有 docstring 不得内嵌具体条目数（如"N 条"）。
+
+    docstring 里的数字没有断言守护，文档增删条目后必然失真（upstream R5 建议：
+    不写具体数字就没有漂移空间）。数字只允许活在断言里。
+    """
+    import ast
+
+    source = Path(__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        doc = ast.get_docstring(node)
+        # 前置排除冒号/数字：'11:00 条目'是时刻+名词，不是条目计数
+        if doc and re.search(r"(?<![:：\d])\d+\s*条", doc):
+            name = getattr(node, "name", "<module>")
+            offenders.append(name)
+    assert not offenders, (
+        f"以下 docstring 内嵌了具体条目数（会随文档演进失真）: {offenders}"
+    )

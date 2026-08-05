@@ -485,13 +485,13 @@ def test_redactor_masks_underscore_compound_keys():
         + "\n".join(leaked)
     )
 
-    # 前导边界只放开「非字母数字」这一档，不是无条件放开：字母直连的普通标识符仍**不得**
-    # 命中，否则会把大量非凭证字段一起掩掉。这条钉住取舍，防止后来者顺手改成 `.?`。
-    for benign in ("mysecret", "secretkey"):
-        raw = f"{benign}={_COMPOUND_SENTINEL}"
-        assert http_retry.redact_provider_text(raw) == raw, (
-            f"{benign} 被命中了 —— 前导边界放得过宽，普通标识符会被误掩"
-        )
+    # 字母直连的取舍在 R6 精化（SC-R6-04）：可完整切进凭证词汇的直连**收**
+    # （`secretkey`→secret+key，见 test_credential_key_matching_covers_all_axes），
+    # 不可切的直连仍**不收** —— `mysecret` 的 "my" 不在词汇表，钉住防止误掩普通标识符。
+    raw = f"mysecret={_COMPOUND_SENTINEL}"
+    assert http_retry.redact_provider_text(raw) == raw, (
+        "mysecret 被命中了 —— token 分解放得过宽，普通标识符会被误掩"
+    )
 
     # 账户身份规则用**同一个**前导片段，不许两条规则各修一半（这正是本条 SC 的失败形状）。
     # `_User=` 是 `\b` 与 `(?<![A-Za-z0-9])` 唯一的行为差异点 —— 没有这条断言，
@@ -510,3 +510,71 @@ def test_redact_provider_text_is_idempotent_and_bounded():
     assert "sk-live-xyz" not in once
     assert once.endswith("…<truncated>")
     assert len(once) == http_retry.PROVIDER_TEXT_MAX_CHARS + len("…<truncated>")
+
+
+# ---------------------------------------------------------------------------
+# SC-R6-04 —— 键名匹配按 token 分解，一次覆盖全部词法轴
+# ---------------------------------------------------------------------------
+# 同一不变量的第四次表现（R2 缺调用 / R4 引号轴 / R5 下划线轴 / R6 驼峰轴 clientSecret）
+# 之后，实现从「regex 逐轴补」换成 token 分解：分隔符（_ - . 空格）+ 驼峰边界切 token，
+# 语义由**尾 token（头名词）**判定 —— `client_secret` 头名词是 secret（值是凭证），
+# `secret_id` 头名词是 id（值是标识符），"任一 token 含 secret" 无法同时满足这两侧。
+_AXES_SENTINEL = "opaque-axes-sentinel-6e2d90c7"
+
+# 应命中：下划线 / 驼峰 / 直连可分解 / 连字符 / 全大写，五个词法轴各有代表
+_AXES_HIT_KEYS = (
+    "client_secret",
+    "clientSecret",
+    "refresh_token",
+    "refreshToken",
+    "secretkey",
+    "secret-key",
+    "API_KEY",
+)
+# 不应命中：凭证词在修饰位（头名词是 id/hash）、普通标识符、不可分解直连
+_AXES_MISS_KEYS = (
+    "secret_id",
+    "token_id",
+    "user_id",
+    "username",
+    "content_hash",
+    "mysecret",
+)
+_AXES_FORMS = (
+    ("bare-kv", "%(k)s=%(v)s"),
+    ("url-query", "?a=1&%(k)s=%(v)s"),
+    ("json-double-quoted", '{"%(k)s":"%(v)s"}'),
+    ("python-repr-single-quoted", "{'%(k)s': '%(v)s'}"),
+)
+
+
+def test_credential_key_matching_covers_all_axes():
+    """token 分解后：全部词法轴的凭证键命中，标识符类键与不可分解直连不命中。"""
+    # 防掩盖前提（沿用 R4/R5 的闸）：哨兵单独出现时原样穿透。
+    assert http_retry.redact_provider_text(_AXES_SENTINEL) == _AXES_SENTINEL, (
+        "哨兵被前缀规则命中 —— 无法证明键名规则是否工作，请换一个不透明哨兵"
+    )
+
+    leaked: list[str] = []
+    for key in _AXES_HIT_KEYS:
+        for form_name, template in _AXES_FORMS:
+            raw = template % {"k": key, "v": _AXES_SENTINEL}
+            out = http_retry.redact_provider_text(raw)
+            if _AXES_SENTINEL in out:
+                leaked.append(f"{key}/{form_name}: {raw!r} -> {out!r}")
+            elif http_retry.REDACTED_PLACEHOLDER not in out:
+                leaked.append(f"{key}/{form_name}: 值消失但无掩码标记 -> {out!r}")
+    assert not leaked, "以下凭证键词法轴未被脱敏:\n" + "\n".join(leaked)
+
+    over_masked: list[str] = []
+    for key in _AXES_MISS_KEYS:
+        raw = f"{key}={_AXES_SENTINEL}"
+        out = http_retry.redact_provider_text(raw)
+        if out != raw:
+            over_masked.append(f"{key}: {raw!r} -> {out!r}")
+    assert not over_masked, (
+        "以下非凭证键被误掩（token 分解的位置语义被破坏）:\n" + "\n".join(over_masked)
+    )
+
+    # 既有 `User` 账户身份掩码不得退化（R5 upstream 19 样本 diff 确认 R4 起即掩码）。
+    assert "zhuzan" not in http_retry.redact_provider_text("User=zhuzan over budget.")

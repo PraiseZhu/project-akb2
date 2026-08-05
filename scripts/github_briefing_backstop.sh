@@ -52,34 +52,24 @@ mkdir -p "$(dirname "$LOG")"
 # GIVE_UP_EXIT_CODE 是本脚本主动放弃。两者必须不同值（语义见文件头）。
 readonly DEADLINE_EXIT_CODE=124
 readonly GIVE_UP_EXIT_CODE=125
-# flock_exec.py 的协议码：busy 是正常让路；helper/setup 失败必须响亮 fail-closed。
-readonly LOCK_BUSY_EXIT_CODE=73
-readonly LOCK_HELPER_ERROR_EXIT_CODE=74
-readonly LOCK_BUSY_MARKER="flock_exec: busy"
-readonly LOCK_HELPER_ERROR_MARKER="flock_exec: error"
-readonly BACKSTOP_PYTHON="${AKB2_BACKSTOP_PYTHON:-python3}"
-readonly FLOCK_EXEC_HELPER="$SCRIPT_DIR/lib/flock_exec.py"
+# 锁 fd 号：shell 自己持有这个 OFD，全程不交给任何子进程（与 social 侧同形）。
+readonly LOCK_FD=9
 
-# Resolve the permanent lock inode before the first outer/inner branch. Re-entry is
-# accepted only when the helper's inherited fd still names this exact inode.
+# 为什么这里没有"重入凭据"：R6 之前 backstop 拿锁后会 re-exec 自身，内层需要一个
+# "我已持锁"的信号，而任何这样的信号都可伪造 —— 布尔被打穿（R4）、传 fd 后校验器
+# 那行 python 由 $BACKSTOP_PYTHON 执行同样被打穿（R5，设成 /usr/bin/true 即通过）。
+# R6 删掉 re-exec：锁由本 shell 内联持有到结束，外层/内层双态与凭据面一并消失。
+#
+# 取锁解释器**硬编码 python3、不设 env 旋钮**：若解释器可经 env 替换，R5 的洞原地
+# 复活（设成 /usr/bin/true 即让"取锁"空转成功、互斥彻底消失），所以旧的
+# AKB2_BACKSTOP_PYTHON 一并删除。PATH 篡改不在威胁模型内（launchd 的 PATH 在 plist
+# 里钉死）。解释器损坏由取锁探针的输出判别兜住（fail-closed，见 social 侧同段注释）。
 # shellcheck source=scripts/lib/state-root.sh
 . "$SCRIPT_DIR/lib/state-root.sh"
 akb2_resolve_state_root
 LOCK_FILE="${AKB2_GITHUB_BACKSTOP_LOCK_FILE:-$STATE_ROOT/locks/github-briefing-backstop.lock}"
-BACKSTOP_FLOCK_HELD=0
-FLOCK_FD_CANDIDATE="${AKB2_BACKSTOP_FLOCK_FD:-}"
-if [[ "$FLOCK_FD_CANDIDATE" =~ ^[0-9]+$ ]] && \
-  "$BACKSTOP_PYTHON" -c \
-    'import fcntl, os, sys; fd = int(sys.argv[1]); actual = os.fstat(fd); expected = os.stat(sys.argv[2]); same = (actual.st_dev, actual.st_ino) == (expected.st_dev, expected.st_ino); same and fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB); raise SystemExit(0 if same else 1)' \
-    "$FLOCK_FD_CANDIDATE" "$LOCK_FILE" >/dev/null 2>&1; then
-  BACKSTOP_FLOCK_HELD=1
-fi
-unset AKB2_BACKSTOP_FLOCK_FD FLOCK_FD_CANDIDATE
-readonly BACKSTOP_FLOCK_HELD
 
-FLOCK_EXEC_ERR_FILE=""
 cleanup() {
-  [[ -n "$FLOCK_EXEC_ERR_FILE" ]] && rm -f "$FLOCK_EXEC_ERR_FILE"
   return 0
 }
 trap cleanup EXIT
@@ -170,17 +160,12 @@ DEADLINE_LABEL="$(printf '%02d:%02d' "${AKB2_GITHUB_DEADLINE_HOUR:-12}" "${AKB2_
 
 # 幂等守卫 ①：今日 briefing 已产出 → 跳过
 if [[ -f "$GITHUB_FILE" ]]; then
-  if [[ "$BACKSTOP_FLOCK_HELD" == "1" ]]; then
-    log_terminal skip "skip — 拿锁后重检发现 GitHub briefing 已产出，不启动补跑 lock_artifact_recheck=pass ($DATE_TODAY)"
-  else
-    log_terminal skip "skip — GitHub briefing 已产出，无需补跑 ($DATE_TODAY)"
-  fi
+  log_terminal skip "skip — GitHub briefing 已产出，无需补跑 ($DATE_TODAY)"
   exit 0
 fi
 
-# 外层做便宜的进程/deadline/dry-run 预检；helper exec 回来的内层已经持有 flock，
-# 只做产物重检并进入补跑，避免重复读取时钟改变既有 deadline 语义。
-if [[ "$BACKSTOP_FLOCK_HELD" != "1" ]]; then
+# 便宜的进程/deadline/dry-run 预检放在拿锁**之前**：能早退的情形不必先付出取锁代价。
+# R6 起不再有外层/内层双态（re-exec 已删），这些预检只会执行一次。
 # 守卫 ②：主跑进程仍在运行 → 让它先跑完
 #
 # 探针模式做成具名 + 可覆写：`pgrep -f` 是**全机器范围**的模糊匹配，同机器上任何一条
@@ -206,7 +191,6 @@ fi
 if [[ "$DRY_RUN" -eq 1 ]]; then
   log_terminal dry_run "dry-run — 今日 GitHub briefing 缺失，将会触发补跑（实际未执行）($DATE_TODAY)"
   exit 0
-fi
 fi
 
 # SC-5: 补跑复用主管线环境 — source 同一 env（GITHUB_PAT/AI_GATEWAY_API_KEY/VAULT_ROOT），
@@ -249,42 +233,46 @@ if akb2_state_root_is_synced "$(dirname "$LOCK_FILE")"; then
   log "warn — 锁目录在跨机同步范围内，互斥保证降级 lock_sync_risk=1 lock_file=$LOCK_FILE ($DATE_TODAY)"
 fi
 
-if [[ "$BACKSTOP_FLOCK_HELD" != "1" ]]; then
-  if ! command -v "$BACKSTOP_PYTHON" >/dev/null 2>&1; then
-    log_terminal failed "FAILED — python3 不可用，无法建立 fcntl.flock 互斥，拒绝无锁补跑 lock_setup=failed exit_code=1 ($DATE_TODAY)"
-    exit 1
-  fi
-  if ! FLOCK_EXEC_ERR_FILE="$(mktemp "${TMPDIR:-/tmp}/akb2-flock-exec.XXXXXX")"; then
-    log_terminal failed "FAILED — 无法建立 flock helper stderr framing，拒绝无锁补跑 lock_setup=failed exit_code=1 ($DATE_TODAY)"
-    exit 1
-  fi
-  set +e
-  AKB2_GITHUB_BACKSTOP_RUN_ID="$RUN_ID" \
-    "$BACKSTOP_PYTHON" "$FLOCK_EXEC_HELPER" \
-    --lock-file "$LOCK_FILE" \
-    --busy-exit-code "$LOCK_BUSY_EXIT_CODE" \
-    --error-exit-code "$LOCK_HELPER_ERROR_EXIT_CODE" \
-    -- /bin/bash "$0" --vault-root "$VAULT_ROOT" --log-path "$LOG" \
-    2>"$FLOCK_EXEC_ERR_FILE"
-  lock_rc=$?
-  set -e
-  lock_busy_marker=0
-  lock_error_marker=0
-  if grep -Fxq "$LOCK_BUSY_MARKER" "$FLOCK_EXEC_ERR_FILE"; then lock_busy_marker=1; fi
-  if grep -Fxq "$LOCK_HELPER_ERROR_MARKER" "$FLOCK_EXEC_ERR_FILE"; then lock_error_marker=1; fi
-  cat "$FLOCK_EXEC_ERR_FILE" >&2
-  rm -f "$FLOCK_EXEC_ERR_FILE"
-  FLOCK_EXEC_ERR_FILE=""
-  if (( lock_rc == LOCK_BUSY_EXIT_CODE && lock_busy_marker == 1 )); then
-    log_terminal skip "skip — already-running: 另一个 github backstop 补跑正持 flock lock_file=$LOCK_FILE ($DATE_TODAY)"
-    exit 0
-  fi
-  if (( lock_rc == LOCK_HELPER_ERROR_EXIT_CODE && lock_error_marker == 1 )); then
-    log_terminal failed "FAILED — 无法建立 fcntl.flock 互斥，拒绝无锁补跑 lock_setup=failed exit_code=1 ($DATE_TODAY)"
-    exit 1
-  fi
-  exit "$lock_rc"
+if ! command -v python3 >/dev/null 2>&1; then
+  log_terminal failed "FAILED — python3 不可用，无法建立 fcntl.flock 互斥，拒绝无锁补跑 lock_setup=failed exit_code=1 ($DATE_TODAY)"
+  exit 1
 fi
+if ! mkdir -p "$(dirname "$LOCK_FILE")" 2>/dev/null; then
+  log_terminal failed "FAILED — 锁目录不可创建，拒绝无锁补跑 lock_setup=failed lock_file=$LOCK_FILE exit_code=1 ($DATE_TODAY)"
+  exit 1
+fi
+# 本 shell 自己打开并持有锁 OFD；python 只代为调用 flock(2)，它拿到的是继承来的同一个
+# OFD，退出后锁不释放（详见 social 侧同段注释）。字面量 9 = $LOCK_FD（bash 3.2 不支持
+# `{var}>`，fd 号必须写死；与下方 `9<&-` 两处须同步）。
+if ! exec 9>"$LOCK_FILE"; then
+  log_terminal failed "FAILED — 锁文件不可打开，拒绝无锁补跑 lock_setup=failed lock_file=$LOCK_FILE exit_code=1 ($DATE_TODAY)"
+  exit 1
+fi
+# 三态判别靠**输出标记**而不是退出码：光看 rc，"解释器损坏/异常"与"锁被别人持有"
+# 无法区分（R5 那条 rc 歧义 finding 的同族形状）。标记走本次命令替换的独占 stdout
+# 管道，任何子进程都写不进来。语义与 social 侧完全同形。
+set +e
+lock_probe="$(python3 -c '
+import fcntl, sys
+try:
+    fcntl.flock(int(sys.argv[1]), fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    print("AKB2_LOCK_BUSY")
+    sys.exit(0)
+print("AKB2_LOCK_HELD")
+' "$LOCK_FD" 2>/dev/null)"
+lock_probe_rc=$?
+set -e
+case "$lock_probe" in
+  AKB2_LOCK_HELD)
+    : ;;   # 本 shell 已持锁，继续
+  AKB2_LOCK_BUSY)
+    log_terminal skip "skip — already-running: 另一个 github backstop 补跑正持 flock lock_file=$LOCK_FILE ($DATE_TODAY)"
+    exit 0 ;;
+  *)
+    log_terminal failed "FAILED — flock 探针未能确认锁状态（解释器损坏或异常，拒绝无锁补跑）lock_setup=failed probe_rc=$lock_probe_rc probe_out=\"$lock_probe\" lock_file=$LOCK_FILE exit_code=1 ($DATE_TODAY)"
+    exit 1 ;;
+esac
 
 # 初次产物判断与拿锁之间，主跑可能刚好完成。成为唯一锁 owner 后必须重检，避免对
 # 已交付的产物再启动一次付费补跑。
@@ -309,8 +297,10 @@ while (( attempt <= RERUN_ATTEMPT_BUDGET )); do
   (( attempt >= 2 )) && family_fallback=1
   log "run — 今日 GitHub briefing 缺失，开始补跑 attempt=$attempt/$RERUN_ATTEMPT_BUDGET llm_family_fallback=$family_fallback ($DATE_TODAY)"
   set +e
+  # `9<&-` 关掉子进程里的锁 fd：否则活过本 backstop 的后代会继续持有该 OFD，让锁无界
+  # 扣住，此后每次都误报 "already-running" 而其实没有别的实例（详见 social 侧同段注释）。
   AKB2_LLM_FAMILY_FALLBACK="$family_fallback" \
-    bash "$RERUN_SCRIPT" --vault-root "$VAULT_ROOT"
+    bash "$RERUN_SCRIPT" --vault-root "$VAULT_ROOT" 9<&-
   rc=$?
   set -e
   # SC-5: recovered 必须复查文件 — rc==0 但当日文件未写出 = 假成功，不算成功

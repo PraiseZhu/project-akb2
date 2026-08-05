@@ -100,20 +100,95 @@ _TRUNCATION_MARKER = "…<truncated>"
 # **引号边界**这一个轴 —— 共享片段管不到「词边界」这另一个轴，`\b` 的前导缺口因此活到了 R5。
 # 结论落成纪律：共享片段只保证被它覆盖的那个轴一致，不保证规则整体没有别的轴出问题；
 # 注释不得把"某一轴有单一 owner"写成"整条规则不可能只修一半"。
+#
+# R6（SC-R6-04）：键名匹配从「regex 逐轴补」改为**按 token 分解**。四轮里每轮冒出一条
+# 新轴（R2 缺调用 / R4 引号轴 / R5 下划线轴 / R6 驼峰轴 clientSecret），根因是 regex 把
+# 「键名的词法形态」和「键名的语义」揉在一条 pattern 里 —— 换一种词法就漏一次。现在
+# 拆开：先把候选键名按分隔符（_ - . 空格）与驼峰边界切成 token 序列，再对 token 做语义
+# 判定，所有词法轴（下划线/连字符/驼峰/引号/大小写）一次覆盖，后续不存在"再补一轴"。
 _OPT_QUOTE = r"['\"]?"
 # 值以空白 / 结构分隔符 / 引号为边界；`}` 与 `]` 排除掉才不会把 JSON 收尾符吃进掩码。
-_KV_VALUE = r"[^\s,;)\]}'\"]+"
-# 键名**前导**边界（SC-R5-04）：不能用 `\b` —— `_` 是词字符，`re.search(r"\bsecret\b",
-# "client_secret")` 为 False，于是 `client_secret=` / `refresh_token=` 这类**下划线复合键
-# 整条规则失配、原文穿透**，而规则里明明列了 `secret` / `token`。改用「前一个字符不是
-# 字母数字」的否定回顾：`_` / `?` / `&` / `{` / `"` 都算合法分隔 → 复合键命中词尾的
-# credential 词（`client_secret`→`secret`，`refresh_token`→`token`）。
-# 已知取舍：字母直连（`mysecret=` / `secretkey=`）仍不命中 —— 那不是标准分隔形态，
-# 收进来会把大量普通标识符也掩掉。前导与 `User` 规则共用同一片段，避免两条规则各修一半。
+# `&` / `?` 也是边界（R6）：通用 kv 捕获下，query string 里前一个非凭证键的值若把 `&`
+# 吃进去，会把后面的 `client_secret=…` 一起吞掉 —— 值在 `&` 处截断，后续键才轮得到判定。
+_KV_VALUE = r"[^\s,;&?)\]}'\"]+"
+# 键名**前导**边界（SC-R5-04）：不能用 `\b` —— `_` 是词字符，遇下划线复合键整条失配。
+# 「前一个字符不是字母数字」的否定回顾：`_` / `?` / `&` / `{` / `"` 都算合法分隔。
+# 与 `User` 规则共用同一片段，避免两条规则各修一半。
 _KEY_LEAD = r"(?<![A-Za-z0-9])"
-_CRED_KEY_NAMES = r"api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password|passwd"
 
-_REDACT_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
+# 凭证语义词集合（SC-R6-04 冻结）：token 判定的唯一依据，不再有独立的 regex 词表。
+_CRED_WORDS = frozenset(
+    {"secret", "token", "password", "passwd", "apikey", "credential", "auth"}
+)
+# 复合分词字典 = 凭证词 + 允许出现在凭证复合词里的中性件。`secretkey` 因可全切成
+# secret+key（含凭证词）而命中；`mysecret` 因 "my" 不在字典、整词不可切而**不**命中 ——
+# 这是 R5「字母直连不收」取舍在 R6 的精化：可分解进凭证词汇的直连收，其余直连仍不收。
+_CRED_COMPOUND_DICT = _CRED_WORDS | {"key", "api"}
+
+_RE_CAMEL_LOWER_UPPER = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_RE_CAMEL_ACRONYM = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])")
+_RE_KEY_SEP = re.compile(r"[_\-. ]+")
+
+
+def _key_tokens(key: str) -> list[str]:
+    """键名 → 小写 token 序列（分隔符 + 驼峰边界，两类边界都要切）。"""
+    marked = _RE_CAMEL_ACRONYM.sub("_", _RE_CAMEL_LOWER_UPPER.sub("_", key))
+    return [t.lower() for t in _RE_KEY_SEP.split(marked) if t]
+
+
+def _segments_into_cred_vocab(token: str) -> bool:
+    """token 可否**完整**切成复合字典词、且至少一段是凭证词（如 secretkey→secret+key）。"""
+    n = len(token)
+    # best[i]: None=位置 i 不可达；否则记录"到 i 为止是否已含凭证词段"（True 优先保留）
+    best: list[bool | None] = [None] * (n + 1)
+    best[0] = False
+    for i in range(n):
+        if best[i] is None:
+            continue
+        for j in range(i + 1, n + 1):
+            piece = token[i:j]
+            if piece in _CRED_COMPOUND_DICT:
+                flag = bool(best[i]) or piece in _CRED_WORDS
+                if best[j] is None or (flag and not best[j]):
+                    best[j] = flag
+    return bool(best[n])
+
+
+def _is_credential_key(key: str) -> bool:
+    """键名语义判定：**尾 token（头名词）**决定这是不是凭证键。
+
+    为什么是尾 token 而不是"任一 token"：`client_secret` 的头名词是 secret（值是凭证），
+    `secret_id` 的头名词是 id（值是标识符）—— 两者都含 "secret" 这个 token，语义却相反。
+    SC-R6-04 冻结的正反例集合（secret_id / token_id / user_id 必须不命中）只有位置语义
+    能同时满足。尾复合（api+key→apikey、secret+key→secretkey）并入尾 token 一起判。
+    """
+    tokens = _key_tokens(key)
+    if not tokens:
+        return False
+    last = tokens[-1]
+    if last in _CRED_WORDS or _segments_into_cred_vocab(last):
+        return True
+    if len(tokens) >= 2 and _segments_into_cred_vocab(tokens[-2] + last):
+        return True
+    return False
+
+
+# 通用 kv 捕获：先抓「任意键 = / : 值」，再用 _is_credential_key 判语义。三种真实形态
+# （裸 kv / JSON / Python dict repr）与引号轴沿用 R4 的共享片段。
+_KV_PATTERN = re.compile(
+    _KEY_LEAD + r"([A-Za-z][A-Za-z0-9_.\-]*)" + _OPT_QUOTE + r"\s*[=:]\s*"
+    + _OPT_QUOTE + _KV_VALUE + _OPT_QUOTE
+)
+
+
+def _redact_credential_kv(match: re.Match[str]) -> str:
+    key = match.group(1)
+    if _is_credential_key(key):
+        return f"{key}={REDACTED_PLACEHOLDER}"
+    return match.group(0)
+
+
+_REDACT_RULES: tuple[tuple[re.Pattern[str], Any], ...] = (
     # 凭证样式（前缀保留，便于判断"是哪类 key 泄了"，值不留）
     (re.compile(r"sk-[A-Za-z0-9_\-]{3,}"), f"sk-{REDACTED_PLACEHOLDER}"),
     (re.compile(r"ghp_[A-Za-z0-9_\-]{3,}"), f"ghp_{REDACTED_PLACEHOLDER}"),
@@ -122,14 +197,8 @@ _REDACT_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"xox[baprs]-[A-Za-z0-9\-]{3,}", re.IGNORECASE), f"xox{REDACTED_PLACEHOLDER}"),
     (re.compile(r"Bearer\s+\S+", re.IGNORECASE), f"Bearer {REDACTED_PLACEHOLDER}"),
     # 键名规则：**不依赖任何前缀**，这是唯一能兜住不透明凭证（自签 token / UUID 形态）的一条。
-    (
-        re.compile(
-            _KEY_LEAD + r"(" + _CRED_KEY_NAMES + r")\b" + _OPT_QUOTE + r"\s*[=:]\s*"
-            + _OPT_QUOTE + _KV_VALUE + _OPT_QUOTE,
-            re.IGNORECASE,
-        ),
-        rf"\1={REDACTED_PLACEHOLDER}",
-    ),
+    # 语义判定在 _is_credential_key（token 分解），非凭证键原样保留。
+    (_KV_PATTERN, _redact_credential_kv),
     # 账户身份：Gateway 的预算 429 原文形如 `User=zhuzan over budget. …`
     # ——「谁打穿了额度」对排查无增量（本机只有一个账户），但它是 PII，不落盘。
     # 引号形态与 `[=:]` 与上面同口径：同一失败形状不允许在两条规则里各修一半。

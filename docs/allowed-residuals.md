@@ -265,11 +265,18 @@ step-2 量规外置正当升级 `skillpack/quality/rubric/10-dimensions.md`（�
 | 为什么仍入仓 | 它是模式清单的权威来源与评审对象（含 `briefing-failed.json` / `briefing-skipped.json` 这类告警唯一归因素材）；owner 合入 `~/AI-Agent/.stignore` 后即生效 |
 | 后续动作 | owner 把本文件的模式合入 `~/AI-Agent/.stignore`（该文件不在本仓管理范围内，agent 不写工作区外文件）；合入后本条残留即可删除 |
 
+（folder 根 `~/AI-Agent/.stignore` 已于 2026-08-05 经 owner 授权合入 AKB2 模式块并隔离既有
+冲突副本 —— 生效前提已满足，不再是活残余；本条目待下一 PR 删除）
+
 ## llm_resilience_lane1（2026-08-03，LLM 调用韧性修复批次 1）
 
 > 来源：`_tmp/fix-plan/lane-1-llm-resilience.md`（2026-08-02 GitHub 简报未交付的分赛道排查结论）。
-> 本节 3 条残留均因**改动边界**（并行 7 个 worker，各持独占文件清单）而非技术困难未在本轮消掉，
+> 本节 2 条残留均因**改动边界**（并行 7 个 worker，各持独占文件清单）而非技术困难未在本轮消掉，
 > 逐条给出修复触发条件与需要的文件权限。
+> （原为 3 条；`github_synthesis_model_not_in_frontmatter` 已于 2026-08-03 修复，
+> 降级为本节末尾的"另注（非残留，已修）"，条数随之更正 —— 本节条数与 `###` 级条目数
+> 的一致性由 `tests/test_render_residuals_summary.py::test_section_count_matches_rendered_entries`
+> 机器核对，不再手抄。）
 
 ### synthesis_no_key_fallback
 

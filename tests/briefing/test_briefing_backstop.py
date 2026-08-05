@@ -15,9 +15,10 @@ from pathlib import Path
 import pytest
 
 from tests.briefing.backstop_lock_test_support import (
-    assert_child_exit_codes_passthrough,
+    assert_child_exit_attribution_unambiguous,
+    assert_descendant_cannot_pin_lock,
     assert_flock_interleaving_matrix,
-    assert_flock_reentry_rejects_forged_env,
+    assert_no_forgeable_reentry_credential_exists,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -1095,26 +1096,29 @@ exit 0''',
 
 def test_lock_acquire_is_atomic_under_barrier_start(tmp_path):
     """fcntl.flock acquisition permits one rerun owner under a true barrier start."""
-    for script in (BACKSTOP_SH, GITHUB_BACKSTOP_SH):
-        source = script.read_text(encoding="utf-8")
-        assert "flock_exec.py" in source, f"{script.name}: missing flock helper"
+    # R6 起只做行为断言：不再检查任何锁实现细节（helper 文件名断言已随 helper 一起删除）。
     for kind in ("social", "github"):
         _run_atomic_lock_barrier_case(tmp_path, kind)
 
 
 def test_stale_takeover_interleaving_matrix(tmp_path):
-    """Flock has no rename takeover: stale inode, N-way start, and owner death are safe."""
+    """Flock has no rename takeover: stale inode, N-way start, and broken python are safe."""
     assert_flock_interleaving_matrix(tmp_path, "social", PROJECT_ROOT)
 
 
-def test_flock_reentry_rejects_forged_env(tmp_path):
-    """A forgeable boolean or unopened fd number cannot claim lock ownership."""
-    assert_flock_reentry_rejects_forged_env(tmp_path, "social", PROJECT_ROOT)
+def test_no_forgeable_reentry_credential_exists(tmp_path):
+    """SC-R6-01: no env forgery (bool / fd / interpreter knob) can bypass the flock."""
+    assert_no_forgeable_reentry_credential_exists(tmp_path, "social", PROJECT_ROOT)
 
 
-def test_child_exit_73_74_passthrough_not_misclassified(tmp_path):
-    """Child protocol-looking exit codes pass through without helper framing."""
-    assert_child_exit_codes_passthrough(tmp_path, "social", PROJECT_ROOT)
+def test_child_exit_code_attribution_unambiguous(tmp_path):
+    """SC-R6-02: child rc passes through; no protocol codes or stderr framing exist."""
+    assert_child_exit_attribution_unambiguous(tmp_path, "social", PROJECT_ROOT)
+
+
+def test_descendant_cannot_pin_lock(tmp_path):
+    """SC-R6-03: a descendant outliving the backstop never inherits the lock fd."""
+    assert_descendant_cannot_pin_lock(tmp_path, "social", PROJECT_ROOT)
 
 
 def test_artifact_is_rechecked_after_lock_acquisition(tmp_path):

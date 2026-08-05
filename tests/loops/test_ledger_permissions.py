@@ -207,3 +207,46 @@ def test_failures_node_compound_key_redacted(tmp_path: Path) -> None:
     assert [r["count"] for r in results] == [1, 1]
     # 权限那一半不得回退
     assert _mode(failures) == 0o600
+
+
+# ---------------------------------------------------------------------------
+# SC-R6-04 —— 驼峰复合键在**真实可达路径**上的脱敏
+# ---------------------------------------------------------------------------
+# R5 补了下划线轴（?client_secret=），驼峰轴（?clientSecret=）当时仍穿透：旧规则按
+# regex 词表匹配，`clientSecret` 里的 Secret 前面是词字符 t，任何词边界写法都够不到。
+# token 分解后驼峰边界与分隔符同权切开，本测试钉住这条轴在 record_failure 落盘路径生效。
+_CAMEL_NODE_SENTINEL = "opaque-node-camel-3f9a72c1"
+
+
+@pytest.mark.usefixtures("_umask_022")
+def test_failures_node_camelcase_key_redacted(tmp_path: Path) -> None:
+    """URL query 里的驼峰复合凭证键必须在落盘前脱敏。"""
+    failures = tmp_path / "ledgers" / "failures.jsonl"
+
+    # 前提：哨兵不含任何已知前缀 —— 只有键名规则能救它（防掩盖闸，同 R4/R5 口径）。
+    from akb2.common.http_retry import redact_provider_text
+
+    assert redact_provider_text(_CAMEL_NODE_SENTINEL) == _CAMEL_NODE_SENTINEL, (
+        "哨兵被前缀规则命中 —— 无法证明键名规则是否工作，请换一个不透明哨兵"
+    )
+
+    results = [
+        record_failure(
+            str(failures),
+            "fetch_fail",
+            f"intake.extract.https://ex.test/a?{key}={_CAMEL_NODE_SENTINEL}",
+        )
+        for key in ("clientSecret", "refreshToken")
+    ]
+
+    body = failures.read_text(encoding="utf-8")
+    assert _CAMEL_NODE_SENTINEL not in body, (
+        f"failures.jsonl 仍带驼峰键凭证原文:\n{body}"
+    )
+    for result in results:
+        assert _CAMEL_NODE_SENTINEL not in result["signature"], result["signature"]
+        assert "<redacted>" in result["signature"], result["signature"]
+    # 两个不同的键名 → 仍是两个不同签名，各自从 1 起算（脱敏没有把它们并成一个）
+    assert [r["count"] for r in results] == [1, 1]
+    # 权限那一半不得回退
+    assert _mode(failures) == 0o600
