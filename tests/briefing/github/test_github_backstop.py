@@ -12,7 +12,9 @@ from pathlib import Path
 import pytest
 
 from tests.briefing.backstop_lock_test_support import (
+    assert_child_exit_codes_passthrough,
     assert_flock_interleaving_matrix,
+    assert_flock_reentry_rejects_forged_env,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -537,7 +539,7 @@ class TestGithubBackstopRerunBudget:
 class TestGithubBackstopLock:
     """SC-8: 补跑必须有 flock —— pgrep 在 backstop 触发时必然扑空。"""
 
-    def test_concurrent_backstop_blocked_by_pid_lock(self, tmp_path):
+    def test_concurrent_backstop_blocked_by_flock(self, tmp_path):
         vault = tmp_path / "vault"
         (vault / "Praise Space/AKB2.0/AI TRENDS/GitHub").mkdir(parents=True)
         lock = tmp_path / "shared.lock"
@@ -626,6 +628,16 @@ exit 1''',
 def test_stale_takeover_interleaving_matrix(tmp_path):
     """Flock has no rename takeover: stale inode, N-way start, and owner death are safe."""
     assert_flock_interleaving_matrix(tmp_path, "github", PROJECT_ROOT)
+
+
+def test_flock_reentry_rejects_forged_env(tmp_path):
+    """A forgeable boolean or unopened fd number cannot claim lock ownership."""
+    assert_flock_reentry_rejects_forged_env(tmp_path, "github", PROJECT_ROOT)
+
+
+def test_child_exit_73_74_passthrough_not_misclassified(tmp_path):
+    """Child protocol-looking exit codes pass through without helper framing."""
+    assert_child_exit_codes_passthrough(tmp_path, "github", PROJECT_ROOT)
 
 
 def test_exit_codes_are_distinct_named_constants():

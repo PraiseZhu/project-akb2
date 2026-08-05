@@ -15,7 +15,9 @@ from pathlib import Path
 import pytest
 
 from tests.briefing.backstop_lock_test_support import (
+    assert_child_exit_codes_passthrough,
     assert_flock_interleaving_matrix,
+    assert_flock_reentry_rejects_forged_env,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -857,7 +859,7 @@ esac""",
 # 耗时（历史 8–16 分钟），08:00 时 pgrep **必然扑空**。这正是 38 天双跑的成型条件。
 
 
-def test_concurrent_backstop_blocked_by_pid_lock(tmp_path):
+def test_concurrent_backstop_blocked_by_flock(tmp_path):
     """SC-8: 第二个 backstop 必须被 flock 挡住，补跑 stub 只被调用 1 次。"""
     vault = tmp_path / "vault"
     (vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
@@ -1103,6 +1105,16 @@ def test_lock_acquire_is_atomic_under_barrier_start(tmp_path):
 def test_stale_takeover_interleaving_matrix(tmp_path):
     """Flock has no rename takeover: stale inode, N-way start, and owner death are safe."""
     assert_flock_interleaving_matrix(tmp_path, "social", PROJECT_ROOT)
+
+
+def test_flock_reentry_rejects_forged_env(tmp_path):
+    """A forgeable boolean or unopened fd number cannot claim lock ownership."""
+    assert_flock_reentry_rejects_forged_env(tmp_path, "social", PROJECT_ROOT)
+
+
+def test_child_exit_73_74_passthrough_not_misclassified(tmp_path):
+    """Child protocol-looking exit codes pass through without helper framing."""
+    assert_child_exit_codes_passthrough(tmp_path, "social", PROJECT_ROOT)
 
 
 def test_artifact_is_rechecked_after_lock_acquisition(tmp_path):

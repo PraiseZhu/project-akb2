@@ -47,14 +47,20 @@ def main(argv: list[str] | None = None) -> int:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
             if exc.errno in (errno.EACCES, errno.EAGAIN):
+                _error("busy")
                 return args.busy_exit_code
             raise
 
         # PEP 446 makes new descriptors close-on-exec by default. The lock must remain
         # held by the backstop after this process is replaced by the target command.
         os.set_inheritable(fd, True)
+        # The re-exec must prove possession of this exact inherited descriptor. A plain
+        # boolean is forgeable and would let an unrelated caller bypass the lock helper.
+        os.environ.pop("AKB2_BACKSTOP_FLOCK_HELD", None)
+        os.environ["AKB2_BACKSTOP_FLOCK_FD"] = str(fd)
         os.execvp(args.command[0], args.command)
     except OSError as exc:
+        _error("error")
         _error(f"cannot lock or exec: {exc}")
         return args.error_exit_code
     finally:

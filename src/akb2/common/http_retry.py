@@ -94,10 +94,23 @@ _TRUNCATION_MARKER = "…<truncated>"
 # `"` 而不是 `[=:]` → **整条规则失配**，`{"api_key":"<opaque>"}` 原样落盘。当时之所以
 # 没被测出，是因为旧测试用的哨兵带 `sk-` 前缀，被前一条**前缀规则**兜住了 ——
 # 一条规则的命中掩盖了另一条规则的洞。故这里把「可选引号」抽成共享片段，键名侧与值侧
-# 用同一份定义，物理上不可能只补一半（加固清单：同一判据只允许有一个 owner）。
+# 用同一份定义（加固清单：同一判据只允许有一个 owner）。
+#
+# ⚠ R5 修正一处 R4 的过度断言：R4 的注释写「物理上不可能只补一半」，但那只覆盖了
+# **引号边界**这一个轴 —— 共享片段管不到「词边界」这另一个轴，`\b` 的前导缺口因此活到了 R5。
+# 结论落成纪律：共享片段只保证被它覆盖的那个轴一致，不保证规则整体没有别的轴出问题；
+# 注释不得把"某一轴有单一 owner"写成"整条规则不可能只修一半"。
 _OPT_QUOTE = r"['\"]?"
 # 值以空白 / 结构分隔符 / 引号为边界；`}` 与 `]` 排除掉才不会把 JSON 收尾符吃进掩码。
 _KV_VALUE = r"[^\s,;)\]}'\"]+"
+# 键名**前导**边界（SC-R5-04）：不能用 `\b` —— `_` 是词字符，`re.search(r"\bsecret\b",
+# "client_secret")` 为 False，于是 `client_secret=` / `refresh_token=` 这类**下划线复合键
+# 整条规则失配、原文穿透**，而规则里明明列了 `secret` / `token`。改用「前一个字符不是
+# 字母数字」的否定回顾：`_` / `?` / `&` / `{` / `"` 都算合法分隔 → 复合键命中词尾的
+# credential 词（`client_secret`→`secret`，`refresh_token`→`token`）。
+# 已知取舍：字母直连（`mysecret=` / `secretkey=`）仍不命中 —— 那不是标准分隔形态，
+# 收进来会把大量普通标识符也掩掉。前导与 `User` 规则共用同一片段，避免两条规则各修一半。
+_KEY_LEAD = r"(?<![A-Za-z0-9])"
 _CRED_KEY_NAMES = r"api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password|passwd"
 
 _REDACT_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -111,7 +124,7 @@ _REDACT_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     # 键名规则：**不依赖任何前缀**，这是唯一能兜住不透明凭证（自签 token / UUID 形态）的一条。
     (
         re.compile(
-            r"\b(" + _CRED_KEY_NAMES + r")\b" + _OPT_QUOTE + r"\s*[=:]\s*"
+            _KEY_LEAD + r"(" + _CRED_KEY_NAMES + r")\b" + _OPT_QUOTE + r"\s*[=:]\s*"
             + _OPT_QUOTE + _KV_VALUE + _OPT_QUOTE,
             re.IGNORECASE,
         ),
@@ -122,7 +135,8 @@ _REDACT_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     # 引号形态与 `[=:]` 与上面同口径：同一失败形状不允许在两条规则里各修一半。
     (
         re.compile(
-            r"\bUser\b" + _OPT_QUOTE + r"\s*[=:]\s*" + _OPT_QUOTE + _KV_VALUE + _OPT_QUOTE,
+            _KEY_LEAD + r"User\b" + _OPT_QUOTE + r"\s*[=:]\s*"
+            + _OPT_QUOTE + _KV_VALUE + _OPT_QUOTE,
             re.IGNORECASE,
         ),
         f"User={REDACTED_PLACEHOLDER}",

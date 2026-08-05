@@ -162,3 +162,48 @@ def test_failures_node_field_is_redacted(tmp_path: Path) -> None:
     # ④ 脱敏**不是**把所有 node 抹成同一个值：不同来源仍是不同签名，各自从 1 起算。
     other = record_failure(str(failures), "fetch_fail", "intake.extract.https://other.test/z")
     assert other["count"] == 1, "不同来源被误并成同一签名 —— 脱敏过度，升级判据失效"
+
+
+# ---------------------------------------------------------------------------
+# SC-R5-04 —— 复合键在**真实可达路径**上的脱敏
+# ---------------------------------------------------------------------------
+# R4 只覆盖了 `?access_token=`（单下划线前缀恰好也是复合键，但当时命中靠的是
+# `access[_-]?token` 这个**整体列了复合形态**的分支）。真正暴露前导 `\b` 缺口的是
+# `?refresh_token=` / `?client_secret=`：规则里只有词尾的 `token` / `secret`，前导 `\b`
+# 遇到 `_` 直接失配 → 原文写进 failures.jsonl。可达路径是
+# `quality/intake/extract.py:_record_fetch_fail` 的 `node=f"intake.extract.{url[:80]}"`。
+_COMPOUND_NODE_SENTINEL = "opaque-node-compound-8d2f61b4"
+
+
+@pytest.mark.usefixtures("_umask_022")
+def test_failures_node_compound_key_redacted(tmp_path: Path) -> None:
+    """URL query 里的下划线复合凭证键必须在落盘前脱敏。"""
+    failures = tmp_path / "ledgers" / "failures.jsonl"
+
+    # 前提：哨兵不含任何已知前缀 —— 只有键名规则能救它（防掩盖闸，同 R4 口径）。
+    from akb2.common.http_retry import redact_provider_text
+
+    assert redact_provider_text(_COMPOUND_NODE_SENTINEL) == _COMPOUND_NODE_SENTINEL, (
+        "哨兵被前缀规则命中 —— 无法证明键名规则是否工作，请换一个不透明哨兵"
+    )
+
+    results = [
+        record_failure(
+            str(failures),
+            "fetch_fail",
+            f"intake.extract.https://ex.test/a?{key}={_COMPOUND_NODE_SENTINEL}",
+        )
+        for key in ("refresh_token", "client_secret")
+    ]
+
+    body = failures.read_text(encoding="utf-8")
+    assert _COMPOUND_NODE_SENTINEL not in body, (
+        f"failures.jsonl 仍带复合键凭证原文:\n{body}"
+    )
+    for result in results:
+        assert _COMPOUND_NODE_SENTINEL not in result["signature"], result["signature"]
+        assert "<redacted>" in result["signature"], result["signature"]
+    # 两个不同的键名 → 仍是两个不同签名，各自从 1 起算（脱敏没有把它们并成一个）
+    assert [r["count"] for r in results] == [1, 1]
+    # 权限那一半不得回退
+    assert _mode(failures) == 0o600

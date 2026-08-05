@@ -39,6 +39,17 @@ def test_schedule_entry_states_runtime_pending():
 
     rendered = render_residuals_summary.render_entry(matches[0])
     assert "运行态待 owner 重装" in rendered
+    assert "（运行态已于 2026-08-05 生效，本条目待下一 PR 删除）" in rendered
+
+
+def test_migrated_table_residuals_are_counted():
+    """Two live residuals promoted from table rows must be renderer-visible entries."""
+    entries = render_residuals_summary.parse_entries(_DOC_PATH)
+    titles = {entry.title for entry in entries}
+    assert {
+        "synthesis_no_key_fallback",
+        "http_retry_duplication_in_send_py",
+    } <= titles
 
 
 def test_entry_count_matches_document_independently():

@@ -72,6 +72,7 @@ def _assert_fd_survives_exec_and_death_releases(
             timeout=10,
         )
         assert blocked.returncode == LOCK_BUSY_EXIT_CODE, blocked.stderr
+        assert "flock_exec: busy" in blocked.stderr.splitlines(), blocked.stderr
         assert not blocked_marker.exists(), "PEP 446 closed the lock fd during exec"
 
         holder.kill()
@@ -161,7 +162,12 @@ exit 0''',
 
 
 def _assert_n_contenders_have_one_owner(
-    case_dir: Path, kind: str, project_root: Path
+    case_dir: Path,
+    kind: str,
+    project_root: Path,
+    *,
+    credential_env: dict[str, str] | None = None,
+    pass_fds: tuple[int, ...] = (),
 ) -> None:
     script, vault, lock, marker, release, common_env, _ = _backstop_case(
         kind, case_dir, project_root
@@ -185,6 +191,7 @@ def _assert_n_contenders_have_one_owner(
         env = {
             **os.environ,
             **common_env,
+            **(credential_env or {}),
             "AKB2_MATRIX_ACTOR": str(index),
             log_key: str(case_dir / f"backstop-{index}.log"),
         }
@@ -202,6 +209,7 @@ def _assert_n_contenders_have_one_owner(
                 stderr=subprocess.PIPE,
                 text=True,
                 env=env,
+                pass_fds=pass_fds,
             )
         )
 
@@ -234,6 +242,125 @@ def _assert_n_contenders_have_one_owner(
     ]
     assert sum("already-running" in content for content in loser_logs) == contender_count - 1
     assert lock.exists(), "the shared flock inode must never be unlinked"
+
+
+def assert_flock_reentry_rejects_forged_env(
+    tmp_path: Path, kind: str, project_root: Path
+) -> None:
+    """Neither the retired boolean nor an unopened fd number may bypass flock."""
+    cases = {
+        "legacy-bool": {"AKB2_BACKSTOP_FLOCK_HELD": "1"},
+        "closed-fd": {"AKB2_BACKSTOP_FLOCK_FD": "7"},
+    }
+    for name, credential_env in cases.items():
+        case_dir = tmp_path / name
+        case_dir.mkdir()
+        _assert_n_contenders_have_one_owner(
+            case_dir,
+            kind,
+            project_root,
+            credential_env=credential_env,
+        )
+
+    wrong_inode_case = tmp_path / "wrong-inode"
+    wrong_inode_case.mkdir()
+    wrong_fd = os.open(wrong_inode_case / "not-the-lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        _assert_n_contenders_have_one_owner(
+            wrong_inode_case,
+            kind,
+            project_root,
+            credential_env={"AKB2_BACKSTOP_FLOCK_FD": str(wrong_fd)},
+            pass_fds=(wrong_fd,),
+        )
+    finally:
+        os.close(wrong_fd)
+
+    same_inode_case = tmp_path / "same-inode-unlocked"
+    same_inode_case.mkdir()
+    _assert_unlocked_same_inode_fd_cannot_bypass(same_inode_case, kind, project_root)
+
+
+def _assert_unlocked_same_inode_fd_cannot_bypass(
+    case_dir: Path, kind: str, project_root: Path
+) -> None:
+    """An open-but-unlocked descriptor for the lock inode is not owner authority."""
+    script, vault, lock, marker, release, common_env, rerun_key = _backstop_case(
+        kind, case_dir, project_root
+    )
+    log_key = "AKB2_BACKSTOP_LOG" if kind == "social" else "AKB2_GITHUB_BACKSTOP_LOG"
+    holder = subprocess.Popen(
+        ["/bin/bash", str(script), "--vault-root", str(vault)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env={
+            **os.environ,
+            **common_env,
+            "AKB2_MATRIX_ACTOR": "owner",
+            log_key: str(case_dir / "owner.log"),
+        },
+    )
+    forged_fd: int | None = None
+    try:
+        _wait_for(marker)
+        forged_fd = os.open(lock, os.O_RDWR)
+        contender = _write_exec(
+            case_dir / "forged-contender.sh",
+            f'echo "forged" >> "{marker}"\nexit 1',
+        )
+        blocked = subprocess.run(
+            ["/bin/bash", str(script), "--vault-root", str(vault)],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            pass_fds=(forged_fd,),
+            env={
+                **os.environ,
+                **common_env,
+                "AKB2_BACKSTOP_FLOCK_FD": str(forged_fd),
+                "AKB2_MATRIX_ACTOR": "forged",
+                rerun_key: str(contender),
+                log_key: str(case_dir / "forged.log"),
+            },
+        )
+        assert blocked.returncode == 0, blocked.stderr
+        assert "already-running" in blocked.stderr, blocked.stderr
+        assert marker.read_text(encoding="utf-8").splitlines() == ["owner"]
+    finally:
+        if forged_fd is not None:
+            os.close(forged_fd)
+        release.touch(exist_ok=True)
+        if holder.poll() is None:
+            holder.communicate(timeout=20)
+
+
+def assert_child_exit_codes_passthrough(
+    tmp_path: Path, kind: str, project_root: Path
+) -> None:
+    """Protected child rc 73/74 lacks helper framing and must pass through unchanged."""
+    for child_rc in (LOCK_BUSY_EXIT_CODE, LOCK_HELPER_ERROR_EXIT_CODE):
+        case_dir = tmp_path / f"child-{child_rc}"
+        case_dir.mkdir()
+        script, vault, _, marker, _, common_env, rerun_key = _backstop_case(
+            kind, case_dir, project_root
+        )
+        common_env[rerun_key] = _write_exec(
+            case_dir / "child.sh",
+            f'echo "invoked" >> "{marker}"\nexit {child_rc}',
+        ).as_posix()
+        result = subprocess.run(
+            ["/bin/bash", str(script), "--vault-root", str(vault)],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            env={**os.environ, **common_env},
+        )
+        assert result.returncode == child_rc, result.stderr
+        assert marker.read_text(encoding="utf-8").splitlines() == ["invoked"]
+        combined = result.stdout + result.stderr
+        assert "already-running" not in combined, combined
+        assert "lock_setup=failed" not in combined, combined
 
 
 def _assert_missing_python_fails_closed(

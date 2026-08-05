@@ -434,6 +434,72 @@ def test_redactor_matches_quoted_json_keys():
     assert "zhuzan" not in diagnosis.raw_excerpt
 
 
+# ---------------------------------------------------------------------------
+# SC-R5-04 —— 下划线复合键的**前导**词边界
+# ---------------------------------------------------------------------------
+# `_` 是词字符，所以 `re.search(r"\bsecret\b", "client_secret")` 为 **False**：前导 `\b`
+# 让下划线复合键整条规则失配，`client_secret=` / `refresh_token=` 原文穿透 —— 而规则里
+# 明明列了 `secret` / `token`。
+#
+# 这是同一不变量的第三次表现，前两次分别是 R2（缺 redact 调用）与 R4（尾部引号边界）。
+# 教训记在实现侧注释里：R4 声称「物理上不可能只补一半」，但共享片段只覆盖**引号**这一个
+# 轴，管不到**词边界**这另一个轴 —— 断言的范围写宽了，缺口就活到了下一轮。
+_COMPOUND_SENTINEL = "opaque-compound-sentinel-4c7e13a9"
+
+# 真实 OAuth / gateway 键名：下划线复合，词尾才是 credential 词
+_COMPOUND_KEYS = (
+    "client_secret",
+    "refresh_token",
+    "client_access_token",
+    "oauth_token",
+    "app_secret",
+)
+_COMPOUND_FORMS = (
+    ("bare-kv", "%(k)s=%(v)s"),
+    ("url-query", "?a=1&%(k)s=%(v)s"),
+    ("json-double-quoted", '{"%(k)s":"%(v)s"}'),
+    ("json-spaced", '{"%(k)s": "%(v)s"}'),
+    ("python-repr-single-quoted", "{'%(k)s': '%(v)s'}"),
+)
+
+
+def test_redactor_masks_underscore_compound_keys():
+    """下划线复合键必须命中词尾 credential 词，前导边界不得用 `\\b`。"""
+    # 防掩盖前提（沿用 R4 的闸）：哨兵单独出现时原样穿透 —— 证明下面的 pass 全是键名
+    # 规则的功劳，而不是某条前缀规则代偿。
+    assert http_retry.redact_provider_text(_COMPOUND_SENTINEL) == _COMPOUND_SENTINEL, (
+        "哨兵本身被某条前缀规则命中了 —— 它就无法证明键名规则是否工作，请换一个不透明哨兵"
+    )
+
+    leaked: list[str] = []
+    for key in _COMPOUND_KEYS:
+        for form_name, template in _COMPOUND_FORMS:
+            raw = template % {"k": key, "v": _COMPOUND_SENTINEL}
+            out = http_retry.redact_provider_text(raw)
+            if _COMPOUND_SENTINEL in out:
+                leaked.append(f"{key}/{form_name}: {raw!r} -> {out!r}")
+            elif http_retry.REDACTED_PLACEHOLDER not in out:
+                leaked.append(f"{key}/{form_name}: 值消失但无掩码标记 -> {out!r}")
+    assert not leaked, (
+        "以下下划线复合键未被脱敏（前导 `\\b` 把 `_` 当词字符 → 整条失配）:\n"
+        + "\n".join(leaked)
+    )
+
+    # 前导边界只放开「非字母数字」这一档，不是无条件放开：字母直连的普通标识符仍**不得**
+    # 命中，否则会把大量非凭证字段一起掩掉。这条钉住取舍，防止后来者顺手改成 `.?`。
+    for benign in ("mysecret", "secretkey"):
+        raw = f"{benign}={_COMPOUND_SENTINEL}"
+        assert http_retry.redact_provider_text(raw) == raw, (
+            f"{benign} 被命中了 —— 前导边界放得过宽，普通标识符会被误掩"
+        )
+
+    # 账户身份规则用**同一个**前导片段，不许两条规则各修一半（这正是本条 SC 的失败形状）。
+    # `_User=` 是 `\b` 与 `(?<![A-Za-z0-9])` 唯一的行为差异点 —— 没有这条断言，
+    # 把 User 规则的前导改回 `\b` 不会让任何测试变红，那个改动就成了没有牙的装饰。
+    for raw in (f"account_User={_COMPOUND_SENTINEL}", f'{{"account_User":"{_COMPOUND_SENTINEL}"}}'):
+        assert _COMPOUND_SENTINEL not in http_retry.redact_provider_text(raw), raw
+
+
 def test_redact_provider_text_is_idempotent_and_bounded():
     once = http_retry.redact_provider_text(
         "User=zhuzan token=abc123 Bearer sk-live-xyz " + "x" * 400

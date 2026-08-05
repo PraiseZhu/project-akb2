@@ -4,7 +4,7 @@
 # 由 com.akb2.github_briefing.backstop（07:30）触发。设计要点：
 #   - 幂等：今日 GitHub Briefing 已写盘 → 直接跳过，绝不重复产出。
 #   - 仅补失败：只有当日 briefing 文件不存在时才重跑 daily_github_briefing.sh。
-#   - 不抢主跑：pgrep 软守卫 + PID 锁（pgrep 会扑空，见锁那一段的说明）。
+#   - 不抢主跑：pgrep 软守卫 + fcntl.flock（pgrep 会扑空，见锁那一段的说明）。
 #   - 静默：成功/跳过/失败都只写日志，不弹桌面通知。
 #
 # 日志：
@@ -40,7 +40,6 @@ if [[ -z "$VAULT_ROOT" ]]; then
   echo "ERROR: --vault-root is required" >&2
   exit 1
 fi
-readonly BACKSTOP_FLOCK_HELD="${AKB2_BACKSTOP_FLOCK_HELD:-0}"
 
 # 日志解析优先级：--log-path > AKB2_GITHUB_BACKSTOP_LOG > 默认生产日志
 # 与 briefing_backstop.sh 对齐。缺这一口时测试直接写生产日志，把测试场景伪装成
@@ -56,8 +55,34 @@ readonly GIVE_UP_EXIT_CODE=125
 # flock_exec.py 的协议码：busy 是正常让路；helper/setup 失败必须响亮 fail-closed。
 readonly LOCK_BUSY_EXIT_CODE=73
 readonly LOCK_HELPER_ERROR_EXIT_CODE=74
+readonly LOCK_BUSY_MARKER="flock_exec: busy"
+readonly LOCK_HELPER_ERROR_MARKER="flock_exec: error"
 readonly BACKSTOP_PYTHON="${AKB2_BACKSTOP_PYTHON:-python3}"
 readonly FLOCK_EXEC_HELPER="$SCRIPT_DIR/lib/flock_exec.py"
+
+# Resolve the permanent lock inode before the first outer/inner branch. Re-entry is
+# accepted only when the helper's inherited fd still names this exact inode.
+# shellcheck source=scripts/lib/state-root.sh
+. "$SCRIPT_DIR/lib/state-root.sh"
+akb2_resolve_state_root
+LOCK_FILE="${AKB2_GITHUB_BACKSTOP_LOCK_FILE:-$STATE_ROOT/locks/github-briefing-backstop.lock}"
+BACKSTOP_FLOCK_HELD=0
+FLOCK_FD_CANDIDATE="${AKB2_BACKSTOP_FLOCK_FD:-}"
+if [[ "$FLOCK_FD_CANDIDATE" =~ ^[0-9]+$ ]] && \
+  "$BACKSTOP_PYTHON" -c \
+    'import fcntl, os, sys; fd = int(sys.argv[1]); actual = os.fstat(fd); expected = os.stat(sys.argv[2]); same = (actual.st_dev, actual.st_ino) == (expected.st_dev, expected.st_ino); same and fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB); raise SystemExit(0 if same else 1)' \
+    "$FLOCK_FD_CANDIDATE" "$LOCK_FILE" >/dev/null 2>&1; then
+  BACKSTOP_FLOCK_HELD=1
+fi
+unset AKB2_BACKSTOP_FLOCK_FD FLOCK_FD_CANDIDATE
+readonly BACKSTOP_FLOCK_HELD
+
+FLOCK_EXEC_ERR_FILE=""
+cleanup() {
+  [[ -n "$FLOCK_EXEC_ERR_FILE" ]] && rm -f "$FLOCK_EXEC_ERR_FILE"
+  return 0
+}
+trap cleanup EXIT
 
 # 补跑重试：**该变的是模型族，不是次数**。2026-08-02 实证 —— pipeline 的 synthesis
 # 阶段内部已有 3 次重试（`DeepSeek API failed after 3 retries`），主跑 05:59 用掉 3
@@ -218,10 +243,6 @@ export GITHUB_FILE  # 供 rerun/stub 复查落点
 # 锁**位置**用机器本地状态根而不是仓库 staging/locks/：REPO_ROOT 在 ~/AI-Agent
 # （Syncthing folder）内，锁放仓库会被跨机同步，而 `fcntl.flock` 只在本机内核生效，
 # 不能协调另一台机器上的同路径（该坑 akb2-main-pipeline.sh:26-30 已修过）。
-# shellcheck source=scripts/lib/state-root.sh
-. "$SCRIPT_DIR/lib/state-root.sh"
-akb2_resolve_state_root
-LOCK_FILE="${AKB2_GITHUB_BACKSTOP_LOCK_FILE:-$STATE_ROOT/locks/github-briefing-backstop.lock}"
 if akb2_state_root_is_synced "$(dirname "$LOCK_FILE")"; then
   # 不 fail-closed 退出：拒跑等于把一次可能成功的补跑直接判死，比锁降级更糟。
   # 但必须明示降级（宪法 P4 失败可见），否则"为什么又双跑了"查不出来。
@@ -233,20 +254,32 @@ if [[ "$BACKSTOP_FLOCK_HELD" != "1" ]]; then
     log_terminal failed "FAILED — python3 不可用，无法建立 fcntl.flock 互斥，拒绝无锁补跑 lock_setup=failed exit_code=1 ($DATE_TODAY)"
     exit 1
   fi
+  if ! FLOCK_EXEC_ERR_FILE="$(mktemp "${TMPDIR:-/tmp}/akb2-flock-exec.XXXXXX")"; then
+    log_terminal failed "FAILED — 无法建立 flock helper stderr framing，拒绝无锁补跑 lock_setup=failed exit_code=1 ($DATE_TODAY)"
+    exit 1
+  fi
   set +e
-  AKB2_BACKSTOP_FLOCK_HELD=1 AKB2_GITHUB_BACKSTOP_RUN_ID="$RUN_ID" \
+  AKB2_GITHUB_BACKSTOP_RUN_ID="$RUN_ID" \
     "$BACKSTOP_PYTHON" "$FLOCK_EXEC_HELPER" \
     --lock-file "$LOCK_FILE" \
     --busy-exit-code "$LOCK_BUSY_EXIT_CODE" \
     --error-exit-code "$LOCK_HELPER_ERROR_EXIT_CODE" \
-    -- /bin/bash "$0" --vault-root "$VAULT_ROOT" --log-path "$LOG"
+    -- /bin/bash "$0" --vault-root "$VAULT_ROOT" --log-path "$LOG" \
+    2>"$FLOCK_EXEC_ERR_FILE"
   lock_rc=$?
   set -e
-  if (( lock_rc == LOCK_BUSY_EXIT_CODE )); then
+  lock_busy_marker=0
+  lock_error_marker=0
+  if grep -Fxq "$LOCK_BUSY_MARKER" "$FLOCK_EXEC_ERR_FILE"; then lock_busy_marker=1; fi
+  if grep -Fxq "$LOCK_HELPER_ERROR_MARKER" "$FLOCK_EXEC_ERR_FILE"; then lock_error_marker=1; fi
+  cat "$FLOCK_EXEC_ERR_FILE" >&2
+  rm -f "$FLOCK_EXEC_ERR_FILE"
+  FLOCK_EXEC_ERR_FILE=""
+  if (( lock_rc == LOCK_BUSY_EXIT_CODE && lock_busy_marker == 1 )); then
     log_terminal skip "skip — already-running: 另一个 github backstop 补跑正持 flock lock_file=$LOCK_FILE ($DATE_TODAY)"
     exit 0
   fi
-  if (( lock_rc == LOCK_HELPER_ERROR_EXIT_CODE )); then
+  if (( lock_rc == LOCK_HELPER_ERROR_EXIT_CODE && lock_error_marker == 1 )); then
     log_terminal failed "FAILED — 无法建立 fcntl.flock 互斥，拒绝无锁补跑 lock_setup=failed exit_code=1 ($DATE_TODAY)"
     exit 1
   fi

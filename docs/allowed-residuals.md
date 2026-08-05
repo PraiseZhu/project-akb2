@@ -252,6 +252,8 @@ step-2 量规外置正当升级 `skillpack/quality/rubric/10-dimensions.md`（�
 | 风险 | 「UTC 预算日重置后唯一有额度的补跑窗口」在生产上仍不存在（现有第二时段 12:05 晚于 12:00 deadline，只能巡检不能补跑）；这是事故核心修复**尚未生效**的部分 |
 | 后续动作 | owner 手工重装这两个 label（或在 manifest 里给它们提供真实 installer），重装后 parity 自动回到 MATCH，本条残留即可删除 |
 
+（运行态已于 2026-08-05 生效，本条目待下一 PR 删除）
+
 ### `.stignore` 入仓但按其自身生效前提不生效（2026-08-04 登记）
 
 | 项 | 值 |
@@ -269,10 +271,21 @@ step-2 量规外置正当升级 `skillpack/quality/rubric/10-dimensions.md`（�
 > 本节 3 条残留均因**改动边界**（并行 7 个 worker，各持独占文件清单）而非技术困难未在本轮消掉，
 > 逐条给出修复触发条件与需要的文件权限。
 
-| 残留 | 位置 | 为什么留 | 修复条件 |
-|------|------|---------|---------|
-| `synthesis_no_key_fallback` | `src/akb2/briefing/synthesis.py::synthesize`（无 `AI_GATEWAY_API_KEY` 分支） | 本轮按计划只摘「**API 失败** → `_fallback_synthesis`」这条自动路径；**无 key** 时仍自动产出降级假简报（`source.name=synthesis_fallback`，summary 明文含 "fallback summary generated when the synthesis model is unavailable"）。改它会让 `tests/briefing/test_synthesis.py::test_happy_path_fallback` 与 `::test_synthesize_output_file`（CLI e2e，无 key 环境跑）双双失败，而该测试文件不在本轮独占清单内 | 有权改 `tests/briefing/test_synthesis.py` 时，照 github 侧 `allow_mock` 形态把它改成显式 opt-in（`synthesize(..., allow_fallback=True)`），生产链路缺 key 直接硬失败。**需 owner 复核**：生产 env 已配 key，该路径在生产不可达，但它是 P3 fail-closed 的一个缺口 |
-| `http_retry_duplication_in_send_py` | `src/akb2/feishu_sync/feishu/send.py:67-90` 与 `src/akb2/common/http_retry.py` | 退避范式已提取到共享模块并被 github synthesis 采用，但 `send.py` 的三个私有函数（`_parse_retry_after` / `_backoff_delay` / `_is_retryable_http`）仍是本地副本 —— `send.py` 的调用点不在本轮独占清单内，按计划「新模块提供实现，`send.py` 暂不改」 | 有权改 `send.py` 时替换为 `from akb2.common.http_retry import ...` 并删本地实现（其 `_BASE_BACKOFF` / `_MAX_BACKOFF` env 覆盖以 `base` / `cap` 参数传入，行为不变）。当前重复是**已知且有意**的，不是漂移 |
+### synthesis_no_key_fallback
+
+| 项 | 值 |
+|---|---|
+| 位置 | `src/akb2/briefing/synthesis.py::synthesize`（无 `AI_GATEWAY_API_KEY` 分支） |
+| 为什么留 | 本轮按计划只摘「**API 失败** → `_fallback_synthesis`」这条自动路径；**无 key** 时仍自动产出降级假简报（`source.name=synthesis_fallback`，summary 明文含 "fallback summary generated when the synthesis model is unavailable"）。改它会让 `tests/briefing/test_synthesis.py::test_happy_path_fallback` 与 `::test_synthesize_output_file`（CLI e2e，无 key 环境跑）双双失败，而该测试文件不在本轮独占清单内 |
+| 修复条件 | 有权改 `tests/briefing/test_synthesis.py` 时，照 github 侧 `allow_mock` 形态把它改成显式 opt-in（`synthesize(..., allow_fallback=True)`），生产链路缺 key 直接硬失败。**需 owner 复核**：生产 env 已配 key，该路径在生产不可达，但它是 P3 fail-closed 的一个缺口 |
+
+### http_retry_duplication_in_send_py
+
+| 项 | 值 |
+|---|---|
+| 位置 | `src/akb2/feishu_sync/feishu/send.py:67-90` 与 `src/akb2/common/http_retry.py` |
+| 为什么留 | 退避范式已提取到共享模块并被 github synthesis 采用，但 `send.py` 的三个私有函数（`_parse_retry_after` / `_backoff_delay` / `_is_retryable_http`）仍是本地副本 —— `send.py` 的调用点不在本轮独占清单内，按计划「新模块提供实现，`send.py` 暂不改」 |
+| 修复条件 | 有权改 `send.py` 时替换为 `from akb2.common.http_retry import ...` 并删本地实现（其 `_BASE_BACKOFF` / `_MAX_BACKOFF` env 覆盖以 `base` / `cap` 参数传入，行为不变）。当前重复是**已知且有意**的，不是漂移 |
 
 > 另注（**非**残留，已修）：`briefing/synthesis.py` 的 `-preview` 默认模型此前属**无豁免登记的违宪**
 > （宪法 P7 / `docs/constitution.md:95`）。本轮已把默认值改为正式版 `deepseek/deepseek-v4-pro`
