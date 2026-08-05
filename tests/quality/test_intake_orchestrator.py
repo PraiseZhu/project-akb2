@@ -176,8 +176,11 @@ def test_dry_run_no_network_no_raw(tmp_path):
             return_value=mock_result,
         ),
         patch("httpx.get", side_effect=_fail_httpx),
-        patch("scrapling.Fetcher", side_effect=_fail_scrapling, create=True),
-        patch("scrapling.StealthyFetcher", side_effect=_fail_scrapling, create=True),
+        patch.dict(
+            __import__("scrapling").__dict__,
+            {"Fetcher": MagicMock(side_effect=_fail_scrapling),
+             "StealthyFetcher": MagicMock(side_effect=_fail_scrapling)},
+        ),
     ):
         stats = run_intake(
             sources_config=sources_config,

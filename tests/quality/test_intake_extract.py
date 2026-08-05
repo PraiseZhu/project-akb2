@@ -489,10 +489,12 @@ class TestExtractViaScrapling:
 
         # mock _extract_via_defuddle 返空，强制走 _html_to_clean_text fallback
         # （隔离 defuddle 是否安装的环境依赖，测 scrapling 调 Fetcher 的行为本身）
-        with patch("scrapling.Fetcher", create=True) as MockFetcher, patch(
+        import scrapling
+        MockFetcher = MagicMock()
+        MockFetcher.get.return_value = mock_page
+        with patch.dict(scrapling.__dict__, {"Fetcher": MockFetcher}), patch(
             "src.akb2.quality.intake.extract._extract_via_defuddle", return_value={}
         ):
-            MockFetcher.get.return_value = mock_page
             result = _extract_via_scrapling("https://example.com/article", browser_mode=False)
 
         assert result, "scrapling 自适应模式应返回非空 dict"
@@ -515,10 +517,12 @@ class TestExtractViaScrapling:
         mock_page.title = "Article From Scrapling StealthyFetcher"
 
         # mock _extract_via_defuddle 返空，强制走 fallback（隔离 defuddle 安装依赖）
-        with patch("scrapling.StealthyFetcher", create=True) as MockStealthy, patch(
+        import scrapling
+        MockStealthy = MagicMock()
+        MockStealthy.fetch.return_value = mock_page
+        with patch.dict(scrapling.__dict__, {"StealthyFetcher": MockStealthy}), patch(
             "src.akb2.quality.intake.extract._extract_via_defuddle", return_value={}
         ):
-            MockStealthy.fetch.return_value = mock_page
             result = _extract_via_scrapling("https://example.com/article", browser_mode=True)
 
         assert result, "scrapling 浏览器模式应返回非空 dict"
@@ -546,10 +550,12 @@ class TestExtractViaScrapling:
         """scrapling 抛异常时降级返回空 dict，不向上冒泡。"""
         from unittest.mock import patch
 
-        from src.akb2.quality.intake.extract import _extract_via_scrapling
+        import scrapling
 
-        with patch("scrapling.Fetcher", create=True) as MockFetcher:
-            MockFetcher.return_value.fetch.side_effect = RuntimeError("connection refused")
+        from src.akb2.quality.intake.extract import _extract_via_scrapling
+        MockFetcher = MagicMock()
+        MockFetcher.return_value.fetch.side_effect = RuntimeError("connection refused")
+        with patch.dict(scrapling.__dict__, {"Fetcher": MockFetcher}):
             result = _extract_via_scrapling("https://example.com/article", browser_mode=False)
 
         assert result == {}, "异常时应降级返回空 dict"
@@ -579,9 +585,10 @@ class TestExtractViaScrapling:
         original = extract_mod._extract_via_defuddle
         try:
             extract_mod._extract_via_defuddle = lambda url, html=None: clean
-            with patch("scrapling.StealthyFetcher", create=True) as MockStealthy:
-                # classmethod 形式（scrapling 0.4.8）：StealthyFetcher.fetch(url)，非实例 .fetch
-                MockStealthy.fetch.return_value = mock_page
+            import scrapling
+            MockStealthy = MagicMock()
+            MockStealthy.fetch.return_value = mock_page
+            with patch.dict(scrapling.__dict__, {"StealthyFetcher": MockStealthy}):
                 result = _extract_via_scrapling("https://cf.example/a", browser_mode=True)
         finally:
             extract_mod._extract_via_defuddle = original
