@@ -7,6 +7,9 @@
 
 from __future__ import annotations
 
+import ast
+import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -15,6 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CHECKER = PROJECT_ROOT / "scripts" / "check_mutation_log.py"
 
 SC_IDS = "SC-T-01,SC-T-02"
+EQUIVALENCE_CLAIMS = ("exact", "exactly", "精确", "恰好", "恰为", "完全一致")
 
 
 def _entry(sc_id: str, *, scope: str = "两个 backstop 测试文件全量", predicted: str = "2 条矩阵 nodeid") -> str:
@@ -31,9 +35,35 @@ def _entry(sc_id: str, *, scope: str = "两个 backstop 测试文件全量", pre
 COMPLIANT = "# 变异对照\n\n" + _entry("SC-T-01") + _entry("SC-T-02")
 
 
-def _run(log_path: Path, sc_ids: str = SC_IDS) -> subprocess.CompletedProcess:
+def _write_manifest(
+    path: Path, sc_ids: tuple[str, ...] = ("SC-T-01", "SC-T-02")
+) -> Path:
+    path.write_text(
+        json.dumps({"schema_version": 1, "scs": [{"id": sc_id} for sc_id in sc_ids]}),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _run(
+    log_path: Path,
+    sc_ids: str | None = SC_IDS,
+    manifest_path: Path | None = None,
+) -> subprocess.CompletedProcess:
+    if manifest_path is None:
+        manifest_path = _write_manifest(log_path.parent / "sc-manifest.json")
+    command = [
+        sys.executable,
+        str(CHECKER),
+        "--log",
+        str(log_path),
+        "--sc-manifest",
+        str(manifest_path),
+    ]
+    if sc_ids is not None:
+        command.extend(("--sc-ids", sc_ids))
     return subprocess.run(
-        [sys.executable, str(CHECKER), "--log", str(log_path), "--sc-ids", sc_ids],
+        command,
         capture_output=True,
         text=True,
         timeout=30,
@@ -126,3 +156,71 @@ def test_gate_itself_has_teeth(tmp_path: Path) -> None:
     result = _run(mention_only)
     assert result.returncode == 1
     assert "SC-T-02" in result.stderr and "判据②" in result.stderr
+
+
+def test_rejects_chinese_equivalence_claims_without_scope(tmp_path: Path) -> None:
+    """每个冻结的等价声称词都拒绝无范围表述，并放行同行带范围的孪生样本。"""
+    for index, claim in enumerate(EQUIVALENCE_CLAIMS):
+        unscoped = tmp_path / f"unscoped-{index}.md"
+        unscoped.write_text(
+            COMPLIANT + f"\n附注：红集{claim}预测。\n",
+            encoding="utf-8",
+        )
+        result = _run(unscoped)
+        assert result.returncode == 1, f"无范围等价声称被放行: {claim}"
+        assert "判据④" in result.stderr
+
+        scoped = tmp_path / f"scoped-{index}.md"
+        scoped.write_text(
+            COMPLIANT + f"\n附注：红集{claim}预测（选择范围：两个测试文件全量）。\n",
+            encoding="utf-8",
+        )
+        result = _run(scoped)
+        assert result.returncode == 0, f"同行带选择范围的表述被误拒: {claim}\n{result.stderr}"
+
+
+def test_sc_ids_derived_from_manifest_not_caller(tmp_path: Path) -> None:
+    """manifest 是 SC 全集 owner；不传 caller 清单仍验全集，传子集则 fail-closed。"""
+    manifest = _write_manifest(tmp_path / "sc-manifest.json")
+    missing_second = tmp_path / "missing-second.md"
+    missing_second.write_text(
+        "# 变异对照\n\n" + _entry("SC-T-01"),
+        encoding="utf-8",
+    )
+
+    derived = _run(missing_second, sc_ids=None, manifest_path=manifest)
+    assert derived.returncode == 1
+    assert "SC-T-02" in derived.stderr and "判据②" in derived.stderr
+
+    complete = tmp_path / "complete.md"
+    complete.write_text(COMPLIANT, encoding="utf-8")
+    narrowed = _run(complete, sc_ids="SC-T-01", manifest_path=manifest)
+    assert narrowed.returncode == 1
+    assert "SC-T-02" in narrowed.stderr and "manifest" in narrowed.stderr
+
+
+def test_docstring_claims_match_implementation_coverage() -> None:
+    """判据④ docstring 清单与实现常量逐项相等，且两侧都不得缩小冻结词集合。"""
+    tree = ast.parse(CHECKER.read_text(encoding="utf-8"))
+    docstring = ast.get_docstring(tree, clean=False) or ""
+    match = re.search(r"等价声称词（机械对账）[:：]\s*([^\n]+)", docstring)
+    assert match is not None, "docstring 缺少可机械对账的等价声称词清单"
+    documented = tuple(part.strip() for part in match.group(1).rstrip("。").split("、"))
+
+    assignment = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "EQUIVALENCE_CLAIMS"
+                for target in node.targets
+            )
+        ),
+        None,
+    )
+    assert assignment is not None, "实现缺少 EQUIVALENCE_CLAIMS 常量"
+    implemented = ast.literal_eval(assignment.value)
+
+    assert documented == implemented, "docstring 与实现的等价声称词覆盖面不一致"
+    assert implemented == EQUIVALENCE_CLAIMS, "等价声称词覆盖面小于 R7 冻结集合"

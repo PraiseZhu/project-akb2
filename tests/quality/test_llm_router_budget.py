@@ -578,3 +578,116 @@ def test_credential_key_matching_covers_all_axes():
 
     # 既有 `User` 账户身份掩码不得退化（R5 upstream 19 样本 diff 确认 R4 起即掩码）。
     assert "zhuzan" not in http_retry.redact_provider_text("User=zhuzan over budget.")
+
+
+# ---------------------------------------------------------------------------
+# SC-R7-01 —— 凭证值跨分隔符必须**整段**掩码，不留明文尾巴
+# ---------------------------------------------------------------------------
+# R6 把 `&` / `?` 无条件排除在值字符类之外（为的是让 query string 里相邻的键各自归位）。
+# 副作用：凭证值**自身**含 `&`/`?` 时，掩码只到第一个分隔符为止 —— `password=p@ss&word!`
+# 落成 `password=<redacted>word!`，`token=abc&def` 落成 `token=<redacted>def`。
+# 掩一半漏一半比完全不掩更危险：输出看起来已经脱敏，明文尾巴却照样进日志/账本。
+#
+# 值侧的判据从此不再是字符黑名单，而是语义条件「后面像不像另一个 kv 键」（实现侧
+# `_NEXT_KV_AHEAD`）。本测试钉住方向 ①（整段掩掉）；方向 ②（相邻键仍分家）由
+# test_query_string_keys_still_split_at_ampersand 钉住，两者缺一即为回归。
+_AMP_HEAD_SENTINEL = "opaque-amp-head-2f7b41c9"
+_AMP_TAIL_SENTINEL = "opaque-amp-tail-8c3e05d6"
+
+# 分隔符出现在值内部的四种真实形态（& / ? / 连续多个 / 尾部标点）
+_AMP_VALUES = (
+    ("ampersand", f"{_AMP_HEAD_SENTINEL}&{_AMP_TAIL_SENTINEL}"),
+    ("question-mark", f"{_AMP_HEAD_SENTINEL}?{_AMP_TAIL_SENTINEL}"),
+    ("multi-separator", f"{_AMP_HEAD_SENTINEL}&x?{_AMP_TAIL_SENTINEL}"),
+    ("trailing-punct", f"{_AMP_HEAD_SENTINEL}&{_AMP_TAIL_SENTINEL}!"),
+)
+_AMP_FORMS = (
+    ("bare-kv", "%(k)s=%(v)s"),
+    ("url-query", "?a=1&%(k)s=%(v)s"),
+    ("json-double-quoted", '{"%(k)s":"%(v)s"}'),
+    ("python-repr-single-quoted", "{'%(k)s': '%(v)s'}"),
+)
+_AMP_KEYS = ("password", "token", "client_secret", "api_key")
+
+
+def test_credential_value_masked_entirely_across_separators():
+    """含 `&` / `?` 的凭证值必须整段掩码，不得在分隔符处截断留下明文尾巴。"""
+    # 防掩盖前提（沿用 R4/R5/R6 的闸）：两个哨兵单独出现时都原样穿透 —— 证明下面每个
+    # pass 都是键名 + 值边界规则的功劳，而不是某条前缀规则代偿。
+    for sentinel in (_AMP_HEAD_SENTINEL, _AMP_TAIL_SENTINEL):
+        assert http_retry.redact_provider_text(sentinel) == sentinel, (
+            f"哨兵 {sentinel} 被某条前缀规则命中 —— 它就无法证明值边界规则是否工作，"
+            "请换一个不透明哨兵"
+        )
+
+    leaked: list[str] = []
+    for key in _AMP_KEYS:
+        for value_name, value in _AMP_VALUES:
+            for form_name, template in _AMP_FORMS:
+                raw = template % {"k": key, "v": value}
+                out = http_retry.redact_provider_text(raw)
+                where = f"{key}/{value_name}/{form_name}"
+                if _AMP_TAIL_SENTINEL in out:
+                    leaked.append(f"{where}: 分隔符后留明文尾巴 {raw!r} -> {out!r}")
+                elif _AMP_HEAD_SENTINEL in out:
+                    leaked.append(f"{where}: 值未被掩码 {raw!r} -> {out!r}")
+                elif http_retry.REDACTED_PLACEHOLDER not in out:
+                    leaked.append(f"{where}: 值消失但无掩码标记 -> {out!r}")
+    assert not leaked, (
+        "以下凭证值只掩了一半（值边界把 `&`/`?` 当无条件终止符）:\n" + "\n".join(leaked)
+    )
+
+    # SC 冻结的两个具名反例：逐字比对整条输出，尾巴一个字符都不许留。
+    assert http_retry.redact_provider_text("password=p@ss&word!") == "password=<redacted>"
+    assert http_retry.redact_provider_text("token=abc&def") == "token=<redacted>"
+
+
+# ---------------------------------------------------------------------------
+# SC-R7-02 —— 非回归那一半：query string 里相邻的键仍在 `&` 处分家
+# ---------------------------------------------------------------------------
+# 修掉明文尾巴的最省事写法是把 `&`/`?` 直接放回值字符类，那会立刻回退成 R5 的形状：
+# `a=1&client_secret=X` 里 `a` 的值吃掉 `&` 并连吞后面整个凭证键 → 两个键连成一段掩码，
+# 后续键根本轮不到语义判定（相邻的普通键 `b` 也会被吞掉，日志失去可读结构）。
+# 本测试与 test_credential_value_masked_entirely_across_separators 是同一判据的正反两面，
+# 必须同时绿；实现侧把「断不断开」交给前瞻条件「后面像不像另一个 kv 键」来裁。
+_SPLIT_SENTINEL = "opaque-split-sentinel-6b0d92a4"
+
+
+def test_query_string_keys_still_split_at_ampersand():
+    """`&` 后紧跟另一个 kv 键时必须断开，相邻键各自归位、非凭证键不被吞。"""
+    # 防掩盖前提：哨兵单独出现时原样穿透。
+    assert http_retry.redact_provider_text(_SPLIT_SENTINEL) == _SPLIT_SENTINEL, (
+        "哨兵被前缀规则命中 —— 无法证明键名/值边界规则是否工作，请换一个不透明哨兵"
+    )
+
+    # 逐字比对整条输出：既验证凭证键被掩，也验证相邻键的值**原样保留**
+    #（只断言"哨兵不在输出里"会漏掉"把 a=1 / b=2 一起吞进掩码"这种回归）。
+    expectations = (
+        (
+            f"a=1&client_secret={_SPLIT_SENTINEL}",
+            "a=1&client_secret=<redacted>",
+        ),
+        (
+            f"?a=1&refresh_token={_SPLIT_SENTINEL}&b=2",
+            "?a=1&refresh_token=<redacted>&b=2",
+        ),
+        # 两个凭证键相邻：必须各自一个掩码，而不是连成一段
+        (
+            f"?client_secret={_SPLIT_SENTINEL}&api_key={_SPLIT_SENTINEL}",
+            "?client_secret=<redacted>&api_key=<redacted>",
+        ),
+        # 冒号形态（YAML/JSON 风格的键）同样算"像另一个键"，边界口径一致
+        (
+            f"a=1&token:{_SPLIT_SENTINEL}&b=2",
+            "a=1&token=<redacted>&b=2",
+        ),
+    )
+    drift: list[str] = []
+    for raw, expected in expectations:
+        out = http_retry.redact_provider_text(raw)
+        if out != expected:
+            drift.append(f"{raw!r}\n  期望: {expected!r}\n  实得: {out!r}")
+    assert not drift, (
+        "以下 query string 的键未在 `&` 处正确分家（值把分隔符与后续键一起吞了）:\n"
+        + "\n\n".join(drift)
+    )

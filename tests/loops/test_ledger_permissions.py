@@ -250,3 +250,53 @@ def test_failures_node_camelcase_key_redacted(tmp_path: Path) -> None:
     assert [r["count"] for r in results] == [1, 1]
     # 权限那一半不得回退
     assert _mode(failures) == 0o600
+
+
+# ---------------------------------------------------------------------------
+# SC-R7-01 —— 值**自身**含 `&` 时在真实落盘路径上整段掩掉
+# ---------------------------------------------------------------------------
+# 前三轮补的都是**键名**词法轴（下划线 / 驼峰 / 引号），值侧一直是一条手调字符类。
+# R6 把 `&`/`?` 无条件排除进那个字符类之后，凭证值自身含 `&` 时掩码在第一个 `&` 处停住 ——
+# `?client_secret=<head>&<tail>&x=1` 落成 `?client_secret=<redacted>&<tail>&x=1`，
+# **明文尾巴写进 failures.jsonl**。签名行 / escalation 行 / 返回的 signature 三处同时带。
+#
+# 本测试走 record_failure 真实落盘路径（可达点：quality/intake/extract.py 的
+# `node=f"intake.extract.{url[:80]}"`），同时钉住两个方向：值内的 `&` 被吞进掩码，
+# 而后面真正的下一个键 `x=1` 仍在 `&` 处分家 —— 只满足一侧的实现都会让本测试变红。
+_AMP_NODE_HEAD_SENTINEL = "opaque-node-amp-head-5a1d38f2"
+_AMP_NODE_TAIL_SENTINEL = "opaque-node-amp-tail-91c6e0b7"
+
+
+@pytest.mark.usefixtures("_umask_022")
+def test_failures_node_value_with_ampersand_fully_redacted(tmp_path: Path) -> None:
+    """node 里含 `&` 的凭证值必须整段掩掉，且后续非凭证参数仍正常分家。"""
+    failures = tmp_path / "ledgers" / "failures.jsonl"
+
+    # 前提：两个哨兵都不含任何已知前缀 —— 只有键名 + 值边界规则能救它们（防掩盖闸）。
+    from akb2.common.http_retry import redact_provider_text
+
+    for sentinel in (_AMP_NODE_HEAD_SENTINEL, _AMP_NODE_TAIL_SENTINEL):
+        assert redact_provider_text(sentinel) == sentinel, (
+            f"哨兵 {sentinel} 被前缀规则命中 —— 无法证明值边界规则是否工作，请换一个不透明哨兵"
+        )
+
+    node = (
+        "intake.extract.https://ex.test/a?client_secret="
+        f"{_AMP_NODE_HEAD_SENTINEL}&{_AMP_NODE_TAIL_SENTINEL}&x=1"
+    )
+    result = record_failure(str(failures), "fetch_fail", node)
+
+    body = failures.read_text(encoding="utf-8")
+    # ① 分隔符后的明文尾巴不得残留在落盘文件里（缺陷形态就是这条红）
+    assert _AMP_NODE_TAIL_SENTINEL not in body, (
+        f"failures.jsonl 仍带 `&` 之后的明文尾巴:\n{body}"
+    )
+    assert _AMP_NODE_HEAD_SENTINEL not in body, f"failures.jsonl 仍带凭证原文:\n{body}"
+    # ② 返回给调用方的 signature（会进日志/异常文本）同样干净且带掩码标记
+    assert _AMP_NODE_TAIL_SENTINEL not in result["signature"], result["signature"]
+    assert _AMP_NODE_HEAD_SENTINEL not in result["signature"], result["signature"]
+    assert "<redacted>" in result["signature"], result["signature"]
+    # ③ 非回归：后面真正的下一个键仍在 `&` 处分家，`x=1` 没被吞进掩码
+    assert result["signature"].endswith("&x=1/fetch_fail"), result["signature"]
+    # ④ 权限那一半不得回退
+    assert _mode(failures) == 0o600

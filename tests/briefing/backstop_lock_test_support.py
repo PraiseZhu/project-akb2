@@ -263,16 +263,47 @@ def assert_no_forgeable_reentry_credential_exists(
     # 凭据面消失的静态半：实现与文档不得再引用旧凭据名（测试侧用拼接构造，
     # 所以整棵 tracked 树的完整名字命中数必须为 0）。
     for legacy_name in (LEGACY_HELD_ENV, LEGACY_FD_ENV):
-        grep = subprocess.run(
-            ["git", "grep", "-l", "-F", legacy_name, "--", "."],
-            capture_output=True,
-            text=True,
-            cwd=project_root,
-            timeout=60,
+        result = _run_legacy_credential_grep(legacy_name, project_root)
+        _assert_legacy_credential_grep_clean(result, legacy_name)
+
+
+class LegacyCredentialGrepResult(NamedTuple):
+    """`git grep` 的三态结果，与 subprocess 解耦以便注入伪造值做单测。"""
+
+    returncode: int
+    hits: list[str]
+    stderr: str
+
+
+def _run_legacy_credential_grep(legacy_name: str, project_root: Path) -> LegacyCredentialGrepResult:
+    grep = subprocess.run(
+        ["git", "grep", "-l", "-F", legacy_name, "--", "."],
+        capture_output=True,
+        text=True,
+        cwd=project_root,
+        timeout=60,
+    )
+    hits = [line for line in grep.stdout.splitlines() if line]
+    return LegacyCredentialGrepResult(grep.returncode, hits, grep.stderr)
+
+
+def _assert_legacy_credential_grep_clean(
+    result: LegacyCredentialGrepResult, legacy_name: str
+) -> None:
+    """三态判别：rc=0 有命中即失败；rc=1 无命中即通过；其余 rc 是工具错误，绝不能
+    被当作阴性结果放行——工具没跑成，守卫就没生效，不是「没找到」。
+    """
+    if result.returncode == 0:
+        raise AssertionError(
+            f"legacy credential name {legacy_name} still referenced in: {result.hits}"
         )
-        assert grep.returncode == 1 and grep.stdout == "", (
-            f"legacy credential name {legacy_name} still referenced in: {grep.stdout}"
-        )
+    if result.returncode == 1:
+        return
+    raise AssertionError(
+        f"git grep for legacy credential name {legacy_name} exited with a tool error "
+        f"(rc={result.returncode}), not a clean no-match — this guard did NOT run: "
+        f"{result.stderr}"
+    )
 
 
 def _assert_unlocked_same_inode_fd_cannot_bypass(
