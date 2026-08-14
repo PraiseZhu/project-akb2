@@ -63,6 +63,16 @@ STATE_SETTING_EVENTS = ("blocked", "unverifiable")
 # ---------------------------------------------------------------------------
 
 
+def _require_dict_list(value: object, field_name: str) -> list[dict]:
+    """确保字段是 dict 列表，拒绝任何非 list 输入。"""
+    if not isinstance(value, list):
+        raise ResolverError(f"{field_name} 必须是 list")
+    for idx, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise ResolverError(f"{field_name}[{idx}] 必须是 dict")
+    return value
+
+
 def _match_expected(record: dict, expected_a: str, expected_b: str, expected_c: str) -> bool:
     """预期字段与 committed record 逐字匹配。"""
     return (
@@ -152,6 +162,8 @@ def fold_reconcile(events: list[dict], *, committed_records: list[dict]) -> Reco
     Raises:
         ResolverError: 非法转移或结构不匹配。
     """
+    events = _require_dict_list(events, "events")
+    committed_records = _require_dict_list(committed_records, "committed_records")
     state = ReconcileState(phase=ReconcilePhase.EMPTY)
     for event in events:
         kind = event.get("kind", "")
@@ -333,8 +345,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"trial_verify: JSON 非法: {exc}", file=sys.stderr)
         return CLI_EXIT_INVALID
 
-    events = data.get("events", [])
-    committed_records = data.get("committed_records", [])
+    if not isinstance(data, dict):
+        print("trial_verify: JSON 顶层必须是对象", file=sys.stderr)
+        return CLI_EXIT_INVALID
+
+    events = data.get("events")
+    committed_records = data.get("committed_records")
 
     state, violations = resolve_trial(events, committed_records=committed_records)
 

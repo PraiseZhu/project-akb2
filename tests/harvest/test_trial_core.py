@@ -461,6 +461,20 @@ class TestCli:
         )
         assert proc.returncode == CLI_EXIT_INVALID
 
+    @pytest.mark.parametrize(
+        ("data", "field"),
+        [
+            ({"events": {}, "committed_records": []}, "events"),
+            ({"events": [], "committed_records": {}}, "committed_records"),
+        ],
+    )
+    def test_non_list_payload_exit_2(self, tmp_path, cli_target, data, field) -> None:
+        proc = self._run_cli(tmp_path, data, cli_target=cli_target)
+        assert proc.returncode == CLI_EXIT_INVALID, proc.stderr
+        output = json.loads(proc.stdout)
+        assert output["violations"]
+        assert field in output["violations"][0]
+
     def test_output_has_phase_and_violations(self, tmp_path, cli_target) -> None:
         data = {"events": [_reconcile_event()], "committed_records": [_record()]}
         proc = self._run_cli(tmp_path, data, cli_target=cli_target)
