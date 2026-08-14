@@ -83,9 +83,19 @@ from harvest_bootstrap._base import (  # noqa: E402
     TRUST_LOG_NAME,
     BootstrapError,
     err,
+    key_id_of_pem,  # noqa: E402,F401
 )
 from harvest_bootstrap.cmd_migrate import cmd_migrate  # noqa: E402
-from harvest_bootstrap.lifecycle import cmd_init  # noqa: E402
+from harvest_bootstrap.lifecycle import (  # noqa: E402,F401
+    build_admission,
+    build_entry,
+    cmd_init,
+)
+from harvest_bootstrap.trustlog import entry_body_bytes  # noqa: E402,F401
+
+# 测试经 importlib 加载本文件后,以本模块命名空间取 bootstrap 签名原语
+# (build_admission / build_entry / entry_body_bytes / key_id_of_pem)构造
+# 对抗输入;此处仅重导出,实现一律在 harvest_bootstrap 包内。
 
 # ---------------------------------------------------------------------------
 # 部署常量解析与身份校验

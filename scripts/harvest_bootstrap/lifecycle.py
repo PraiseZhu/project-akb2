@@ -23,6 +23,8 @@ from ._base import (
     fsync_dir,
     fsync_file,
     key_id_of_pem,
+    sha256_bytes,
+    sha256_file,
 )
 from .crypto import gen_keypair, sign_bytes, sign_file
 from .trustlog import (
@@ -320,33 +322,58 @@ def _derive_pub_from_sk(sk: Path) -> bytes:
 
 
 def build_admission(
-    roots: dict, key_number: int, key_id: str, deployment_id: str
+    c: dict, epoch: int, key_id: str, pub_pem: bytes, signer_sk: Path
 ) -> dict:
-    """构建 trust-log 条目中的 admission 段(四根 parent chain + 密钥身份)。"""
-    return {
-        "roots": record_parent_chain(roots),
-        "key_number": key_number,
+    """准入证书:由前驱私钥对 {key_id, public_key_pem, epoch, predecessor} 签名。
+
+    key_number 标明本代密钥编号(epoch),供崩溃残留清理判定「当代准入编号」。
+    """
+    predecessor = "root" if epoch == 1 else f"K{epoch - 1}"
+    body = {
         "key_id": key_id,
-        "deployment_id": deployment_id,
-        "schema_version": SCHEMA_VERSION,
+        "public_key_pem": pub_pem.decode(),
+        "epoch": epoch,
+        "predecessor": predecessor,
+    }
+    cert = sign_bytes(signer_sk, json.dumps(body, sort_keys=True).encode())
+    return {
+        "key_id": key_id,
+        "key_number": epoch,
+        "public_key_id": key_id,
+        "public_key_sha256": sha256_bytes(pub_pem),
+        "predecessor": predecessor,
+        "certificate": cert,
     }
 
 
 def build_entry(
     c: dict,
     epoch: int,
-    admission: dict,
-    prev_entry_hash: str | None,
+    deployment_id: str,
+    gen_dir: Path,
+    pub_pem: bytes,
     signer_sk: Path,
+    prev_hash: str | None,
+    prev_key_id: str | None,
 ) -> dict:
-    """构建完整的 trust-log 条目(含签名)。"""
-    entry: dict = {
+    """构建完整的 trust-log 条目(含 bundle 摘要、准入证书与签名)。"""
+    key_id = key_id_of_pem(pub_pem)
+    entry = {
+        "deployment_id": deployment_id,
         "epoch": epoch,
-        "prev_entry_hash": prev_entry_hash,
-        "admission": admission,
+        "generation_dir": f"{GENERATIONS_DIR}/{epoch}",
+        "bundle": {
+            "manifest_sha256": sha256_file(gen_dir / "manifest"),
+            "signature_sha256": sha256_file(gen_dir / "manifest.sig"),
+            "public_key_sha256": sha256_file(gen_dir / "public_key"),
+        },
+        "admission": build_admission(c, epoch, key_id, pub_pem, signer_sk),
+        "revocation": (
+            {"prev_key_id": prev_key_id, "revoked_at_epoch": epoch} if prev_key_id else None
+        ),
+        "prev_entry_hash": prev_hash,
     }
-    sig = sign_bytes(signer_sk, entry_body_bytes(entry))
-    entry["signature"] = sig
+    entry["signature"] = sign_bytes(signer_sk, entry_body_bytes(entry))
     return entry
 
 
@@ -380,12 +407,11 @@ def cmd_init(c: dict, deployment_id: str) -> None:
             ["openssl", "pkey", "-in", str(k1_sk), "-pubout"],
             capture_output=True, stdin=subprocess.DEVNULL, check=True,
         ).stdout
-        write_bundle(
+        gen_dir = write_bundle(
             c, 1, build_manifest(c, roots, 1, deployment_id), k1_sk, pub_pem
         )
-        key_id = key_id_of_pem(pub_pem)
-        admission = build_admission(roots, 1, key_id, deployment_id)
-        e1 = build_entry(c, 1, admission, None, root_sk)
+        # 创世条目:由 ROOT_SK 签(K1 准入)
+        e1 = build_entry(c, 1, deployment_id, gen_dir, pub_pem, c["root_sk"], None, None)
         # 生效前校验已落盘布局;校验失败 → trust-log 仍为空,残留由下次 init 回收
         verify_layout(c)
         append_entry(c, e1)

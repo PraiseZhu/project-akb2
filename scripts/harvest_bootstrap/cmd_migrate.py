@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""harvest_bootstrap cmd_migrate: 迁移到下一代(签发新 signer 密钥、废止旧密钥、追加 trust-log 条目)。
+"""harvest_bootstrap cmd_migrate:迁移到下一代(签发新 signer 密钥、废止旧密钥、
+追加 trust-log 条目)。
 
 本模块从 lifecycle 提取为独立切片;依赖 _base / crypto / trustlog / lifecycle 的导入符号,
 这些模块由其他切片提供,不在本切片内。
@@ -17,13 +18,11 @@ from ._base import (
     GENERATIONS_DIR,
     err,
     fsync_dir,
-    key_id_of_pem,
     test_mode_enabled,
 )
 from .crypto import gen_keypair
 from .lifecycle import (
     acquire_lock,
-    build_admission,
     build_entry,
     build_manifest,
     cleanup_crash_leftovers,
@@ -53,10 +52,10 @@ def cmd_migrate(c: dict, deployment_id: str) -> None:
             err("未初始化:trust-log 为空,migrate 需先 init")
         check_bad_tail(c, entries, bad, tip)
         n = tip["epoch"]
-        if tip["admission"]["deployment_id"] != deployment_id:
+        if tip["deployment_id"] != deployment_id:
             err(
                 f"deployment_id 不符:trust-log 末条为 "
-                f"{tip['admission']['deployment_id']!r},传入 {deployment_id!r}"
+                f"{tip['deployment_id']!r},传入 {deployment_id!r}"
             )
         if os.environ.get(ENV_PAUSE_CAS) and test_mode_enabled(c):
             time.sleep(1.0)
@@ -82,12 +81,14 @@ def cmd_migrate(c: dict, deployment_id: str) -> None:
             ["openssl", "pkey", "-in", str(new_sk), "-pubout"],
             capture_output=True, stdin=subprocess.DEVNULL, check=True,
         ).stdout
-        write_bundle(
+        gen_dir = write_bundle(
             c, new_n, build_manifest(c, roots, new_n, deployment_id), new_sk, new_pub
         )
-        key_id = key_id_of_pem(new_pub)
-        admission = build_admission(roots, new_n, key_id, deployment_id)
-        e_new = build_entry(c, new_n, admission, h1, prev_sk)
+        # E_{n+1}:由 K_n 签(K_{n+1} 准入 / K_n 废止)
+        e_new = build_entry(
+            c, new_n, deployment_id, gen_dir, new_pub, prev_sk,
+            prev_hash=h1, prev_key_id=tip["admission"]["key_id"],
+        )
         verify_layout(c)
         append_entry(c, e_new)
         prev_sk.unlink()
