@@ -522,6 +522,9 @@ class Reservation:
         if evidence.batch_key != self.key:
             raise InvalidReservation(
                 "evidence.batch_key 与该 reservation 的 key 不符,拒绝释放")
+        # sealed 锁的释放仍必须绑定原 reservation 能力,不能靠伪造对象 +
+        # marker/evidence 旁路 owner_token/pid 校验直接删锁。
+        self.assert_valid(self.namespace, self.key)
         with _fresh_anchor_handles() as handles:
             locks_h = handles["locks_dir"]
             _verify_root_in_place(locks_h)

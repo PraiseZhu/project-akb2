@@ -999,6 +999,27 @@ def test_evidence_release_ok(repo_root, bootstrap, deploy_setup, monkeypatch):
         pass
 
 
+def test_release_after_taint_rejects_forged_reservation(repo_root, bootstrap,
+                                                        deploy_setup, monkeypatch):
+    """④c release 仍受 reservation 能力约束:伪造对象不得仅凭 evidence 释放 sealed 锁。"""
+    ds = init_deploy(bootstrap, deploy_setup(), repo_root)
+    apply_env(monkeypatch, ds["env"])
+    r, ev, _target = seal_reservation(ds, monkeypatch)
+    lock_path = Path(ds["roots"]["locks_dir"]) / L.BATCH / (ev.batch_key + ".lock")
+    write_marker(ds, ev.batch_key, canonical(ev).encode())
+
+    forged = L.Reservation(L.BATCH, ev.batch_key, "forged-token", 999999, 0)
+    forged.poison()
+
+    with pytest.raises(L.InvalidReservation):
+        forged.release_after_taint(ev)
+    assert lock_path.exists(), "伪造对象不得删掉 sealed 锁"
+    assert forged.is_released is False
+
+    r.release_after_taint(ev)
+    assert not lock_path.exists(), "原持有者仍可正常释放"
+
+
 def test_evidence_three_way_compare(repo_root, bootstrap, deploy_setup,
                                     monkeypatch):
     """④c release 内部确实做了三方比对:drift_pending、marker、传入 e 各读至少一次。"""
