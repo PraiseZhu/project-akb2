@@ -737,7 +737,13 @@ def test_dual_identity_runtime_read_only(repo_root, bootstrap, deploy_setup):
     )
     cmd = ["sudo", "-n", "-u", "nobody", sys.executable, "-c", script,
            str(repo_root / "src"), str(ds["root_sk"])]
-    r = subprocess.run(cmd, capture_output=True, text=True, env={"HOME": "/tmp"}, cwd=repo_root)
+    # env 只给 HOME 会丢 PYTHONPATH(script 内虽有 sys.path.insert,CI 实测
+    # nobody 子进程仍报 No module named 'akb2'):继承 os.environ 再覆盖这两键,
+    # 与 script 内 insert 双保险。
+    sub_env = dict(os.environ)
+    sub_env["HOME"] = "/tmp"
+    sub_env["PYTHONPATH"] = str(repo_root / "src")
+    r = subprocess.run(cmd, capture_output=True, text=True, env=sub_env, cwd=repo_root)
     assert r.returncode == 0, r.stderr
     assert "SK_READ_DENIED" in r.stdout
     handles = json.loads(r.stdout.splitlines()[0])
