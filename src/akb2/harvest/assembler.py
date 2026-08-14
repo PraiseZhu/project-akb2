@@ -553,19 +553,38 @@ def assemble(
 
     # 4. 一次性隔离私有目录(0700;选址在 raw_dir 直接父目录 = 同挂载点,
     #    不在任何消费者枚举范围内)。
-    #    绝对路径:trust_root 是 anchors 从受信链解析出的稳定锚点,拼接
-    #    隔离目录名即真实路径(创建时本进程刚持有其验证过的 fd,字符串
-    #    一致性由「创建即记录」保证;TOCTOU 窗口已按威胁模型声明记录)。
+    #    绝对路径与 dir_fd 必须指向同一目录:隔离目录经 raw_h.parent_fd
+    #    创建/打开/清理,archive_raw 的 output_dir 却是路径字符串——两者
+    #    各自独立构造,raw_dir 嵌套(trust_root/x/y/raw)时必然错位:归档
+    #    写到父目录之外的路径、fd 侧读回失败、清理删错位置,父目录外残留
+    #    未脱敏 markdown。故 output_dir 一律取 dirname(raw_dir) 拼隔离目录
+    #    名,并在创建前用 (st_dev, st_ino) 将该路径与 parent_fd 绑定为同
+    #    一目录(身份不符 → 零创建 fail-closed),创建后仍以 fd 为准读写。
     iso_name = f".harvest-iso--{harvest_run_id}.tmp"
-    # trust_root:anchors 解析 roots.json(受信链第 1 步已验证 owner/mode 与
-    # 必需字段);load_verified 已全量走完受信链,此处读到的即受信根。
+    # raw_dir 真实路径:anchors 已在受信链第 1 步验证 roots.json(owner/mode
+    # 与必需字段),load_verified 全量走完,此处读取与 anchors 同源的配置。
     roots_cfg = Path(os.environ.get("AKB2_HARVEST_DEPLOY_ROOT", "")) / "roots.json"
     try:
         _roots = json.loads(roots_cfg.read_text())
-        parent_path = Path(_roots["trust_root"])
-    except (OSError, KeyError, json.JSONDecodeError) as e:
+        parent_path = Path(_roots["raw_dir"]).parent
+    except (OSError, KeyError, json.JSONDecodeError, TypeError, ValueError) as e:
         raise AnchorDriftError(
-            f"trust_root 不可解析(anchors 已通过,此处仅取路径): {e}") from None
+            f"raw_dir 不可解析(anchors 已通过,此处仅取路径): {e}") from None
+    # 路径 ↔ fd 同源绑定:路径解析出的身份必须恰为 parent_fd 持有的目录。
+    #    纯 fd→path(macOS 无 /proc,readlink /dev/fd 报 EINVAL,F_GETPATH
+    #    经 fcntl/ioctl/ctypes 均不可用)不可移植,故反向以身份校验闭合。
+    try:
+        _pst = os.stat(parent_path)
+    except OSError as e:
+        raise AnchorDriftError(
+            f"隔离目录父路径不可解析(与 parent_fd 绑定失败): {parent_path} "
+            f"({e.strerror})") from None
+    _fst = os.fstat(raw_h.parent_fd)
+    if (_pst.st_dev, _pst.st_ino) != (_fst.st_dev, _fst.st_ino):
+        raise AnchorDriftError(
+            f"隔离目录父路径与 parent_fd 身份不符(嵌套 raw_dir 或根被换): "
+            f"{parent_path} (dev={_pst.st_dev}, ino={_pst.st_ino}) != "
+            f"fd (dev={_fst.st_dev}, ino={_fst.st_ino})")
     iso_path = parent_path / iso_name
     iso_fd = -1
     try:
@@ -593,8 +612,9 @@ def assemble(
     filename = ""
     try:
         # 5. 以隔离目录为 output_dir 调 archive_raw 恰一次(writer 非 renderer)。
-        #    output_dir = 创建时记录的 trust_root 拼接隔离目录名(字符串窗口
-        #    已按威胁模型声明记录,见 (v-f2))。
+        #    output_dir = dirname(raw_dir) 拼隔离目录名,创建前已与 parent_fd
+        #    做过 (dev,ino) 同源绑定(见第 4 步);归档产物因此落在 fd 侧读写
+        #    与清理的同一目录内。
         sm = payload.get("source_meta") or {}
         slug = payload["session_id"]
         url = "cindy://session/" + payload["session_id"]  # sc-asm-sourceurl 定案

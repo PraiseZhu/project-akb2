@@ -140,6 +140,80 @@ def deployment(tmp_path_factory: pytest.TempPathFactory) -> SimpleNamespace:
                            raw_dir=tree / "raw", env=env)
 
 
+@pytest.fixture(scope="session")
+def nested_deployment(
+        tmp_path_factory: pytest.TempPathFactory) -> SimpleNamespace:
+    """深层 raw_dir 布局:raw 在 trust_root/x/y/raw(父目录 != trust_root)。
+
+    与 deployment 同构,仅目录层级不同——用于暴露「隔离目录经 parent_fd
+    创建、归档 output_dir 却按 trust_root 拼路径」的错位缺陷。
+    """
+    tmp = tmp_path_factory.mktemp("harvest-deploy-nested")
+    uid, gid = os.getuid(), os.getgid()
+    deploy_root = tmp / "deploy"
+    deploy_root.mkdir(0o750)
+    tree = tmp / "tree"
+    tree.mkdir(0o750)
+    raw_dir = tree / "x" / "y" / "raw"
+    # 中间级逐层显式 0750:parents=True 走 umask 会给出组/其他可写目录,
+    # bootstrap 的父链权限校验拒「其他位可写」
+    cur = tree
+    for part in ("x", "y", "raw"):
+        cur = cur / part
+        cur.mkdir(0o750)
+    for rel in ("stage", "locks", "batch"):
+        (tree / rel).mkdir(0o750)
+    (deploy_root / "roots.json").write_text(json.dumps({
+        "raw_dir": str(raw_dir), "stage": str(tree / "stage"),
+        "locks_dir": str(tree / "locks"), "batch": str(tree / "batch"),
+        "trust_root": str(tree)}), encoding="utf-8")
+    os.chmod(deploy_root / "roots.json", 0o400)
+    env = dict(os.environ)
+    env.update({
+        "AKB2_HARVEST_DEPLOY_ROOT": str(deploy_root),
+        "AKB2_HARVEST_DEPLOY_UID": str(uid),
+        "AKB2_HARVEST_DEPLOY_GID": str(gid),
+        "AKB2_HARVEST_RUNTIME_READER_GID": str(gid),
+        "AKB2_HARVEST_RUNTIME_UID": str(uid),
+        "AKB2_HARVEST_RUNTIME_GID": str(gid),
+        "PYTHONPATH": str(REPO_ROOT / "src"),
+    })
+    r = subprocess.run(
+        [sys.executable, "scripts/harvest_anchor_bootstrap.py", "init",
+         "--deployment-id", "g2-asm-nested"],
+        capture_output=True, text=True, env=env, cwd=REPO_ROOT)
+    assert r.returncode == 0, r.stdout + r.stderr
+    fp = hashlib.sha256(
+        (deploy_root / "root-key" / "root.pub").read_bytes()).hexdigest()
+    env["AKB2_HARVEST_ROOT_PK_FINGERPRINT"] = fp
+    return SimpleNamespace(deploy_root=deploy_root, tree=tree,
+                           raw_dir=raw_dir, env=env)
+
+
+@pytest.fixture()
+def nested_deploy_env(monkeypatch: pytest.MonkeyPatch,
+                      nested_deployment: SimpleNamespace) -> None:
+    for k, v in nested_deployment.env.items():
+        monkeypatch.setenv(k, v)
+
+
+def _iso_names(root: Path) -> list[str]:
+    """root 目录下现存的全部隔离目录名(任意 run_id)。"""
+    try:
+        return sorted(n for n in os.listdir(root)
+                      if n.startswith(".harvest-iso--"))
+    except FileNotFoundError:
+        return []
+
+
+def _stray_md(root: Path) -> list[str]:
+    """root 目录下现存的散落 markdown(隔离目录本不应出现在这里)。"""
+    try:
+        return sorted(n for n in os.listdir(root) if n.endswith(".md"))
+    except FileNotFoundError:
+        return []
+
+
 @pytest.fixture()
 def deploy_env(monkeypatch: pytest.MonkeyPatch,
                deployment: SimpleNamespace) -> None:
@@ -351,6 +425,50 @@ class TestIntegration:
                                harvest_run_id=ids.run_id)
         assert not iso.exists()
         assert _new_raw(deployment, before) == []
+
+
+# ---------------------------------------------------------------------------
+# (nested) 深层 raw_dir:隔离目录与归档 output_dir 必须同一目录
+# ---------------------------------------------------------------------------
+
+
+class TestNestedRawDir:
+    """raw_dir=<trust_root>/x/y/raw 时,iso 经 parent_fd 建在 x/y 下,
+    output_dir 不得错指 trust_root——错位会在 trust_root 残留明文 markdown。"""
+
+    def test_success_lands_only_in_raw_dir(
+            self, nested_deployment: SimpleNamespace,
+            nested_deploy_env: None, ids: SimpleNamespace) -> None:
+        """成功落位:产物只进 raw_dir;trust_root 与中间父目录无隔离目录、无散落 .md。"""
+        nd = nested_deployment
+        before = _raw_before(nd)
+        filename = assembler.assemble(_payload(ids.session_id),
+                                      harvest_run_id=ids.run_id)
+        assert _new_raw(nd, before) == [filename]
+        text = (nd.raw_dir / filename).read_text(encoding="utf-8")
+        assert ids.run_id in text
+        # trust_root 与 raw 的每级父目录:零隔离目录、零散落 markdown
+        for probe in (nd.tree, nd.tree / "x", nd.tree / "x" / "y"):
+            assert _iso_names(probe) == [], probe
+            assert _stray_md(probe) == [], probe
+
+    def test_secret_reject_leaves_no_residue(
+            self, nested_deployment: SimpleNamespace,
+            nested_deploy_env: None, ids: SimpleNamespace) -> None:
+        """含 Bearer 凭证 + 默认 Reject:exit 3 语义,raw_dir 零新增,
+        trust_root 与 raw 父目录无残留 .md / 隔离目录。"""
+        nd = nested_deployment
+        before = _raw_before(nd)
+        with pytest.raises(RedactionRejectedError):
+            assembler.assemble(_payload(ids.session_id, with_secret=True),
+                               harvest_run_id=ids.run_id)
+        assert _new_raw(nd, before) == []
+        for probe in (nd.tree, nd.tree / "x", nd.tree / "x" / "y"):
+            assert _iso_names(probe) == [], probe
+            assert _stray_md(probe) == [], probe
+        # 全树零 Bearer 明文(Reject 语义:未脱敏产物必须已销毁)
+        for md in sorted(nd.tree.rglob("*.md")):
+            assert SECRET not in md.read_text(encoding="utf-8"), md
 
 
 # ---------------------------------------------------------------------------
