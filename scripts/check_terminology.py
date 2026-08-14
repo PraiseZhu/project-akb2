@@ -136,7 +136,7 @@ def main() -> int:
     except (OSError, json.JSONDecodeError) as e:
         print(f"harvest terminology: manifest 无法读取或解析:{manifest_path}({e})", file=sys.stderr)
         return 2
-    scs = manifest.get("scs", manifest if isinstance(manifest, list) else [])
+    scs = manifest if isinstance(manifest, list) else manifest.get("scs", [])
     total = 0
     for sc in scs:
         sc_id = sc.get("id") if isinstance(sc, dict) else None
