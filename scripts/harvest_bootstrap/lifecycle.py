@@ -34,9 +34,13 @@ def acquire_lock(c: dict) -> Path:
         try:
             content = lock.read_text()
             meta = json.loads(content)
-        except (OSError, json.JSONDecodeError):
+            if not isinstance(meta, dict):
+                raise TypeError("锁内容非对象")
+            pid, ts = meta.get("pid"), meta.get("ts")
+            if not isinstance(pid, int):
+                raise TypeError("pid 字段非整数")
+        except (OSError, json.JSONDecodeError, TypeError):
             err(f"部署锁 {lock} 内容不可解析,需人工裁定后处理", code=2)
-        pid, ts = meta.get("pid"), meta.get("ts")
         try:
             os.kill(pid, 0)
             alive = True
