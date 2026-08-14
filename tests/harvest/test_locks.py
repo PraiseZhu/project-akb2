@@ -35,9 +35,9 @@ from itertools import count
 from pathlib import Path
 
 import pytest
-from akb2.harvest.anchors import AnchorDriftError
 
 import akb2.harvest.locks as L
+from akb2.harvest.anchors import AnchorDriftError
 
 ENV_DEPLOY_ROOT = "AKB2_HARVEST_DEPLOY_ROOT"
 ENV_DEPLOY_UID = "AKB2_HARVEST_DEPLOY_UID"

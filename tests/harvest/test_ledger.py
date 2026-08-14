@@ -22,7 +22,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from akb2.harvest.locks import ReservationHeld as RealReservationHeld
 
 from akb2.harvest.ledger import (
     CONTENT,
@@ -40,6 +39,7 @@ from akb2.harvest.ledger import (
     write_committed,
     write_pending,
 )
+from akb2.harvest.locks import ReservationHeld as RealReservationHeld
 
 # 与 ledger.py 一致的锁 namespace 常量
 _NS_CONTENT = CONTENT

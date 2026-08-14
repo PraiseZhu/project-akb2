@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 
 import pytest
+
 from akb2.harvest.template import extract_submit_template
 
 SKILL_MD_PATH = Path(
