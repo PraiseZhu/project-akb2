@@ -35,15 +35,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+from akb2.harvest import __main__ as cli  # noqa: E402
+from akb2.harvest import assembler  # noqa: E402
 from akb2.harvest.redaction import (  # noqa: E402
     REDACTED_MARKER,
     RedactionPolicy,
     RedactionRejectedError,
     scan_and_redact,
 )
-
-from akb2.harvest import __main__ as cli  # noqa: E402
-from akb2.harvest import assembler  # noqa: E402
 
 SECRET = "e3b0c44298fc1c149afbf4c8996fb924"
 REQUIRED_ANCHOR_KEYS = ("A", "E", "H", "M", "Z")
@@ -336,7 +335,12 @@ class TestIntegration:
         orig_open = assembler.os.open
 
         def boom_on_iso(name, flags, *args, **kwargs):
-            if flags & os.O_DIRECTORY:
+            # 只拦截隔离目录本身的 open:名字带 .harvest-iso-- 前缀,或是
+            # 在 dir_fd 下打开目录(O_DIRECTORY)。anchors 的 trust_root open
+            # 同样带 O_DIRECTORY 但无 dir_fd——不能误伤,否则前置链路先炸。
+            is_iso_name = ".harvest-iso--" in str(name)
+            is_dir_open = bool(kwargs.get("dir_fd")) and bool(flags & os.O_DIRECTORY)
+            if is_iso_name or is_dir_open:
                 raise OSError("注入的 open 失败")
             return orig_open(name, flags, *args, **kwargs)
 

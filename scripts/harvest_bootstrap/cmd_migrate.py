@@ -89,7 +89,7 @@ def cmd_migrate(c: dict, deployment_id: str) -> None:
             c, new_n, deployment_id, gen_dir, new_pub, prev_sk,
             prev_hash=h1, prev_key_id=tip["admission"]["key_id"],
         )
-        verify_layout(c)
+        verify_layout(c, roots)
         append_entry(c, e_new)
         prev_sk.unlink()
         fsync_dir(c["signer_keys"])

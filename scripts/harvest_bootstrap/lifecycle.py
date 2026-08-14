@@ -12,9 +12,8 @@ from pathlib import Path
 
 from ._base import (
     GENERATIONS_DIR,
+    K_ID_PREFIX,
     ROOT_KEY_DIR,
-    ROOT_PK_NAME,
-    ROOT_SK_NAME,
     SCHEMA_VERSION,
     SIGNER_KEYS_DIR,
     BootstrapError,
@@ -229,33 +228,79 @@ def cleanup_orphan_generations(c: dict, keep_epochs: set[int]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def verify_layout(c: dict) -> None:
-    """验证部署根目录布局:四目录结构 + 根配置 + root-key 均存在且权限正确。"""
-    root = c["deploy_root"]
-    if not root.exists():
-        raise BootstrapError(f"部署根不存在:{root}")
-    if not root.is_dir():
-        raise BootstrapError(f"部署根不是目录:{root}")
-    for d, mode in [
-        (root / ROOT_KEY_DIR, 0o700),
-        (root / SIGNER_KEYS_DIR, 0o710),
-        (root / GENERATIONS_DIR, 0o750),
-        (c["trust_log"].parent, 0o750),
-    ]:
+def verify_layout(c: dict, roots: dict) -> None:
+    """部署侧权限表校验(init/migrate 生效前;签发材料与运行期写面两栏都验)。
+
+    文件按「存在才校验」处理:init 在 append 前验时 trust-log/recovery-log
+    可能尚未创建(append_entry 才落盘),缺文件不构成布局失败;目录仍要求
+    在场(ensure_skeleton 已建齐,缺目录即骨架异常,失败)。
+    """
+    uid = c["deploy_uid"]
+    reader = c["reader_gid"]
+    runtime_uid = c["runtime_uid"]
+
+    def _owner_mode(path: Path, owner: int, mode: int, group: int | None = None,
+                    what: str = "") -> None:
+        try:
+            st = path.stat()
+        except FileNotFoundError:
+            return
+        if st.st_uid != owner:
+            raise BootstrapError(f"权限校验失败:{what} owner={st.st_uid},期望 {owner}")
+        if group is not None and st.st_gid != group:
+            raise BootstrapError(f"权限校验失败:{what} group={st.st_gid},期望 {group}")
+        if st.st_mode & 0o777 != mode:
+            raise BootstrapError(
+                f"权限校验失败:{what} mode={oct(st.st_mode & 0o777)},期望 {oct(mode)}"
+            )
+
+    for d in (c["root_key_dir"], c["trust_log_dir"], c["generations"], c["signer_keys"]):
         if not d.exists():
             raise BootstrapError(f"部署布局缺少目录:{d}")
         if not d.is_dir():
             raise BootstrapError(f"路径不是目录:{d}")
-        st = d.stat()
-        if (st.st_mode & 0o777) != mode:
-            raise BootstrapError(
-                f"目录权限不符:{d}(期望 {mode:04o}, 实际 {st.st_mode & 0o777:04o})"
-            )
-    if not c["roots_config"].exists():
-        raise BootstrapError(f"根配置缺失:{c['roots_config']}")
-    sk = root / ROOT_KEY_DIR / ROOT_SK_NAME
-    if not sk.exists():
-        raise BootstrapError(f"root 私钥缺失:{sk}")
+    # 签发材料:owner 部署 UID、mode 0400、运行期无任何权限
+    _owner_mode(c["root_sk"], uid, 0o400, what="ROOT_SK")
+    _owner_mode(c["roots_config"], uid, 0o400, what="根配置")
+    # root key 验证公钥:bundle 栏(0440,reader 组只读)
+    _owner_mode(c["root_pk"], uid, 0o440, reader, what="ROOT_PK")
+    # 追加型权威记录:0640(部署 UID O_APPEND 追加、runtime 只读)、父目录 0750
+    _owner_mode(c["trust_log_dir"], uid, 0o750, what="trust-log 父目录")
+    # (0660 组可写必须拒:权威日志的组位只允许读)
+    _owner_mode(c["trust_log"], uid, 0o640, reader, what="trust-log")
+    _owner_mode(c["recovery_log"], uid, 0o640, reader, what="recovery-log")
+    # generations 树:bundle 0440/reader 组;目录 0750
+    _owner_mode(c["generations"], uid, 0o750, what="generations/")
+    for gen_dir in (
+        sorted(c["generations"].iterdir(), key=lambda p: p.name)
+        if c["generations"].exists() else []
+    ):
+        if not gen_dir.is_dir():
+            continue
+        _owner_mode(gen_dir, uid, 0o750, what=f"generations/{gen_dir.name}")
+        for f in ("manifest", "manifest.sig", "public_key"):
+            _owner_mode(gen_dir / f, uid, 0o440, reader, what=f"generations/{gen_dir.name}/{f}")
+    # signer keyring:目录 0710(组仅 search),私钥 0400/部署 owner
+    _owner_mode(c["signer_keys"], uid, 0o710, reader, what="signer-keys/")
+    for k in c["signer_keys"].glob("K*.sk"):
+        _owner_mode(k, uid, 0o400, what=f"signer-keys/{k.name}")
+    # 运行期写面:存在 → owner runtime UID、0750;不存在 → 父链每级对 runtime 至少 x
+    trust_root = Path(roots["trust_root"])
+    for name in ("raw_dir", "stage", "locks_dir", "batch"):
+        target = Path(roots[name])
+        rel = target.relative_to(trust_root)
+        cur = trust_root
+        for part in rel.parts:
+            cur = cur / part
+            if not cur.exists():
+                break
+            st = cur.stat()
+            if st.st_mode & 0o007:
+                raise BootstrapError(f"权限校验失败:根 {name} 父链 {cur} 其他位可写")
+            if not (st.st_mode & 0o010):
+                raise BootstrapError(f"权限校验失败:根 {name} 父链 {cur} 对 runtime 无 x")
+        if target.exists():
+            _owner_mode(target, runtime_uid, 0o750, what=f"运行期根 {name}")
 
 
 def ensure_skeleton(c: dict) -> None:
@@ -281,39 +326,36 @@ def ensure_skeleton(c: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-def ensure_root_key(c: dict) -> tuple[Path, Path, bytes]:
-    """确保 root 密钥对存在:缺失则生成,部分存在则补齐公钥。
+def ensure_root_key(c: dict) -> str:
+    """ROOT_SK 缺失则生成(部署/离线持有;init 自举),返回 ROOT_PK 指纹。
 
-    返回 (sk_path, pk_path, pub_pem_bytes)。私钥 mode 0o400,公钥 mode 0o440。
+    部署常量钉住指纹(root_fp 非空)时与实际指纹比对,不符即 fail-closed。
     """
-    sk = c["deploy_root"] / ROOT_KEY_DIR / ROOT_SK_NAME
-    pk = c["deploy_root"] / ROOT_KEY_DIR / ROOT_PK_NAME
-    if sk.exists():
-        if pk.exists():
-            return sk, pk, pk.read_bytes()
-        # 私钥存在但公钥缺失:从私钥导出公钥
-        pub = _derive_pub_from_sk(sk)
-        pk.write_bytes(pub)
-        os.chmod(pk, 0o440)
-        fsync_file(pk)
-        return sk, pk, pub
-    # 全新生成
-    pub = gen_keypair(sk, None)
-    pk.write_bytes(pub)
-    os.chmod(pk, 0o440)
-    fsync_file(pk)
-    return sk, pk, pub
-
-
-def _derive_pub_from_sk(sk: Path) -> bytes:
-    """从已有私钥导出公钥 PEM。"""
-    import subprocess
-
-    r = subprocess.run(
-        ["openssl", "pkey", "-in", str(sk), "-pubout"],
-        check=True, capture_output=True, stdin=subprocess.DEVNULL,
-    )
-    return r.stdout
+    if not c["root_sk"].exists():
+        gen_keypair(c["root_sk"], None)
+        os.chmod(c["root_sk"], 0o400)
+        pub = subprocess.run(
+            ["openssl", "pkey", "-in", str(c["root_sk"]), "-pubout"],
+            capture_output=True, stdin=subprocess.DEVNULL, check=True,
+        ).stdout
+        pub_tmp = c["root_pk"].with_name(c["root_pk"].name + f".tmp{os.getpid()}")
+        pub_tmp.write_bytes(pub)
+        os.replace(pub_tmp, c["root_pk"])
+        os.chmod(c["root_pk"], 0o440)
+        fsync_file(c["root_pk"])
+        fsync_dir(c["root_key_dir"])
+    else:
+        if not c["root_pk"].exists():
+            raise BootstrapError("ROOT_SK 存在但 ROOT_PK 缺失,部署状态不一致")
+        pub = c["root_pk"].read_bytes()
+    fp = sha256_bytes(pub)
+    if c["root_fp"]:
+        if c["root_fp"] != fp:
+            raise BootstrapError(
+                f"ROOT_PK 指纹不符:部署常量钉住 {c['root_fp']},实际 {fp}——"
+                f"带外人工流程核对后修正部署常量"
+            )
+    return fp
 
 
 # ---------------------------------------------------------------------------
@@ -397,8 +439,8 @@ def cmd_init(c: dict, deployment_id: str) -> None:
             err("部署已初始化(trust-log 非空);重新 init 只能由带外人工流程清空状态后执行")
         check_bad_tail(c, entries, bad, tip)
         cleanup_orphan_generations(c, set())
-        # 确保 root key 存在
-        root_sk, _root_pk, _root_pub = ensure_root_key(c)
+        # 生成或复用 root key
+        fp = ensure_root_key(c)
         # 生成 K1 signer key
         k1_sk = c["signer_keys"] / "K1.sk"
         if not k1_sk.exists():
@@ -413,10 +455,11 @@ def cmd_init(c: dict, deployment_id: str) -> None:
         # 创世条目:由 ROOT_SK 签(K1 准入)
         e1 = build_entry(c, 1, deployment_id, gen_dir, pub_pem, c["root_sk"], None, None)
         # 生效前校验已落盘布局;校验失败 → trust-log 仍为空,残留由下次 init 回收
-        verify_layout(c)
+        verify_layout(c, roots)
         append_entry(c, e1)
         print(
             f"[init] epoch=1 generation={GENERATIONS_DIR}/1 "
+            f"root_pk_fingerprint={fp} root_pk_key_id={fp[:K_ID_PREFIX]} "
             f"append_ok={len(json.dumps(e1, sort_keys=True).encode())}"
         )
     finally:
