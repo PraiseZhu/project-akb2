@@ -722,16 +722,18 @@ def test_dual_identity_runtime_read_only(repo_root, bootstrap, deploy_setup):
     r = run_bootstrap(bootstrap, ["init", "--deployment-id", "dep-1"], ds["env"], repo_root)
     assert r.returncode == 0, r.stderr
     # 以 runtime(nobody)起真实 subprocess 调 load_verified
+    # (try/except 必须分行:Python 3.13 下 try 与 except 挤在同一物理行是
+    # SyntaxError,与 AUDIT_WRAPPER 同款显式 \n 多行脚本)
     script = (
-        "import json,sys;"
-        "sys.path.insert(0, sys.argv[1]);"
-        "from akb2.harvest.anchors import load_verified;"
-        "hs = load_verified();"
-        "print(json.dumps(sorted(hs)));"
-        "import os;"
-        "try:"
-        "  open(sys.argv[2],'rb').read(); print('SK_READ_OK')"
-        "except PermissionError: print('SK_READ_DENIED')"
+        "import json,sys\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "from akb2.harvest.anchors import load_verified\n"
+        "hs = load_verified()\n"
+        "print(json.dumps(sorted(hs)))\n"
+        "import os\n"
+        "try:\n"
+        "  open(sys.argv[2],'rb').read(); print('SK_READ_OK')\n"
+        "except PermissionError: print('SK_READ_DENIED')\n"
     )
     cmd = ["sudo", "-n", "-u", "nobody", sys.executable, "-c", script,
            str(repo_root / "src"), str(ds["root_sk"])]

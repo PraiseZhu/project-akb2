@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ast
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -318,12 +319,22 @@ class TestStaleRef:
 
         验证命令已包含 git fetch, 正常流程下本测试通过;
         但直接调用 pytest 而未先 fetch 时, 若本地 origin/main 落后于远端, 本测试会红。
+
+        本地解析用 --verify origin/main^{commit}:Actions 环境下裸
+        rev-parse refs/remotes/origin/main 可能吐出符号名而非 40hex;
+        非 40hex(解析失败或符号名)一律 skip,不与远端 SHA 比对。
         """
         remote_head = _git_remote_head(worktree)
-        local_origin_main = subprocess.run(
-            ["git", "rev-parse", "refs/remotes/origin/main"],
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", "origin/main^{commit}"],
             capture_output=True, text=True, cwd=str(worktree), timeout=30,
-        ).stdout.strip()
+        )
+        local_origin_main = result.stdout.strip()
+        if result.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", local_origin_main):
+            pytest.skip(
+                f"本地 origin/main 无法解析为 40hex commit SHA: {local_origin_main!r}"
+                f"({result.stderr.strip()})"
+            )
         assert local_origin_main == remote_head, (
             f"本地 origin/main ({local_origin_main}) 落后于远端 ({remote_head})\n"
             f"请执行: git fetch origin +refs/heads/main:refs/remotes/origin/main"

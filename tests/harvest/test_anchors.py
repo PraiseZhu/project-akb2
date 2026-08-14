@@ -864,7 +864,9 @@ def test_root_sk_open_denied_for_runtime_identity(repo_root, bootstrap, deploy_s
     ).stdout.strip())
     ds["env"][ENV_RUNTIME_UID] = str(runtime_uid)
     ds["env"][ENV_RUNTIME_GID] = str(runtime_gid)
-    # 部署身份仍为测试进程(init 由测试进程执行,文件 owner = 测试进程)
+    # 部署身份先完成 init:ROOT_SK 由部署身份(测试进程)生成并落盘,
+    # runtime 身份的拒绝才可归因于权限位而非「文件尚不存在」。
+    init_deploy(bootstrap, ds, repo_root, fingerprint=False)
     import subprocess as sp
     r = sp.run(["sudo", "-n", "-u", "nobody", sys.executable, "-c",
                 "import os; st=os.stat(os.environ['P']); "

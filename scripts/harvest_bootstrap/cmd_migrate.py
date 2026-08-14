@@ -25,6 +25,7 @@ from .lifecycle import (
     acquire_lock,
     build_entry,
     build_manifest,
+    chown_reader_group,
     cleanup_crash_leftovers,
     cleanup_orphan_generations,
     ensure_skeleton,
@@ -91,6 +92,7 @@ def cmd_migrate(c: dict, deployment_id: str) -> None:
         )
         verify_layout(c, roots)
         append_entry(c, e_new)
+        chown_reader_group(c, c["trust_log"], "trust-log")
         prev_sk.unlink()
         fsync_dir(c["signer_keys"])
         append_ok = len(json.dumps(e_new, sort_keys=True).encode())

@@ -161,8 +161,29 @@ def write_bundle(c: dict, epoch: int, manifest: dict, signer_sk: Path, pub_pem: 
     for f in ("manifest", "manifest.sig", "public_key"):
         p = gen_dir / f
         os.chmod(p, 0o440)
+        chown_reader_group(c, p, f"generations/{epoch}/{f}")
     fsync_dir(gen_dir)
     return gen_dir
+
+
+# ---------------------------------------------------------------------------
+# reader 组归属
+# ---------------------------------------------------------------------------
+
+
+def chown_reader_group(c: dict, path: Path, what: str) -> None:
+    """把 path 的组改为 reader_gid(uid 不变),供 verify_layout 的 group 校验对齐。
+
+    CI 上进程的 egid 是 runner 主组(如 1001),而 verify_layout 要求 bundle 栏
+    文件 group=reader_gid;只 chmod 不 chown 会让 gid 停在主组 → 布局校验红。
+    失败按 fail-closed 报 BootstrapError(组归属是权限表的一栏,不允许静默漂移)。
+    """
+    try:
+        os.chown(path, -1, c["reader_gid"])
+    except OSError as e:
+        raise BootstrapError(
+            f"无法将 {what}({path})的组设为 reader 组({c['reader_gid']}):{e.strerror}"
+        ) from None
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +194,7 @@ def write_bundle(c: dict, epoch: int, manifest: dict, signer_sk: Path, pub_pem: 
 def ensure_signer_keys_dir(c: dict) -> None:
     c["signer_keys"].mkdir(mode=0o710, exist_ok=True)
     os.chmod(c["signer_keys"], 0o710)
+    chown_reader_group(c, c["signer_keys"], "signer-keys/")
 
 
 def current_key_number(c: dict) -> int | None:
@@ -316,6 +338,8 @@ def ensure_skeleton(c: dict) -> None:
         d = root / name
         d.mkdir(mode=mode, exist_ok=True)
         os.chmod(d, mode)
+        if name == SIGNER_KEYS_DIR:
+            chown_reader_group(c, d, "signer-keys/")
     trust_log_dir = c["trust_log"].parent
     trust_log_dir.mkdir(mode=0o750, exist_ok=True)
     os.chmod(trust_log_dir, 0o750)
@@ -342,6 +366,7 @@ def ensure_root_key(c: dict) -> str:
         pub_tmp.write_bytes(pub)
         os.replace(pub_tmp, c["root_pk"])
         os.chmod(c["root_pk"], 0o440)
+        chown_reader_group(c, c["root_pk"], "ROOT_PK")
         fsync_file(c["root_pk"])
         fsync_dir(c["root_key_dir"])
     else:
@@ -457,6 +482,7 @@ def cmd_init(c: dict, deployment_id: str) -> None:
         # 生效前校验已落盘布局;校验失败 → trust-log 仍为空,残留由下次 init 回收
         verify_layout(c, roots)
         append_entry(c, e1)
+        chown_reader_group(c, c["trust_log"], "trust-log")
         print(
             f"[init] epoch=1 generation={GENERATIONS_DIR}/1 "
             f"root_pk_fingerprint={fp} root_pk_key_id={fp[:K_ID_PREFIX]} "
