@@ -15,6 +15,10 @@ description = "测试 fixture 与脱敏器伪造哨兵（非真密钥）"
 # 规则按长度+熵误报。整目录豁免——该目录是测试 fixture，不放真密钥。
 paths = [
     'evals/main-pipeline-quality/fixtures/raw-html/.*',
+    # 脱敏器测试的伪造凭证 fixture：test_redaction.py 包含 19 类凭证模式的
+    # 刻意构造假凭证(API key / JWT / GitHub PAT / PEM 私钥 / 连接串等)，
+    # 用途正是断言 redactor 会命中它们。这些不是真密钥。
+    'tests/harvest/test_redaction.py',
 ]
 
 # 脱敏器测试的**伪造哨兵**：`sk-probe-*-2026` 是刻意构造的假凭证，用途正是断言
