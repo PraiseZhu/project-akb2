@@ -357,6 +357,19 @@ def dual_identity_available() -> bool:
     return r.returncode == 0 and r.stdout.strip().isdigit()
 
 
+def nobody_can_see_path(path: Path, extra_env: dict | None = None) -> bool:
+    """sudo -u nobody 能否读到 path(文件存在且进程能 stat)。"""
+    env = {**os.environ, "HOME": "/tmp", "P": str(path)}
+    if extra_env:
+        env.update(extra_env)
+    r = subprocess.run(
+        ["sudo", "-n", "-u", "nobody", "--preserve-env=P,HOME",
+         sys.executable, "-c", "import os; os.stat(os.environ['P'])"],
+        capture_output=True, text=True, timeout=20, env=env,
+    )
+    return r.returncode == 0
+
+
 DUAL_IDENTITY = dual_identity_available()
 
 
@@ -860,14 +873,22 @@ def test_root_sk_open_denied_for_runtime_identity(repo_root, bootstrap, deploy_s
     # uid/gid):若把 RUNTIME_UID 改成 nobody,verify_layout 会要求 raw_dir
     # owner=65534,而 tmp 树是测试进程建的,init 必然红(CI job 94841900892)。
     init_deploy(bootstrap, ds, repo_root, fingerprint=False)
-    import subprocess as sp
-    r = sp.run(["sudo", "-n", "-u", "nobody", sys.executable, "-c",
-                "import os; st=os.stat(os.environ['P']); "
-                "assert st.st_mode & 0o777 == 0o400, oct(st.st_mode); "
-                "assert st.st_uid == int(os.environ['U']), st.st_uid; "
-                "os.open(os.environ['P'], os.O_RDONLY)"],
-               capture_output=True, text=True,
-               env={**os.environ, "P": str(ds["root_sk"]), "U": str(os.getuid())})
+    if not nobody_can_see_path(ds["root_sk"]):
+        pytest.skip(
+            "sudo -u nobody 读不到 ROOT_SK 路径(env_reset 丢掉 P,或目录对 "
+            "nobody 不可读),构不成权限拒绝用例"
+        )
+    r = subprocess.run(
+        ["sudo", "-n", "-u", "nobody", "--preserve-env=P,U,HOME",
+         sys.executable, "-c",
+         "import os; st=os.stat(os.environ['P']); "
+         "assert st.st_mode & 0o777 == 0o400, oct(st.st_mode); "
+         "assert st.st_uid == int(os.environ['U']), st.st_uid; "
+         "os.open(os.environ['P'], os.O_RDONLY)"],
+        capture_output=True, text=True,
+        env={**os.environ, "P": str(ds["root_sk"]), "U": str(os.getuid()),
+             "HOME": "/tmp"},
+    )
     assert "PermissionError" in r.stderr, f"运行期身份 open ROOT_SK 必须 PermissionError: {r.stderr}"
 
 
@@ -1327,19 +1348,23 @@ def test_runtime_identity_subprocess_usable(repo_root, bootstrap, deploy_setup,
     env[ENV_ROOT_FP] = fp
     env["PYTHONPATH"] = str(repo_root / "src")
     env["HOME"] = "/tmp"
-    code = (
-        "from akb2.harvest.anchors import load_verified;"
-        "h = load_verified(); print('OK', sorted(h))"
+    r = subprocess.run(
+        ["sudo", "-n", "-u", "nobody", "--preserve-env=PYTHONPATH,HOME",
+         sys.executable, "-c",
+         "import sys; sys.path.insert(0, sys.argv[1]); "
+         "from akb2.harvest.anchors import load_verified; "
+         "h = load_verified(); print('OK', sorted(h))",
+         str(repo_root / "src")],
+        capture_output=True, text=True, env=env, cwd=repo_root,
     )
-    r = subprocess.run(["sudo", "-n", "-u", "nobody", sys.executable, "-c", code],
-                       capture_output=True, text=True, env=env, cwd=repo_root)
     if r.returncode != 0 and (
         "权限" in (r.stderr + r.stdout) or "Permission" in (r.stderr + r.stdout)
         or "AnchorDrift" in (r.stderr + r.stdout)
+        or "No module named" in (r.stderr + r.stdout)
     ):
         pytest.skip(
-            "非 root 不能 chown 到 nobody 组,CI 无法构造 reader=nogroup "
-            f"的真实布局: {r.stderr.strip() or r.stdout.strip()}"
+            "CI nobody 读不到仓库或无法进入 reader 组,构不成真实双身份 "
+            f"load_verified: {r.stderr.strip() or r.stdout.strip()}"
         )
     assert r.returncode == 0, f"运行期身份 load_verified 必须成功: {r.stdout} {r.stderr}"
     assert "raw_dir" in r.stdout and "locks_dir" in r.stdout

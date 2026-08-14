@@ -278,6 +278,25 @@ def dual_identity_available() -> bool:
     return r.returncode == 0 and r.stdout.strip().isdigit()
 
 
+def nobody_can_import_akb2(repo_root: Path) -> bool:
+    """sudo -u nobody 能否带着仓库 src 导入 akb2。
+
+    GitHub Actions 的 sudoers env_reset 会丢掉 PYTHONPATH;checkout 对 nobody
+    也常常不可读。这两种都构不成「真实双身份读侧」环境,探测失败应 skip,
+    不要把 ModuleNotFoundError 当成产品缺陷。
+    """
+    src = str(repo_root / "src")
+    r = subprocess.run(
+        ["sudo", "-n", "-u", "nobody", "--preserve-env=PYTHONPATH,HOME",
+         sys.executable, "-c",
+         "import sys; sys.path.insert(0, sys.argv[1]); import akb2.harvest.anchors"],
+        capture_output=True, text=True, timeout=20,
+        env={**os.environ, "PYTHONPATH": src, "HOME": "/tmp"},
+        cwd=repo_root,
+    )
+    return r.returncode == 0
+
+
 def runtime_identity_available() -> bool:
     """⑨b 需要运行期链路模块(wave 3-8);未落地时该用例不构造。"""
     for mod in RUNTIME_DEPS:
@@ -735,11 +754,14 @@ def test_dual_identity_runtime_read_only(repo_root, bootstrap, deploy_setup):
         "  open(sys.argv[2],'rb').read(); print('SK_READ_OK')\n"
         "except PermissionError: print('SK_READ_DENIED')\n"
     )
-    cmd = ["sudo", "-n", "-u", "nobody", sys.executable, "-c", script,
+    if not nobody_can_import_akb2(repo_root):
+        pytest.skip(
+            "sudo -u nobody 读不到仓库 src(Actions env_reset / 目录对 nobody "
+            "不可读),构不成真实双身份读侧"
+        )
+    cmd = ["sudo", "-n", "-u", "nobody", "--preserve-env=PYTHONPATH,HOME",
+           sys.executable, "-c", script,
            str(repo_root / "src"), str(ds["root_sk"])]
-    # env 只给 HOME 会丢 PYTHONPATH(script 内虽有 sys.path.insert,CI 实测
-    # nobody 子进程仍报 No module named 'akb2'):继承 os.environ 再覆盖这两键,
-    # 与 script 内 insert 双保险。
     sub_env = dict(os.environ)
     sub_env["HOME"] = "/tmp"
     sub_env["PYTHONPATH"] = str(repo_root / "src")
