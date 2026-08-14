@@ -37,6 +37,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -76,29 +77,35 @@ def entry_hash(entry: dict) -> str:
     return sha256_bytes(json.dumps(entry, sort_keys=True).encode())
 
 
+def scan_trust_log_bytes(raw: bytes) -> tuple[list[tuple[dict, int]], bytes | None]:
+    """扫描 trust-log 原始字节,返回 (完整条目及其末尾偏移, 坏尾字节)。"""
+    segments = raw.split(b"\n")
+    trailing = b"" if segments[-1] == b"" else segments.pop()
+    entries: list[tuple[dict, int]] = []
+    offset = 0
+    for raw_line in segments:
+        line_bytes = raw_line + b"\n"
+        line = raw_line.strip()
+        if not line:
+            offset += len(line_bytes)
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            return entries, raw[offset:]
+        offset += len(line_bytes)
+        entries.append((entry, offset))
+    if trailing:
+        return entries, trailing
+    return entries, None
+
+
 def parse_trust_log(path: Path) -> tuple[list[dict], bytes | None]:
     """解析 trust-log,返回 (完整条目列表, 坏尾字节)。语义与 bootstrap 一致。"""
     if not path.exists():
         return [], None
-    raw = path.read_bytes()
-    segments = raw.split(b"\n")
-    trailing = b"" if segments[-1] == b"" else segments[-1]
-    if trailing:
-        segments = segments[:-1]
-    entries: list[dict] = []
-    offset = 0
-    for raw_line in segments:
-        offset += len(raw_line) + 1
-        line = raw_line.strip()
-        if not line:
-            continue
-        try:
-            entries.append(json.loads(line))
-        except json.JSONDecodeError:
-            return entries, raw[offset:]
-    if trailing:
-        return entries, trailing
-    return entries, None
+    parsed, bad = scan_trust_log_bytes(path.read_bytes())
+    return [entry for entry, _offset in parsed], bad
 
 
 def load_constants() -> dict:
@@ -135,22 +142,132 @@ def enforce_identity(c: dict) -> None:
 
 
 def openssl_verify(pub_pem: Path, data: bytes, sig_hex: str) -> bool:
-    tmp = pub_pem.with_name(f".recv-{os.getpid()}-{time.time_ns()}")
-    data_path = tmp.with_suffix(".data")
-    sig_path = tmp.with_suffix(".sig")
     try:
-        data_path.write_bytes(data)
-        sig_path.write_bytes(bytes.fromhex(sig_hex))
-        r = subprocess.run(
-            ["openssl", "dgst", "-sha256", "-verify", str(pub_pem),
-             "-signature", str(sig_path), str(data_path)],
-            capture_output=True, stdin=subprocess.DEVNULL,
+        sig_bytes = bytes.fromhex(sig_hex)
+    except (TypeError, ValueError):
+        return False
+    try:
+        with tempfile.TemporaryDirectory(prefix="akb2-harvest-recover-") as tmp_dir:
+            tmp = Path(tmp_dir)
+            data_path = tmp / "ticket.data"
+            sig_path = tmp / "ticket.sig"
+            data_path.write_bytes(data)
+            sig_path.write_bytes(sig_bytes)
+            r = subprocess.run(
+                [
+                    "openssl",
+                    "dgst",
+                    "-sha256",
+                    "-verify",
+                    str(pub_pem),
+                    "-signature",
+                    str(sig_path),
+                    str(data_path),
+                ],
+                capture_output=True,
+                check=False,
+                stdin=subprocess.DEVNULL,
+            )
+            return r.returncode == 0
+    except OSError as e:
+        raise RecoverError(f"验签阶段执行失败:{e}") from None
+
+
+def validate_recovery_target(
+    parsed_entries: list[tuple[dict, int]], bad_tail: bytes | None, target_hash: str
+) -> tuple[int, bytes]:
+    """票据边界必须指向最后一条完整条目,不得把有效记录算进坏尾。"""
+    if not parsed_entries:
+        raise RecoverError("trust-log 为空或不可读,无条目可恢复")
+    if not bad_tail:
+        raise RecoverError("trust-log 未检测到坏尾,拒绝无效恢复票据")
+    target_offset = None
+    for entry, end_offset in parsed_entries:
+        if entry_hash(entry) == target_hash:
+            target_offset = end_offset
+    if target_offset is None:
+        raise RecoverError("票据 entry_hash 在 trust-log 中无匹配条目,拒绝(边界必须由票据指定)")
+    last_complete_offset = parsed_entries[-1][1]
+    if target_offset != last_complete_offset:
+        raise RecoverError("票据 entry_hash 不是最后一条完整条目,拒绝截断有效记录")
+    return target_offset, bad_tail
+
+
+def _rollback_trust_log(fd: int, trust_log: Path, bad_bytes: bytes, before_sha256: str) -> None:
+    try:
+        n = os.write(fd, bad_bytes)
+        if n != len(bad_bytes):
+            raise RecoverError(f"trust-log 回滚短写:{n}/{len(bad_bytes)}")
+        os.fsync(fd)
+    except OSError as e:
+        raise RecoverError(f"trust-log 回滚失败:{e}") from None
+    restored = sha256_file(trust_log)
+    if restored != before_sha256:
+        raise RecoverError(
+            f"trust-log 回滚后哈希不符:期望 {before_sha256},实测 {restored}"
         )
-        return r.returncode == 0
+
+
+def truncate_with_audit(
+    trust_log: Path,
+    recovery_log: Path,
+    target_offset: int,
+    bad_bytes: bytes,
+    payload: bytes,
+    before_sha256: str,
+    after_sha256: str,
+) -> None:
+    """先预检 recovery-log 可写,再截断;审计落盘失败时回滚 trust-log。"""
+    try:
+        tfd = os.open(trust_log, os.O_WRONLY | os.O_APPEND)
+    except OSError as e:
+        raise RecoverError(f"无法打开 trust-log 进行恢复:{e}") from None
+    try:
+        try:
+            rfd = os.open(recovery_log, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o640)
+        except OSError as e:
+            raise RecoverError(f"无法打开 recovery-log:{e}") from None
+        try:
+            try:
+                os.ftruncate(tfd, target_offset)
+                os.fsync(tfd)
+                n = os.write(rfd, payload)
+                if n != len(payload):
+                    raise OSError(f"recovery-log 追加短写:{n}/{len(payload)}")
+                os.fsync(rfd)
+            except OSError as e:
+                try:
+                    _rollback_trust_log(tfd, trust_log, bad_bytes, before_sha256)
+                except RecoverError as rollback_err:
+                    raise RecoverError(
+                        f"recovery-log 追加失败且 trust-log 回滚失败:{e}; {rollback_err}"
+                    ) from None
+                raise RecoverError(f"recovery-log 追加失败,已回滚 trust-log:{e}") from None
+        finally:
+            os.close(rfd)
     finally:
-        for p in (data_path, sig_path):
-            if p.exists():
-                p.unlink()
+        os.close(tfd)
+    if sha256_file(trust_log) != after_sha256:
+        raise RecoverError(
+            f"trust-log 截断后哈希不符:期望 {after_sha256},实测 {sha256_file(trust_log)}"
+        )
+
+
+def nonce_seen(recovery_log: Path, nonce: str) -> bool:
+    """recovery-log 必须保持可解析;损坏时 fail-closed。"""
+    if not recovery_log.exists():
+        return False
+    for line in recovery_log.read_bytes().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            prev = json.loads(line)
+        except json.JSONDecodeError as e:
+            raise RecoverError(f"recovery-log 含损坏条目,拒绝继续恢复:{e}") from None
+        if prev.get("ticket", {}).get("nonce") == nonce:
+            return True
+    return False
 
 
 def check_root_pk(c: dict) -> None:
@@ -201,7 +318,9 @@ def main() -> None:
             c["root_pk"], json.dumps(body, sort_keys=True).encode(), ticket["signature"]
         ):
             err("票据签名无效(非 ROOT_SK 签发或已被篡改),拒绝且零字节改动")
-        entries, bad = parse_trust_log(c["trust_log"])
+        raw = c["trust_log"].read_bytes()
+        parsed_entries, bad = scan_trust_log_bytes(raw)
+        entries = [entry for entry, _offset in parsed_entries]
         if not entries:
             err("trust-log 为空或不可读,无条目可恢复")
         # 票据字段逐项与磁盘实测比对(任一不符即拒,零改动)
@@ -210,74 +329,45 @@ def main() -> None:
                 f"票据 deployment_id={ticket['deployment_id']!r} 与 trust-log "
                 f"{entries[0].get('deployment_id')!r} 不符,拒绝"
             )
-        # 定位截断点:内容 hash == 票据 entry_hash 的条目末尾(禁止自行推断)
-        target_offset = None
-        raw = c["trust_log"].read_bytes()
-        offset = 0
-        for raw_line in raw.split(b"\n"):
-            line = raw_line.strip()
-            if not line:
-                offset += len(raw_line) + 1
-                continue
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                break
-            offset += len(raw_line) + 1
-            if entry_hash(entry) == ticket["entry_hash"]:
-                target_offset = offset
-        if target_offset is None:
-            err("票据 entry_hash 在 trust-log 中无匹配条目,拒绝(边界必须由票据指定)")
-        bad_bytes = raw[target_offset:]
+        target_offset, bad_bytes = validate_recovery_target(
+            parsed_entries, bad, ticket["entry_hash"]
+        )
         if sha256_bytes(bad_bytes) != ticket["bad_tail_sha256"]:
             err(
                 f"票据 bad_tail_sha256 与磁盘实测不符(实测 {sha256_bytes(bad_bytes)}),拒绝"
             )
         # nonce 防重放:recovery-log 已含同 nonce → 拒
-        if c["recovery_log"].exists():
-            for line in c["recovery_log"].read_bytes().splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    prev = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if prev.get("ticket", {}).get("nonce") == ticket["nonce"]:
-                    err(f"票据 nonce={ticket['nonce']!r} 已使用过(重放),拒绝")
-        before = sha256_file(c["trust_log"])
-        # 截断(票据指定的偏移;O_APPEND 追加审计)
-        fd = os.open(c["trust_log"], os.O_WRONLY | os.O_APPEND)
-        try:
-            os.ftruncate(fd, target_offset)
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        after = sha256_file(c["trust_log"])
+        if nonce_seen(c["recovery_log"], ticket["nonce"]):
+            err(f"票据 nonce={ticket['nonce']!r} 已使用过(重放),拒绝")
+        before = sha256_bytes(raw)
+        after = sha256_bytes(raw[:target_offset])
         audit_entry = {
             "ticket": ticket,
             "before_sha256": before,
             "after_sha256": after,
             "offset": target_offset,
             "ts": int(time.time()),
-            "uid": os.getuid(),
-            "gid": os.getgid(),
+            "uid": os.geteuid(),
+            "gid": os.getegid(),
         }
         payload = json.dumps(audit_entry, sort_keys=True).encode() + b"\n"
-        rfd = os.open(c["recovery_log"], os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o640)
-        try:
-            n = os.write(rfd, payload)
-            os.fsync(rfd)
-        finally:
-            os.close(rfd)
-        if n != len(payload):
-            err("recovery-log 追加短写,需人工核验")
+        truncate_with_audit(
+            c["trust_log"],
+            c["recovery_log"],
+            target_offset,
+            bad_bytes,
+            payload,
+            before,
+            after,
+        )
         print(
             f"[recover] offset={target_offset} before={before[:16]} after={after[:16]} "
             f"bad_tail={len(bad_bytes)} bytes removed;poison 解除,migrate 可继续"
         )
     except RecoverError as e:
         err(str(e))
+    except OSError as e:
+        err(f"文件操作失败:{e}")
 
 
 if __name__ == "__main__":
