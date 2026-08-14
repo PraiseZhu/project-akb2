@@ -12,9 +12,10 @@ import fcntl
 import os
 import subprocess
 import time
-from datetime import date
 from pathlib import Path
 from typing import NamedTuple
+
+from tests.briefing.shanghai_today import shanghai_today
 
 # 73/74 是**已删除**的旧锁协议码。保留数值只为证明「与历史协议撞码的子进程退出码
 # 不再被特殊解释」—— 它们如今只是两个普通的失败退出码。
@@ -57,7 +58,7 @@ def _backstop_case(kind: str, case_dir: Path, project_root: Path) -> BackstopCas
     lock = case_dir / "backstop.lock"
     marker = case_dir / "rerun-marker"
     release = case_dir / "release"
-    today = date.today().isoformat()
+    today = shanghai_today()
     if kind == "social":
         script = project_root / "scripts" / "briefing_backstop.sh"
         target = (

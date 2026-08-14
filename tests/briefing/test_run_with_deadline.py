@@ -7,8 +7,14 @@ import signal
 import subprocess
 import sys
 import time
-from datetime import date
 from pathlib import Path
+
+from tests.briefing.shanghai_today import shanghai_today
+
+
+def _today() -> str:
+    """Same calendar day as run_with_deadline.py (`Asia/Shanghai`)."""
+    return shanghai_today()
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 WRAPPER = PROJECT_ROOT / "scripts" / "run_with_deadline.py"
@@ -34,7 +40,7 @@ def test_deadline_already_missed_does_not_start_child(tmp_path):
             "--name",
             "test-deadline",
             "--date",
-            date.today().isoformat(),
+            _today(),
             "--deadline-hour",
             "0",
             "--deadline-minute",
@@ -70,7 +76,7 @@ def test_sigterm_terminates_child_process_group(tmp_path):
     )
     # deadline 必须是「今天且未到」才进入轮询循环：_deadline_for 对非今天日期返回
     # None → 走 subprocess.call 旁路（不注册 handler）。设今天 23:59 确保进轮询。
-    today = date.today().isoformat()
+    today = _today()
     proc = subprocess.Popen(
         [
             sys.executable,

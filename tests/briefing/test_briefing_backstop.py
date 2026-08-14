@@ -9,7 +9,6 @@ import subprocess
 import sys
 import tempfile
 import time
-from datetime import date
 from pathlib import Path
 
 import pytest
@@ -20,6 +19,7 @@ from tests.briefing.backstop_lock_test_support import (
     assert_flock_interleaving_matrix,
     assert_no_forgeable_reentry_credential_exists,
 )
+from tests.briefing.shanghai_today import shanghai_today
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BACKSTOP_SH = PROJECT_ROOT / "scripts" / "briefing_backstop.sh"
@@ -38,7 +38,7 @@ _IMPOSSIBLE_PGREP = "akb2-backstop-selftest-no-such-process-a7f3c1"
 
 
 def _today() -> str:
-    return date.today().isoformat()
+    return shanghai_today()
 
 
 def _write_exec(path: Path, body: str) -> Path:
