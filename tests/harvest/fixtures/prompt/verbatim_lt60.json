@@ -1,0 +1,24 @@
+{
+  "schema_version": "1",
+  "session_id": "sess-harvest-neg-verbatim-0001",
+  "title": "反例：verbatim 占比不足（command/output 类字符 40% < 60%）",
+  "lane_hint": "concept",
+  "components": ["gate", "runner", "admission"],
+  "causal_edges": [{"from": "gate", "to": "runner"}],
+  "atoms": [
+    {"id": "A", "kind": "command", "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"},
+    {"id": "E", "kind": "error", "text": "xxxxxxxxxx"},
+    {"id": "H", "kind": "context", "text": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"},
+    {"id": "M", "kind": "judgment", "text": "yyyyyyyyyyyyyyyyyyyy"}
+  ],
+  "how_steps": [
+    {"anchor": "A", "provenance": "session log", "cmd": "python3 -m akb2.quality.pipeline --dry-run", "expect": "dry-run 通过"},
+    {"anchor": "E", "provenance": "session log", "cmd": "pytest tests/test_gate.py", "expect": "失败用例先红"},
+    {"anchor": "H", "provenance": "session log", "cmd": "ruff check src tests", "expect": "零 finding"}
+  ],
+  "source_meta": {
+    "session_id": "sess-harvest-neg-verbatim-0001",
+    "tool": "claude-code",
+    "fetched_at": "2026-08-10T18:00:00+08:00"
+  }
+}

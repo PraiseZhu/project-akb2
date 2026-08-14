@@ -1,0 +1,26 @@
+{
+  "schema_version": "1",
+  "session_id": "sess-harvest-neg-howsteps-0001",
+  "title": "反例：procedural 车道 how 步骤不足（how_steps 4 < 5）",
+  "lane_hint": "procedural",
+  "components": ["gate", "runner", "admission"],
+  "causal_edges": [{"from": "gate", "to": "runner"}],
+  "atoms": [
+    {"id": "A", "kind": "command", "text": "python3 -m akb2.quality.pipeline --dry-run"},
+    {"id": "E", "kind": "output", "text": "exit 0: 全部通过"},
+    {"id": "H", "kind": "diff", "text": "gate.py 增补 components 存在性校验"},
+    {"id": "M", "kind": "command", "text": "python3 -m pytest tests/test_gate.py -q"},
+    {"id": "Z", "kind": "context", "text": "此前 runner 未校验 components 存在性"}
+  ],
+  "how_steps": [
+    {"anchor": "A", "provenance": "session log", "cmd": "python3 -m akb2.quality.pipeline --dry-run", "expect": "dry-run 通过"},
+    {"anchor": "E", "provenance": "session log", "cmd": "python3 -m akb2.quality.pipeline --once", "expect": "入库成功"},
+    {"anchor": "H", "provenance": "session log", "cmd": "pytest tests/test_gate.py", "expect": "失败用例先红"},
+    {"anchor": "M", "provenance": "session log", "cmd": "ruff check src tests", "expect": "零 finding"}
+  ],
+  "source_meta": {
+    "session_id": "sess-harvest-neg-howsteps-0001",
+    "tool": "claude-code",
+    "fetched_at": "2026-08-10T18:00:00+08:00"
+  }
+}
