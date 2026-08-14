@@ -12,7 +12,6 @@ import subprocess
 from pathlib import Path
 
 import pytest
-
 from akb2.harvest.schema import (
     LANE_AMBIGUOUS_EXIT,
     LANE_CONCEPT,
