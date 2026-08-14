@@ -292,6 +292,22 @@ class TestErrorHandling:
 
         assert "error" in result["fold_state"]
 
+    def test_unexpected_fold_error_propagates(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """非 ResolverError 不应被吞掉，否则程序错误会被伪装成正常统计输出。"""
+        import harvest_feedback as fb_mod
+
+        hl = _write_jsonl(tmp_path / "hl.jsonl", [])
+        tj = _write_jsonl(tmp_path / "tj.jsonl", [])
+        ql = _write_jsonl(tmp_path / "ql.jsonl", [])
+
+        def broken_fold(*args, **kwargs):  # type: ignore[no-untyped-def]
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(fb_mod, "fold_reconcile", broken_fold)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            harvest_feedback(str(hl), str(tj), str(ql))
+
 
 # ---------------------------------------------------------------------------
 # 坏行
@@ -318,6 +334,22 @@ class TestCorruptedLines:
         assert result["counts"]["corrupted_lines"]["trial_journal"] == 2
         assert result["counts"]["corrupted_lines"]["harvest_ledger"] == 0
         assert result["counts"]["corrupted_lines"]["quality_ledger"] == 0
+        assert result["fold_state"]["phase"] == "RESOLVED"
+
+    def test_non_dict_json_value_counted_as_corrupted(self, tmp_path: Path) -> None:
+        """合法 JSON 但非 dict 也属于结构损坏，不能在后续 .get() 处炸掉。"""
+        hl = _write_jsonl(tmp_path / "hl.jsonl", [_committed_row()])
+        tj_path = tmp_path / "tj.jsonl"
+        with open(tj_path, "w", encoding="utf-8") as fh:
+            fh.write("[]\n")
+            fh.write("42\n")
+            fh.write(json.dumps(_trial_event()) + "\n")
+        ql = _write_jsonl(tmp_path / "ql.jsonl", [])
+
+        result = harvest_feedback(str(hl), str(tj_path), str(ql))
+
+        assert result["counts"]["trial_events"] == 1
+        assert result["counts"]["corrupted_lines"]["trial_journal"] == 2
         assert result["fold_state"]["phase"] == "RESOLVED"
 
 

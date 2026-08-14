@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 # 身份断言：此 fold_reconcile 与 akb2.harvest.trial_verify.fold_reconcile 是同一函数对象
-from akb2.harvest.trial_verify import fold_reconcile
+from akb2.harvest.trial_verify import ResolverError, fold_reconcile
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -36,10 +36,14 @@ def _read_jsonl(path: str) -> tuple[list[dict], int]:
             if not line:
                 continue
             try:
-                rows.append(json.loads(line))
+                parsed = json.loads(line)
             except json.JSONDecodeError:
                 corrupted += 1
                 continue
+            if not isinstance(parsed, dict):
+                corrupted += 1
+                continue
+            rows.append(parsed)
     return rows, corrupted
 
 
@@ -74,7 +78,7 @@ def harvest_feedback(
     # 3. 折叠 trial 事件
     try:
         state = fold_reconcile(trial_events, committed_records=committed_records)
-    except Exception as exc:
+    except ResolverError as exc:
         return {
             "fold_state": {"error": str(exc)},
             "counts": {
