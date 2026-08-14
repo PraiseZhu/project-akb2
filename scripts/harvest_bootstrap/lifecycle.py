@@ -15,6 +15,7 @@ from ._base import (
     ROOT_PK_NAME,
     ROOT_SK_NAME,
     SCHEMA_VERSION,
+    SIGNER_KEYS_DIR,
     BootstrapError,
     crash_if,
     err,
@@ -226,12 +227,12 @@ def verify_layout(c: dict) -> None:
         raise BootstrapError(f"部署根不存在:{root}")
     if not root.is_dir():
         raise BootstrapError(f"部署根不是目录:{root}")
-    for name, mode in [
-        (ROOT_KEY_DIR, 0o700),
-        ("signer-keys", 0o710),
-        (GENERATIONS_DIR, 0o750),
+    for d, mode in [
+        (root / ROOT_KEY_DIR, 0o700),
+        (root / SIGNER_KEYS_DIR, 0o710),
+        (root / GENERATIONS_DIR, 0o750),
+        (c["trust_log"].parent, 0o750),
     ]:
-        d = root / name
         if not d.exists():
             raise BootstrapError(f"部署布局缺少目录:{d}")
         if not d.is_dir():
@@ -255,7 +256,7 @@ def ensure_skeleton(c: dict) -> None:
     os.chmod(root, 0o750)
     for name, mode in [
         (ROOT_KEY_DIR, 0o700),
-        ("signer-keys", 0o710),
+        (SIGNER_KEYS_DIR, 0o710),
         (GENERATIONS_DIR, 0o750),
     ]:
         d = root / name
