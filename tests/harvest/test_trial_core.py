@@ -27,6 +27,8 @@ from akb2.harvest.trial_verify import (  # noqa: E402
     ReconcilePhase,
     ReconcileState,
     ResolverError,
+    check_batch_calibration,
+    check_batch_sourceurl,
     check_consistency,
     fold_reconcile,
     format_evidence,
@@ -536,3 +538,256 @@ class TestFunctionCliConsistency:
         assert fn_failed == expect_fail, (
             f"期望失败={expect_fail}, 实际失败={fn_failed}"
         )
+
+
+# ---------------------------------------------------------------------------
+# --batch 模式：--check-calibration / --check-sourceurl
+# ---------------------------------------------------------------------------
+
+
+def _batch_entry_committed(sid: str = "s1", hash_val: str = "h1") -> dict:
+    """settled/committed 条目：reconciliation_state 与 final_state 对齐。"""
+    return {
+        "phase": "settled",
+        "status": "completed",
+        "session_id": sid,
+        "expected_slug": sid,
+        "pipeline_content_hash": hash_val,
+        "reconciliation_state": "committed",
+        "final_state": "committed",
+    }
+
+
+def _batch_entry_blocked(sid: str = "s2") -> dict:
+    """failed/blocked 条目。"""
+    return {
+        "phase": "failed",
+        "status": "failed",
+        "session_id": sid,
+        "expected_slug": sid,
+        "pipeline_content_hash": "h2",
+        "reconciliation_state": "blocked",
+        "final_state": "submit_error",
+    }
+
+
+def _batch_entry_intent(sid: str = "s3") -> dict:
+    """intent 条目：未到对账期。"""
+    return {
+        "phase": "intent",
+        "status": "pending",
+        "session_id": sid,
+        "expected_slug": sid,
+        "pipeline_content_hash": None,
+        "final_state": None,
+    }
+
+
+def _batch_planned_item(sid: str = "s1") -> dict:
+    """planned 条目：entry/payload/source_meta 三元 session_id 同源。"""
+    return {
+        "session_id": sid,
+        "title": "t",
+        "payload": {
+            "session_id": sid,
+            "source_meta": {"session_id": sid},
+        },
+    }
+
+
+def _batch(
+    planned: list[dict] | None = None,
+    attempted: list[dict] | None = None,
+) -> dict:
+    return {
+        "version": "1",
+        "planned": planned if planned is not None else [],
+        "attempted": attempted if attempted is not None else [],
+    }
+
+
+def _run_cli_args(argv: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["python3", "-m", "akb2.harvest.trial_verify"] + argv,
+        capture_output=True,
+        text=True,
+        env=CLI_ENV,
+        cwd=REPO_ROOT,
+    )
+
+
+class TestBatchCalibration:
+    """check_batch_calibration：attempted 对账状态一致性。"""
+
+    def test_committed_and_blocked_ok(self) -> None:
+        batch = _batch(
+            attempted=[_batch_entry_committed(), _batch_entry_blocked()],
+        )
+        assert check_batch_calibration(batch) == []
+
+    def test_intent_skipped(self) -> None:
+        batch = _batch(attempted=[_batch_entry_intent()])
+        assert check_batch_calibration(batch) == []
+
+    def test_not_required_skipped(self) -> None:
+        entry = {
+            "phase": "in_flight",
+            "reconciliation_state": "not_required",
+            "final_state": None,
+        }
+        assert check_batch_calibration(_batch(attempted=[entry])) == []
+
+    def test_committed_final_state_mismatch(self) -> None:
+        entry = _batch_entry_committed()
+        entry["final_state"] = "submit_error"
+        vs = check_batch_calibration(_batch(attempted=[entry]))
+        assert vs
+        assert "final_state" in vs[0]
+
+    def test_committed_empty_hash_fail_closed(self) -> None:
+        entry = _batch_entry_committed(hash_val="")
+        vs = check_batch_calibration(_batch(attempted=[entry]))
+        assert vs
+
+    def test_blocked_but_final_committed(self) -> None:
+        entry = _batch_entry_blocked()
+        entry["final_state"] = "committed"
+        vs = check_batch_calibration(_batch(attempted=[entry]))
+        assert vs
+        assert "blocked" in vs[0]
+
+    def test_unknown_reconciliation_state(self) -> None:
+        entry = _batch_entry_committed()
+        entry["reconciliation_state"] = "mystery"
+        vs = check_batch_calibration(_batch(attempted=[entry]))
+        assert vs
+        assert "未知" in vs[0]
+
+    def test_attempted_not_list(self) -> None:
+        vs = check_batch_calibration({"attempted": {}})
+        assert vs
+
+
+class TestBatchSourceurl:
+    """check_batch_sourceurl：planned source_url 身份三元同源。"""
+
+    def test_consistent_ids_ok(self) -> None:
+        batch = _batch(planned=[_batch_planned_item()])
+        assert check_batch_sourceurl(batch) == []
+
+    def test_payload_id_mismatch(self) -> None:
+        item = _batch_planned_item(sid="s1")
+        item["payload"]["session_id"] = "other"
+        vs = check_batch_sourceurl(_batch(planned=[item]))
+        assert vs
+        assert "身份不一致" in vs[0]
+
+    def test_source_meta_id_mismatch(self) -> None:
+        item = _batch_planned_item(sid="s1")
+        item["payload"]["source_meta"]["session_id"] = "other"
+        vs = check_batch_sourceurl(_batch(planned=[item]))
+        assert vs
+
+    def test_empty_entry_id(self) -> None:
+        item = _batch_planned_item(sid="")
+        vs = check_batch_sourceurl(_batch(planned=[item]))
+        assert vs
+
+    def test_planned_not_list(self) -> None:
+        vs = check_batch_sourceurl({"planned": {}})
+        assert vs
+
+
+class TestBatchCli:
+    """CLI --batch 模式：参数被识别 + 双 check 生效。"""
+
+    def test_batch_calibration_exit_zero(self, tmp_path) -> None:
+        batch = _batch(
+            attempted=[_batch_entry_committed(), _batch_entry_blocked()],
+        )
+        src = tmp_path / "trial-batch.json"
+        src.write_text(json.dumps(batch, ensure_ascii=False))
+        proc = _run_cli_args(
+            ["--batch", str(src), "--check-calibration"]
+        )
+        assert proc.returncode == CLI_EXIT_OK, proc.stderr
+        assert "校验通过" in proc.stderr
+        output = json.loads(proc.stdout)
+        assert output["checks"] == ["calibration"]
+        assert output["violations"] == []
+
+    def test_batch_sourceurl_exit_zero(self, tmp_path) -> None:
+        batch = _batch(planned=[_batch_planned_item()])
+        src = tmp_path / "trial-batch.json"
+        src.write_text(json.dumps(batch, ensure_ascii=False))
+        proc = _run_cli_args(
+            ["--batch", str(src), "--check-sourceurl"]
+        )
+        assert proc.returncode == CLI_EXIT_OK, proc.stderr
+        output = json.loads(proc.stdout)
+        assert output["checks"] == ["sourceurl"]
+
+    def test_batch_both_checks(self, tmp_path) -> None:
+        batch = _batch(
+            planned=[_batch_planned_item()],
+            attempted=[_batch_entry_committed()],
+        )
+        src = tmp_path / "trial-batch.json"
+        src.write_text(json.dumps(batch, ensure_ascii=False))
+        proc = _run_cli_args(
+            ["--batch", str(src), "--check-calibration", "--check-sourceurl"]
+        )
+        assert proc.returncode == CLI_EXIT_OK, proc.stderr
+        output = json.loads(proc.stdout)
+        assert output["checks"] == ["calibration", "sourceurl"]
+
+    def test_batch_violation_exit_2(self, tmp_path) -> None:
+        entry = _batch_entry_committed()
+        entry["final_state"] = "submit_error"
+        batch = _batch(attempted=[entry])
+        src = tmp_path / "trial-batch.json"
+        src.write_text(json.dumps(batch, ensure_ascii=False))
+        proc = _run_cli_args(
+            ["--batch", str(src), "--check-calibration"]
+        )
+        assert proc.returncode == CLI_EXIT_INVALID, proc.stderr
+        output = json.loads(proc.stdout)
+        assert output["violations"]
+
+    def test_batch_missing_file_exit_2(self, tmp_path) -> None:
+        proc = _run_cli_args(
+            ["--batch", str(tmp_path / "nope.json"), "--check-calibration"]
+        )
+        assert proc.returncode == CLI_EXIT_INVALID
+
+    def test_batch_without_check_flag_errors(self, tmp_path) -> None:
+        src = tmp_path / "trial-batch.json"
+        src.write_text("{}")
+        proc = _run_cli_args(["--batch", str(src)])
+        assert proc.returncode != 0
+        assert "unrecognized arguments" not in proc.stderr
+
+    def test_batch_and_file_mutually_exclusive(self, tmp_path) -> None:
+        src = tmp_path / "trial-batch.json"
+        src.write_text("{}")
+        proc = _run_cli_args(
+            ["--batch", str(src), "--check-calibration", str(src)]
+        )
+        assert proc.returncode != 0
+        assert "互斥" in proc.stderr
+
+    def test_check_flag_without_batch_errors(self, tmp_path) -> None:
+        proc = _run_cli_args(["--check-calibration"])
+        assert proc.returncode != 0
+        assert "file 或 --batch" in proc.stderr
+
+    def test_check_flag_with_file_errors(self, tmp_path) -> None:
+        src = tmp_path / "tv.json"
+        src.write_text("{}")
+        proc = _run_cli_args([str(src), "--check-sourceurl"])
+        assert proc.returncode != 0
+        assert "--batch 模式" in proc.stderr
+
+    def test_no_args_errors(self) -> None:
+        proc = _run_cli_args([])
+        assert proc.returncode != 0
