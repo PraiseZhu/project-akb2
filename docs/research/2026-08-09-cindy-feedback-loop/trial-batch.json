@@ -1,0 +1,159 @@
+{
+  "version": "1",
+  "planned": [
+    {
+      "session_id": "4e1c8a92-3b7d-4f6a-9c25-1d8e0b3a7f64",
+      "title": "重构观察：修复 intake 前置校验缺失",
+      "payload": {
+        "schema_version": "1",
+        "session_id": "4e1c8a92-3b7d-4f6a-9c25-1d8e0b3a7f64",
+        "title": "重构观察：修复 intake 前置校验缺失",
+        "lane_hint": "procedural",
+        "components": ["gate", "runner"],
+        "causal_edges": [],
+        "atoms": [
+          {"id": "a1", "kind": "command", "text": "python3 -m akb2.quality.pipeline --dry-run"},
+          {"id": "a2", "kind": "output", "text": "exit 2: missing components"},
+          {"id": "a3", "kind": "error", "text": "gate 前置校验缺失导致失败"},
+          {"id": "a4", "kind": "diff", "text": "gate.py 增补 3 处校验"},
+          {"id": "a5", "kind": "judgment", "text": "修复有效，重复跑通过"},
+          {"id": "a6", "kind": "context", "text": "此前 runner 未校验 components 存在性"}
+        ],
+        "how_steps": [
+          {"anchor": "a1", "provenance": "session log", "cmd": "python3 -m akb2.quality.pipeline --dry-run", "expect": "dry-run 通过"},
+          {"anchor": "a2", "provenance": "session log", "cmd": "pytest tests/test_gate.py", "expect": "失败用例先红"},
+          {"anchor": "a3", "provenance": "session log", "cmd": "python3 -m pytest tests/ -q", "expect": "全绿"},
+          {"anchor": "a4", "provenance": "session log", "cmd": "ruff check src tests", "expect": "零 finding"},
+          {"anchor": "a5", "provenance": "session log", "cmd": "python3 -m akb2.quality.pipeline --once", "expect": "入库成功"}
+        ],
+        "source_meta": {
+          "session_id": "4e1c8a92-3b7d-4f6a-9c25-1d8e0b3a7f64",
+          "tool": "claude-code",
+          "fetched_at": "2026-08-13T15:00:00+08:00"
+        }
+      }
+    },
+    {
+      "session_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+      "title": "试投 manifest 车道一致性验证",
+      "payload": {
+        "schema_version": "1",
+        "session_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+        "title": "试投 manifest 车道一致性验证",
+        "lane_hint": "concept",
+        "components": ["gate", "runner", "admission", "ledger"],
+        "causal_edges": [
+          {"from": "gate", "to": "runner"},
+          {"from": "runner", "to": "admission"},
+          {"from": "admission", "to": "ledger"}
+        ],
+        "atoms": [
+          {"id": "a1", "kind": "command", "text": "评估管线组件依赖关系"},
+          {"id": "a2", "kind": "judgment", "text": "gate 是 runner 的前置依赖"},
+          {"id": "a3", "kind": "context", "text": "admission 负责质量准入"},
+          {"id": "a4", "kind": "context", "text": "ledger 记录最终状态"},
+          {"id": "a5", "kind": "judgment", "text": "四组件形成完整链路"},
+          {"id": "a6", "kind": "context", "text": "concept 车道侧重架构理解而非步骤"}
+        ],
+        "how_steps": [
+          {"anchor": "a1", "provenance": "session log", "cmd": "评估组件依赖", "expect": "依赖关系清晰"},
+          {"anchor": "a2", "provenance": "session log", "cmd": "确认前置条件", "expect": "gate 前置成立"},
+          {"anchor": "a3", "provenance": "session log", "cmd": "检查准入机制", "expect": "admission 正常"}
+        ],
+        "source_meta": {
+          "session_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+          "tool": "claude-code",
+          "fetched_at": "2026-08-13T15:10:00+08:00"
+        }
+      }
+    },
+    {
+      "session_id": "f1e2d3c4-b5a6-4c7d-8e9f-0a1b2c3d4e5f",
+      "title": "残留面处置协议：锚点漂移恢复",
+      "payload": {
+        "schema_version": "1",
+        "session_id": "f1e2d3c4-b5a6-4c7d-8e9f-0a1b2c3d4e5f",
+        "title": "残留面处置协议：锚点漂移恢复",
+        "lane_hint": "procedural",
+        "components": ["anchors", "locks"],
+        "causal_edges": [],
+        "atoms": [
+          {"id": "a1", "kind": "command", "text": "python3 -m akb2.harvest.anchors.verify"},
+          {"id": "a2", "kind": "error", "text": "AnchorDriftError: raw_dir 身份不符"},
+          {"id": "a3", "kind": "diff", "text": "重新锚定 trust_root 路径"},
+          {"id": "a4", "kind": "command", "text": "python3 -m akb2.harvest.anchors.bootstrap --deployment-id recovery-001"},
+          {"id": "a5", "kind": "output", "text": "锚点恢复完成，全链验证通过"},
+          {"id": "a6", "kind": "judgment", "text": "恢复有效，后续需加固锚点监控"}
+        ],
+        "how_steps": [
+          {"anchor": "a1", "provenance": "session log", "cmd": "python3 -m akb2.harvest.anchors.verify", "expect": "验证通过"},
+          {"anchor": "a2", "provenance": "session log", "cmd": "检查锚点日志", "expect": "定位漂移根因"},
+          {"anchor": "a3", "provenance": "session log", "cmd": "修正 trust_root 引用", "expect": "路径对齐"},
+          {"anchor": "a4", "provenance": "session log", "cmd": "python3 -m akb2.harvest.anchors.bootstrap --deployment-id recovery-001", "expect": "bootstrap 成功"},
+          {"anchor": "a5", "provenance": "session log", "cmd": "python3 -m pytest tests/harvest/test_anchors.py -q", "expect": "全绿"}
+        ],
+        "source_meta": {
+          "session_id": "f1e2d3c4-b5a6-4c7d-8e9f-0a1b2c3d4e5f",
+          "tool": "claude-code",
+          "fetched_at": "2026-08-13T15:20:00+08:00"
+        }
+      }
+    }
+  ],
+  "attempted": [
+    {
+      "phase": "intent",
+      "status": "pending",
+      "harvest_run_id": "d4e5f6a7-b8c9-4d0e-8f1a-2b3c4d5e6f78",
+      "session_id": "4e1c8a92-3b7d-4f6a-9c25-1d8e0b3a7f64",
+      "expected_slug": "4e1c8a92-3b7d-4f6a-9c25-1d8e0b3a7f64",
+      "intent_timestamp": "2026-08-13T15:00:00+08:00",
+      "raw_path": null,
+      "pipeline_content_hash": null,
+      "final_state": null
+    },
+    {
+      "phase": "in_flight",
+      "status": "running",
+      "harvest_run_id": "b5f6a7c8-d9e0-4f1a-8b2c-3d4e5f6a7b89",
+      "session_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+      "expected_slug": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+      "intent_timestamp": "2026-08-13T15:05:00+08:00",
+      "raw_path": "/Volumes/AKB2/harvest/raw/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d.md",
+      "pipeline_content_hash": "a1b2c3d4e5f6a7b8",
+      "delivery_timestamp": "2026-08-13T15:10:00+08:00",
+      "deadline": "2026-08-13T16:00:00+08:00",
+      "reconciliation_state": "not_required",
+      "final_state": null
+    },
+    {
+      "phase": "settled",
+      "status": "completed",
+      "harvest_run_id": "c6a7b8d9-e0f1-4a2b-9c3d-4e5f6a7b8c90",
+      "session_id": "f1e2d3c4-b5a6-4c7d-8e9f-0a1b2c3d4e5f",
+      "expected_slug": "f1e2d3c4-b5a6-4c7d-8e9f-0a1b2c3d4e5f",
+      "intent_timestamp": "2026-08-13T15:15:00+08:00",
+      "raw_path": "/Volumes/AKB2/harvest/raw/f1e2d3c4-b5a6-4c7d-8e9f-0a1b2c3d4e5f.md",
+      "pipeline_content_hash": "f1e2d3c4b5a6c7d8",
+      "delivery_timestamp": "2026-08-13T15:20:00+08:00",
+      "deadline": "2026-08-13T16:00:00+08:00",
+      "reconciliation_state": "committed",
+      "final_state": "committed"
+    },
+    {
+      "phase": "failed",
+      "status": "failed",
+      "harvest_run_id": "d7a8b9c0-e1f2-4a3b-9d4e-5f6a7b8c9d01",
+      "session_id": "f1e2d3c4-b5a6-4c7d-8e9f-0a1b2c3d4e5f",
+      "expected_slug": "f1e2d3c4-b5a6-4c7d-8e9f-0a1b2c3d4e5f",
+      "intent_timestamp": "2026-08-13T15:25:00+08:00",
+      "raw_path": "/Volumes/AKB2/harvest/raw/d7a8b9c0-e1f2-4a3b-9d4e-5f6a7b8c9d01.md",
+      "pipeline_content_hash": "d7a8b9c0e1f2a3b4",
+      "delivery_timestamp": "2026-08-13T15:30:00+08:00",
+      "deadline": "2026-08-13T16:00:00+08:00",
+      "reconciliation_state": "blocked",
+      "final_state": "submit_error",
+      "failure_reason": "车道校验失败：concept 证据不足"
+    }
+  ]
+}
