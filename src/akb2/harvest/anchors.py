@@ -411,62 +411,70 @@ def load_verified() -> dict[str, AnchorHandle]:
         raise AnchorDriftError("manifest 缺少 roots 字段")
     trust_root = Path(roots["trust_root"])
     handles: dict[str, AnchorHandle] = {}
-    for name in ROOT_NAMES:
-        entry = mroots.get(name)
-        if not isinstance(entry, dict) or not isinstance(entry.get("chain"), list) \
-                or not entry["chain"]:
-            raise AnchorDriftError(f"manifest 缺少根 {name} 的 parent chain")
-        chain = entry["chain"]
-        try:
-            trust_root_fd = os.open(
-                trust_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        except OSError as e:
-            raise AnchorDriftError(
-                f"根 {name} trust_root 不可解析: {trust_root} ({e.strerror})") from None
-        fds: list[int] = [trust_root_fd]
-        try:
-            for level in chain:
-                if not isinstance(level, dict) or not level.get("name"):
-                    raise AnchorDriftError(f"根 {name} 的 chain 层级非法")
-                try:
-                    fd = os.open(level["name"], os.O_RDONLY | os.O_NOFOLLOW,
-                                dir_fd=fds[-1])
-                except OSError as e:
-                    raise AnchorDriftError(
-                        f"根 {name} 路径不可解析(leaf={level['name']}): "
-                        f"{e.strerror}") from None
-                try:
-                    st = os.fstat(fd)
-                except OSError:
-                    os.close(fd)
-                    raise AnchorDriftError(
-                        f"根 {name} 路径不可解析: {level['name']}") from None
-                if (st.st_dev, st.st_ino) != (level.get("st_dev"), level.get("st_ino")):
-                    os.close(fd)
-                    raise AnchorDriftError(
-                        f"根 {name} parent chain 身份不符: {level['name']}")
-                fds.append(fd)
-        except BaseException:
-            for fd in fds:
+    try:
+        for name in ROOT_NAMES:
+            entry = mroots.get(name)
+            if not isinstance(entry, dict) or not isinstance(entry.get("chain"), list) \
+                    or not entry["chain"]:
+                raise AnchorDriftError(f"manifest 缺少根 {name} 的 parent chain")
+            chain = entry["chain"]
+            try:
+                trust_root_fd = os.open(
+                    trust_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            except OSError as e:
+                raise AnchorDriftError(
+                    f"根 {name} trust_root 不可解析: {trust_root} ({e.strerror})") from None
+            fds: list[int] = [trust_root_fd]
+            try:
+                for level in chain:
+                    if not isinstance(level, dict) or not level.get("name"):
+                        raise AnchorDriftError(f"根 {name} 的 chain 层级非法")
+                    try:
+                        fd = os.open(level["name"], os.O_RDONLY | os.O_NOFOLLOW,
+                                    dir_fd=fds[-1])
+                    except OSError as e:
+                        raise AnchorDriftError(
+                            f"根 {name} 路径不可解析(leaf={level['name']}): "
+                            f"{e.strerror}") from None
+                    try:
+                        st = os.fstat(fd)
+                    except OSError:
+                        os.close(fd)
+                        raise AnchorDriftError(
+                            f"根 {name} 路径不可解析: {level['name']}") from None
+                    if (st.st_dev, st.st_ino) != (level.get("st_dev"), level.get("st_ino")):
+                        os.close(fd)
+                        raise AnchorDriftError(
+                            f"根 {name} parent chain 身份不符: {level['name']}")
+                    fds.append(fd)
+            except BaseException:
+                for fd in fds:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+                raise
+            # chain 非空 → fds 至少 [trust_root_fd, leaf_fd] 两项;只保留最后两级
+            # (parent_fd/root_fd),中间级用完即关,避免每次 load_verified() 泄漏 fd
+            root_fd = fds[-1]
+            parent_fd = fds[-2]
+            for fd in fds[:-2]:
                 try:
                     os.close(fd)
                 except OSError:
                     pass
-            raise
-        # chain 非空 → fds 至少 [trust_root_fd, leaf_fd] 两项;只保留最后两级
-        # (parent_fd/root_fd),中间级用完即关,避免每次 load_verified() 泄漏 fd
-        root_fd = fds[-1]
-        parent_fd = fds[-2]
-        for fd in fds[:-2]:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-        last = chain[-1]
-        handles[name] = AnchorHandle(
-            root_fd=root_fd,
-            parent_fd=parent_fd,
-            leaf_name=last["name"],
-            expected_identity={"st_dev": last["st_dev"], "st_ino": last["st_ino"]},
-        )
+            last = chain[-1]
+            handles[name] = AnchorHandle(
+                root_fd=root_fd,
+                parent_fd=parent_fd,
+                leaf_name=last["name"],
+                expected_identity={"st_dev": last["st_dev"], "st_ino": last["st_ino"]},
+            )
+    except BaseException:
+        # 某根失败前,更早的根可能已建好 handle(root_fd/parent_fd 已持有)——
+        # 逐根异常处理只保证单根内部零泄漏,不保证跨根;这里补上外层兜底,
+        # 把已建好的 handle 一并关闭,防止「前几根成功、后一根失败」时静默泄漏。
+        for h in handles.values():
+            h.close()
+        raise
     return handles
