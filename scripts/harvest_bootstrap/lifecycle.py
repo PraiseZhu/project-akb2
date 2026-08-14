@@ -11,6 +11,9 @@ from pathlib import Path
 
 from ._base import (
     GENERATIONS_DIR,
+    ROOT_KEY_DIR,
+    ROOT_PK_NAME,
+    ROOT_SK_NAME,
     SCHEMA_VERSION,
     BootstrapError,
     crash_if,
@@ -18,7 +21,8 @@ from ._base import (
     fsync_dir,
     fsync_file,
 )
-from .crypto import sign_file
+from .crypto import gen_keypair, sign_bytes, sign_file
+from .trustlog import entry_body_bytes
 
 # ---------------------------------------------------------------------------
 # 部署锁
@@ -208,3 +212,131 @@ def cleanup_orphan_generations(c: dict, keep_epochs: set[int]) -> None:
             continue
         if n not in keep_epochs:
             shutil.rmtree(p)
+
+
+# ---------------------------------------------------------------------------
+# 布局验证与骨架
+# ---------------------------------------------------------------------------
+
+
+def verify_layout(c: dict) -> None:
+    """验证部署根目录布局:四目录结构 + 根配置 + root-key 均存在且权限正确。"""
+    root = c["deploy_root"]
+    if not root.exists():
+        raise BootstrapError(f"部署根不存在:{root}")
+    if not root.is_dir():
+        raise BootstrapError(f"部署根不是目录:{root}")
+    for name, mode in [
+        (ROOT_KEY_DIR, 0o700),
+        ("signer-keys", 0o710),
+        (GENERATIONS_DIR, 0o750),
+    ]:
+        d = root / name
+        if not d.exists():
+            raise BootstrapError(f"部署布局缺少目录:{d}")
+        if not d.is_dir():
+            raise BootstrapError(f"路径不是目录:{d}")
+        st = d.stat()
+        if (st.st_mode & 0o777) != mode:
+            raise BootstrapError(
+                f"目录权限不符:{d}(期望 {mode:04o}, 实际 {st.st_mode & 0o777:04o})"
+            )
+    if not c["roots_config"].exists():
+        raise BootstrapError(f"根配置缺失:{c['roots_config']}")
+    sk = root / ROOT_KEY_DIR / ROOT_SK_NAME
+    if not sk.exists():
+        raise BootstrapError(f"root 私钥缺失:{sk}")
+
+
+def ensure_skeleton(c: dict) -> None:
+    """创建部署骨架目录结构(幂等,已存在不报错)。"""
+    root = c["deploy_root"]
+    root.mkdir(mode=0o750, exist_ok=True)
+    os.chmod(root, 0o750)
+    for name, mode in [
+        (ROOT_KEY_DIR, 0o700),
+        ("signer-keys", 0o710),
+        (GENERATIONS_DIR, 0o750),
+    ]:
+        d = root / name
+        d.mkdir(mode=mode, exist_ok=True)
+        os.chmod(d, mode)
+    trust_log_dir = c["trust_log"].parent
+    trust_log_dir.mkdir(mode=0o750, exist_ok=True)
+    os.chmod(trust_log_dir, 0o750)
+
+
+# ---------------------------------------------------------------------------
+# root 密钥
+# ---------------------------------------------------------------------------
+
+
+def ensure_root_key(c: dict) -> tuple[Path, Path, bytes]:
+    """确保 root 密钥对存在:缺失则生成,部分存在则补齐公钥。
+
+    返回 (sk_path, pk_path, pub_pem_bytes)。私钥 mode 0o400,公钥 mode 0o440。
+    """
+    sk = c["deploy_root"] / ROOT_KEY_DIR / ROOT_SK_NAME
+    pk = c["deploy_root"] / ROOT_KEY_DIR / ROOT_PK_NAME
+    if sk.exists():
+        if pk.exists():
+            return sk, pk, pk.read_bytes()
+        # 私钥存在但公钥缺失:从私钥导出公钥
+        pub = _derive_pub_from_sk(sk)
+        pk.write_bytes(pub)
+        os.chmod(pk, 0o440)
+        fsync_file(pk)
+        return sk, pk, pub
+    # 全新生成
+    pub = gen_keypair(sk, None)
+    pk.write_bytes(pub)
+    os.chmod(pk, 0o440)
+    fsync_file(pk)
+    return sk, pk, pub
+
+
+def _derive_pub_from_sk(sk: Path) -> bytes:
+    """从已有私钥导出公钥 PEM。"""
+    import subprocess
+
+    r = subprocess.run(
+        ["openssl", "pkey", "-in", str(sk), "-pubout"],
+        check=True, capture_output=True, stdin=subprocess.DEVNULL,
+    )
+    return r.stdout
+
+
+# ---------------------------------------------------------------------------
+# trust-log 条目构造
+# ---------------------------------------------------------------------------
+
+
+def build_admission(
+    roots: dict, key_number: int, key_id: str, deployment_id: str
+) -> dict:
+    """构建 trust-log 条目中的 admission 段(四根 parent chain + 密钥身份)。"""
+    return {
+        "roots": record_parent_chain(roots),
+        "key_number": key_number,
+        "key_id": key_id,
+        "deployment_id": deployment_id,
+        "schema_version": SCHEMA_VERSION,
+    }
+
+
+def build_entry(
+    c: dict,
+    epoch: int,
+    admission: dict,
+    prev_entry_hash: str | None,
+    signer_sk: Path,
+) -> dict:
+    """构建完整的 trust-log 条目(含签名)。"""
+    entry: dict = {
+        "epoch": epoch,
+        "prev_entry_hash": prev_entry_hash,
+        "admission": admission,
+    }
+    sig = sign_bytes(signer_sk, entry_body_bytes(entry))
+    entry["signature"] = sig
+    return entry
