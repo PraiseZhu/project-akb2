@@ -84,7 +84,8 @@ from harvest_bootstrap._base import (  # noqa: E402
     BootstrapError,
     err,
 )
-from harvest_bootstrap.lifecycle import cmd_init, cmd_migrate  # noqa: E402
+from harvest_bootstrap.cmd_migrate import cmd_migrate  # noqa: E402
+from harvest_bootstrap.lifecycle import cmd_init  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # 部署常量解析与身份校验
