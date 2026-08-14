@@ -406,6 +406,16 @@ class TestCliFailClosed:
         )
         assert proc.returncode == CLI_EXIT_INVALID
 
+    def test_cli_directory_path_is_fail_closed(self, tmp_path, cli_target) -> None:
+        proc = subprocess.run(
+            cli_target + [str(tmp_path)],
+            capture_output=True,
+            text=True,
+            env=CLI_ENV,
+        )
+        assert proc.returncode == CLI_EXIT_INVALID
+        assert "文件不可读" in proc.stderr
+
 
 class TestFunctionCliConsistency:
     """函数与 CLI 对同一负样例判定一致(硬化类 5/8)。"""

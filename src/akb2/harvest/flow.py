@@ -78,13 +78,18 @@ ConfirmFn = Callable[[str], bool | None]
 AssemblerFn = Callable[..., str]
 
 
+def _count_list_items(value: object) -> int:
+    """仅对 list 计数；坏 payload 在渲染阶段按 0 处理，交由 assembler 裁决。"""
+    return len(value) if isinstance(value, list) else 0
+
+
 def render_payload(payload: dict) -> str:
     """渲染稿：把 harvest JSON 转成用户可读的展示文本（落盘前展示）。"""
     title = payload.get("title", "(无标题)")
     lane = payload.get("lane_hint", "unknown")
-    n_atoms = len(payload.get("atoms", []))
-    n_steps = len(payload.get("how_steps", []))
-    n_components = len(payload.get("components", []))
+    n_atoms = _count_list_items(payload.get("atoms"))
+    n_steps = _count_list_items(payload.get("how_steps"))
+    n_components = _count_list_items(payload.get("components"))
     return (
         f"【harvest 渲染稿】\n"
         f"标题: {title}\n车道: {lane}\n"

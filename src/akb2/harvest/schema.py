@@ -343,11 +343,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         with open(args.file, encoding="utf-8") as fh:
             payload = json.load(fh)
-    except FileNotFoundError:
-        print(f"harvest schema: 文件不可读: {args.file}", file=sys.stderr)
-        return CLI_EXIT_IO
     except json.JSONDecodeError as exc:
         print(f"harvest schema: JSON 非法: {exc}", file=sys.stderr)
+        return CLI_EXIT_IO
+    except (OSError, UnicodeDecodeError) as exc:
+        print(f"harvest schema: 文件不可读: {args.file} ({exc})", file=sys.stderr)
         return CLI_EXIT_IO
 
     violations = validate(payload)
