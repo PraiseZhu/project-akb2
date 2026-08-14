@@ -328,6 +328,26 @@ class TestIntegration:
         assert not iso.exists()
         assert _new_raw(deployment, before) == []
 
+    def test_iso_cleaned_on_open_failure(self, deployment, deploy_env: None,
+                                        ids: SimpleNamespace,
+                                        monkeypatch) -> None:
+        """隔离目录已创建但后续 open 失败时，不能留下孤儿目录。"""
+        iso = deployment.tree / f".harvest-iso--{ids.run_id}.tmp"
+        orig_open = assembler.os.open
+
+        def boom_on_iso(name, flags, *args, **kwargs):
+            if flags & os.O_DIRECTORY:
+                raise OSError("注入的 open 失败")
+            return orig_open(name, flags, *args, **kwargs)
+
+        monkeypatch.setattr(assembler.os, "open", boom_on_iso)
+        before = _raw_before(deployment)
+        with pytest.raises(assembler.AssemblyRejectedError):
+            assembler.assemble(_payload(ids.session_id),
+                               harvest_run_id=ids.run_id)
+        assert not iso.exists()
+        assert _new_raw(deployment, before) == []
+
 
 # ---------------------------------------------------------------------------
 # ③ run_id 贯通契约
@@ -348,6 +368,23 @@ class TestRunIdContract:
             [sys.executable, "-m", "akb2.harvest", str(f)],
             capture_output=True, text=True, env=env, cwd=REPO_ROOT)
         assert r.returncode == 2
+        assert _new_raw(deployment, before) == []
+
+    def test_cli_directory_input_exit2(self, deployment: SimpleNamespace,
+                                      deploy_env: None, ids: SimpleNamespace,
+                                      tmp_path: Path) -> None:
+        """输入路径是目录时，CLI 也应收口为 exit 2 而非 traceback。"""
+        d = tmp_path / "input-dir"
+        d.mkdir()
+        env = dict(deployment.env)
+        env["PYTHONPATH"] = str(REPO_ROOT / "src")
+        before = _raw_before(deployment)
+        r = subprocess.run(
+            [sys.executable, "-m", "akb2.harvest", str(d),
+             "--harvest-run-id", ids.run_id],
+            capture_output=True, text=True, env=env, cwd=REPO_ROOT)
+        assert r.returncode == 2
+        assert "文件不可读" in r.stderr
         assert _new_raw(deployment, before) == []
 
     def test_function_missing_run_id_typeerror(self, deploy_env: None,

@@ -69,6 +69,9 @@ def main(argv: list[str] | None = None) -> int:
     except FileNotFoundError:
         print(f"harvest: 文件不可读: {args.file}", file=sys.stderr)
         return EXIT_REJECTED
+    except OSError as exc:
+        print(f"harvest: 文件不可读: {args.file}: {exc}", file=sys.stderr)
+        return EXIT_REJECTED
     except json.JSONDecodeError as exc:
         print(f"harvest: JSON 非法: {exc}", file=sys.stderr)
         return EXIT_REJECTED

@@ -567,14 +567,28 @@ def assemble(
         raise AnchorDriftError(
             f"trust_root 不可解析(anchors 已通过,此处仅取路径): {e}") from None
     iso_path = parent_path / iso_name
+    iso_fd = -1
     try:
         os.mkdir(iso_name, 0o700, dir_fd=raw_h.parent_fd)
+        os.fsync(raw_h.parent_fd)
+        iso_fd = os.open(iso_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                         dir_fd=raw_h.parent_fd)
     except OSError as e:
+        if iso_fd >= 0:
+            try:
+                os.close(iso_fd)
+            except OSError:
+                pass
+        try:
+            os.rmdir(iso_name, dir_fd=raw_h.parent_fd)
+        except OSError:
+            pass
+        try:
+            os.fsync(raw_h.parent_fd)
+        except OSError:
+            pass
         raise AssemblyRejectedError(
             f"隔离私有目录创建失败: {e}") from None
-    os.fsync(raw_h.parent_fd)
-    iso_fd = os.open(iso_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                     dir_fd=raw_h.parent_fd)
 
     filename = ""
     try:
