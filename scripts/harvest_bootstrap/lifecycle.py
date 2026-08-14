@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -21,9 +22,15 @@ from ._base import (
     err,
     fsync_dir,
     fsync_file,
+    key_id_of_pem,
 )
 from .crypto import gen_keypair, sign_bytes, sign_file
-from .trustlog import entry_body_bytes
+from .trustlog import (
+    append_entry,
+    check_bad_tail,
+    entry_body_bytes,
+    read_tip,
+)
 
 # ---------------------------------------------------------------------------
 # 部署锁
@@ -341,3 +348,50 @@ def build_entry(
     sig = sign_bytes(signer_sk, entry_body_bytes(entry))
     entry["signature"] = sig
     return entry
+
+
+# ---------------------------------------------------------------------------
+# init / migrate
+# ---------------------------------------------------------------------------
+
+
+def cmd_init(c: dict, deployment_id: str) -> None:
+    """初始化 harvest 部署:创世 trust-log 条目(epoch 1)。
+
+    由 ROOT_SK 对 K1 准入签名,落盘 generations/1/ 三件与 trust-log 首条。
+    生效前校验已落盘布局;校验失败 → trust-log 仍为空,残留可被下次 init 回收。
+    """
+    roots = load_roots_config(c)
+    ensure_skeleton(c)
+    lock = acquire_lock(c)
+    try:
+        entries, tip, bad, h = read_tip(c)
+        if entries:
+            err("部署已初始化(trust-log 非空);重新 init 只能由带外人工流程清空状态后执行")
+        check_bad_tail(c, entries, bad, tip)
+        cleanup_orphan_generations(c, set())
+        # 确保 root key 存在
+        root_sk, _root_pk, _root_pub = ensure_root_key(c)
+        # 生成 K1 signer key
+        k1_sk = c["signer_keys"] / "K1.sk"
+        if not k1_sk.exists():
+            gen_keypair(k1_sk, None)
+        pub_pem = subprocess.run(
+            ["openssl", "pkey", "-in", str(k1_sk), "-pubout"],
+            capture_output=True, stdin=subprocess.DEVNULL, check=True,
+        ).stdout
+        write_bundle(
+            c, 1, build_manifest(c, roots, 1, deployment_id), k1_sk, pub_pem
+        )
+        key_id = key_id_of_pem(pub_pem)
+        admission = build_admission(roots, 1, key_id, deployment_id)
+        e1 = build_entry(c, 1, admission, None, root_sk)
+        # 生效前校验已落盘布局;校验失败 → trust-log 仍为空,残留由下次 init 回收
+        verify_layout(c)
+        append_entry(c, e1)
+        print(
+            f"[init] epoch=1 generation={GENERATIONS_DIR}/1 "
+            f"append_ok={len(json.dumps(e1, sort_keys=True).encode())}"
+        )
+    finally:
+        release_lock(lock)
