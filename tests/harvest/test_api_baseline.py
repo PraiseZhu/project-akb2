@@ -150,10 +150,22 @@ def worktree() -> Path:
 
 @pytest.fixture
 def base_sha(worktree: Path) -> str:
-    """从环境变量 AKB2_BASE_SHA 取 base SHA。"""
+    """从环境变量 AKB2_BASE_SHA 取 base SHA；未设置时回退到 origin/main 当前 SHA。
+
+    只在缺失时 skip 会让本测试套件在默认 `pytest -q`（CI 未设置该变量）下
+    8/9 项静默跳过、覆盖为零——回退到 origin/main 保证签名比对默认可自证。
+    """
     sha = os.environ.get(ENV_BASE_SHA, "")
     if not sha:
-        pytest.skip(f"{ENV_BASE_SHA} 未设置")
+        result = subprocess.run(
+            ["git", "rev-parse", "refs/remotes/origin/main"],
+            capture_output=True, text=True, cwd=str(worktree), timeout=30,
+        )
+        if result.returncode != 0:
+            pytest.skip(
+                f"{ENV_BASE_SHA} 未设置，且回退取 origin/main 失败: {result.stderr.strip()}"
+            )
+        sha = result.stdout.strip()
     if not sha.isalnum() or len(sha) != 40:
         pytest.fail(f"{ENV_BASE_SHA}={sha} 不是有效的 40 字符 hex SHA")
     return sha
