@@ -183,34 +183,26 @@ def lookup(ledger_path: str, run_id: str) -> dict | None:
     """按 harvest_run_id 查最新一条事件行(含所有类型,最晚 ts 优先)。"""
     path = Path(ledger_path)
     rows = _read_ledger(path)
-    candidates = [r for r in rows if r.get("harvest_run_id") == run_id]
-    if not candidates:
-        return None
-    # 最晚 ts 优先
-    candidates.sort(key=lambda r: r.get("ts", 0), reverse=True)
-    return candidates[0]
+    for row in reversed(rows):
+        if row.get("harvest_run_id") == run_id:
+            return row
+    return None
 
 
 def _last_committed_for_run_id(rows: list[dict], run_id: str) -> dict | None:
     """从已读行中找 run_id 的最后一条 committed 行。"""
-    committed = [r for r in rows
-                 if r.get("harvest_run_id") == run_id
-                 and r.get("event") == EVENT_COMMITTED]
-    if not committed:
-        return None
-    committed.sort(key=lambda r: r.get("ts", 0), reverse=True)
-    return committed[0]
+    for row in reversed(rows):
+        if row.get("harvest_run_id") == run_id and row.get("event") == EVENT_COMMITTED:
+            return row
+    return None
 
 
 def _last_pending_for_run_id(rows: list[dict], run_id: str) -> dict | None:
     """从已读行中找 run_id 的最后一条 pending 行。"""
-    pendings = [r for r in rows
-                if r.get("harvest_run_id") == run_id
-                and r.get("event") == EVENT_PENDING]
-    if not pendings:
-        return None
-    pendings.sort(key=lambda r: r.get("ts", 0), reverse=True)
-    return pendings[0]
+    for row in reversed(rows):
+        if row.get("harvest_run_id") == run_id and row.get("event") == EVENT_PENDING:
+            return row
+    return None
 
 
 def _find_pending_by_content(
@@ -618,17 +610,19 @@ def run_harvest_with_ledger(
             }
 
         with content_rsv:
-            # 4. 写 pending 行
-            entry = {
-                "event": EVENT_PENDING,
-                "harvest_run_id": run_id,
-                "session_id": session_id,
-                "content_fingerprint": content_fingerprint,
-                "content_key": ck,
-                "dest_filename": dest_filename,
-                "ts": _now_ts(),
-            }
-            _append_line(ledger_path, entry)
+            # 4. 复用已存在的同一 pending,避免重试时重复追加。
+            entry = other_pending
+            if entry is None:
+                entry = {
+                    "event": EVENT_PENDING,
+                    "harvest_run_id": run_id,
+                    "session_id": session_id,
+                    "content_fingerprint": content_fingerprint,
+                    "content_key": ck,
+                    "dest_filename": dest_filename,
+                    "ts": _now_ts(),
+                }
+                _append_line(ledger_path, entry)
 
             # 5. 调 assemble_fn(archive_raw + redaction 等)
             try:
