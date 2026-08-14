@@ -68,20 +68,6 @@ REJECTED_ARGS = [
 GHOST_DEPLOY_UID = 424242
 GHOST_DEPLOY_GID = 424242
 
-# 规格 (5f2) 写死的禁用词表(必须与 scripts/check_terminology.py 的 WORDS 逐项相等)
-BANNED_WORDS = [
-    "active",
-    "epoch-state",
-    "deployment-state",
-    "独立吊销链",
-    "密钥吊销链",
-    "指针切换",
-    "commit 记录",
-    "读 commit",
-    "对 commit 做 replace",
-    "部署状态里",
-]
-
 CRASH_STAGES = [
     # (stage, 语义)
     ("mkdir", "新 generation 目录建好但文件未写完"),
@@ -170,10 +156,6 @@ def read_trust_log(path: Path) -> list[dict]:
 def entry_hash(entry: dict) -> str:
     """条目内容 hash = sha256(完整条目 JSON 字节,含自身 signature)。"""
     return hashlib.sha256(json.dumps(entry, sort_keys=True).encode()).hexdigest()
-
-
-def last_entry(entries: list[dict]) -> dict | None:
-    return entries[-1] if entries else None
 
 
 @pytest.fixture()
@@ -277,10 +259,6 @@ def run_bootstrap(bootstrap: Path, args: list[str], env: dict, cwd: Path, audit_
     cmd = [sys.executable, "-c", AUDIT_WRAPPER, str(bootstrap), str(audit_log), *args] if audit_log else [
         sys.executable, str(bootstrap), *args]
     return subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=cwd)
-
-
-def run_raw(bootstrap: Path, args: list[str], env: dict, cwd: Path):
-    return subprocess.run([sys.executable, str(bootstrap), *args], capture_output=True, text=True, env=env, cwd=cwd)
 
 
 def dual_identity_available() -> bool:
