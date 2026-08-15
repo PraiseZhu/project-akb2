@@ -232,3 +232,40 @@ def test_discriminates_handshake_without_vault_env(tmp_path):
     # ①② 段标记已打出的前提下才轮到③段红（exit 4 只可能在其后）
     assert "REG_AUTHORITY_MATCH" in proc.stdout, proc.stdout
     assert "REG_OTHER_KEYS_INTACT" in proc.stdout, proc.stdout
+
+
+def test_ambient_host_vault_env_does_not_mask_missing_entry_env(tmp_path):
+    """宿主泄漏防御：宿主进程带 AKB2_ROOT、条目缺它 → 仍必须 exit 4。
+
+    生产握手子进程不复用测试侧的 SCRUB 父环境逻辑——本用例故意把宿主
+    AKB2_ROOT 注入 run_verify 的父环境（指向一个真实可用的 fixture vault），
+    若握手子进程照抄宿主 env，server 会拿宿主路径跑通 lifespan，把
+    「条目 env 自足性」验证变成假绿。
+    """
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    cfg = tmp_path / ".claude.json"
+    backup_dir = tmp_path / "reg-backup"
+    doc = build_registered_config(vault)
+    del doc["mcpServers"][SERVER_KEY]["env"]["AKB2_ROOT"]
+    write_green_state(cfg, backup_dir, doc)
+
+    # 宿主带一个「看似能用」的 AKB2_ROOT（指向同形状 fixture vault）
+    ambient_vault = tmp_path / "ambient-vault"
+    ambient_sources = ambient_vault / "wiki" / "sources"
+    ambient_sources.mkdir(parents=True)
+    env = {k: v for k, v in os.environ.items() if k not in SCRUB_ENV_KEYS}
+    env["AKB2_ROOT"] = str(ambient_vault)
+    proc = subprocess.run(
+        [sys.executable, str(VERIFY_SCRIPT),
+         "--config", str(cfg), "--backup-dir", str(backup_dir),
+         "--repo-root", str(REPO_ROOT)],
+        capture_output=True, text=True, timeout=120.0, env=env,
+    )
+    assert proc.returncode == EXIT_HANDSHAKE, (
+        f"宿主 AKB2_ROOT 不得掩盖条目缺 env：期望 exit 4，"
+        f"got {proc.returncode}: {proc.stderr!r}"
+    )
+    # ①② 段标记仍在（exit 4 确实来自③段握手，非前置误伤）
+    assert "REG_AUTHORITY_MATCH" in proc.stdout, proc.stdout
+    assert "REG_OTHER_KEYS_INTACT" in proc.stdout, proc.stdout

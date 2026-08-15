@@ -291,6 +291,36 @@ def _read_message(stdout: Any, deadline: float) -> dict[str, Any] | None:
         raise HandshakeDecodeError(f"响应不是合法 JSON: {line!r} ({exc})") from exc
 
 
+# 宿主 vault/env 变量不得泄入握手子进程：条目缺该变量而宿主有时，子进程会
+# 拿宿主路径继续跑，把「条目自足性」验证变成假绿。以下变量一律先剥离，
+# 仅允许 entry.env 显式叠回。
+_SCRUBBED_ENV_KEYS = (
+    "AKB2_ROOT",
+    "AKB2_VAULT_ROOT",
+    "VAULT_ROOT",
+    "PYTHONPATH",
+)
+
+
+def _controlled_child_env(env_overlay: dict[str, Any]) -> dict[str, str]:
+    """构造受控子进程 env：继承启动所需基础变量，剥离 vault 路径类变量后叠加 entry.env。
+
+    保留 PATH/HOME/LANG/TZ/TMPDIR/SSL 证书类——python 解释器启动与 https
+    出站都依赖它们；剥离的是会改变被测 server 行为的 vault/env 泄漏项。
+    """
+    child_env: dict[str, str] = {}
+    for key, value in os.environ.items():
+        if key in _SCRUBBED_ENV_KEYS:
+            continue
+        if key.startswith("PYTHON"):
+            continue  # PYTHONHOME/PYTHONSTARTUP 等解释器注入项同剥
+        child_env[key] = value
+    if isinstance(env_overlay, dict):
+        for key, value in env_overlay.items():
+            child_env[str(key)] = str(value)
+    return child_env
+
+
 def check_handshake(entry: dict[str, Any]) -> tuple[list[str], str]:
     """③段：注册条目原样起子进程完成 initialize 握手。返回 (失败原因, serverInfo.name)。"""
     problems: list[str] = []
@@ -300,9 +330,7 @@ def check_handshake(entry: dict[str, Any]) -> tuple[list[str], str]:
     if not isinstance(command, str) or not isinstance(args_list, list):
         return ["条目缺 command/args，无法起握手进程"], ""
 
-    child_env = dict(os.environ)
-    if isinstance(env_overlay, dict):
-        child_env.update(env_overlay)
+    child_env = _controlled_child_env(env_overlay)
 
     request_id = 1
     initialize_request = {
