@@ -14,6 +14,7 @@ Aliases: `akb-search`, `cc-akb-search`, `akb`, `search`, `知识库`, `知识库
 ## Purpose
 
 搜索 AKB 知识库，支持三种搜索路由分流：工具库查询、知识库查询、全量搜索。
+知识库查询走 AKB2 只读检索，按概念图谱 `[[链接]]` 读完相关正文，不用条数卡检索。
 
 ## Workflow
 
@@ -39,32 +40,70 @@ Aliases: `akb-search`, `cc-akb-search`, `akb`, `search`, `知识库`, `知识库
 
 - 从用户消息提取核心关键词
 - 中英文均可搜索
+- 优先英文技术术语（LangGraph, MCP, ReAct），中文补充
 
 ### Step 2: 执行搜索
 
-- 调用 `akb_search` MCP 工具
-- 根据 scope 过滤结果：
-  - `scope=toolbox`：仅返回 toolbox/ 路径下的条目
-  - `scope=knowledge`：仅返回 wiki/ 路径下的条目
-  - `scope=all`：返回所有匹配条目
+**知识库 / 全量里的知识部分**：走 `akb2_retrieval_search`，不要用条数卡。
+MCP 默认 5、CLI/引擎默认 10；`limit<=0` 会空结果。显式传 `limit=1000` 顶掉截断。
+只有用户明确说「只要 N 条」才改 limit。
 
-### Step 3: 合并结果
+```
+mcp__akb2-retrieval__akb2_retrieval_search(query="<关键词>", limit=1000)
+```
 
-- 去重
-- 按相关度排序
+MCP 不可用时，在 Project AKB2 仓根：
+
+```bash
+cd ~/AI-Agent/Claude/projects/Project\ AKB2
+PYTHONPATH=src python3 -m akb2.retrieval.cli search "<关键词>" --limit 1000 --output json
+```
+
+vault：`VAULT_ROOT` / `AKB2_ROOT` 优先。Mac mini 生产库是 `/Volumes/AKB2/Obsidian`；
+主力机通常没有该卷，用 `--vault-root /Users/praise/Obsidian` 或
+`AKB2_ROOT=/Users/praise/Obsidian/Praise Space/AKB2.0`。
+
+**工具库**：仍调 `akb_search` MCP，按 `scope=toolbox` 只留 toolbox/ 路径。
+
+**全量**：知识库走上一节，工具库走 `akb_search`，再合并。
+
+### Step 3: 抽链接，派子代理读（知识库）
+
+检索 JSON 只是索引。概念图谱要读有链接的正文，不要只拿 `how_density` 交差。
+
+从每条命中抽链接（去重）：
+
+- frontmatter `related_concepts` / `aliases` 里的 `[[wikilink]]`
+- 正文 `[[wikilink]]`
+- 只跟这篇相关的概念/设计/来源；跳过 `00-Index`、staging、archive
+
+解析：
+
+- `[[concept-harness-engineering]]` → `<AKB2.0>/wiki/concepts/concept-harness-engineering.md`
+- `[[slug]]` 先 `wiki/concepts/`、再 `wiki/sources/`、再 `wiki/designs/` 找 `<slug>.md`
+- 解析不到的记一笔，不要假装读过
+
+读法：
+
+- 1–2 个链接：主会话自己 Read
+- ≥3 个链接：派子代理并行读，回报标题、相关要点、又链出的 `[[wikilink]]`
+- 外扩跟图谱走，读到没有未读相关链接为止；环用已读集合打破
+
+子代理只读，不改 vault，不改工程仓。
 
 ### Step 4: 呈现给用户
 
-- 每条结果标注来源类型：
-  - 路径含 `toolbox/` → 标注 `[工具库]`
-  - 路径含 `wiki/` → 标注 `[知识库]`
-  - 其他 → 标注 `[其他]`
-- 格式：`[知识库] 标题 — 摘要` 或 `[工具库] 工具名 — 用途`
+- 先给结论，再按相关性列读过的笔记
+- 每条标注来源：`[知识库]` / `[工具库]`
+- How 类问题优先展示可执行步骤
+- 概念/对比/选型：把图谱上读到的相邻概念一并说清
+- 无结果换词；有链接没读到就如实说
 
 ## Dependencies
 
-- akb-search MCP server: 提供底层搜索能力
-- AKB2.0 vault: 知识库数据源
+- akb2-retrieval MCP：知识库只读检索（`akb2_retrieval_search`）
+- akb-search MCP：工具库 / 旧检索兜底
+- AKB2.0 vault：知识库数据源
 
 ## Safety
 
@@ -76,3 +115,4 @@ Aliases: `akb-search`, `cc-akb-search`, `akb`, `search`, `知识库`, `知识库
 
 - Original Claude skill: `akb-search`
 - 知识复利增强：搜索路由分流（scope=toolbox / scope=knowledge / scope=all）
+- 2026-08-16：知识库改走 akb2-retrieval，不按条数截断，跟图谱链接读
