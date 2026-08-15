@@ -1,4 +1,4 @@
-"""sc-fb-stats 验收：harvest 反馈统计脚本（wave9/g7）。
+"""sc-fb-stats 验收：harvest 反馈统计脚本（wave9/g7）+ p2a 联结与复扫（wave1/g4）。
 
 测试覆盖：
 - 身份断言：fold_reconcile 与 trial_verify 是同一函数对象
@@ -8,11 +8,16 @@
 - 异常：fold_reconcile 抛出 ResolverError
 - 坏 JSONL：损坏行被静默跳过
 - CLI 入口：argv 不足/正确
+- p2a-sc1：按 harvest_run_id exact-key 联结 raw；缺 run_id 走 content_key
+  二级映射；不可联结进 unmatched 不静默丢弃；前缀匹配变异转红
+- p2a-sc2：CLI 输出复扫 redaction——伪凭证默认 Reject（exit 3 不回显
+  原文）；--redact 含 [REDACTED] 不含原文；跳过复扫变异转红
 """
 
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -21,7 +26,12 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
-from harvest_feedback import _read_jsonl, harvest_feedback, main  # noqa: E402
+from harvest_feedback import (  # noqa: E402
+    _read_jsonl,
+    harvest_feedback,
+    join_raw_by_run_id,
+    main,
+)
 
 # ---------------------------------------------------------------------------
 # 身份断言
@@ -78,8 +88,10 @@ def _committed_row(
     b: str = "b1",
     c: str = "c1",
     hash_val: str = "h1",
+    raw_abspath: str = "/vault/raw/r1.json",
+    content_key: str = "",
 ) -> dict:
-    return {
+    d: dict = {
         "event": "committed",
         "harvest_run_id": run_id,
         "a": a,
@@ -89,7 +101,12 @@ def _committed_row(
         "content_fingerprint": "fp1",
         "session_id": "s1",
         "ts": 1000,
+        "raw_abspath": raw_abspath,
+        "pipeline_content_hash": hash_val,
     }
+    if content_key:
+        d["content_key"] = content_key
+    return d
 
 
 def _trial_event(
@@ -429,3 +446,251 @@ class TestReadJsonl:
         rows, corrupted = _read_jsonl(str(tmp_path / "nope.jsonl"))
         assert rows == []
         assert corrupted == 0
+
+
+# ---------------------------------------------------------------------------
+# p2a-sc1: run_id exact-key 联结
+# ---------------------------------------------------------------------------
+
+
+class TestRunIdJoin:
+    """按 harvest_run_id exact-key 联结 raw（wave1/g4）。"""
+
+    def test_joinable_via_run_id(self, tmp_path: Path) -> None:
+        """可联结：trial/quality 行 run_id 与 committed 逐字相等，raw 钉死
+        committed 行 raw_abspath。"""
+        hl = _write_jsonl(tmp_path / "hl.jsonl", [
+            _committed_row(run_id="run-1", raw_abspath="/vault/raw/a.json"),
+            _committed_row(run_id="run-2", raw_abspath="/vault/raw/b.json"),
+        ])
+        tj = _write_jsonl(tmp_path / "tj.jsonl", [
+            {"kind": "blocked", "harvest_run_id": "run-1", "content_hash": "ch1"},
+            {"kind": "resolved", "harvest_run_id": "run-1"},
+        ])
+        ql_rows = [dict(_quality_row(content_hash="ch1"), harvest_run_id="run-2")]
+        ql = _write_jsonl(tmp_path / "ql.jsonl", ql_rows)
+
+        result = harvest_feedback(str(hl), str(tj), str(ql))
+
+        rj = result["raw_join"]
+        assert rj["by_run_id"]["run-1"]["raw_abspath"] == "/vault/raw/a.json"
+        assert rj["by_run_id"]["run-2"]["raw_abspath"] == "/vault/raw/b.json"
+        assert rj["by_run_id"]["run-1"]["trial_events_joined"] == 2
+        assert rj["by_run_id"]["run-2"]["quality_entries_joined"] == 1
+        assert rj["joined_via_run_id"] == 3
+        assert rj["joined_via_content_key"] == 0
+        assert rj["unmatched"]["trial_events"] == 0
+        assert rj["unmatched"]["quality_entries"] == 0
+        # 前缀不相等不联结：run-1x 不是 run-1
+        result2 = join_raw_by_run_id(
+            [{"event": "committed", "harvest_run_id": "run-1",
+              "raw_abspath": "/vault/raw/a.json"}],
+            [{"kind": "blocked", "harvest_run_id": "run-1x"}],
+            [],
+        )
+        assert result2["unmatched"]["trial_events"] == 1
+        assert result2["unmatched"]["trial_run_ids"] == ["run-1x"]
+        assert result2["by_run_id"]["run-1"]["trial_events_joined"] == 0
+
+    def test_secondary_join_via_content_key(self, tmp_path: Path) -> None:
+        """缺 run_id 的 quality 行经 content_key 二级映射联结。"""
+        committed = [
+            _committed_row(run_id="run-A", raw_abspath="/vault/raw/a.json",
+                           content_key="ck-a"),
+        ]
+        quality = [
+            {"event": "finalize", "content_key": "ck-a"},      # 二级映射命中
+            {"event": "finalize", "content_key": "ck-z"},      # 映射不中 → unmatched
+            {"event": "intake_raw"},                            # 无键 → unmatched
+        ]
+        rj = join_raw_by_run_id(committed, [], quality)
+        assert rj["joined_via_content_key"] == 1
+        assert rj["by_run_id"]["run-A"]["quality_entries_joined"] == 1
+        assert rj["unmatched"]["quality_entries"] == 2
+        assert rj["unmatched"]["quality_run_ids"] == []  # 无自带 run_id 不列
+
+    def test_missing_raw_goes_unmatched(self, tmp_path: Path) -> None:
+        """查无 raw（run_id 未知/typo）进 unmatched，不静默丢弃。"""
+        committed = [_committed_row(run_id="real-run")]
+        trial = [
+            {"kind": "blocked", "harvest_run_id": "typo-run"},
+            {"kind": "resolved", "harvest_run_id": "typo-run"},
+        ]
+        rj = join_raw_by_run_id(committed, trial, [])
+        assert rj["unmatched"]["trial_events"] == 2
+        assert rj["unmatched"]["trial_run_ids"] == ["typo-run"]
+        assert rj["by_run_id"]["real-run"]["trial_events_joined"] == 0
+
+    def test_empty_ledger_all_unmatched(self, tmp_path: Path) -> None:
+        """ledger 空（无 committed）→ 所有带 run_id 的行都 unmatched。"""
+        trial = [{"kind": "unverifiable", "harvest_run_id": "r-x"}]
+        quality = [{"event": "intake_raw", "harvest_run_id": "r-x"}]
+        rj = join_raw_by_run_id([], trial, quality)
+        assert rj["by_run_id"] == {}
+        assert rj["unmatched"]["trial_events"] == 1
+        assert rj["unmatched"]["quality_entries"] == 1
+        assert rj["unmatched"]["trial_run_ids"] == ["r-x"]
+        assert rj["unmatched"]["quality_run_ids"] == ["r-x"]
+
+    def test_samples_match_unmatched_verdict(self) -> None:
+        """unmatched.samples 与 unmatched 计数同一裁定路径：经 content_key
+        联结成功的行（无 run_id）不得混进 samples。"""
+        committed = [
+            _committed_row(run_id="run-A", raw_abspath="/vault/raw/a.json",
+                           content_key="ck-a"),
+        ]
+        trial = [
+            {"kind": "unverifiable", "harvest_run_id": "run-ghost"},  # 不可联结
+            {"kind": "manual_attested", "harvest_run_id": "run-ghost"},
+        ]
+        quality = [
+            {"event": "finalize", "content_key": "ck-a"},  # content_key 联结成功
+        ]
+        rj = join_raw_by_run_id(committed, trial, quality)
+        samples = rj["unmatched"]["samples"]
+        assert len(samples) == 2  # 只含两条不可联结 trial
+        assert all(s.get("harvest_run_id") == "run-ghost" for s in samples)
+        # 联结成功的 quality 行不在 samples 里
+        assert not any(s.get("event") == "finalize" for s in samples)
+
+    def test_exactly_three_sources_no_extra_input(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """恰三源：真实读三个 ledger 之外，不 open 任何其他文件。"""
+        import builtins
+
+        hl = _write_jsonl(tmp_path / "hl.jsonl", [_committed_row()])
+        tj = _write_jsonl(tmp_path / "tj.jsonl", [_trial_event()])
+        ql = _write_jsonl(tmp_path / "ql.jsonl", [_quality_row()])
+
+        opened: list[str] = []
+        real_open = builtins.open
+
+        def spy_open(file, *args, **kwargs):  # type: ignore[no-untyped-def]
+            opened.append(str(file))
+            return real_open(file, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", spy_open)
+        harvest_feedback(str(hl), str(tj), str(ql))
+
+        allowed = {str(p) for p in (hl, tj, ql)}
+        extra = [p for p in opened if p not in allowed]
+        assert extra == []  # 除三源外零额外文件读取
+
+    def test_mutation_prefix_match_turns_red(self) -> None:
+        """反向变异：exact 改前缀匹配后此用例必须失败。
+
+        若 join_raw_by_run_id 被改成前缀匹配（如 startswith），run-pre
+        会错误联结到 run-prefix-run 的 committed 行，raw_abspath 断言转红。
+        """
+        committed = [
+            _committed_row(run_id="run-prefix-run", raw_abspath="/vault/raw/real.json"),
+        ]
+        trial = [{"kind": "blocked", "harvest_run_id": "run-pre"}]
+        rj = join_raw_by_run_id(committed, trial, [])
+        # exact-key 下 run-pre 不可联结
+        assert rj["unmatched"]["trial_events"] == 1
+        assert rj["by_run_id"]["run-prefix-run"]["trial_events_joined"] == 0
+
+
+# ---------------------------------------------------------------------------
+# p2a-sc2: CLI 输出复扫 redaction
+# ---------------------------------------------------------------------------
+
+
+class TestOutputRescan:
+    """CLI 输出前 json.dumps 全文复扫（wave1/g4）。"""
+
+    def _write_credential_journal(self, tmp_path: Path) -> tuple[Path, Path, Path]:
+        """三源中 journal 携带伪凭证(github token 形态)。"""
+        hl = _write_jsonl(tmp_path / "hl.jsonl", [])
+        tj = _write_jsonl(tmp_path / "tj.jsonl", [
+            {"kind": "unverifiable", "harvest_run_id": "r-cred",
+             "details": "token ghp_AbCdEfGhIjKlMnOpQrStUvWxYz1234567890 leaked"},
+        ])
+        ql = _write_jsonl(tmp_path / "ql.jsonl", [])
+        return hl, tj, ql
+
+    def test_default_reject_exit_3_no_plaintext(self, tmp_path: Path, capsys) -> None:
+        """默认 Reject：伪凭证 journal → exit 3，stdout 无输出、stderr 不含原文。"""
+        hl, tj, ql = self._write_credential_journal(tmp_path)
+
+        rc = main(["prog", str(hl), str(tj), str(ql)])
+        captured = capsys.readouterr()
+
+        assert rc == 3
+        assert captured.out == ""  # 未落任何输出
+        assert "ghp_AbCdEfGh" not in captured.err  # 不回显原文
+        assert "github_token" in captured.err  # 点名模式类
+
+    def test_redact_flag_replaces_and_outputs(self, tmp_path: Path, capsys) -> None:
+        """--redact：输出含 [REDACTED] 且不含凭证原文。"""
+        hl, tj, ql = self._write_credential_journal(tmp_path)
+
+        rc = main(["prog", str(hl), str(tj), str(ql), "--redact"])
+        captured = capsys.readouterr()
+
+        assert rc == 0
+        assert "ghp_AbCdEfGh" not in captured.out
+        assert "[REDACTED]" in captured.out
+        parsed = json.loads(captured.out)  # 输出仍是合法 JSON
+        assert parsed["counts"]["trial_events"] == 1
+
+    def test_clean_output_passes_untouched(self, tmp_path: Path, capsys) -> None:
+        """无凭证输出原样通过（ Reject 不误伤正常统计输出）。"""
+        hl = _write_jsonl(tmp_path / "hl.jsonl", [_committed_row()])
+        tj = _write_jsonl(tmp_path / "tj.jsonl", [_trial_event()])
+        ql = _write_jsonl(tmp_path / "ql.jsonl", [])
+
+        rc = main(["prog", str(hl), str(tj), str(ql)])
+        captured = capsys.readouterr()
+
+        assert rc == 0
+        assert "[REDACTED]" not in captured.out
+        parsed = json.loads(captured.out)
+        assert parsed["fold_state"]["phase"] == "RESOLVED"
+
+    def test_scan_text_shares_rule_set_with_assembler(self) -> None:
+        """复扫与 assembler 同一规则集：scan_text 是 redaction 模块的薄封装，
+        不复制 pattern 表（identity 断言：模块内只有一处 _PATTERNS 定义）。"""
+        import inspect
+
+        import akb2.harvest.redaction as red_mod
+        from akb2.harvest import assembler as asm_mod
+
+        # assembler 的落盘扫描与 scan_text 用同一底层实现
+        src = inspect.getsource(red_mod.scan_text)
+        assert "_scan_markdown" in src  # 复用同一编译模式族
+        assert "_PATTERNS" not in src.replace("_scan_markdown", "")  # 零模式定义
+        # pattern 表全仓只此一处定义
+        harvest_dir = Path(red_mod.__file__).parent
+        pattern_defs = []
+        for py in harvest_dir.glob("*.py"):
+            text = py.read_text(encoding="utf-8")
+            if re.search(r"^_PATTERNS\s*[:=]", text, re.MULTILINE):
+                pattern_defs.append(py.name)
+        assert pattern_defs == ["redaction.py"]
+        # assembler 确实经 redaction 模块复用(不是自己的副本)
+        assert asm_mod.scan_and_redact is red_mod.scan_and_redact
+
+    def test_mutation_skip_rescan_turns_red(self, tmp_path: Path, capsys) -> None:
+        """反向变异：跳过复扫后两个用例必须失败。
+
+        monkeypatch main 里的 scan_text 为直通函数,模拟"复扫被跳过"——
+        默认 Reject 用例(期望 exit 3)与 --redact 用例(期望 [REDACTED])
+        在直通下都会转红。
+        """
+        import harvest_feedback as fb_mod
+
+        def skip_scan(text, *, policy):  # type: ignore[no-untyped-def]
+            return text, []
+
+        hl, tj, ql = self._write_credential_journal(tmp_path)
+        # 直通变异下:默认 Reject 用例的 rc=3 期望必然失守(rc 变 0),
+        # 且输出必含原文 —— 两个锚点任一都可检出"复扫被跳过"。
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(fb_mod, "scan_text", skip_scan)
+            rc = main(["prog", str(hl), str(tj), str(ql)])
+            leaked = capsys.readouterr().out
+        assert rc == 0  # 直通下不再拒绝(与原实现的 rc=3 相悖)
+        assert "ghp_AbCdEfGh" in leaked  # 跳过复扫 = 原文泄漏(变异检测锚点)
