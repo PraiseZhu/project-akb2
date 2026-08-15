@@ -14,6 +14,9 @@ fail-closed 的入口：
   ``--harvest-run-id`` / ``assemble(*, harvest_run_id)`` 强制），不是内容字段；
   若两处都必填，payload 与参数不一致时反而要再定优先级，徒增二源分歧。
 - atoms[].kind 枚举固定 6 值；source_meta 为宽松 dict（字段未枚举，不造约束）
+- ``session_id`` 必须是小写 canonical UUID4（复用 assembler 的
+  ``validate_harvest_run_id`` 同一谓词，不另写第二份正则）；
+  ``source_meta.session_id`` 存在时必须与顶层逐字相等（同源闸，缺失不违规）
 - 函数入口不因「进程内调用」放行任何 CLI 会拒的输入（硬化类 5）
 
 依赖: 标准库 only（json/argparse），无 LLM、无 IO 副作用。
@@ -24,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -63,6 +67,74 @@ def _nonempty_str(value: Any, label: str) -> list[str]:
         return [f"{label}: 期望字符串,实际 {type(value).__name__}"]
     if not value.strip():
         return [f"{label}: 期望非空字符串,实际为空"]
+    return []
+
+
+def _load_run_id_predicate():
+    """加载 assembler.validate_harvest_run_id（同一函数对象，不复制谓词）。
+
+    assembler 顶层 import 本模块，直接顶层反向 import 构成顺序敏感循环，
+    故延迟到调用点。部分子进程入口（scripts/trial_batch.py）只保证
+    ``PYTHONPATH=<repo>/src``，而 assembler 顶层的
+    ``from src.akb2.quality.intake.raw_archiver import ...`` 要求 repo root
+    也在 sys.path——此时首次 import 报 ModuleNotFoundError。这里从本文件
+    位置推导 repo root 补进 sys.path 后重试同一 import，仍失败则如实抛出
+    （fail-closed，不降级、不写第二份正则兜底）。
+    """
+    try:
+        from akb2.harvest.assembler import validate_harvest_run_id
+    except ModuleNotFoundError:
+        repo_root = Path(__file__).resolve().parents[3]
+        sys.path.insert(0, str(repo_root))
+        from akb2.harvest.assembler import validate_harvest_run_id
+    return validate_harvest_run_id
+
+
+def _validate_session_id(session_id: Any) -> list[str]:
+    """session_id 格式闸：小写 canonical UUID4（与 run_id 同一谓词）。
+
+    谓词复用 assembler.validate_harvest_run_id 同一函数对象（不另写第二份
+    正则）。非字符串经谓词自身的 isinstance 检查拒绝，消息含期望/实际形态、
+    不输出 payload 全文。
+    """
+    validate_harvest_run_id = _load_run_id_predicate()
+
+    if not validate_harvest_run_id(session_id):
+        actual = (
+            repr(session_id) if isinstance(session_id, str) else type(session_id).__name__
+        )
+        return [
+            "session_id: 期望小写 canonical UUID4"
+            f"(如 4e1c8a92-3b7d-4f6a-9c25-1d8e0b3a7f64),实际 {actual}"
+        ]
+    return []
+
+
+def _validate_session_id_same_origin(payload: dict) -> list[str]:
+    """同源闸：source_meta.session_id 存在时必须与顶层 session_id 逐字相等。
+
+    键缺失不违规（source_meta 为宽松 dict 契约）；分叉即拒。消息只含两值
+    的截断指纹（前 8 字符）而非全文，防 PII 泄漏进违规清单。
+    """
+    source_meta = payload.get("source_meta")
+    if not isinstance(source_meta, dict) or "session_id" not in source_meta:
+        return []
+    # 顶层 session_id 缺失已由必填字段闸点名，此处不叠加同源违规
+    if "session_id" not in payload:
+        return []
+    top = payload.get("session_id")
+    nested = source_meta["session_id"]
+
+    def _fingerprint(value: Any) -> str:
+        if isinstance(value, str):
+            return f"str:{value[:8]}…"
+        return type(value).__name__
+
+    if top != nested:
+        return [
+            "source_meta.session_id: 期望与顶层 session_id 逐字相等,实际分叉"
+            f"(顶层={_fingerprint(top)},source_meta={_fingerprint(nested)})"
+        ]
     return []
 
 
@@ -164,6 +236,13 @@ def validate(payload: Any) -> list[str]:
         violations.append(
             f"schema_version: 期望值 {SCHEMA_VERSION!r},实际 {sv!r}"
         )
+
+    # session_id 格式闸（小写 canonical UUID4，缺字段已点名则不重复报）
+    if "session_id" in payload:
+        violations.extend(_validate_session_id(payload["session_id"]))
+
+    # 同源闸（source_meta 非法形态由下方结构闸点名，此处只比对可读 dict）
+    violations.extend(_validate_session_id_same_origin(payload))
 
     # lane_hint 枚举
     lane = payload.get("lane_hint")

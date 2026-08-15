@@ -3,7 +3,7 @@
 集成断言用**真实** bootstrap 部署根 + 真实 archive_raw / anchors / rename
 (非 monkeypatch 替身);monkeypatch 只用于计数与次序观测。
 
-覆盖(packet sc-asm-cli expect + sc-asm-redact expect):
+覆盖(packet sc-asm-cli expect + sc-asm-redact expect + p1a-sc0 ①–⑮):
   ① 集成:文件名 / 10 键 frontmatter / AEHMZ 锚点 / run_id 逐字
   (2a)(2a-2) 写盘所有权:archive_raw 恰一次且 output_dir 指向隔离目录;
      落位经原子改名恰一次;raw_dir 无中间产物
@@ -13,6 +13,8 @@
   (p) 默认 Reject 零落位+隔离产物已销毁;CLI --redact 落盘+终检零命中+
      落盘==终检所扫;CLI 侧零写盘零替换
   (r) 三种凭证形态 exit 3 语义;scan 在 archive_raw 之后、落位之前;公开面无绕过
+  (p1a) CLI→run_harvest_with_ledger 接线:identity 前置闸/闭包哨兵/台账
+     终态/生产注入模式双模/reservation 透传/raw_abspath 同源/退出码全支
 """
 
 from __future__ import annotations
@@ -37,12 +39,16 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from akb2.harvest import __main__ as cli  # noqa: E402
 from akb2.harvest import assembler  # noqa: E402
+from akb2.harvest import ledger as ledger_mod  # noqa: E402
+from akb2.harvest import locks as locks_mod  # noqa: E402
+from akb2.harvest import schema as schema_mod  # noqa: E402
 from akb2.harvest.redaction import (  # noqa: E402
     REDACTED_MARKER,
     RedactionPolicy,
     RedactionRejectedError,
     scan_and_redact,
 )
+from src.akb2.quality.intake.models import compute_article_id  # noqa: E402
 
 SECRET = "e3b0c44298fc1c149afbf4c8996fb924"
 REQUIRED_ANCHOR_KEYS = ("A", "E", "H", "M", "Z")
@@ -126,6 +132,9 @@ def deployment(tmp_path_factory: pytest.TempPathFactory) -> SimpleNamespace:
         "AKB2_HARVEST_RUNTIME_READER_GID": str(gid),
         "AKB2_HARVEST_RUNTIME_UID": str(uid),
         "AKB2_HARVEST_RUNTIME_GID": str(gid),
+        # p1a-sc0:CLI 走 ledger.run_harvest_with_ledger 后账本经
+        # resolve_state_file 落 AKB2_STATE_ROOT;不隔离会写真实家目录
+        "AKB2_STATE_ROOT": str(tmp / "state"),
         "PYTHONPATH": str(REPO_ROOT / "src"),
     })
     r = subprocess.run(
@@ -540,6 +549,26 @@ class TestRunIdContract:
         """CLI 与 assembler 共用同一 validate_harvest_run_id 函数对象。"""
         assert cli.validate_harvest_run_id is assembler.validate_harvest_run_id
 
+    def test_run_id_rejects_trailing_whitespace(self) -> None:
+        """恰为 canonical UUID4：尾随换行/空白/大写一律拒（fullmatch）。
+
+        Python 的 `$` 在串尾换行前也匹配，旧正则会把带尾随换行的 UUID
+        错判为合法（reviewer blocker finding）；fullmatch 要求整串恰好匹配。
+        """
+        good = "4e1c8a92-3b7d-4f6a-9c25-1d8e0b3a7f64"
+        assert assembler.validate_harvest_run_id(good)
+        assert not assembler.validate_harvest_run_id(f"{good}\n")
+        assert not assembler.validate_harvest_run_id(f"{good} ")
+        assert not assembler.validate_harvest_run_id(good.upper())
+
+    def test_schema_rejects_trailing_newline_session_id(self) -> None:
+        """schema.validate 复用同一谓词：顶层 session_id 带 \\n 同样违规。"""
+        bad = "4e1c8a92-3b7d-4f6a-9c25-1d8e0b3a7f64\n"
+        violations = schema_mod.validate(_payload(bad))
+        assert any(v.startswith("session_id: ") for v in violations), (
+            f"带尾随换行的 session_id 必须违规,实际 {violations!r}"
+        )
+
     def test_bad_run_id_rejected_both_sides(self, deployment, deploy_env: None,
                                             ids: SimpleNamespace,
                                             tmp_path: Path) -> None:
@@ -668,14 +697,23 @@ class TestRedactionUnbypassable:
         assert order == ["archive_raw", "scan_and_redact", "_place"]
 
     def test_public_surface_no_skip(self) -> None:
-        """(r)③ assemble 签名无跳过参数;公开面除 assemble 外无其它落盘入口。"""
+        """(r)③ assemble 签名无跳过参数;公开面除 assemble 外无其它落盘入口。
+
+        p1a-sc0 扩展:reservation/dest_filename/date_str 三注入参 keyword-only
+        且默认 None——它们是 ledger 编排器的生产注入通道,不是 redaction
+        跳过参数(policy 仍只有 Reject/Redact 两值,无法关闭扫描)。
+        """
         sig = inspect.signature(assembler.assemble)
         params = sig.parameters
-        assert set(params) == {"payload", "harvest_run_id", "policy"}
+        assert set(params) == {"payload", "harvest_run_id", "policy",
+                               "reservation", "dest_filename", "date_str"}
         assert params["harvest_run_id"].kind is inspect.Parameter.KEYWORD_ONLY
         assert params["harvest_run_id"].default is inspect.Parameter.empty
         assert params["policy"].kind is inspect.Parameter.KEYWORD_ONLY
         assert params["policy"].default is RedactionPolicy.Reject
+        for injected in ("reservation", "dest_filename", "date_str"):
+            assert params[injected].kind is inspect.Parameter.KEYWORD_ONLY
+            assert params[injected].default is None
         # dir() 扫描:assembler 自身定义的公开 callable 中,接受 payload 的
         # 只有 assemble(scan_and_redact 等是 redaction 模块导入,不落盘)
         for name in dir(assembler):
@@ -690,3 +728,443 @@ class TestRedactionUnbypassable:
             except (TypeError, ValueError):
                 continue
             assert "payload" not in p, f"{name} 是疑似绕过入口"
+
+
+# ---------------------------------------------------------------------------
+# (p1a-sc0) CLI → run_harvest_with_ledger 接线:①–⑦⑨–⑮
+# ---------------------------------------------------------------------------
+
+
+class _FixedDate(datetime):
+    """钉死 cli.datetime 的 now():dest_filename 预计算与 main() 内部同日。
+
+    跨午夜竞态防御:测试预计算 dest_filename 与 main() 内部各取一次
+    now(),不钉死会在 23:59:59→00:00:00 边界 flaky。
+    """
+
+    _DAY = datetime(2031, 1, 2, 3, 30, 0, tzinfo=UTC)
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls._DAY
+
+
+P1A_FIXED_DATE = "2031-01-02"
+
+
+def _p1a_dest(sid: str) -> str:
+    """与 cli.main 同一纯函数拼 dest_filename(须在 monkeypatch cli.datetime 后调用)。"""
+    from akb2.harvest import __main__ as _cli
+    day = _cli.datetime.now(UTC).strftime("%Y-%m-%d")
+    return (f"{sid}--{compute_article_id('cindy://session/' + sid)}"
+            f"--raw--{day}.md")
+
+
+def _p1a_fingerprint(p: dict) -> str:
+    """与 cli.main 同源指纹:sha256(_render_body(payload))。"""
+    return hashlib.sha256(
+        assembler._render_body(p).encode("utf-8")).hexdigest()
+
+
+class TestCliLedgerWiring:
+    """①②③④⑨⑬⑭ + ⑮ 的 main() 全链路分支(直接调 main,不经 subprocess)。"""
+
+    @pytest.fixture()
+    def p1a_env(self, deployment, deploy_env, monkeypatch, tmp_path):
+        """部署 env + 独立状态根 + 钉死 cli.datetime。"""
+        monkeypatch.setenv("AKB2_STATE_ROOT", str(tmp_path / "state"))
+        monkeypatch.setattr(cli, "datetime", _FixedDate)
+        return SimpleNamespace(state=tmp_path / "state")
+
+    def _write_payload(self, tmp_path, p: dict, name: str = "p1a.json") -> Path:
+        f = tmp_path / name
+        f.write_text(json.dumps(p), encoding="utf-8")
+        return f
+
+    def test_created_writes_committed_row_with_real_abspath(
+            self, deployment, ids, p1a_env, tmp_path, capsys):
+        """① CLI 落位成功:lookup 返回 committed 行,raw_abspath == 实际落位
+        文件(绝对路径且 basename==dest_filename,⑪ 闭包契约同证)。"""
+        p = _payload(ids.session_id)
+        f = self._write_payload(tmp_path, p)
+        rc = cli.main([str(f), "--harvest-run-id", ids.run_id])
+        assert rc == 0
+        # ⑮ created 支:stderr 含 basename
+        err = capsys.readouterr().err
+        dest = _p1a_dest(ids.session_id)
+        assert dest in err
+        # ① committed 行 + raw_abspath 指向真实落位文件
+        row = ledger_mod.lookup(str(ledger_mod.resolve_ledger_path()),
+                                ids.run_id)
+        assert row is not None and row["event"] == "committed"
+        landed = (deployment.raw_dir / dest)
+        assert landed.is_file()
+        # ⑪ raw_abspath 绝对路径、basename==dest_filename、指向实际文件
+        assert Path(row["raw_abspath"]).is_absolute()
+        assert Path(row["raw_abspath"]).name == dest
+        assert Path(row["raw_abspath"]) == landed.resolve()
+
+    def test_second_run_same_identity_already_committed(
+            self, deployment, ids, p1a_env, tmp_path, capsys):
+        """② 同身份同 run_id 二次执行:already_committed(exit 5),台账行数不增。"""
+        f = self._write_payload(tmp_path, _payload(ids.session_id))
+        assert cli.main([str(f), "--harvest-run-id", ids.run_id]) == 0
+        lp = ledger_mod.resolve_ledger_path()
+        n1 = len(lp.read_text().splitlines())
+        rc = cli.main([str(f), "--harvest-run-id", ids.run_id])
+        assert rc == 5  # ⑮ already_committed 支
+        assert "already_committed" in capsys.readouterr().err
+        n2 = len(lp.read_text().splitlines())
+        assert n2 == n1, "二次幂等跳过不得追加任何台账行"
+
+    def test_same_run_id_different_identity_run_id_conflict(
+            self, deployment, ids, p1a_env, tmp_path, capsys):
+        """③ 同 run_id 不同身份(session 不同 → dest/fp 不同)→ run_id_conflict(6)。"""
+        sid2 = "ffffffff-1111-4111-8111-111111111111"
+        assert sid2 != ids.session_id
+        f1 = self._write_payload(tmp_path, _payload(ids.session_id), "first.json")
+        cli.main([str(f1), "--harvest-run-id", ids.run_id])
+        f2 = self._write_payload(tmp_path, _payload(sid2), "second.json")
+        rc = cli.main([str(f2), "--harvest-run-id", ids.run_id])
+        assert rc == 6  # ⑮ run_id_conflict 支
+        assert "run_id_conflict" in capsys.readouterr().err
+
+    def test_redaction_reject_leaves_pending_no_committed(
+            self, deployment, ids, p1a_env, tmp_path, capsys):
+        """④a redaction Reject:exit 3 + 台账有 pending、无 committed。"""
+        f = self._write_payload(tmp_path, _payload(ids.session_id,
+                                                   with_secret=True))
+        rc = cli.main([str(f), "--harvest-run-id", ids.run_id])
+        assert rc == 3  # ⑮ RedactionRejectedError 支
+        assert "RedactionRejectedError" in capsys.readouterr().err
+        row = ledger_mod.lookup(str(ledger_mod.resolve_ledger_path()),
+                                ids.run_id)
+        assert row is not None and row["event"] == "pending"
+        rows = ledger_mod.resolve_ledger_path().read_text().splitlines()
+        assert all(json.loads(r)["event"] != "committed" for r in rows)
+
+    def test_place_exists_leaves_pending_no_committed(
+            self, deployment, ids, p1a_env, tmp_path, capsys):
+        """④b _place 失败(预置同名目标 → EEXIST):exit 4 + pending 无 committed。"""
+        dest = _p1a_dest(ids.session_id)
+        (deployment.raw_dir / dest).write_text("预置占位", encoding="utf-8")
+        f = self._write_payload(tmp_path, _payload(ids.session_id))
+        rc = cli.main([str(f), "--harvest-run-id", ids.run_id])
+        assert rc == 4  # ⑮ PlaceExistsError 支
+        assert "PlaceExistsError" in capsys.readouterr().err
+        row = ledger_mod.lookup(str(ledger_mod.resolve_ledger_path()),
+                                ids.run_id)
+        assert row is not None and row["event"] == "pending"
+        rows = ledger_mod.resolve_ledger_path().read_text().splitlines()
+        assert all(json.loads(r)["event"] != "committed" for r in rows)
+
+    def test_destname_conflict_exit4(self, deployment, ids, p1a_env,
+                                     tmp_path, capsys):
+        """⑮ destname_conflict 支:预持 DESTNAME 锁 → outcome=destname_conflict
+        → exit 4(无 error 前缀,由 outcome 兜底)。"""
+        dest = _p1a_dest(ids.session_id)
+        f = self._write_payload(tmp_path, _payload(ids.session_id))
+        with locks_mod.reserve(locks_mod.DESTNAME, dest):
+            rc = cli.main([str(f), "--harvest-run-id", ids.run_id])
+        assert rc == 4
+        assert "destname_conflict" in capsys.readouterr().err
+
+    def test_content_conflict_exit2_named(self, deployment, ids, p1a_env,
+                                          tmp_path, capsys):
+        """⑮ content_conflict 支:预持 CONTENT 锁 → exit 2 且 stderr 点名
+        content_conflict。"""
+        p = _payload(ids.session_id)
+        f = self._write_payload(tmp_path, p)
+        ck = ledger_mod.content_key(ids.session_id, _p1a_fingerprint(p))
+        with locks_mod.reserve(locks_mod.CONTENT, ck):
+            rc = cli.main([str(f), "--harvest-run-id", ids.run_id])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "content_conflict" in err
+        # 不泄漏正文
+        assert p["title"] not in err
+
+    def test_first_callback_no_iso_and_single_assemble(
+            self, deployment, ids, p1a_env, tmp_path, monkeypatch):
+        """⑨ 第一次回调零副作用:spy 首次进入 assemble(= 第二次回调执行点,
+        第一次回调已返回)时 tree 无 .harvest-iso--*;main 全程 assemble 恰一次。"""
+        calls = {"n": 0}
+        orig = assembler.assemble
+
+        def spy(*a, **k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # 第一次进入 assemble 的时刻 = 编排器第一次回调已返回之后
+                assert _iso_names(deployment.tree) == [], \
+                    "第一次回调不得创建隔离目录"
+            return orig(*a, **k)
+
+        monkeypatch.setattr(assembler, "assemble", spy)
+        f = self._write_payload(tmp_path, _payload(ids.session_id))
+        rc = cli.main([str(f), "--harvest-run-id", ids.run_id])
+        assert rc == 0
+        assert calls["n"] == 1, "assemble() 进程内只被调用一次"
+        assert _iso_names(deployment.tree) == []
+
+    def test_preflight_error_structured_place_failed(
+            self, deployment, ids, p1a_env, tmp_path, capsys, monkeypatch):
+        """⑫ PreflightError 注入:异常不冒泡(traceback 零)、stderr 含
+        'PreflightError:' 类型前缀、rc=2、台账 pending 无 committed。"""
+        def boom(*a, **k):
+            raise assembler.PreflightError("注入的预检失败")
+
+        monkeypatch.setattr(assembler, "_preflight", boom)
+        f = self._write_payload(tmp_path, _payload(ids.session_id))
+        rc = cli.main([str(f), "--harvest-run-id", ids.run_id])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "PreflightError:" in err
+        row = ledger_mod.lookup(str(ledger_mod.resolve_ledger_path()),
+                                ids.run_id)
+        assert row is not None and row["event"] == "pending"
+
+    def test_assembly_rejected_via_injected_archive_failure(
+            self, deployment, ids, p1a_env, tmp_path, capsys, monkeypatch):
+        """⑮ AssemblyRejectedError 支:archive_raw 注入失败 → 前缀 → exit 2。"""
+        def boom(*a, **k):
+            return SimpleNamespace(success=False, output_path="",
+                                   error="注入的 archive_raw 失败")
+
+        monkeypatch.setattr(assembler, "archive_raw", boom)
+        f = self._write_payload(tmp_path, _payload(ids.session_id))
+        rc = cli.main([str(f), "--harvest-run-id", ids.run_id])
+        assert rc == 2
+        assert "AssemblyRejectedError:" in capsys.readouterr().err
+
+    def test_anchor_drift_via_injection_exit2(
+            self, deployment, ids, p1a_env, tmp_path, capsys, monkeypatch):
+        """⑮ AnchorDriftError 支:漂移注入 → 前缀 → exit 2。"""
+        from akb2.harvest.anchors import AnchorDriftError
+
+        def boom(h):
+            raise AnchorDriftError("注入的锚点漂移")
+
+        monkeypatch.setattr(assembler, "_verify_leaf_in_place", boom)
+        f = self._write_payload(tmp_path, _payload(ids.session_id))
+        rc = cli.main([str(f), "--harvest-run-id", ids.run_id])
+        assert rc == 2
+        assert "AnchorDriftError:" in capsys.readouterr().err
+
+    def test_raw_abspath_anchored_to_verified_raw_dir(
+            self, deployment, ids, p1a_env, tmp_path):
+        """⑬ raw_abspath 与 anchors 实际验证的 raw_dir 同一 inode(不从
+        VAULT_ROOT 推导;若闭包改用 Path(vault)/filename 拼则此断言红)。"""
+        import akb2.harvest.anchors as anchors_mod
+        f = self._write_payload(tmp_path, _payload(ids.session_id))
+        assert cli.main([str(f), "--harvest-run-id", ids.run_id]) == 0
+        row = ledger_mod.lookup(str(ledger_mod.resolve_ledger_path()),
+                                ids.run_id)
+        handles = anchors_mod.load_verified()
+        try:
+            st_fd = os.fstat(handles["raw_dir"].root_fd)
+            st_path = os.stat(Path(row["raw_abspath"]).parent)
+            assert (st_fd.st_dev, st_fd.st_ino) == (st_path.st_dev,
+                                                    st_path.st_ino)
+        finally:
+            for h in handles.values():
+                h.close()
+
+    @pytest.mark.parametrize("mutate,label", [
+        (lambda p: p.pop("session_id"), "缺 session_id"),
+        (lambda p: p.update(session_id="NOT-A-UUID"), "session_id 非 UUID4"),
+        (lambda p: p.update(session_id=12345), "session_id 非字符串"),
+        (lambda p: p.update(how_steps=p["how_steps"][:4]), "lane 不足"),
+        (lambda p: p.update(atoms=["not-a-dict"]), "atoms 元素非 dict"),
+        (lambda p: p.update(how_steps=["not-a-dict"]), "how_steps 元素非 dict"),
+    ])
+    def test_identity_gate_rejects_before_ledger(
+            self, deployment, ids, p1a_env, tmp_path, mutate, label):
+        """⑭ identity 前置闸:六类坏 payload → exit 2 且 ledger.lookup 无行
+        (零 pending 零 committed)。反证:拿掉前置闸后,坏 payload 要么在
+        identity 计算处 KeyError 冒泡,要么先写 pending 再被后段拒——
+        lookup 无行断言即转红。"""
+        p = _payload(ids.session_id)
+        mutate(p)
+        f = self._write_payload(tmp_path, p)
+        rc = cli.main([str(f), "--harvest-run-id", ids.run_id])
+        assert rc == 2, label
+        assert ledger_mod.lookup(str(ledger_mod.resolve_ledger_path()),
+                                 ids.run_id) is None, label
+
+    def test_identity_gate_non_dict_payload(self, deployment, ids, p1a_env,
+                                            tmp_path):
+        """⑭ payload 非 dict(JSON 数组)→ exit 2 零台账副作用。"""
+        f = tmp_path / "arr.json"
+        f.write_text("[1, 2, 3]", encoding="utf-8")
+        rc = cli.main([str(f), "--harvest-run-id", ids.run_id])
+        assert rc == 2
+        assert ledger_mod.lookup(str(ledger_mod.resolve_ledger_path()),
+                                 ids.run_id) is None
+
+    def test_schema_gate_shares_function_objects(self):
+        """⑭ 配套:CLI 前置闸与 assemble 内部同一函数对象(不另写闸)。"""
+        assert cli.schema is schema_mod is assembler.schema
+        assert cli.schema.validate is assembler.schema.validate
+        assert cli.schema.run_lane_check is assembler.schema.run_lane_check
+
+
+class TestOutcomeExitCodes:
+    """⑮ 映射函数单测:main() 内不可达分支(assemble_failed/无前缀
+    place_failed)经 _report_outcome 直测。"""
+
+    @pytest.mark.parametrize("result,expected", [
+        ({"outcome": "created", "filename": "x.md"}, 0),
+        ({"outcome": "assemble_failed",
+          "error": "RuntimeError: 注入"}, 2),
+        ({"outcome": "place_failed", "error": "TypeError: 注入"}, 2),
+        ({"outcome": "place_failed",
+          "error": "AssemblyRejectedError: schema 校验失败"}, 2),
+        ({"outcome": "place_failed",
+          "error": "AnchorDriftError: 漂移"}, 2),
+        ({"outcome": "place_failed",
+          "error": "PreflightError: 预检"}, 2),
+        ({"outcome": "place_failed",
+          "error": "RedactionRejectedError: 命中"}, 3),
+        ({"outcome": "place_failed",
+          "error": "PlaceExistsError: 已存在"}, 4),
+        ({"outcome": "destname_conflict"}, 4),
+        ({"outcome": "already_committed"}, 5),
+        ({"outcome": "run_id_conflict"}, 6),
+        ({"outcome": "content_conflict"}, 2),
+    ])
+    def test_outcome_to_exit_code(self, result, expected):
+        assert cli._report_outcome(result) == expected
+
+
+class TestAssembleInjectionModes:
+    """⑥⑦⑩:assemble 生产注入模式与 legacy 模式双模行为。"""
+
+    @pytest.fixture()
+    def inject_env(self, deployment, deploy_env, ids, monkeypatch):
+        """部署 env + 真锁可用;返回预计算 dest(固定日期 2031-01-02)。"""
+        dest = (f"{ids.session_id}--"
+                f"{compute_article_id('cindy://session/' + ids.session_id)}"
+                f"--raw--{P1A_FIXED_DATE}.md")
+        return SimpleNamespace(dest=dest,
+                               date_str=P1A_FIXED_DATE)
+
+    def test_injected_reservation_skips_internal_reserve(
+            self, deployment, ids, inject_env, monkeypatch):
+        """⑥a 生产模式:传入有效凭证 → 不再内部 reserve DESTNAME(外部预约
+        先于 spy 激活,spy 只见 assemble 内部调用)。"""
+        reserve_calls: list[tuple[str, str]] = []
+        orig_reserve = locks_mod.reserve
+
+        def spy(ns, key):
+            reserve_calls.append((ns, key))
+            return orig_reserve(ns, key)
+
+        p = _payload(ids.session_id)
+        before = _raw_before(deployment)
+        with locks_mod.reserve(locks_mod.DESTNAME, inject_env.dest) as rsv:
+            monkeypatch.setattr(assembler.locks, "reserve", spy)
+            raw = assembler.assemble(
+                p, harvest_run_id=ids.run_id, reservation=rsv,
+                dest_filename=inject_env.dest,
+                date_str=inject_env.date_str)
+        # assemble 内部零 DESTNAME 预约(凭证由外部持有)
+        assert all(ns != locks_mod.DESTNAME for ns, _ in reserve_calls), \
+            reserve_calls
+        # 返回绝对路径,指向真实落位文件
+        assert Path(raw).is_absolute()
+        assert Path(raw).name == inject_env.dest
+        assert Path(raw).is_file()
+        assert _new_raw(deployment, before) == [inject_env.dest]
+
+    def test_legacy_mode_reserves_internally_returns_basename(
+            self, deployment, ids, inject_env, monkeypatch):
+        """⑥b legacy 模式(三参缺省):内部自行 reserve+_place,返回 basename,
+        行为与 origin/main 现网一致。"""
+        reserve_calls: list[tuple[str, str]] = []
+        orig_reserve = locks_mod.reserve
+
+        def spy(ns, key):
+            reserve_calls.append((ns, key))
+            return orig_reserve(ns, key)
+
+        monkeypatch.setattr(assembler.locks, "reserve", spy)
+        before = _raw_before(deployment)
+        filename = assembler.assemble(_payload(ids.session_id),
+                                      harvest_run_id=ids.run_id)
+        assert (locks_mod.DESTNAME, filename) in reserve_calls
+        assert "/" not in filename, "legacy 返回 basename,非路径"
+        assert _new_raw(deployment, before) == [filename]
+
+    def test_partial_injection_rejected(self, deployment, ids, inject_env):
+        """模式判别:三注入参部分提供 → TypeError(禁止一语双义)。"""
+        p = _payload(ids.session_id)
+        with locks_mod.reserve(locks_mod.DESTNAME, inject_env.dest) as rsv:
+            with pytest.raises(TypeError):
+                assembler.assemble(p, harvest_run_id=ids.run_id,
+                                   reservation=rsv)  # 缺 dest_filename/date_str
+
+    def test_released_reservation_rejected_no_landing(
+            self, deployment, ids, inject_env):
+        """⑦a 已 release 的 reservation → 拒(InvalidReservation)且 raw_dir
+        无新文件。"""
+        rsv = locks_mod.reserve(locks_mod.DESTNAME, inject_env.dest)
+        with rsv:
+            pass  # 进出即释放
+        before = _raw_before(deployment)
+        with pytest.raises(locks_mod.InvalidReservation):
+            assembler.assemble(_payload(ids.session_id),
+                               harvest_run_id=ids.run_id, reservation=rsv,
+                               dest_filename=inject_env.dest,
+                               date_str=inject_env.date_str)
+        assert _new_raw(deployment, before) == []
+
+    def test_wrong_namespace_reservation_rejected_no_landing(
+            self, deployment, ids, inject_env):
+        """⑦b 错误 namespace 的 reservation(CONTENT 键冒充 DESTNAME)→ 拒
+        且 raw_dir 无新文件。"""
+        with locks_mod.reserve(locks_mod.CONTENT, inject_env.dest) as rsv:
+            before = _raw_before(deployment)
+            with pytest.raises(locks_mod.InvalidReservation):
+                assembler.assemble(_payload(ids.session_id),
+                                   harvest_run_id=ids.run_id, reservation=rsv,
+                                   dest_filename=inject_env.dest,
+                                   date_str=inject_env.date_str)
+            assert _new_raw(deployment, before) == []
+
+    def test_dest_filename_matches_output_and_lock_key(
+            self, deployment, ids, inject_env):
+        """⑩ 预计算 dest_filename == archive_raw 产出 basename == DESTNAME
+        锁键:注入固定远期日期 2031-01-02,落位文件名带同一日期(证明 date_str
+        注入生效、assemble 未再 now());锁键即 dest_filename(_place 五项
+        校验通过即证)。人为改 assemble 内部 date/article_id 后,产物名 ≠
+        dest_filename,显式断言先拒 → 本用例红。"""
+        p = _payload(ids.session_id)
+        before = _raw_before(deployment)
+        with locks_mod.reserve(locks_mod.DESTNAME, inject_env.dest) as rsv:
+            raw = assembler.assemble(
+                p, harvest_run_id=ids.run_id, reservation=rsv,
+                dest_filename=inject_env.dest,
+                date_str=inject_env.date_str)
+        assert Path(raw).name == inject_env.dest
+        assert _new_raw(deployment, before) == [inject_env.dest]
+        assert P1A_FIXED_DATE in inject_env.dest
+        # 锁键 == dest_filename 已由 reserve(DESTNAME, dest) + _place
+        # assert_valid 通过共同证明;frontmatter run_id 逐字
+        text = (deployment.raw_dir / inject_env.dest).read_text(
+            encoding="utf-8")
+        assert f"harvest_run_id: {ids.run_id}" in text
+
+    def test_mismatched_dest_filename_rejected_before_place(
+            self, deployment, ids, inject_env):
+        """⑩ 负例:传入与 archive_raw 产物必然不符的 dest_filename →
+        AssemblyRejectedError 且不 _place(raw_dir 零新增)。"""
+        wrong = (f"{ids.session_id}--{'0' * 12}"
+                 f"--raw--{P1A_FIXED_DATE}.md")
+        with locks_mod.reserve(locks_mod.DESTNAME, wrong) as rsv:
+            before = _raw_before(deployment)
+            with pytest.raises(assembler.AssemblyRejectedError):
+                assembler.assemble(_payload(ids.session_id),
+                                   harvest_run_id=ids.run_id,
+                                   reservation=rsv, dest_filename=wrong,
+                                   date_str=inject_env.date_str)
+            assert _new_raw(deployment, before) == []

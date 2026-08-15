@@ -169,7 +169,9 @@ def _base(
         ]
     return {
         "schema_version": "1",
-        "session_id": "sess-fixtures-boundary-test",
+        # p0-sc1 定案:session_id 必为小写 canonical UUID4(由原字符串
+        # "sess-fixtures-boundary-test" sha256 确定性派生,只为不留非法样例)
+        "session_id": "d6c5c5d0-0f08-42c8-adea-c917c534011e",
         "title": "阈值边界构造 fixture",
         "lane_hint": lane_hint,
         "components": components,

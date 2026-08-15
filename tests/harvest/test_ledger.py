@@ -18,11 +18,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
+from akb2.harvest import assembler
+from akb2.harvest import ledger as ledger_mod
+from akb2.harvest import locks as locks_mod
 from akb2.harvest.ledger import (
     CONTENT,
     DESTNAME,
@@ -40,6 +47,8 @@ from akb2.harvest.ledger import (
     write_pending,
 )
 from akb2.harvest.locks import ReservationHeld as RealReservationHeld
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # 与 ledger.py 一致的锁 namespace 常量
 _NS_CONTENT = CONTENT
@@ -992,3 +1001,183 @@ class TestOutcomeDistinction:
         assert result["outcome"] == "already_committed"
         # 返回的是第一次 committed 的 entry(raw_abspath 是第一次的)
         assert result["entry"]["raw_abspath"] == "/tmp/raw/v1/test--raw--2026-08-13.md"
+
+
+# ---------------------------------------------------------------------------
+# p1a-sc0: reservation 透传 + 真 _place 路径(假桩从不调 _place,必须补真用例)
+# ---------------------------------------------------------------------------
+
+
+def _real_payload(session_id: str) -> dict:
+    """与 test_assembler._payload 同构的最小合法 payload(schema+车道双闸过)。"""
+    return {
+        "schema_version": "1",
+        "session_id": session_id,
+        "title": "ledger 真 _place 用例",
+        "lane_hint": "procedural",
+        "components": [],
+        "causal_edges": [],
+        "atoms": [{"id": f"a{i}", "kind": "command", "text": f"text {i}"}
+                  for i in range(1, 7)],
+        "how_steps": [
+            {"anchor": f"a{i}", "provenance": "log", "cmd": f"cmd{i}",
+             "expect": "ok"} for i in range(1, 6)],
+        "source_meta": {"tool": "claude-code", "author": "tester",
+                        "publisher": "lab", "published_at": "2026-08-10"},
+    }
+
+
+@pytest.fixture(scope="module")
+def real_deployment(tmp_path_factory: pytest.TempPathFactory) -> SimpleNamespace:
+    """真锁部署根(bootstrap anchors),供走真 _place 的编排器用例。
+
+    与 test_assembler.deployment 同构;module 级独立一份避免跨文件共享
+    session fixture(tests/harvest/conftest.py 不在本 SC 边界内)。
+    """
+    tmp = tmp_path_factory.mktemp("ledger-real-place")
+    uid, gid = os.getuid(), os.getgid()
+    deploy_root = tmp / "deploy"
+    deploy_root.mkdir(0o750)
+    tree = tmp / "tree"
+    tree.mkdir(0o750)
+    for p in ("raw", "stage", "locks", "batch"):
+        (tree / p).mkdir(0o750)
+    (deploy_root / "roots.json").write_text(json.dumps({
+        "raw_dir": str(tree / "raw"), "stage": str(tree / "stage"),
+        "locks_dir": str(tree / "locks"), "batch": str(tree / "batch"),
+        "trust_root": str(tree)}), encoding="utf-8")
+    os.chmod(deploy_root / "roots.json", 0o400)
+    env = dict(os.environ)
+    env.update({
+        "AKB2_HARVEST_DEPLOY_ROOT": str(deploy_root),
+        "AKB2_HARVEST_DEPLOY_UID": str(uid),
+        "AKB2_HARVEST_DEPLOY_GID": str(gid),
+        "AKB2_HARVEST_RUNTIME_READER_GID": str(gid),
+        "AKB2_HARVEST_RUNTIME_UID": str(uid),
+        "AKB2_HARVEST_RUNTIME_GID": str(gid),
+        "AKB2_STATE_ROOT": str(tmp / "state"),
+        "PYTHONPATH": str(REPO_ROOT / "src"),
+    })
+    r = subprocess.run(
+        [sys.executable, "scripts/harvest_anchor_bootstrap.py", "init",
+         "--deployment-id", "p1a-sc0-ledger"],
+        capture_output=True, text=True, env=env, cwd=REPO_ROOT)
+    assert r.returncode == 0, r.stdout + r.stderr
+    fp = hashlib.sha256(
+        (deploy_root / "root-key" / "root.pub").read_bytes()).hexdigest()
+    env["AKB2_HARVEST_ROOT_PK_FINGERPRINT"] = fp
+    return SimpleNamespace(deploy_root=deploy_root, tree=tree,
+                           raw_dir=tree / "raw", env=env)
+
+
+@pytest.fixture()
+def real_deploy_env(monkeypatch: pytest.MonkeyPatch,
+                    real_deployment: SimpleNamespace) -> None:
+    for k, v in real_deployment.env.items():
+        monkeypatch.setenv(k, v)
+
+
+class TestReservationPassthrough:
+    """p1a-sc0 expect ⑧ + ⑤:phase='place' 必须把 destname_rsv 透传给回调。"""
+
+    def test_real_place_receives_valid_reservation(self, real_deployment,
+                                                   real_deploy_env,
+                                                   tmp_path: Path):
+        """⑧ 正向:真锁+真 assemble,第二次回调收到的 reservation 凭
+        assert_valid(DESTNAME, dest_filename) 实校验通过,走真 _place 落位成功。
+        反向变异:ledger 调用点去掉 reservation= 后,回调 reservation=None,
+        assert_valid 抛 AttributeError → place_failed → 本用例转红。
+        """
+        run_id = "1a2b3c4d-5e6f-4a90-bcde-f123456789aa"
+        session_id = "2b3c4d5e-6f70-4a90-bcde-f123456789bb"
+        from src.akb2.quality.intake.models import compute_article_id
+        dest = (f"{session_id}--"
+                f"{compute_article_id('cindy://session/' + session_id)}"
+                "--raw--2031-01-02.md")
+        payload = _real_payload(session_id)
+        seen: dict = {}
+
+        def real_assemble_fn(*, run_id, dest_filename, phase=None,
+                             reservation=None):
+            if phase != "place":
+                return {"success": True}
+            # 当场真校验:凭证必须是本 namespace+key 的有效预约
+            reservation.assert_valid(DESTNAME, dest_filename)
+            seen["reservation"] = reservation
+            raw = assembler.assemble(
+                payload, harvest_run_id=run_id,
+                reservation=reservation, dest_filename=dest_filename,
+                date_str="2031-01-02")
+            return {"success": True, "raw_abspath": raw}
+
+        ledger_file = tmp_path / "ledger.jsonl"
+        result = run_harvest_with_ledger(
+            str(ledger_file), run_id=run_id, session_id=session_id,
+            content_fingerprint="fp-real-001", dest_filename=dest,
+            raw_dir=str(real_deployment.raw_dir),
+            assemble_fn=real_assemble_fn)
+        assert result["outcome"] == "created", result
+        # 透传凭证是真 Reservation,且随编排器 with 退出已释放(用过即还)
+        rsv = seen["reservation"]
+        assert isinstance(rsv, locks_mod.Reservation)
+        assert rsv.namespace == DESTNAME
+        assert rsv.key == dest
+        assert rsv.is_released is True
+        # committed 行 raw_abspath 指向真实落位文件
+        row = lookup(str(ledger_file), run_id)
+        assert row["event"] == EVENT_COMMITTED
+        assert Path(row["raw_abspath"]) == \
+            (real_deployment.raw_dir / dest).resolve()
+        assert (real_deployment.raw_dir / dest).is_file()
+
+    def test_crash_between_place_and_commit_leaves_pending_window(
+            self, real_deployment, real_deploy_env, tmp_path: Path,
+            monkeypatch):
+        """⑤ 故障注入:_place 成功后写 committed 的 _append_line 抛错 →
+        可观测终态 = 返回失败(异常冒泡)、盘上有 raw、账上有 pending、无 committed。
+        这是编排器「_place 成功与 committed 之间」的既有崩溃窗口,本用例
+        钉死该窗口的可观测终态(恢复/对账不在本 SC 范围)。
+        """
+        run_id = "3c4d5e6f-7081-4a90-bcde-f123456789cc"
+        session_id = "4d5e6f70-8192-4a90-bcde-f123456789dd"
+        from src.akb2.quality.intake.models import compute_article_id
+        dest = (f"{session_id}--"
+                f"{compute_article_id('cindy://session/' + session_id)}"
+                "--raw--2031-01-02.md")
+        payload = _real_payload(session_id)
+
+        def real_assemble_fn(*, run_id, dest_filename, phase=None,
+                             reservation=None):
+            if phase != "place":
+                return {"success": True}
+            reservation.assert_valid(DESTNAME, dest_filename)
+            raw = assembler.assemble(
+                payload, harvest_run_id=run_id,
+                reservation=reservation, dest_filename=dest_filename,
+                date_str="2031-01-02")
+            return {"success": True, "raw_abspath": raw}
+
+        orig_append = ledger_mod._append_line
+
+        def boom_on_committed(path, entry):
+            if entry.get("event") == EVENT_COMMITTED:
+                raise OSError("注入:committed 写入前进程崩溃")
+            return orig_append(path, entry)
+
+        monkeypatch.setattr(ledger_mod, "_append_line", boom_on_committed)
+        ledger_file = tmp_path / "ledger.jsonl"
+        with pytest.raises(OSError):
+            run_harvest_with_ledger(
+                str(ledger_file), run_id=run_id, session_id=session_id,
+                content_fingerprint="fp-crash-001", dest_filename=dest,
+                raw_dir=str(real_deployment.raw_dir),
+                assemble_fn=real_assemble_fn)
+
+        # 终态三断言:盘上有 raw、账上有 pending、无 committed
+        assert (real_deployment.raw_dir / dest).is_file(), \
+            "_place 已成功,raw 必须在盘"
+        rows = [json.loads(line)
+                for line in ledger_file.read_text().splitlines() if line]
+        events = [r["event"] for r in rows]
+        assert EVENT_PENDING in events
+        assert EVENT_COMMITTED not in events

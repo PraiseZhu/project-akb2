@@ -1,6 +1,6 @@
 {
   "schema_version": "1",
-  "session_id": "sess-harvest-neg-verbatim-0001",
+  "session_id": "70272056-78b2-4285-b391-2c39e3823042",
   "title": "反例：verbatim 占比不足（command/output 类字符 40% < 60%）",
   "lane_hint": "concept",
   "components": ["gate", "runner", "admission"],
@@ -17,7 +17,7 @@
     {"anchor": "H", "provenance": "session log", "cmd": "ruff check src tests", "expect": "零 finding"}
   ],
   "source_meta": {
-    "session_id": "sess-harvest-neg-verbatim-0001",
+    "session_id": "70272056-78b2-4285-b391-2c39e3823042",
     "tool": "claude-code",
     "fetched_at": "2026-08-10T18:00:00+08:00"
   }

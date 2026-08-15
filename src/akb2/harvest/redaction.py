@@ -12,6 +12,10 @@
 - ``scan_and_redact(payload, rendered_markdown, *, policy) -> (markdown, findings)``
   — 扫描对象 = 输入 JSON 全文 + 渲染后 markdown 全文;替换动作只发生在
   markdown 上(落盘的是它),payload 命中只参与 Reject 判定。
+- ``scan_text(text, *, policy) -> (text, findings)`` — 单段任意文本的薄封装:
+  与 scan_and_redact 走同一编译模式族(``_scan_markdown``)与同一替换实现
+  (``_apply_replacements``),供没有 payload/markdown 双对象形态的调用方
+  (如 feedback CLI 输出复扫)复用;本模块外零模式定义。
 
 叙述性 token 字样(token budget / token 节省)不误伤:模式族只匹配「赋值/
 头/块」形态,词组形态天然不命中。
@@ -32,6 +36,7 @@ __all__ = [
     "RedactionFinding",
     "RedactionRejectedError",
     "scan_and_redact",
+    "scan_text",
 ]
 
 # 替换占位符(替换动作的确定输出;断言差异集时以其为锚)
@@ -277,3 +282,39 @@ def scan_and_redact(
     if findings:
         return _apply_replacements(rendered_markdown, findings), findings
     return rendered_markdown, []
+
+
+def scan_text(
+    text: str,
+    *,
+    policy: RedactionPolicy,
+) -> tuple[str, list[RedactionFinding]]:
+    """对单段文本复用同一模式族扫描(薄封装,不另设规则)。
+
+    与 ``scan_and_redact`` 共享 ``_scan_markdown`` 的编译模式族与
+    ``_apply_replacements`` 的合并替换实现 —— 调用方(如 feedback CLI
+    的输出复扫)由此获得与 assembler 落盘扫描完全一致的判定口径,
+    本函数自身零模式定义、零替换实现。
+
+    Args:
+        text: 待扫描的任意全文(如 json.dumps 输出)。
+        policy: Reject(命中即抛 RedactionRejectedError)或 Redact(替换后返回)。
+
+    Returns:
+        (text, findings):Reject 分支无命中时原样返回;Redact 分支返回
+        替换 [REDACTED] 后的文本与命中清单。
+
+    Raises:
+        RedactionRejectedError: policy=Reject 且任一命中。
+        TypeError: policy 不是 RedactionPolicy。
+    """
+    if not isinstance(policy, RedactionPolicy):
+        raise TypeError(f"policy 必须是 RedactionPolicy,实际 {policy!r}")
+    findings = _scan_markdown(text)
+    if policy is RedactionPolicy.Reject:
+        if findings:
+            raise RedactionRejectedError(findings)
+        return text, []
+    if findings:
+        return _apply_replacements(text, findings), findings
+    return text, []

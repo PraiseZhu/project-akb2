@@ -1,6 +1,6 @@
 {
   "schema_version": "1",
-  "session_id": "sess-harvest-neg-components-0001",
+  "session_id": "3fb3053c-b738-46c4-9c39-69cdb7eb072f",
   "title": "反例：concept 车道缺命名组件（components 1 < 3）",
   "lane_hint": "concept",
   "components": ["gate"],
@@ -21,7 +21,7 @@
     {"anchor": "M", "provenance": "session log", "cmd": "python3 -m akb2.gate --check", "expect": "fail-closed 判定"}
   ],
   "source_meta": {
-    "session_id": "sess-harvest-neg-components-0001",
+    "session_id": "3fb3053c-b738-46c4-9c39-69cdb7eb072f",
     "tool": "claude-code",
     "fetched_at": "2026-08-10T18:00:00+08:00"
   }

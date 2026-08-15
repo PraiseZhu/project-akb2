@@ -6,18 +6,17 @@
   3. 断言该值出现在 raw frontmatter harvest_run_id。
   4. 省略 --harvest-run-id 必得 exit 2 且零产物。
   5. 用同一常量展开 SKILL.md 唯一模板（纯字符串替换），断言 run_id 值与测试
-     常量逐字相同——只验证展开机制，不代表展开后的 argv 已被真实 CLI 接受
-     （模板仍含 CLI 不支持的 --harvest-json，见下方裁边）。
+     常量逐字相同——模板已与真实 CLI 位置参数对齐（p1a-sc2-skill-contract-sync），
+     展开后的 argv 形态即真实 CLI 可接受的形态。
 
 裁边:
-  - ledger 尚未接线:__main__.py 直调 assembler.assemble，未接入 flow.py 的
-    ledger 记账（sc-asm-ledger 未接线到 CLI 入口）。用真实
-    akb2.common.state_paths / akb2.harvest.ledger 常量解析出的账本路径断言
-    不存在，而非猜测路径，如实标 residual。
-  - 不得改 SKILL.md。SKILL.md 模板与真实 CLI 的位置参数漂移（`--harvest-json`
-    非真实 CLI 支持的入参）是已知跨组残余，留给后续契约组修，本文件只让
-    test_skill_md_template_expansion 显式记录该残余，不断言展开后的 argv
-    已被真实 CLI 接受。
+  - ledger 已接线（p1a-sc0：CLI 调 run_harvest_with_ledger 记账）：
+    test_full_pipeline_integration 断言账本落 committed 行且与入参同源。
+    原「ledger 尚未接线」residual 断言随接线完成而过期，已同步更新。
+  - 原跨组残余已修：SKILL.md 模板曾写 `--harvest-json`（真实 CLI 不支持的
+    入参），p1a-sc2-skill-contract-sync 已将模板改为与真实 CLI 一致的位置
+    参数形态。test_skill_md_template_expansion 现在断言模板与真实 CLI argv
+    形态逐字一致，防止漂移复发。
 """
 
 from __future__ import annotations
@@ -174,13 +173,11 @@ class TestHarvestSmoke:
     def test_skill_md_template_expansion(self):
         """SKILL.md 唯一模板展开后 run_id 占位符与测试常量逐字相同。
 
-        本测试只验证模板字符串展开机制本身（占位符替换），**不代表**展开后
-        的 argv 已被真实 CLI 接受——真实 CLI 只认位置参数 `<file>` +
-        `--harvest-run-id`（见 __main__.py:45-52），而 SKILL.md 模板此刻仍写
-        着 `--harvest-json`，真跑会被 argparse 拒绝（已实测 exit 2:
-        "unrecognized arguments: --harvest-json"）。这是已知的跨组契约漂移
-        （SKILL.md vs CLI 位置参数），本组裁决不改 SKILL.md，留给后续契约组
-        修；本测试改为显式断言该漂移仍然存在，防止被误读成"完整链路已验证"。
+        模板已与真实 CLI 位置参数对齐（p1a-sc2-skill-contract-sync）：
+        真实 CLI 只认位置参数 `<file>` + `--harvest-run-id`（见
+        __main__.py:45-52），模板现为同形态。本测试断言展开后 argv 的
+        形态与真实 CLI 一致（位置参数在前、--harvest-run-id 在后、无
+        已废弃的 --harvest-json flag），防止文档-CLI 契约漂移复发。
         """
         if not SKILL_MD_PATH.exists():
             pytest.skip("SKILL.md 未生成（依赖真实工件）")
@@ -200,13 +197,26 @@ class TestHarvestSmoke:
         # 断言另一个占位符保持模板形态（未被替换）
         assert "{{harvest_json}}" in expanded
 
-        # 已知跨组残余（不在本组修改范围内）：SKILL.md 模板仍用
-        # `--harvest-json`，真实 CLI 不支持该入参（只接受位置参数 <file>），
-        # 显式记录此漂移，防止本测试的"绿"被误读为"该模板 argv 可真实执行"
-        assert "--harvest-json" in template, (
-            "SKILL.md 模板预期仍含已知残余 --harvest-json"
-            "（真实 CLI 不支持该入参，跨组契约漂移待后续契约组修）；"
-            "若此断言失败，说明模板已被改动，请同步更新本注释与 residual 记录"
+        # 契约对齐断言（p1a-sc2-skill-contract-sync）：模板已与真实 CLI
+        # 位置参数对齐。展开后（补上 json 路径）argv 形态必须是
+        # `python3 -m akb2.harvest <file> --harvest-run-id <id>`——位置参数
+        # 在前、无已废弃的 --harvest-json flag，与 __main__.py argparse 一致
+        assert "--harvest-json" not in template, (
+            "SKILL.md 模板不得再含已废弃的 --harvest-json"
+            "（真实 CLI 只认位置参数 <file>，契约已于"
+            " p1a-sc2-skill-contract-sync 对齐）；若此断言失败，"
+            "说明模板发生回退，请同步更新本注释"
+        )
+        expanded_argv = template.replace(
+            "{{harvest_json}}", str(FIXTURE_JSON)
+        ).replace("{{harvest_run_id}}", FIXTURE_HARVEST_RUN_ID)
+        expected_argv = (
+            f"python3 -m akb2.harvest {FIXTURE_JSON} "
+            f"--harvest-run-id {FIXTURE_HARVEST_RUN_ID}"
+        )
+        assert expanded_argv == expected_argv, (
+            f"展开后 argv 与真实 CLI 形态分叉:\n实际: {expanded_argv!r}\n"
+            f"预期: {expected_argv!r}"
         )
 
     # ---- 1-3. 全流程 smoke ----
@@ -217,10 +227,10 @@ class TestHarvestSmoke:
         验证:
         - 复用 valid_concept.json 合格 fixture
         - 实跑命令带 --harvest-run-id（真实 CLI argv：位置参数 file + --harvest-run-id，
-          不含 SKILL.md 模板里那个 CLI 不支持的 --harvest-json）
+          与 SKILL.md 模板同形态——契约已于 p1a-sc2-skill-contract-sync 对齐）
         - 断言该值出现在 raw frontmatter harvest_run_id
-        - ledger 尚未接线，用真实 akb2.harvest.ledger 常量解析出的账本路径
-          断言不存在（residual，非造假 committed 记录）
+        - ledger 已接线（p1a-sc0：CLI 调 run_harvest_with_ledger）：断言账本
+          存在 committed 行，且 session_id / harvest_run_id 与入参逐字同源
         """
         # 设置部署环境
         deploy = _setup_deploy(tmp_path)
@@ -270,10 +280,30 @@ class TestHarvestSmoke:
             f"原始文件不以 frontmatter 开头:\n{content[:200]}"
         )
 
-        # 残余标记:ledger 尚未接线（__main__.py 不调 flow.py 的 ledger 记账）
-        # 用真实 akb2.harvest.ledger 常量解析账本路径，而非猜测文件名
-        # 如实记录 residual，不做造假 committed 断言
+        # ledger 已接线（p1a-sc0）：CLI 走 run_harvest_with_ledger 记账。
+        # 用真实 akb2.harvest.ledger 常量解析账本路径，断言 committed 行
+        # 落账且 session_id / harvest_run_id 与入参逐字同源（非造假记录）
         ledger_path = state_root / LEDGER_SUBDIR / LEDGER_FILENAME
-        assert not ledger_path.exists(), (
-            "ledger 尚未接线，不应存在 ledger 文件"
+        assert ledger_path.exists(), (
+            "ledger 已接线，CLI 成功路径应落 committed 台账"
+        )
+        rows = [
+            json.loads(line)
+            for line in ledger_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        committed = [row for row in rows if row.get("event") == "committed"]
+        assert len(committed) == 1, (
+            f"预期恰 1 条 committed 行,实际 {len(committed)}: {rows}"
+        )
+        fixture_sid = json.loads(
+            FIXTURE_JSON.read_text(encoding="utf-8"))["session_id"]
+        assert committed[0]["harvest_run_id"] == FIXTURE_HARVEST_RUN_ID, (
+            f"committed 行 run_id 与入参分叉: {committed[0]!r}"
+        )
+        assert committed[0]["session_id"] == fixture_sid, (
+            f"committed 行 session_id 与 fixture 分叉: {committed[0]!r}"
+        )
+        assert committed[0]["dest_filename"] == raw_path.name, (
+            f"committed 行 dest_filename 与实际产物分叉: {committed[0]!r}"
         )

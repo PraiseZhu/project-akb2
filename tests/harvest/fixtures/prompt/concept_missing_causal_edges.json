@@ -1,6 +1,6 @@
 {
   "schema_version": "1",
-  "session_id": "sess-harvest-neg-edges-0001",
+  "session_id": "ad323ece-e55a-4fb9-8ed2-9d2e3e0d266c",
   "title": "反例：concept 车道缺因果边（causal_edges 0 < 1）",
   "lane_hint": "concept",
   "components": ["gate", "runner", "admission"],
@@ -21,7 +21,7 @@
     {"anchor": "M", "provenance": "session log", "cmd": "python3 -m akb2.gate --check", "expect": "fail-closed 判定"}
   ],
   "source_meta": {
-    "session_id": "sess-harvest-neg-edges-0001",
+    "session_id": "ad323ece-e55a-4fb9-8ed2-9d2e3e0d266c",
     "tool": "claude-code",
     "fetched_at": "2026-08-10T18:00:00+08:00"
   }
