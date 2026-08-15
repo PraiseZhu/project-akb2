@@ -38,18 +38,16 @@ expected_minutes_per_run:
 
 ## 触发频度假设（2026-08-15）
 
-| workflow | 月次 | 单次估 | 月耗 | 依据 |
-|---|---|---|---|---|
-| ci.yml | 40 | 18 | 720 | 约每天 1 次 PR/push + 余量；含 3.11/3.13 两个 matrix |
-| gitleaks.yml | 40 | 3 | 120 | 与 ci 同触发密度 |
-| shellcheck.yml | 20 | 2 | 40 | 只在 `*.sh` 变更时跑 |
-| zizmor.yml | 20 | 3 | 60 | 只在 workflow / dependabot 变更时跑 |
-| actionlint.yml | 20 | 2 | 40 | 只在 workflow 变更时跑 |
-| pip-audit.yml | 8 | 4 | 32 | 每周 schedule 约 4 次 + PR/dispatch 余量 4 |
+数字只以上面的机读块为准，不要在这里再抄一份。当前口径：
 
-合计约 **1012** 分钟/月，软阈值 1500，相对 2000 硬配额大约还剩 49%。
+- `ci.yml`：约每天 1 次 PR/push + 余量；18 分钟含 3.11/3.13 两个 matrix
+- `gitleaks.yml`：与 ci 同触发密度
+- `shellcheck.yml`：只在 `*.sh` 变更时跑
+- `zizmor.yml`：只在 workflow / dependabot 变更时跑
+- `actionlint.yml`：只在 workflow 变更时跑
+- `pip-audit.yml`：每周 schedule 约 4 次 + PR/dispatch 余量 4
 
-改 timeout、加 workflow 或改触发密度后必须同步改本表，否则脚本会因文件集合不一致或 expected > timeout 而红。
+改 timeout、加 workflow 或改触发密度时只改机读块。脚本会核对文件集合、拒绝 ≤0 的频度/耗时，并要求 expected ≤ timeout 上界。
 
 ## 报警
 

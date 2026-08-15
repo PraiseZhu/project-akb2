@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Deterministic GitHub Actions minute-budget check.
 
-Reads timeout-minutes from every job in .github/workflows/*.yml and the
-expected_minutes_per_run / frequency_per_month constants in docs/ci-budget.md.
-Does not call any GitHub billing API.
+Reads timeout-minutes via PyYAML from every job in .github/workflows/*.yml and
+the expected_minutes_per_run / frequency_per_month constants in
+docs/ci-budget.md. Does not call any GitHub billing API.
 
 Exit 0 if estimated minutes < soft threshold; exit 1 otherwise.
 """
@@ -13,6 +13,8 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
+
+import yaml
 
 REPO = Path(__file__).resolve().parents[1]
 WORKFLOWS = REPO / ".github" / "workflows"
@@ -45,23 +47,26 @@ def parse_map(text: str, heading: str) -> dict[str, int]:
 
 
 def job_timeouts(path: Path) -> dict[str, int]:
-    jobs: dict[str, int] = {}
-    current: str | None = None
-    in_jobs = False
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if line.startswith("jobs:"):
-            in_jobs = True
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise SystemExit(f"{path.name}: 顶层不是 mapping")
+    jobs = data.get("jobs")
+    if not isinstance(jobs, dict) or not jobs:
+        raise SystemExit(f"{path.name}: 没有 jobs")
+    out: dict[str, int] = {}
+    missing: list[str] = []
+    for name, job in jobs.items():
+        if not isinstance(job, dict):
+            missing.append(name)
             continue
-        if not in_jobs:
+        timeout = job.get("timeout-minutes")
+        if not isinstance(timeout, int) or timeout <= 0:
+            missing.append(name)
             continue
-        jm = re.match(r"^  ([A-Za-z0-9_-]+):\s*$", line)
-        if jm:
-            current = jm.group(1)
-            continue
-        tm = re.match(r"^    timeout-minutes:\s*(\d+)\s*$", line)
-        if tm and current:
-            jobs[current] = int(tm.group(1))
-    return jobs
+        out[name] = timeout
+    if missing:
+        raise SystemExit(f"{path.name}: job 缺少正整数 timeout-minutes: {missing}")
+    return out
 
 
 def main() -> int:
@@ -83,6 +88,12 @@ def main() -> int:
         return 1
     soft = int(soft_m.group(1))
     hard = int(hard_m.group(1))
+    if soft <= 0 or hard <= 0 or soft > hard:
+        print(
+            f"docs/ci-budget.md 阈值非法: soft={soft} hard={hard}",
+            file=sys.stderr,
+        )
+        return 1
     freqs = parse_map(text, "frequency_per_month")
     expected = parse_map(text, "expected_minutes_per_run")
 
@@ -97,13 +108,18 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 1
+        zeros = sorted(name for name, value in mapping.items() if value <= 0)
+        if zeros:
+            print(f"{label} 必须为正整数，发现 ≤0: {zeros}", file=sys.stderr)
+            return 1
 
     total = 0
     rows: list[str] = []
     for path in workflow_files:
-        jobs = job_timeouts(path)
-        if not jobs:
-            print(f"{path.name}: 没有任何 timeout-minutes", file=sys.stderr)
+        try:
+            jobs = job_timeouts(path)
+        except SystemExit as exc:
+            print(str(exc), file=sys.stderr)
             return 1
         cap = sum(jobs.values())
         exp = expected[path.name]
@@ -121,7 +137,7 @@ def main() -> int:
         )
 
     margin = hard - total
-    pct = (margin / hard) * 100 if hard else 0.0
+    pct = (margin / hard) * 100
     print("AKB2 CI budget check")
     for row in rows:
         print(row)

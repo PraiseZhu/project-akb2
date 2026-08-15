@@ -10,54 +10,59 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parents[1]
 WORKFLOWS = REPO / ".github" / "workflows"
+TESTS_JOB_TIMEOUT_MAX = 30
+OTHER_JOB_TIMEOUT_MAX = 10
 
 
-def _workflow_files() -> list[Path]:
+@pytest.fixture(scope="module")
+def loaded_workflows() -> dict[str, dict]:
     files = sorted(WORKFLOWS.glob("*.yml"))
     assert files, f"未找到任何 workflow: {WORKFLOWS}"
-    return files
+    out: dict[str, dict] = {}
+    for path in files:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert isinstance(data, dict), f"{path.name} 顶层不是 mapping"
+        out[path.name] = data
+    return out
 
 
-def _load(path: Path) -> dict:
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    assert isinstance(data, dict), f"{path.name} 顶层不是 mapping"
-    return data
-
-
-def test_every_workflow_has_concurrency() -> None:
-    missing = []
-    for path in _workflow_files():
-        data = _load(path)
-        if "concurrency" not in data:
-            missing.append(path.name)
+def test_every_workflow_has_concurrency(loaded_workflows: dict[str, dict]) -> None:
+    missing = [name for name, data in loaded_workflows.items() if "concurrency" not in data]
     assert not missing, f"以下 workflow 缺少顶层 concurrency: {missing}"
 
 
-def test_every_job_has_timeout_minutes() -> None:
+def test_every_job_has_timeout_minutes(loaded_workflows: dict[str, dict]) -> None:
     missing: list[str] = []
-    for path in _workflow_files():
-        data = _load(path)
+    for wf_name, data in loaded_workflows.items():
         jobs = data.get("jobs")
-        assert isinstance(jobs, dict) and jobs, f"{path.name} 没有 jobs"
+        assert isinstance(jobs, dict) and jobs, f"{wf_name} 没有 jobs"
         for name, job in jobs.items():
-            assert isinstance(job, dict), f"{path.name} job {name} 不是 mapping"
+            assert isinstance(job, dict), f"{wf_name} job {name} 不是 mapping"
             timeout = job.get("timeout-minutes")
             if not isinstance(timeout, int) or timeout <= 0:
-                missing.append(f"{path.name}:{name}")
+                missing.append(f"{wf_name}:{name}")
     assert not missing, f"以下 job 缺少正整数 timeout-minutes: {missing}"
 
 
-def test_tests_job_timeout_at_most_30() -> None:
-    ci = _load(WORKFLOWS / "ci.yml")
-    tests = ci["jobs"].get("tests")
-    assert isinstance(tests, dict), "ci.yml 缺少 tests job"
-    timeout = tests.get("timeout-minutes")
-    assert isinstance(timeout, int), "ci.yml tests 缺少 timeout-minutes"
-    assert timeout <= 30, f"ci.yml tests timeout-minutes={timeout} 超过 30"
+def test_job_timeout_caps(loaded_workflows: dict[str, dict]) -> None:
+    over: list[str] = []
+    for wf_name, data in loaded_workflows.items():
+        for name, job in data["jobs"].items():
+            timeout = job.get("timeout-minutes")
+            assert isinstance(timeout, int), f"{wf_name}:{name} 缺少 timeout-minutes"
+            cap = (
+                TESTS_JOB_TIMEOUT_MAX
+                if wf_name == "ci.yml" and name == "tests"
+                else OTHER_JOB_TIMEOUT_MAX
+            )
+            if timeout > cap:
+                over.append(f"{wf_name}:{name}={timeout}>{cap}")
+    assert not over, f"timeout-minutes 超过上限: {over}"
 
 
 def test_budget_script_accepts_current_workflows() -> None:
@@ -69,16 +74,3 @@ def test_budget_script_accepts_current_workflows() -> None:
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "estimated_month_minutes=" in result.stdout
-
-
-def test_non_tests_jobs_timeout_at_most_10() -> None:
-    over: list[str] = []
-    for path in _workflow_files():
-        data = _load(path)
-        for name, job in data["jobs"].items():
-            if path.name == "ci.yml" and name == "tests":
-                continue
-            timeout = job["timeout-minutes"]
-            if timeout > 10:
-                over.append(f"{path.name}:{name}={timeout}")
-    assert not over, f"非 tests job 的 timeout-minutes 超过 10: {over}"
