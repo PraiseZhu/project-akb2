@@ -354,6 +354,55 @@ class TestArticleBudgetEnforcement:
         with pytest.raises(ArticleBudgetExceededError, match="计数文件损坏"):
             route_llm("gpt-5.4", self._mk_msg(0), article_key="article-corrupt")
 
+    @pytest.mark.parametrize(
+        "bad_payload",
+        ["[]", "null", '"a string"', "123", '{"some-key": 1.5}', '{"some-key": true}'],
+        ids=["list", "null", "string", "number", "float-value", "bool-value"],
+    )
+    def test_wrong_shape_counter_file_fails_closed(self, monkeypatch, bad_payload):
+        """计数文件是合法 JSON 但形状不对（非 dict[str,int]）也必须 fail-closed。
+
+        回归防线：修复前，非 dict 根节点或含非 int 值（如 JSON null/list、浮点/布尔
+        值）会被 isinstance 过滤器悄悄清空成 {} 而不抛错，等价于把所有 article 的
+        计数重置——已打满预算的 article 会在文件被这类"合法但形状错"的内容覆写后
+        立即重新拿到名额，与本模块文档承诺的 fail-closed 相反。
+        """
+        self._env(monkeypatch)
+        _install_fake_openai(monkeypatch)
+        from src.akb2.common.state_paths import LEDGER_SUBDIR, get_state_root
+        from src.akb2.quality.llm_router import ARTICLE_CALLS_FILE
+
+        counter_path = get_state_root() / LEDGER_SUBDIR / ARTICLE_CALLS_FILE
+        counter_path.parent.mkdir(parents=True, exist_ok=True)
+        counter_path.write_text(bad_payload, encoding="utf-8")
+
+        with pytest.raises(ArticleBudgetExceededError, match="计数文件损坏"):
+            route_llm("gpt-5.4", self._mk_msg(0), article_key="article-wrong-shape")
+
+    def test_wrong_shape_counter_file_does_not_reset_exhausted_budget(
+        self, monkeypatch
+    ):
+        """已打满预算的 article 在计数文件被覆写成合法但形状错误的内容后，仍必须
+        保持 fail-closed，不能因为「形状不对」被当空文件处理而重新获得名额。
+        """
+        self._env(monkeypatch)
+        captured = _install_fake_openai(monkeypatch)
+        from src.akb2.common.state_paths import LEDGER_SUBDIR, get_state_root
+        from src.akb2.quality.llm_router import ARTICLE_CALLS_FILE
+
+        key = "article-exhausted-then-corrupted"
+        for i in range(MAX_CALLS_PER_ARTICLE):
+            route_llm("gpt-5.4", self._mk_msg(i), article_key=key)
+        assert int(captured["create_calls"]) == MAX_CALLS_PER_ARTICLE
+
+        counter_path = get_state_root() / LEDGER_SUBDIR / ARTICLE_CALLS_FILE
+        counter_path.write_text("[1, 2, 3]", encoding="utf-8")
+
+        with pytest.raises(ArticleBudgetExceededError):
+            route_llm("gpt-5.4", self._mk_msg(99), article_key=key)
+        # 拒绝的那次调用没打到 API：请求计数仍停在 N，没有借「文件损坏」偷到新名额
+        assert int(captured["create_calls"]) == MAX_CALLS_PER_ARTICLE
+
 
 class TestBuildOutboundPayload:
     """出站 payload 构建验证（fixture 断言，不打真 API）。"""

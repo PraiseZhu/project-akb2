@@ -316,15 +316,29 @@ def reserve_article_call(
                 try:
                     with open(calls_path, encoding="utf-8") as fh:
                         loaded = json.load(fh)
-                    if isinstance(loaded, dict):
-                        counts = {
-                            k: int(v)
-                            for k, v in loaded.items()
-                            if isinstance(v, int)
-                        }
-                except (json.JSONDecodeError, OSError) as exc:
-                    # 计数文件损坏 = 无法证明还有名额 → fail-closed 拒绝放行
-                    # （宪法 P3/P4：不降级、失败可见）。
+                    if not isinstance(loaded, dict):
+                        raise ValueError(
+                            f"计数文件根节点不是 object: {type(loaded).__name__}"
+                        )
+                    bad_values = [
+                        k
+                        for k, v in loaded.items()
+                        if not isinstance(v, int) or isinstance(v, bool)
+                    ]
+                    if bad_values:
+                        raise ValueError(
+                            f"计数文件含非整数字段: {bad_values}"
+                        )
+                    counts = {k: int(v) for k, v in loaded.items()}
+                except (json.JSONDecodeError, OSError, ValueError) as exc:
+                    # 计数文件损坏/形状不合法 = 无法证明还有名额 → fail-closed 拒绝放行
+                    # （宪法 P3/P4：不降级、失败可见）。此前只捕获 JSONDecodeError/
+                    # OSError，语法合法但形状错误（非 dict / 非 int 值，如 JSON
+                    # null/list 或浮点值）会被 isinstance 过滤器悄悄当空/丢字段处理，
+                    # 等价于清空已记满的计数、让打满预算的 article 重新获得名额——
+                    # 与本函数文档承诺的 fail-closed 相反（实测复现：exhausted
+                    # article 在计数文件被覆写成 `[]`/`null`/含浮点值 dict 后立即
+                    # 重新拿到名额）。形状校验并入同一 fail-closed 分支堵死这条口子。
                     raise ArticleBudgetExceededError(
                         f"per-article 调用计数文件损坏，fail-closed 拒绝新调用:"
                         f" {calls_path} ({exc})"
