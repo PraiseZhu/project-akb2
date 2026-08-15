@@ -79,8 +79,9 @@ def join_raw_by_run_id(
 
     1. 行自带 ``harvest_run_id`` 且与某 committed 行**逐字相等** → 联结
        (via=run_id;不做前缀/子串匹配);
-    2. 行**缺 run_id**(空/缺键)时,若 ``content_key`` 与某 committed 行相等 →
-       二级映射联结(via=content_key)。行自带非空 run_id 但未逐字命中
+    2. 行**缺 run_id**(键缺失/None/空串)时,若 ``content_key`` 与某 committed
+       行相等 → 二级映射联结(via=content_key)。键在且值不是 None/空串
+       (包括 0、False 等非空 falsy)即视为自带 run_id,未逐字命中
        committed 时**不得**走 content_key 兜底——否则 run-B 的反馈会经共享
        content_key 错记到 run-A 名下;
     3. 两者皆不可联结 → unmatched,计数与其自带 run_id 一并进顶层
@@ -102,14 +103,26 @@ def join_raw_by_run_id(
         if ck:
             run_id_by_content_key[ck] = rid
 
+    def _present_rid(row: dict) -> str | None:
+        """行自带 run_id 的规范化。缺键 / None / "" → None(视为缺 run_id,
+        允许 content_key 兜底);其余值——含 0、False 等非空 falsy——一律
+        返回 str(value),视为自带 run_id(禁止兜底)。"""
+        raw = row.get("harvest_run_id")
+        if raw is None or raw == "":
+            return None
+        return str(raw)
+
     def resolve(row: dict) -> tuple[str, str] | None:
         """单行联结裁定:返回 (run_id, via);不可联结返回 None。
 
-        content_key 兜底仅适用于行缺 run_id 的情形;行自带非空 run_id
-        且未逐字命中 committed → 直接 unmatched,防止跨 run 错记。
+        「缺 run_id」仅指键缺失、值为 None 或空串——只有这三种情形允许
+        content_key 兜底。键在且值不是 None/""(包括 0、False 等非空
+        falsy 值)一律视为自带 run_id:逐字命中 committed → via=run_id;
+        未命中 → unmatched,不得走 content_key,防止跨 run 错记
+        (0/False 曾被 ``or ""` 吞成缺 run_id 而错走兜底)。
         """
-        rid = str(row.get("harvest_run_id", "") or "")
-        if rid:
+        rid = _present_rid(row)
+        if rid is not None:
             if rid in raw_by_run_id:
                 return rid, "run_id"
             return None
@@ -144,8 +157,8 @@ def join_raw_by_run_id(
         hit = resolve(ev)
         if hit is None:
             unmatched_trial += 1
-            rid = str(ev.get("harvest_run_id", "") or "")
-            if rid:
+            rid = _present_rid(ev)
+            if rid is not None:
                 unmatched_trial_run_ids.append(rid)
             _sample_unmatched(ev)
             continue
@@ -160,8 +173,8 @@ def join_raw_by_run_id(
         hit = resolve(row)
         if hit is None:
             unmatched_quality += 1
-            rid = str(row.get("harvest_run_id", "") or "")
-            if rid:
+            rid = _present_rid(row)
+            if rid is not None:
                 unmatched_quality_run_ids.append(rid)
             _sample_unmatched(row)
             continue
