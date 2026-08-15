@@ -113,6 +113,20 @@ def _extract_title(fm_text: str, fallback: str) -> str:
     return title or fallback
 
 
+def _in_fence(lines: list[str], idx: int) -> bool:
+    """判定第 idx 行是否位于围栏代码块内（从文件头线性扫描到该行）。
+
+    与 _section_after 的行内 fence 判定同一规则：以 ``` 开头的行是围栏
+    开关。起始标题扫描用它过滤伪标题，保证起始与结束两侧共用一套
+    fence 状态机，不存在「结束认 fence、起始不认」的不对称。
+    """
+    in_fence = False
+    for line in lines[:idx]:
+        if line.lstrip().startswith(_CODE_FENCE_PREFIX):
+            in_fence = not in_fence
+    return in_fence
+
+
 def _section_after(lines: list[str], heading_idx: int) -> str:
     """取标题行之后到下一标题行之前的正文（strip 首尾空白）。
 
@@ -139,12 +153,20 @@ def extract_how_section(body: str) -> str:
 
     优先 ### 操作步骤（新链路），兜底 ## xxx(How 模板)（历史样张）；
     都没有返回空串（promoted 笔记缺 How 节时 How 字段为空，不编造）。
+
+    起始标题扫描与 _section_after 的结束扫描共用同一 fence 状态机：
+    围栏代码块里的伪标题（如示例 markdown 里的 `### 操作步骤`）不是文档
+    结构，不能当 How 起点——否则截出来的正文以围栏残留内容开头。
     """
     lines = body.splitlines()
     for i, line in enumerate(lines):
+        if _in_fence(lines, i):
+            continue
         if _HOW_SUBSECTION_RE.match(line):
             return _section_after(lines, i)
     for i, line in enumerate(lines):
+        if _in_fence(lines, i):
+            continue
         if _HOW_TEMPLATE_HEADING_RE.match(line):
             return _section_after(lines, i)
     return ""

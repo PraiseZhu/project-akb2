@@ -260,6 +260,48 @@ cp db.sqlite db.sqlite.bak
     assert results[0].how_executability == ["pytest -q tests/"]
 
 
+def test_how_start_heading_inside_fence_ignored(tmp_path):
+    """围栏里的伪 `### 操作步骤` 不得当 How 起点（起始扫描须 fence-aware）。
+
+    反例：论证段先出现一个围栏示例块，内部含 `### 操作步骤` + 伪造列表。
+    起始扫描若不认 fence，截出的正文会以「- 伪造示例」开头、真步骤被拼
+    在残留内容之后。
+    """
+    root = tmp_path / "vault"
+    sources = root / "wiki" / "sources"
+    sources.mkdir(parents=True)
+    body = """## 论证与解释
+
+正文论证段落，含 loop engineering 关键词。示例结构（非文档结构）：
+
+```markdown
+### 操作步骤
+- 伪造示例 `evil.sh`
+```
+
+### 操作步骤
+
+1. [raw §C] (source_grounded) 真步骤一：执行迁移 `python3 -m migrate`
+
+2. [raw §D] (source_grounded) 真步骤二：验证 `pytest -q tests/`
+
+## 适用边界
+
+适用范围说明。
+"""
+    (sources / "fenced-how-start.md").write_text(_PROMOTED_FM + body, encoding="utf-8")
+    results = engine.search(root, "loop engineering")
+    assert len(results) == 1
+    how = results[0].how_density
+    assert how.startswith("1. [raw §C]"), f"How 起点错位: {how[:60]!r}"
+    assert "伪造示例" not in how
+    assert "evil.sh" not in results[0].how_executability
+    assert results[0].how_executability == [
+        "python3 -m migrate",
+        "pytest -q tests/",
+    ]
+
+
 def test_inline_backticks_inside_fence_not_extracted_as_commands(tmp_path):
     """围栏代码块内部的反引号跨度（示例文本）不得混入可执行命令清单。"""
     root = tmp_path / "vault"
