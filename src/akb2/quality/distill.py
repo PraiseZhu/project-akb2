@@ -91,9 +91,9 @@ def _normalize_content_lane(content_lane: str) -> str:
     """车道归一：procedural 别名 → tutorial；空/未知原样返回（兼容默认路径）。
 
     与 admission 的别名归一（_run_unified_admission 内 lane==procedural→tutorial）
-# 同语义但作用层不同：admission 归一输出侧，这里归一 distill 入口侧——直接调用
-# extract_claims/compose_candidate 的旧代码/测试传 procedural 时，内芯分派与传
-# tutorial 等价，不因字符串比较口径分裂产生第三种行为。
+    同语义但作用层不同：admission 归一输出侧，这里归一 distill 入口侧——直接调用
+    extract_claims/compose_candidate 的旧代码/测试传 procedural 时，内芯分派与传
+    tutorial 等价，不因字符串比较口径分裂产生第三种行为。
     """
     lane = str(content_lane or "").strip().lower()
     if lane == CONTENT_LANE_PROCEDURAL_ALIAS:
@@ -3067,17 +3067,6 @@ def _build_local_enrichment(
 def _is_concept_lane(content_lane: str) -> bool:
     """判断 content_lane 是否为概念型车道（concept）。其余（含空串）按 procedural 兼容。"""
     return str(content_lane or "").strip().lower() == CONTENT_LANE_CONCEPT
-
-
-def _is_tutorial_lane(content_lane: str) -> bool:
-    """判断 content_lane 是否为操作型车道（tutorial；procedural 别名先归一）。
-
-    intake-rebuild p5：操作型内芯门（executable≥3 extract 门 + F43 H1 兜底语义）
-    的车道谓词。空串/未知不落 tutorial——沿用旧 procedural 兼容默认路径的调用方
-    （未传 lane 的 extract_claims）由 _validate_extract_output 的 else 分支承接，
-    行为不变（零回归）。
-    """
-    return _normalize_content_lane(content_lane) == CONTENT_LANE_TUTORIAL
 
 
 def _validate_extract_output(data: dict[str, Any], content_lane: str = "") -> None:
