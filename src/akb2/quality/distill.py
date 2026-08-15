@@ -75,6 +75,30 @@ CONCEPT_MIN_MECHANISM_COMPONENTS: int = 3
 FALLBACK_MAX_COMPONENTS: int = 12
 # step-1 content_lane 枚举：concept（概念型）/ procedural（操作型，默认兼容）。
 CONTENT_LANE_CONCEPT: str = "concept"
+# intake-rebuild p5（sc-p5-add-pattern-design）：三车道内芯枚举。tutorial 是操作型
+# 车道的 canonical 值（与 admission.LANE_TUTORIAL 一致）；procedural 降为兼容别名，
+# 入口统一归一为 tutorial（admission 输出侧已不产生 procedural 终值，此处护住
+# distill 直接调用方/旧测试仍传 procedural 的路径）。pattern/design 为新通过态
+# 车道：内芯是"可复用模式集/设计呈现"，不含概念机制组件（F4 由 integrity_floor
+# 的非 concept H1≥1 门统一裁决，不误用 concept 组件阈值）。
+CONTENT_LANE_TUTORIAL: str = "tutorial"
+CONTENT_LANE_PATTERN: str = "pattern"
+CONTENT_LANE_DESIGN: str = "design"
+CONTENT_LANE_PROCEDURAL_ALIAS: str = "procedural"
+
+
+def _normalize_content_lane(content_lane: str) -> str:
+    """车道归一：procedural 别名 → tutorial；空/未知原样返回（兼容默认路径）。
+
+    与 admission 的别名归一（_run_unified_admission 内 lane==procedural→tutorial）
+# 同语义但作用层不同：admission 归一输出侧，这里归一 distill 入口侧——直接调用
+# extract_claims/compose_candidate 的旧代码/测试传 procedural 时，内芯分派与传
+# tutorial 等价，不因字符串比较口径分裂产生第三种行为。
+    """
+    lane = str(content_lane or "").strip().lower()
+    if lane == CONTENT_LANE_PROCEDURAL_ALIAS:
+        return CONTENT_LANE_TUTORIAL
+    return lane
 HOW_STEPS_MAX_RENDERED: int = 3
 CLAIMS_MAX_ITEMS: int = 5
 GATE_REASON_MAX_CHARS: int = 150
@@ -692,6 +716,7 @@ def extract_claims(
                             beta_tool_enabled,
                             json_mode_enabled,
                             parsed_segments,
+                            content_lane=content_lane,
                         )
                     else:
                         segment_data = _extract_segment_once(
@@ -701,9 +726,10 @@ def extract_claims(
                             beta_tool_enabled,
                             json_mode_enabled,
                             parsed_segments,
+                            content_lane=content_lane,
                         )
                     parsed_segments[segment_name] = segment_data
-            merged = _merge_extract_segments(parsed_segments)
+            merged = _merge_extract_segments(parsed_segments, content_lane)
             # F9-A: extract 后处理归一化单入口(LLM 成功路径 + fallback 共用 choke point)。
             # 按序:F-A 锚解析→edge anchor 校正→P1b-1 接地→F8-C 组件过滤→F6-A 端点闭合→
             # F8-D 命名归一→F8-A evidence 回填→F3-B 命令剥离。diag 透传 ExtractResult.diagnostics。
@@ -1507,11 +1533,50 @@ def _verbatim_coverage_in_block(claim_text: str, block_text: str) -> float:
     return m.size / len(claim_norm) if claim_norm else 0.0
 
 
+# intake-rebuild p5（sc-p5-add-pattern-design）：车道专属抽取指令内芯。
+# 三车道共用 9 节成稿骨架与全 segment schema——只切 how_params 段的内芯指令，
+# claims/meta/argumentation/graph 段的抽取契约与车道无关（锚定/盲区/溯源是
+# 全车道诚实性门，不分道）。每条内芯只改「核心价值抽什么」，不改字段名/schema
+# （出站 strict schema 零改动，pattern/design 零 .py 新字段）。
+_LANE_HOW_PARAMS_CORE_INSTRUCTIONS: dict[str, str] = {
+    CONTENT_LANE_PATTERN: (
+        "- 【pattern 车道内芯】本篇是可复用模式集（最佳实践/反模式集合），"
+        "抽取核心价值时：\n"
+        "  * 每个模式作为一条 how_step 抽出：instruction 写模式名+一句适用条件"
+        "（何时用/何时不用），command 留空、executable=false（模式不是命令）；\n"
+        "  * how_level 按 H3=模式间关系/组合约束、H2=模式的数据流或状态效果、"
+        "H1=模式内给出的具体命令 标注；原文给了命令才标 H1（逐字复制）；\n"
+        "  * mechanism_components 不硬凑：仅当原文把多个模式组织成命名框架"
+        "（如三层结构/角色分工）时抽组件，组件仍须带逐字 evidence_sentence；\n"
+        "  * 宁缺勿假：原文没有的内容不编造（floor F4 与 grader 会拦）。\n"
+    ),
+    CONTENT_LANE_DESIGN: (
+        "- 【design 车道内芯】本篇是设计呈现（设计决策/视觉与交互方案），"
+        "抽取核心价值时：\n"
+        "  * 每条设计决策作为一条 how_step 抽出：instruction 写决策内容+理由"
+        "（如层级/色彩/间距/交互取舍），command 留空、executable=false"
+        "（设计决策不是命令）；\n"
+        "  * how_level 按 H3=设计系统的组件与关系（如 token/层级/网格）、"
+        "H2=决策对用户可见效果的影响、H1=设计工具的具体命令/配置 标注；"
+        "原文给了命令才标 H1（逐字复制）；\n"
+        "  * mechanism_components 不硬凑：仅当原文给出命名的结构性设计系统"
+        "（如八点网格/三级色标）时抽组件，组件仍须带逐字 evidence_sentence；\n"
+        "  * 宁缺勿假：原文没有的内容不编造（floor F4 与 grader 会拦）。\n"
+    ),
+}
+
+
 def _build_extract_segment_messages(
     segment_name: str,
     content_snippet: str,
+    content_lane: str = "",
 ) -> list[dict[str, str]]:
-    """构建分段抽取 prompt，降低单次 schema/推理复杂度。"""
+    """构建分段抽取 prompt，降低单次 schema/推理复杂度。
+
+    intake-rebuild p5：how_params 段按 content_lane 切内芯——tutorial（含 procedural
+    别名/默认）沿用既有操作型指令（零回归）；pattern/design 追加车道专属内芯
+    （见 _LANE_HOW_PARAMS_CORE_INSTRUCTIONS）；concept 沿用既有机制组件指令。
+    """
     segment_instructions = {
         "claims": (
             "只抽取 claims 与 tldr。\n"
@@ -1531,7 +1596,10 @@ def _build_extract_segment_messages(
             "抽取 how_steps、mechanism_components、causal_edges 与 param_entries。\n"
             "- how_steps: 对象数组 {instruction, command, executable, how_level}；"
             "操作型原文至少 3 条 executable=true 且 command 非空。\n"
-            "- how_level: 标注每步的机制层级——H1=命令级（可直接执行的命令/调用）；"
+            + _LANE_HOW_PARAMS_CORE_INSTRUCTIONS.get(
+                _normalize_content_lane(content_lane), ""
+            )
+            + "- how_level: 标注每步的机制层级——H1=命令级（可直接执行的命令/调用）；"
             "H2=数据流/状态/接口说明级（讲清数据怎么流、状态怎么变、接口怎么对接）；"
             "H3=命名机制组件+因果边级（讲清是哪几个命名组件、组件间因果如何驱动）。\n"
             "  [F43] procedural/how-to 原文:每个编号命令步骤（\"1. Navigate to Databases → "
@@ -2693,14 +2761,20 @@ def _extract_segment_once(
     beta_tool_enabled: bool,
     json_mode_enabled: bool,
     previous_segments: dict[str, dict[str, Any]],
+    content_lane: str = "",
 ) -> dict[str, Any]:
     """单次抽取一个 segment：messages → LLM → parse → normalize → validate。
 
     从 extract_claims 主循环抽出，便于 how_params retake 复用同一路径产多次。
     非 retake 路径行为与原内联实现等价（同调用、同归一化、同校验）。
+
+    intake-rebuild p5：content_lane 透传给 _build_extract_segment_messages，
+    how_params 段按 tutorial/pattern/design 切内芯指令（默认空 lane 零变化）。
     """
     schema = _DISTILL_SEGMENT_SCHEMAS[segment_name]
-    messages = _build_extract_segment_messages(segment_name, content_snippet)
+    messages = _build_extract_segment_messages(
+        segment_name, content_snippet, content_lane=content_lane
+    )
     if beta_tool_enabled:
         from src.akb2.quality.llm_router import route_deepseek_beta_tool
 
@@ -2742,6 +2816,7 @@ def _extract_how_params_with_retake(
     beta_tool_enabled: bool,
     json_mode_enabled: bool,
     previous_segments: dict[str, dict[str, Any]],
+    content_lane: str = "",
 ) -> dict[str, Any]:
     """语义型 How 抖动兜底：how_params segment 产 SEMANTIC_RETAKE_MAX 次取交集。
 
@@ -2761,6 +2836,7 @@ def _extract_how_params_with_retake(
                 beta_tool_enabled,
                 json_mode_enabled,
                 previous_segments,
+                content_lane=content_lane,
             )
         )
     intersected = _intersect_how_steps(samples)
@@ -2881,6 +2957,7 @@ def _how_step_intersection_keys(step: dict[str, Any]) -> list[tuple[str, str]]:
 
 def _merge_extract_segments(
     segments: dict[str, dict[str, Any]],
+    content_lane: str = "",
 ) -> dict[str, Any]:
     """合并三段输出，外部仍保持原 ExtractResult.data 结构。"""
     how_params = segments["how_params"]
@@ -2907,7 +2984,14 @@ def _merge_extract_segments(
     }
     if not merged["claims"]:
         raise ValueError("claims 分段为空")
-    if not merged["how_steps"]:
+    # intake-rebuild p5：how_steps 非空门按车道分派——tutorial/concept/空 lane（旧
+    # 调用方）保留（防 LLM 空 segment 抖动 + procedural executable 门依赖非空）；
+    # pattern/design 的内芯条目（模式/设计决策）天然可为空（车道核心价值由 floor
+    # F4 H1≥1 裁决，此处不早判），空数组合法放行进成稿（How 节走车道 walkthrough）。
+    if not merged["how_steps"] and _normalize_content_lane(content_lane) not in (
+        CONTENT_LANE_PATTERN,
+        CONTENT_LANE_DESIGN,
+    ):
         raise ValueError("how_params 分段未返回 how_steps")
     if not merged["argumentation"]:
         raise ValueError("argumentation 分段为空")
@@ -2983,6 +3067,17 @@ def _build_local_enrichment(
 def _is_concept_lane(content_lane: str) -> bool:
     """判断 content_lane 是否为概念型车道（concept）。其余（含空串）按 procedural 兼容。"""
     return str(content_lane or "").strip().lower() == CONTENT_LANE_CONCEPT
+
+
+def _is_tutorial_lane(content_lane: str) -> bool:
+    """判断 content_lane 是否为操作型车道（tutorial；procedural 别名先归一）。
+
+    intake-rebuild p5：操作型内芯门（executable≥3 extract 门 + F43 H1 兜底语义）
+    的车道谓词。空串/未知不落 tutorial——沿用旧 procedural 兼容默认路径的调用方
+    （未传 lane 的 extract_claims）由 _validate_extract_output 的 else 分支承接，
+    行为不变（零回归）。
+    """
+    return _normalize_content_lane(content_lane) == CONTENT_LANE_TUTORIAL
 
 
 def _validate_extract_output(data: dict[str, Any], content_lane: str = "") -> None:
@@ -3065,21 +3160,26 @@ def _validate_extract_output(data: dict[str, Any], content_lane: str = "") -> No
             f"（可直接引用原文的 claim 必须用 source_grounded）"
         )
 
-    # 3.6 how_steps 可执行数量校验（lane-aware，SC-3a/A3-1）：
-    # - procedural（默认/兼容）：保留 ≥3 条 executable=true 且 command 非空的 extract 门
-    #   （零回归）——否则真实 extract 可合法通过但成稿缺 How 可执行性（rubric How 密度）。
+    # 3.6 how_steps 可执行数量校验（lane-aware，SC-3a/A3-1 + intake-rebuild p5）：
+    # - tutorial（操作型 canonical；procedural 别名经 _normalize_content_lane 归一）/
+    #   默认（空 lane，旧调用方）：
+    #   保留 ≥3 条 executable=true 且 command 非空的 extract 门（零回归）——否则真实
+    #   extract 可合法通过但成稿缺 How 可执行性（rubric How 密度）。
     # - concept：§0.2/A2 删 F4 前移——extract 不再判 F4（≥3 组件/连边），F4 唯一裁决点
-    #   回 integrity_floor（runner.py floor 段）。旧 _validate_extract_output 内调
-    #   _core_value_f4_failed 与 runner floor（runner.py:651-653）+ 质量段 early-return
-    #   （runner.py:988-1017）双跑同一 F4，且 floor 在 A层/grader 之前 early-return，
-    #   F4 计边发生在正文/A层/grader 不存在时——顺序矛盾（§0.2 D1）。concept 允许
-    #   H1==0、不卡 executable；机制完整性由 floor F4 兜底（D1 改 eligible edge 口径）。
+    #   回 integrity_floor（runner.py floor 段）。concept 允许 H1==0、不卡 executable；
+    #   机制完整性由 floor F4 兜底（D1 改 eligible edge 口径）。
+    # - pattern/design（p5 新通过态）：不卡 executable≥3——模式集/设计呈现原文天然
+    #   无可复制命令，硬卡会把 admission 已放行的车道在 extract 层卡死（与 admission
+    #   how_tendency 车道作用域门的语义对齐：仅 tutorial 拒收 how fail）。核心价值
+    #   由 integrity_floor F4 非 concept 分支（H1≥1 命令级步骤）统一 fail-closed 裁决，
+    #   不在此处早判（与 concept 同一"extract 不早判 F4"纪律）。
     # 注：本校验作用于 extract 输出（maker 提案层），命令是否最终渲染进候选页由
-    # _build_body 的 emission-前回查 raw 护栏裁决（治本2）；此处只保证 procedural maker
+    # _build_body 的 emission-前回查 raw 护栏裁决（治本2）；此处只保证操作型 maker
     # 提出了足量可执行候选步骤。concept 的机制组件/边由 LLM/§4 两阶段抽取产，
     # 不足量时由 floor F4 fail-closed（不在此处早判）。
     how_steps = data.get("how_steps", []) or []
-    if not _is_concept_lane(content_lane):
+    _lane_norm = _normalize_content_lane(content_lane)
+    if _lane_norm in ("", CONTENT_LANE_TUTORIAL):
         executable_steps = sum(
             1
             for s in how_steps
@@ -5052,7 +5152,13 @@ def _build_deterministic_extract_data(
     # max_repair_rounds / grader assert）——idx5 poisoned trace 源头（grader 判未从 cited
     # anchor 推出）。concept F4 判 mechanism_components，how_steps 留空避免造假；
     # procedural 保留（零回归）。
-    if _is_concept_lane(content_lane):
+    # intake-rebuild p5：pattern/design 同理不注入——这组步骤是 AKB 管线操作化映射，
+    # 与"可复用模式集/设计呈现"的内芯无关，注入即造 poisoned trace；车道核心价值
+    # 交由 floor F4（非 concept H1≥1）裁决，fallback 不足即 fail-closed（诚实）。
+    if _is_concept_lane(content_lane) or _normalize_content_lane(content_lane) in (
+        CONTENT_LANE_PATTERN,
+        CONTENT_LANE_DESIGN,
+    ):
         how_steps = []
     params = {
         "max_repair_rounds": "3",
@@ -5061,7 +5167,10 @@ def _build_deterministic_extract_data(
         "max_parallel_items": "1",
         "fallback_allowed": "false",
     }
-    if _is_concept_lane(content_lane):
+    if _is_concept_lane(content_lane) or _normalize_content_lane(content_lane) in (
+        CONTENT_LANE_PATTERN,
+        CONTENT_LANE_DESIGN,
+    ):
         params = {}
     concepts = ["loop-engineering", "quality-gate", "agent-workflow"]
     argumentation = [
@@ -5628,7 +5737,10 @@ def _build_frontmatter(
         "confidence": "medium",
         # 状态（短）
         "status": "candidate",
-        "content_lane": content_lane,  # 内容车道（step-1：concept/procedural）
+        # 内容车道（step-1 穿线；intake-rebuild p5 起归一：procedural 别名落盘前
+        # 归一为 tutorial canonical 值，候选页不再出现 procedural 终值——与
+        # admission 输出侧同语义。pattern/design 原样透传。）
+        "content_lane": _normalize_content_lane(content_lane),
         "gate_decision": None,  # 写死 null（已知坑 1）
         "gate_reason": gate_reason,  # ≤150 字符（已知坑 3）
         "star_level": 0,  # 0 星基线（STAR-RATING；升星引擎=循环3）
@@ -7544,6 +7656,58 @@ def _render_concept_mechanism_walkthrough(
     return "\n".join(lines) if lines else _zero_fallback
 
 
+def _render_lane_core_walkthrough(
+    extract_data: dict[str, Any],
+    lane: str,
+    raw_content: str | None,
+) -> str:
+    """intake-rebuild p5（sc-p5-add-pattern-design）：pattern/design 车道 how 双空内芯。
+
+    与 concept 的 _render_concept_mechanism_walkthrough 同构（零编造、确定性渲染），
+    但核心价值载体不同：pattern/design 的 extract 内芯产的是 how_steps 里的
+    模式/设计决策条目（instruction 级，command 留空 executable=false），不是
+    mechanism_components/causal_edges。本函数从 how_steps 渲染内芯行：
+        [raw §X] (provenance) 模式/设计决策:instruction
+    - 零编造：instruction 逐字来自 extract how_steps；anchor 走 P1a 统一 parser
+      canonicalize + resolve，∈ raw 声明集，不在则跳过（不造假 anchor）。
+    - ≤5 行（有界）。无可用步骤 → 诚实说明单行（无 FORBIDDEN/TEMPLATE marker，
+      车道天然无命令不伪装 source_grounded）。
+    """
+    lane_label = "模式" if lane == CONTENT_LANE_PATTERN else "设计决策"
+    _zero_fallback = (
+        f"（{lane} 车道原文无可锚定的{lane_label}条目；"
+        f"核心价值由完整性地板裁决，候选阶段不强行生成。）"
+    )
+    steps = extract_data.get("how_steps", []) or []
+    decl = declared_anchor_set(raw_content)
+    if not steps or not decl:
+        return _zero_fallback
+    lines: list[str] = []
+    for step in steps[:5]:
+        if not isinstance(step, dict):
+            continue
+        instruction = str(step.get("instruction", "")).strip()
+        if not instruction:
+            continue
+        anchor = str(step.get("anchor", "")).strip()
+        if not anchor:
+            continue
+        # P1a 统一 parser:canonicalize + 唯一前缀解析（与 concept walkthrough 同口径）
+        anchor = canonicalize_anchor(anchor)
+        if anchor not in decl:
+            resolved = resolve_anchor_ref(anchor, decl)
+            anchor = resolved if resolved else anchor
+        if anchor not in decl:
+            continue  # 不在声明集 → 跳过(不造假 anchor)
+        provenance = str(step.get("provenance", "")).strip()
+        if provenance not in ("source_grounded", "akb_interpretation"):
+            provenance = "source_grounded"
+        lines.append(
+            f"[raw {anchor}] ({provenance}) {lane_label}:{instruction}"
+        )
+    return "\n".join(lines) if lines else _zero_fallback
+
+
 def _render_mechanism_narrative(
     extract_data: dict[str, Any], raw_content: str | None
 ) -> str:
@@ -7974,9 +8138,17 @@ def _build_body(
         how_text = llm_how_text
     else:
         # P3: how 双空 — concept lane 从 eligible 边渲染机制 walkthrough(零编造,避 FORBIDDEN
-        # marker);procedural(含空 lane)占位原样保留 → SG 照拒(严格性零回退)。
-        if str(content_lane).strip().lower() == "concept":
+        # marker);procedural/tutorial(含空 lane)占位原样保留 → SG 照拒(严格性零回退)。
+        # intake-rebuild p5:pattern/design 从 how_steps(模式/设计决策,instruction 级)渲染
+        # 内芯行(零编造,evidence 逐字来自 raw);仍无材料 → 诚实说明行(无 FORBIDDEN marker,
+        # 车道天然无命令,核心价值由 floor F4 H1 门裁决)。
+        _lane_key = _normalize_content_lane(content_lane)
+        if _lane_key == "concept":
             how_text = _render_concept_mechanism_walkthrough(extract_data, raw_content)
+        elif _lane_key in (CONTENT_LANE_PATTERN, CONTENT_LANE_DESIGN):
+            how_text = _render_lane_core_walkthrough(
+                extract_data, _lane_key, raw_content
+            )
         else:
             how_text = "（原文无可安全锚定的操作步骤；候选阶段不强行生成 AKB 操作化步骤。）"
     # F6-C: must_cover 字面量注入——检查每条 source_operation 字面量是否在 how_text
