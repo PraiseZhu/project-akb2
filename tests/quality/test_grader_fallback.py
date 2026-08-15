@@ -78,11 +78,6 @@ def gpt54_pass_response() -> dict:
             content={
                 "dimensions": [
                     {
-                        "dimension": "论断锚定率",
-                        "pass": True,
-                        "defects": [],
-                    },
-                    {
                         "dimension": "How 密度",
                         "pass": True,
                         "defects": [],
@@ -93,37 +88,17 @@ def gpt54_pass_response() -> dict:
                         "defects": [],
                     },
                     {
-                        "dimension": "证据诚实",
-                        "pass": True,
-                        "defects": [],
-                    },
-                    {
-                        "dimension": "解读分离",
-                        "pass": True,
-                        "defects": [],
-                    },
-                    {
                         "dimension": "TLDR 密度",
                         "pass": True,
                         "defects": [],
                     },
                     {
-                        "dimension": "新颖增量",
-                        "pass": True,
-                        "defects": [],
-                    },
-                    {
-                        "dimension": "边强度匹配",
+                        "dimension": "适用边界",
                         "pass": True,
                         "defects": [],
                     },
                     {
                         "dimension": "Future Questions 质量",
-                        "pass": True,
-                        "defects": [],
-                    },
-                    {
-                        "dimension": "适用边界",
                         "pass": True,
                         "defects": [],
                     },
@@ -144,9 +119,8 @@ def gemini_flash_pass_response() -> dict:
                 "dimensions": [
                     {"dimension": dim, "pass": True, "defects": []}
                     for dim in [
-                        "论断锚定率", "How 密度", "How 可执行性", "证据诚实",
-                        "解读分离", "TLDR 密度", "新颖增量", "边强度匹配",
-                        "Future Questions 质量", "适用边界",
+                        "How 密度", "How 可执行性", "TLDR 密度", "适用边界",
+                        "Future Questions 质量",
                     ]
                 ]
             },
