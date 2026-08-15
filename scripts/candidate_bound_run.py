@@ -466,7 +466,8 @@ def _check_phase(repo_root: Path, artifact: dict) -> dict:
         "head_expected": artifact["head_sha"],
         "head_actual": head_actual,
         "dirty_ok": dirty == 0,
-        "dirty_count": dirty,
+        "dirty_expected": 0,
+        "dirty_actual": dirty,
         "external_ok": not mismatches,
         "external_mismatches": mismatches,
     }
@@ -480,7 +481,10 @@ def _phase_failed(phase: dict) -> list[str]:
             f"actual={phase['head_actual']})"
         )
     if not phase["dirty_ok"]:
-        reasons.append(f"dirty_count={phase['dirty_count']} (git 可见改动非零)")
+        reasons.append(
+            f"工作树不干净 (expected dirty={phase['dirty_expected']}, "
+            f"actual={phase['dirty_actual']})"
+        )
     if not phase["external_ok"]:
         for m in phase["external_mismatches"]:
             reasons.append(

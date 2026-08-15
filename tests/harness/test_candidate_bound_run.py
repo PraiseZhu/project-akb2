@@ -99,10 +99,14 @@ def test_pre_check_fails_on_head_drift(mini_repo):
 def test_pre_check_fails_on_dirty_worktree(mini_repo):
     out, run_env, report_dir = _prepared(mini_repo)
     (mini_repo["repo"] / "dirty.txt").write_text("uncommitted\n")
+    (mini_repo["repo"] / "dirty2.txt").write_text("uncommitted\n")
     rc = _run(run_env, out, report_dir, "true")
     assert rc.returncode != 0
     assert "PRE_CHECK_FAIL" in rc.stderr
     assert "dirty" in rc.stderr
+    # 失败信息必须带 expected/actual（可诊断，与 head/external 同口径）
+    assert "expected dirty=0" in rc.stderr
+    assert "actual=2" in rc.stderr
 
 
 def test_pre_check_fails_on_external_hash_mismatch(mini_repo):
@@ -126,6 +130,9 @@ def test_post_check_fails_when_cmd_dirties_worktree(mini_repo):
     assert rc.returncode != 0
     assert "POST_CHECK_FAIL" in rc.stderr
     assert "dirty" in rc.stderr
+    # POST 侧同样必须带 expected/actual（一个 git 可见改动）
+    assert "expected dirty=0" in rc.stderr
+    assert "actual=1" in rc.stderr
 
 
 def test_post_check_fails_when_cmd_modifies_external_anchor(mini_repo):
