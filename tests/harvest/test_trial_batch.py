@@ -568,25 +568,33 @@ class TestSessionIdGateMutationIsolation:
     ——证明这些用例钉死的正是 batch 侧闸本身，而非 schema 侧或别处行为。
     注：monkeypatch 只影响 trial_batch 模块绑定，assembler 原函数对象不动，
     schema 侧用例（test_schema.py）不受影响。
+
+    钉层纪律（schema 侧 UUID4 闸合入后）：validate_trial_batch 对 planned
+    条目还会经 validate_harvest(payload) 走 schema 侧同谓词闸，monkeypatch
+    挖 batch 绑定挖不掉那一层。因此变异用例只调 batch 自己的入口函数
+    （_validate_planned_item / _validate_attempted_item），且 planned 用例保持
+    内嵌 payload 合法让 schema 侧物理绿灯——被观测的翻转只能来自 batch 闸。
     """
 
     def test_mutation_non_uuid4_flips_to_pass(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # 内嵌 payload 保持合法 UUID4：schema 侧闸物理绿灯，
+        # UUID4 拒绝只能来自 batch 侧顶层闸（顶层与 payload 分叉另报同源违规，
+        # 属不同闸，不含 UUID4 字样）。
         batch = make_valid_batch()
         batch["planned"][0]["session_id"] = "not-a-uuid"
-        batch["planned"][0]["payload"]["session_id"] = "not-a-uuid"
-        batch["planned"][0]["payload"]["source_meta"]["session_id"] = "not-a-uuid"
+        item = batch["planned"][0]
 
-        # 基线：闸在 → 必拒
-        with_uuid4_gate = validate_trial_batch(batch)
+        # 基线：闸在 → batch 入口必因 UUID4 拒
+        with_uuid4_gate = trial_batch._validate_planned_item(item, 0)
         assert any("UUID4" in v for v in with_uuid4_gate)
 
         # 变异：闸挖掉 → 同一输入必须不再因 UUID4 拒（用例转红）
         monkeypatch.setattr(
             trial_batch, "validate_harvest_run_id", lambda _s: True
         )
-        mutated = validate_trial_batch(batch)
+        mutated = trial_batch._validate_planned_item(item, 0)
         assert not any("UUID4" in v for v in mutated), (
             "挖掉 batch 侧 UUID4 闸后仍拒 = 用例没钉在 batch 侧闸上: "
             f"{mutated!r}"
@@ -598,15 +606,17 @@ class TestSessionIdGateMutationIsolation:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         batch = make_valid_batch()
-        batch["attempted"][0]["session_id"] = "plain-session-id"
+        item = batch["attempted"][0]
+        item["session_id"] = "plain-session-id"
 
-        with_gate = validate_trial_batch(batch)
+        # attempted 无内嵌 payload，不进 schema；直接调 batch 入口钉层
+        with_gate = trial_batch._validate_attempted_item(item, 0)
         assert any("UUID4" in v for v in with_gate)
 
         monkeypatch.setattr(
             trial_batch, "validate_harvest_run_id", lambda _s: True
         )
-        mutated = validate_trial_batch(batch)
+        mutated = trial_batch._validate_attempted_item(item, 0)
         assert not any("UUID4" in v for v in mutated), (
             f"attempted 侧同样未钉死在 batch 闸: {mutated!r}"
         )
