@@ -2006,17 +2006,18 @@ def _run_quality_segments(
     # P1 重构（drop-repair-residency）：repair 多轮修复循环已删除。
     # 存在 blocking 缺陷 = 终态失败——不再重写候选文本，不进驻留池;
     # 缺陷摘要 fail-visible 落入 meta,由上层 abort 落账(F39 只救 infra 死)。
-    # advisory 缺陷不阻断(与 initial 无缺陷路径同语义)。
-    blocking = [d for d in (a_defects + b_defects) if d in all_defects]
+    # advisory 缺陷不阻断(与 initial 无缺陷路径同语义)。all_defects 已是
+    # _rl_blocking 过滤后的 blocking 集合，直接复用（避免按值 in 重新过滤——
+    # dataclass 结构相等下，同值的 advisory/非 advisory 缺陷会被误收）。
     meta_fail: dict[str, Any] = {
         **meta_b,
         "repair_rounds": 0,
-        "final_defects_summary": _defect_summary(blocking),
+        "final_defects_summary": _defect_summary(all_defects),
     }
     return (
         False,
         "blocking_defects_present",
-        f"存在 {len(blocking)} 项 blocking 缺陷（repair 循环已移除，直接终态）",
+        f"存在 {len(all_defects)} 项 blocking 缺陷（repair 循环已移除，直接终态）",
         meta_fail,
     )
 
