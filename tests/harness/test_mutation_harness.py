@@ -176,6 +176,46 @@ def test_empty_collection_is_error(tmp_path: Path) -> None:
     assert "SOURCE_RESTORED" in _prefixes(out)
 
 
+def test_zero_actual_red_with_empty_prediction_is_error() -> None:
+    """测到了但 0 红 + 空预测：rc=2（0 红不当过），不产生 MATCH 假绿行。
+
+    反例：ledger 变异打到与账本无关的绿测试文件（test_schema_selfcheck），
+    变异未被任何测试观察到——「空==空」不构成匹配成功。
+    """
+    sha_before = _sha(LEDGER)
+    rc, out, err = _run_harness(
+        [
+            "--mutation", "ledger_dedup_disabled",
+            "--tests", "tests/loops/test_schema_selfcheck.py",
+            "--predicted-red", "",
+            "--timeout", TIMEOUT,
+        ]
+    )
+    assert rc == mh.EXIT_ERROR, out + err
+    assert "MUTATION_RED_SET_EMPTY" in err
+    # 机器可读 stdout 不得再出现 MATCH 判定（假绿语义已移除）
+    assert "MUTATION_RED_SET_MATCH" not in out
+    assert "MUTATION_RED_SET_MISMATCH" not in out
+    assert _sha(LEDGER) == sha_before
+    assert "SOURCE_RESTORED" in _prefixes(out)
+
+
+def test_zero_actual_red_with_nonempty_prediction_is_error() -> None:
+    """0 红 + 非空预测：同样 rc=2（空红集先于比对 fail-closed），不是 MISMATCH。"""
+    rc, out, err = _run_harness(
+        [
+            "--mutation", "ledger_dedup_disabled",
+            "--tests", "tests/loops/test_schema_selfcheck.py",
+            "--predicted-red", "tests.loops.test_schema_selfcheck.test_nonexistent",
+            "--timeout", TIMEOUT,
+        ]
+    )
+    assert rc == mh.EXIT_ERROR, out + err
+    assert "MUTATION_RED_SET_EMPTY" in err
+    assert "MUTATION_RED_SET_MATCH" not in out
+    assert "MUTATION_RED_SET_MISMATCH" not in out
+
+
 def test_forbidden_registry_entry_rejected_cli(monkeypatch, capsys) -> None:
     """CLI 层：注册表条目指向 src/akb2/quality/ → 启动校验拒收 rc=2，可诊断。"""
     monkeypatch.setitem(

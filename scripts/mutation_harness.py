@@ -28,10 +28,11 @@
     RED_ACTUAL <红集id>    （每个实际红测试一行，诊断用）
 
 退出码：
-    0  红集 exact 匹配且源文件已还原
+    0  红集 exact 匹配（非空）且源文件已还原
     1  红集不匹配（源文件已还原）
     2  执行器自身错误：未知变异 / 锚点漂移 / pytest 启动失败或超时 /
-       收集 0 个测试 / junit 未生成或不可解析 / 还原后 sha256 不符。细节见 stderr。
+       收集 0 个测试 / 实际红集为空（0 红不当过）/ junit 未生成或不可解析 /
+       还原后 sha256 不符。细节见 stderr。
 
 边界（g4 派工包）：注册表条目禁指 src/akb2/quality/，启动时注册表校验兜底。
 """
@@ -311,7 +312,8 @@ def _normalize_test_id(test_id: str) -> str:
 
 
 def parse_predicted_red(raw: str) -> set[str]:
-    """逗号分隔的预测红集 → set（空白条目丢弃；空串 = 预测无红）。
+    """逗号分隔的预测红集 → set（空白条目丢弃；空串 = 预测无红，
+    但实际红集为空时无论预测如何都按执行器错误处理，见 run_once）。
 
     每条接受 junit classname.name 或 pytest nodeid（path::test）两种等价写法，
     统一归一化后比对，与 parse_red_set 的输出同一命名空间。
@@ -370,6 +372,20 @@ def run_once(args: argparse.Namespace) -> int:
                 f"SOURCE_RESTORE_FAILED path={mut.file} expected={sha_pre} actual={sha_post}"
             )
 
+    for test_id in sorted(actual):
+        print(f"RED_ACTUAL {test_id}")
+
+    if not actual:
+        # 实际红集为空 = 变异没被任何测试观察到。无论预测是否为空都
+        # fail-closed：0 红 + 空 predicted 的「空==空」是假绿，不是匹配成功
+        # （与 parse_red_set 拒绝空收集同一宪法口径：失败必须可见）。
+        print(
+            "MUTATION_RED_SET_EMPTY actual=0 predicted="
+            f"{len(predicted)}（变异未触发任何红测试，测试集对该变异无鉴别力）",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+
     matched = actual == predicted
     if matched:
         print(f"MUTATION_RED_SET_MATCH actual={len(actual)} predicted={len(predicted)}")
@@ -380,8 +396,6 @@ def run_once(args: argparse.Namespace) -> int:
             f"MUTATION_RED_SET_MISMATCH actual={len(actual)} predicted={len(predicted)}"
             f" only_actual={only_actual} only_predicted={only_predicted}"
         )
-    for test_id in sorted(actual):
-        print(f"RED_ACTUAL {test_id}")
 
     if not restore_ok:
         return EXIT_ERROR
@@ -405,7 +419,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         required=True,
         help=(
             "预测红集（逗号分隔；每条支持 junit classname.name 或 pytest nodeid"
-            " path::test 两种等价写法；空串 = 预测无红）"
+            " path::test 两种等价写法；空串 = 预测无红，"
+            "但实际红集为空时执行器报错而非判定匹配）"
         ),
     )
     parser.add_argument(
