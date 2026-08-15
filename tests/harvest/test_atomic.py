@@ -178,7 +178,7 @@ class TestIsolationVisibility:
         import akb2.harvest.assembler as _M
         _M._place = spy
         try:
-            _M.assemble(_payload("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"),
+            _M.assemble(_payload("c6e10d0d-c8b8-4220-97c8-7ad06e68bd90"),
                         harvest_run_id=RUN_ID)
         finally:
             _M._place = orig
@@ -196,7 +196,7 @@ class TestLandingSemantics:
         """(②) 改名后 raw_dir 只剩最终名一个新增;最终文件完整(10 键+锚点)。"""
         before = _raw_before(deploy)
         import akb2.harvest.assembler as _M
-        filename = _M.assemble(_payload("b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7"),
+        filename = _M.assemble(_payload("a6dc5aca-d956-4d5c-80e9-c1843d52c193"),
                                harvest_run_id=RUN_ID)
         new = _new_raw(deploy, before)
         assert new == [filename]
@@ -217,7 +217,7 @@ class TestLandingSemantics:
 
         monkeypatch.setattr(_M, "_place", boom)
         with pytest.raises(OSError):
-            _M.assemble(_payload("c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8"),
+            _M.assemble(_payload("7e48811b-4bf0-4b93-891a-18b0b699ff4d"),
                         harvest_run_id=RUN_ID)
         assert _new_raw(deploy, before) == []
         assert sha256_file(foreign) == foreign_hash
@@ -233,7 +233,7 @@ class TestLandingSemantics:
         iso = deploy["tree"] / f".harvest-iso--{RUN_ID}.tmp"
         before = _raw_before(deploy)
         with pytest.raises(OSError):
-            _M.assemble(_payload("d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9"),
+            _M.assemble(_payload("36d6c5a0-58cc-484f-b32a-5185b98a4cb2"),
                         harvest_run_id=RUN_ID)
         assert not iso.exists()
         assert _new_raw(deploy, before) == []
@@ -242,7 +242,7 @@ class TestLandingSemantics:
         """(④) 目标已存在 → 拒 EEXIST(内核)、exit 4、既有文件字节未变。"""
         # 先真实落一份(同一 session_id → 同名)
         import akb2.harvest.assembler as _M
-        sid = "e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+        sid = "c21576d1-ae9e-451b-b6fd-19f21987b502"
         filename = _M.assemble(_payload(sid), harvest_run_id=RUN_ID)
         existing = deploy["raw_dir"] / filename
         existing_hash = sha256_file(existing)
@@ -277,14 +277,14 @@ class TestRunIdEscape:
         import akb2.harvest.assembler as _M
         for bad in ("../../raw", f"{deploy['raw_dir']}", "not-a-uuid"):
             with pytest.raises(_M.AssemblyRejectedError):
-                _M.assemble(_payload("f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1"),
+                _M.assemble(_payload("a6bfd155-2ef4-4a6f-9bbb-eed990618985"),
                             harvest_run_id=bad)
         assert _new_raw(deploy, before) == []
 
     def test_cli_side_exit2(self, deploy, tmp_path) -> None:
         """(⑤) CLI 侧恶意 run_id 三例 exit 2,raw_dir 零新增。"""
         p = tmp_path / "p.json"
-        p.write_text(json.dumps(_payload("a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2")),
+        p.write_text(json.dumps(_payload("deb838ef-b4c5-47e8-b55d-ef10852b987e")),
                      encoding="utf-8")
         before = _raw_before(deploy)
         for bad in ("../../raw", f"{deploy['raw_dir']}", "not-a-uuid"):
@@ -381,7 +381,7 @@ class TestConcurrency:
     def test_foreign_writer_race_rejected(self, deploy, monkeypatch) -> None:
         """(⑥) 落位原语前插入外来同名文件 → 内核 RENAME_EXCL 拒 EEXIST、exit 4。"""
         import akb2.harvest.assembler as _M
-        sid = "b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3"
+        sid = "f52e5a83-8802-44e5-839c-5bdb54f41b8f"
         # 先在 _place 插缝:调用原落位原语前写入外来同名文件(模拟不拿锁的旧 feeder)
         foreign_content = "FOREIGN-WRITER"
         injected: list[Path] = []
@@ -407,7 +407,7 @@ class TestConcurrency:
 
     def test_cross_process_reservation_enforced(self, deploy) -> None:
         """(⑦) 进程 B 未 reserve 直调 _place(伪造/None/复制 token)均被拒,raw 零新增。"""
-        sid = "c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4"
+        sid = "bbffb18b-381e-4176-a5de-003cd5cbbed1"
         filename = f"{sid}--1234567890ab--raw--2026-08-11.md"
         before = _raw_before(deploy)
         iso_rel = f".harvest-iso--{RUN_ID}.tmp"
@@ -470,7 +470,7 @@ finally:
     def test_released_reservation_rejected(self, deploy) -> None:
         """(⑧) 已 released 的 Reservation 调 _place 被拒。"""
         import akb2.harvest.assembler as _M
-        sid = "d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5"
+        sid = "6a785171-77ec-443a-a9fc-ada177a07d73"
         filename = f"{sid}--1234567890ab--raw--2026-08-11.md"
         with L.reserve("DESTNAME", filename) as reservation:
             pass  # 已 released
@@ -519,7 +519,7 @@ class TestHardFail:
         monkeypatch.setattr(_M, "archive_raw", spy_ar)
         before = _raw_before(deploy)
         with pytest.raises(_M.AssemblyRejectedError):
-            _M.assemble(_payload("e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6"),
+            _M.assemble(_payload("ffb23c6e-a190-40ad-8ce5-af3d5b94dc47"),
                         harvest_run_id=RUN_ID)
         assert calls == []
         assert _new_raw(deploy, before) == []
@@ -539,7 +539,7 @@ class TestHardFail:
 
         ledger = tmp_path / "ledger.jsonl"
         before = _raw_before(deploy)
-        p = _payload("f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7")
+        p = _payload("777a6e41-409b-49cd-82eb-928bced5c15a")
         p["how_steps"][0]["cmd"] = f"curl -H 'Authorization: Bearer {SECRET}'"
         with pytest.raises(RedactionRejectedError):
             run_harvest_flow(
@@ -561,7 +561,7 @@ class TestHardFail:
         iso = deploy["tree"] / f".harvest-iso--{RUN_ID}.tmp"
         before = _raw_before(deploy)
         with pytest.raises(OSError):
-            _M.assemble(_payload("a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8"),
+            _M.assemble(_payload("6c51e236-ae23-476f-a2a3-18367fa23d65"),
                         harvest_run_id=RUN_ID)
         assert not iso.exists()
         assert _new_raw(deploy, before) == []

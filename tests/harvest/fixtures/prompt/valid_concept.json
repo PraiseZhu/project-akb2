@@ -1,6 +1,6 @@
 {
   "schema_version": "1",
-  "session_id": "sess-harvest-valid-concept-0001",
+  "session_id": "73f94974-45a1-4cd1-a42f-4d7b064ae919",
   "title": "机制化收割示例：gate 前置校验缺失的修复链路",
   "lane_hint": "concept",
   "components": ["gate", "runner", "admission"],
@@ -19,7 +19,7 @@
     {"anchor": "Z", "provenance": "session log", "cmd": "ruff check src tests", "expect": "零 finding"}
   ],
   "source_meta": {
-    "session_id": "sess-harvest-valid-concept-0001",
+    "session_id": "73f94974-45a1-4cd1-a42f-4d7b064ae919",
     "tool": "claude-code",
     "fetched_at": "2026-08-10T18:00:00+08:00"
   }

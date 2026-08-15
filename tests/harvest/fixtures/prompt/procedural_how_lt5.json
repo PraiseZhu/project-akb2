@@ -1,6 +1,6 @@
 {
   "schema_version": "1",
-  "session_id": "sess-harvest-neg-howsteps-0001",
+  "session_id": "f1a31af4-99c9-4caf-a9bc-e4276c651ec6",
   "title": "反例：procedural 车道 how 步骤不足（how_steps 4 < 5）",
   "lane_hint": "procedural",
   "components": ["gate", "runner", "admission"],
@@ -19,7 +19,7 @@
     {"anchor": "M", "provenance": "session log", "cmd": "ruff check src tests", "expect": "零 finding"}
   ],
   "source_meta": {
-    "session_id": "sess-harvest-neg-howsteps-0001",
+    "session_id": "f1a31af4-99c9-4caf-a9bc-e4276c651ec6",
     "tool": "claude-code",
     "fetched_at": "2026-08-10T18:00:00+08:00"
   }

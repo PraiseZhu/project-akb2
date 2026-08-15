@@ -1,6 +1,6 @@
 {
   "schema_version": "1",
-  "session_id": "sess-harvest-neg-anchor-0001",
+  "session_id": "1e081174-e315-41a8-b6d3-0455b26276d2",
   "title": "反例：how_steps.anchor 指向不存在的 atom id",
   "lane_hint": "concept",
   "components": ["gate", "runner", "admission"],
@@ -19,7 +19,7 @@
     {"anchor": "Z", "provenance": "session log", "cmd": "ruff check src tests", "expect": "零 finding"}
   ],
   "source_meta": {
-    "session_id": "sess-harvest-neg-anchor-0001",
+    "session_id": "1e081174-e315-41a8-b6d3-0455b26276d2",
     "tool": "claude-code",
     "fetched_at": "2026-08-10T18:00:00+08:00"
   }
