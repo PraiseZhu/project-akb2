@@ -1,4 +1,4 @@
-"""AKB2 Quality -- 五闸升格判定与收尾模块。
+"""AKB2 Quality -- 六闸升格判定与收尾模块。
 
 六闸自动升格判定(Gate-0 溯源 + 五闸;全过唯一终态=写 wiki/sources active,
 双模式拆除后无 proposal 写路径)
@@ -299,7 +299,7 @@ def evaluate_five_gates(
     if not grader_ok:
         return False, "Gate-5 (grader PASS)", grader_detail
 
-    # §0.2/D8：proposed_node_only 过闸时标 graph_pending（run_promote 据此二次拒 active）
+    # §0.2/D8：proposed_node_only 过闸时标 graph_pending（run_promote 据此落账，P2 后不再拒 active）
     pending_marker = " [graph_pending=true]" if is_proposed_node_only else ""
     return True, "ALL", (
         f"Five gates passed: {gate_detail}; {lint_detail}; {grader_detail}{pending_marker}"
@@ -1214,7 +1214,7 @@ def _cmd_rollback(snapshot_id: str) -> int:
 
 
 def _cmd_promote(args: argparse.Namespace) -> int:
-    """promote 子命令：执行五闸判定 + 升格/提议。"""
+    """promote 子命令：执行六闸判定 + 升格（全过唯一终态=写 active）。"""
     candidate_path = Path(args.candidate).resolve()
     vault_root = Path(args.vault_root).resolve() if args.vault_root else None
 
@@ -1239,12 +1239,12 @@ def _cmd_promote(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="AKB2 Quality — Five-Gate Promote CLI"
+        description="AKB2 Quality — Six-Gate Promote CLI"
     )
     sub = parser.add_subparsers(dest="cmd")
 
     # promote 子命令
-    prom = sub.add_parser("promote", help="Run five-gate check and promote")
+    prom = sub.add_parser("promote", help="Run six-gate check and promote")
     prom.add_argument("--candidate", required=True, help="Path to candidate .md file")
     prom.add_argument("--vault-root", required=True, help="AKB2.0 vault root directory")
     prom.add_argument("--grader-result", help="Path to step-4 grader result JSON")
