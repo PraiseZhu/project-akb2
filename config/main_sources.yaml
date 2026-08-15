@@ -11,7 +11,12 @@
 #   sources[].listing_url   — 列表页 URL（无 feed 时用）
 #   sources[].rate_limit    — 最小请求间隔（秒）
 #   sources[].status        — trial（默认）
-#   sources[].category      — core | supplementary | authority
+#   sources[].category      — core | supplementary | authority（来源权威分级）
+#   sources[].lane          — 内容车道预期（可选）: concept | tutorial | pattern | design
+#                             与 admission.py LANE_* 常量及 skillpack/quality/
+#                             concept-index-injection.md「内容车道锚点」节 exact 对齐；
+#                             未标注 = 不预设，由 admission 逐篇判定。
+#                             教程型源标 tutorial，不得标 concept。
 #   sources[].notes         — 可选备注
 
 sources:
@@ -44,6 +49,7 @@ sources:
     rate_limit: 3600
     status: down
     category: core
+    lane: tutorial
     notes: "OpenAI Cookbook — 实践指南; [2026-07-22 停用] 已迁 developers.openai.com,静态抓仅 docs 页"
 
   - slug: addy-osmani
@@ -80,6 +86,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: core
+    lane: concept
     notes: "Lilian Weng — OpenAI 安全 / LLM / Agent"
 
   - slug: chip-huyen
@@ -89,6 +96,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: core
+    lane: concept
     notes: "Chip Huyen — ML 系统设计 / AI 工程"
 
   - slug: eugene-yan
@@ -143,6 +151,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: core
+    lane: tutorial
     notes: "Josh Comeau — CSS / 前端动画 / 交互设计"
 
   - slug: emil-kowalski
@@ -152,6 +161,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: core
+    lane: design
     notes: "Emil Kowalski — UI 工程 / 动画; [2026-07-22 转 listing] 原 feed 失效/无 RSS,清空 feed_url 走 listing 抓取"
 
   - slug: framer-motion
@@ -188,6 +198,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: core
+    lane: tutorial
     notes: "Ahmad Shadeed — CSS / 布局 / 设计细节"
 
   - slug: figma-blog
@@ -224,6 +235,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: core
+    lane: design
     notes: "Maggie Appleton — 设计人类学 / 知识可视化"
 
   - slug: game-developer
@@ -242,6 +254,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: core
+    lane: design
     notes: "Lost Garden — 游戏设计理论 / 系统设计"
 
   # =========================================================================
@@ -255,6 +268,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
+    lane: concept
     notes: "Dan Abramov — React / 前端心智模型"
 
   - slug: lee-robinson
@@ -273,6 +287,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
+    lane: tutorial
     notes: "Kent C. Dodds — React / 测试 / 前端最佳实践"
 
   - slug: tanner-linsley
@@ -318,6 +333,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
+    lane: pattern
     notes: "Martin Fowler — 软件架构 / 重构"
 
   - slug: netflix-tech-blog
@@ -354,6 +370,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
+    lane: tutorial
     notes: "Smashing Magazine — Web 设计 / 前端"
 
   - slug: css-tricks
@@ -363,6 +380,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
+    lane: tutorial
     notes: "CSS-Tricks — CSS / 前端技巧（汰换观察位）"
 
   - slug: a-list-apart
@@ -372,6 +390,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
+    lane: design
     notes: "A List Apart — Web 设计思想"
 
   - slug: benedict-evans
@@ -399,6 +418,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
+    lane: concept
     notes: "Gwern — AI / 长篇研究; [2026-07-22 feed 修复] 原 feed 失效,改用有效 rss.xml"
 
   - slug: tobias-ahlin
@@ -408,6 +428,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
+    lane: design
     notes: "Tobias Ahlin — 设计工程 / 动画"
 
   - slug: brad-frost
@@ -417,6 +438,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
+    lane: pattern
     notes: "Brad Frost — 设计系统 / 原子设计"
 
   - slug: design-details
@@ -444,6 +466,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
+    lane: tutorial
     notes: "CSS {IRL} — CSS 实战"
 
   - slug: jake-archibald
@@ -498,6 +521,7 @@ sources:
     rate_limit: 3600
     status: down
     category: supplementary
+    lane: tutorial
     notes: "Sarah Drasner — SVG / 动画 / 前端; [2026-07-22 停用] feed/listing 均 403 反爬,需浏览器"
 
   - slug: una-kravets
@@ -507,6 +531,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
+    lane: tutorial
     notes: "Una Kravets — CSS / 设计工程"
 
   # =========================================================================
@@ -847,6 +872,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
+    lane: concept
     notes: "Sebastian Raschka — LLM 机制讲解长文(架构/训练/推理)"
 
   - slug: sshh-blog
@@ -882,6 +908,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
+    lane: tutorial
     notes: "Jason Liu — RAG/结构化输出/LLM 工程实践(instructor 作者)"
 
   - slug: sourcegraph-blog
@@ -900,6 +927,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
+    lane: concept
     notes: "Drew Breunig — context engineering 专题深文(taxonomy 直接命中)"
 
   - slug: cameron-wolfe
@@ -909,6 +937,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
+    lane: concept
     notes: "Cameron Wolfe — LLM 机制原理长文(架构/训练/推理拆解)"
 
   # =========================================================================
@@ -923,6 +952,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
+    lane: tutorial
     notes: "Phil Schmid — LLM 部署/微调/推理工程实操(Google DeepMind)"
 
   - slug: oxen-ai
@@ -932,6 +962,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
+    lane: concept
     notes: "Oxen AI — arXiv Dives 论文机制逐段拆解系列"
 
   - slug: maarten-grootendorst
@@ -941,6 +972,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
+    lane: tutorial
     notes: "Maarten Grootendorst — LLM 机制可视化长文(BERTopic 作者)"
 
   - slug: kexue-fm
@@ -950,6 +982,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
+    lane: concept
     notes: "苏剑林(科学空间)— LLM 架构/注意力/位置编码数理机制深文"
 
   - slug: explosion-ai
@@ -976,6 +1009,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
+    lane: pattern
     notes: "Adam Wathan — Tailwind/设计系统工程  [设计工程]"
 
   - slug: ai2-blog
@@ -1066,6 +1100,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
+    lane: concept
     notes: "Jay Alammar — LLM 架构可视化拆解  [个人 LLM 工程深文]"
 
   - slug: mark-dalgleish
@@ -1111,6 +1146,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
+    lane: design
     notes: "Paul Robert Lloyd — 设计系统工程  [设计工程]"
 
   - slug: qdrant-blog
@@ -1156,6 +1192,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
+    lane: pattern
     notes: "ThoughtWorks — 工程实践/架构深文  [工程实践/架构团队]"
 
   - slug: together-ai-blog
@@ -1212,6 +1249,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
+    lane: tutorial
     notes: "Aider(Paul Gauthier) — 终端 AI 编码工程  [AI coding 工具厂]"
 
   - slug: continue-dev
@@ -1230,6 +1268,7 @@ sources:
     rate_limit: 3600
     status: down
     category: supplementary
+    lane: concept
     notes: "Distill — ML 机制可视化深文  [LLM/agent 工程个人作者]; [F49 数据降级 2026-07-16] 07-11起 22 进 0 过准入 / 0 入库 / 0 驻留,恢复需人工改回 trial"
 
   - slug: dvc-blog
@@ -1284,6 +1323,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
+    lane: tutorial
     notes: "Jason Brownlee — ML/LLM 机制教程深文  [LLM/agent 工程个人作者]"
 
   - slug: ollama-blog
@@ -1347,6 +1387,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
+    lane: design
     notes: "Sara Soueidan — SVG/可访问性/设计工程  [设计工程深文]"
 
   - slug: semantic-kernel
@@ -1374,6 +1415,7 @@ sources:
     rate_limit: 3600
     status: trial
     category: supplementary
+    lane: concept
     notes: "Stephen Wolfram — LLM/计算科学/机制拆解  [LLM/agent 工程个人作者]"
 
   - slug: tabnine-blog

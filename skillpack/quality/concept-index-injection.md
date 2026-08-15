@@ -49,6 +49,35 @@ status: active
 19. **A2A** — Agent-to-Agent 协议相关
 20. **LangGraph** — LangGraph 框架相关
 
+## 内容车道锚点（intake-rebuild p5，sc-p5-taxonomy-sources）
+
+内容车道（content_lane）是准入段对通过态内容的四选一分类，与上方领域 taxonomy 是两个
+维度：领域 taxonomy 判「是否在收录面内」（topic_relevance 锚点），内容车道判「以什么
+形态入池、走哪条内芯」。车道集合与 `src/akb2/quality/admission.py` 的 `LANE_*` 常量
+（`LANE_PASSABLE`）exact 对齐，本节是文档侧锚点：
+
+1. **concept** — 机制/架构概念阐述（过渡保留车道）
+2. **tutorial** — 教程/操作指南（canonical 值；`procedural` 为兼容别名，入口归一为 tutorial，不产生 procedural 终值）
+3. **pattern** — 可复用模式集（内芯为模式条目，不含概念机制组件）
+4. **design** — 设计呈现（内芯为设计决策呈现，不含概念机制组件）
+
+另有 `reject`（非知识，一票拒收不下传，不混入通过态车道）。未知车道值 fail-closed
+（拒收+落账），不静默归车道。pattern/design 不默认落 concept 桶，各自独立车道；
+完整性门对非 concept 车道走 integrity_floor 的 H1≥1 分支，不误用 concept 组件阈值。
+
+### 车道与源标注的对应（main_sources.yaml 同步锚点）
+
+`config/main_sources.yaml` 的 `lane` 字段按本节车道集合标注源的内容形态预期
+（未标注 = 不预设，由 admission 逐篇判定）：
+
+- 教程型源（how-to/操作指南/实操 walkthrough 为主）标 `tutorial`，**不得标 `concept`**
+- 模式集型源（设计模式/架构模式/可复用方法论为主）标 `pattern`
+- 设计呈现型源（设计决策/视觉呈现/设计系统案例为主）标 `design`
+- 概念阐述型源（机制/架构原理拆解为主）标 `concept`
+
+两份文件的车道值集合必须与 `admission.py` 常量保持 exact 一致；改车道枚举时三处
+同步（代码常量 / 本节 / main_sources.yaml schema 注释）。
+
 ## 概念索引（提炼段概念引用）
 
 以下概念为知识库中已建立的概念节点。提炼段 `referenced_concepts` 字段应尽量引用
@@ -79,5 +108,7 @@ status: active
 ## 运行时注入
 
 本文件在准入段与提炼段启动时加载，作为 prompt 的 taxonomy 锚点部分。
-代码中 `admission.py` 的 `_DEFAULT_DOMAIN_TAXONOMY` 常量为本文件的代码化版本，
-两端必须保持同步。
+代码中 `admission.py` 的 `_DEFAULT_DOMAIN_TAXONOMY` 常量为本文件（领域 taxonomy 节）
+的代码化版本，两端必须保持同步。内容车道锚点同理：`admission.py` 的 `LANE_*`
+常量与本文「内容车道锚点」节、`config/main_sources.yaml` 的 `lane` 字段值域
+三处 exact 对齐，改任一处必须同步其余两处。
