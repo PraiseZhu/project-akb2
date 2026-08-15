@@ -376,7 +376,8 @@ def _build_grader_prompt(
     content_lane: str = "",
     schema_mismatch_hint: str = "",
 ) -> list[dict[str, str]]:
-    """构建评分 prompt（system + user）。lane-aware：concept 评 7 维、procedural 评 10 维。
+    """构建评分 prompt（system + user）。lane-aware：各车道加权维按 rubric.yaml 动态派生
+    （intake-rebuild p4 起每车道 4–5 维，不再是旧 concept 7 维/procedural 10 维）。
 
     F18: schema_mismatch_hint 非空时（即 schema-mismatch 重试），system 消息末尾附上次
     格式错误提示，帮 gpt-5.4 修正输出（网关不强制 strict，prompt 软约束 + 重试提示补缺口）。
@@ -396,13 +397,15 @@ def _build_grader_prompt(
         "必须与下列名称逐字一致，不得输出任何其他维度名：\n"
         + "\n".join(f"  {i + 1}. {d}" for i, d in enumerate(dims))
     )
-    # 量规判据：concept 车道的维度不在 10-dimensions.md（该 md 只描述 procedural
-    # 10 维），其判据来自 rubric.yaml lanes.concept 的 note；procedural 用 md 全文。
-    if (
-        isinstance(lane_dim_specs, list)
-        and lane_dim_specs
-        and lane_key not in ("", "procedural")
-    ):
+    # 量规判据：优先用 rubric.yaml 本车道 dimensions 的 note 逐条渲染，与
+    # dim_enum_block 的车道维度集合严格对齐。10-dimensions.md 仍是旧 10 维全量文档
+    # （intake-rebuild p4 压缩后 procedural 已减至 5 维，md 未同步且不在本次
+    # allowed_paths 内，不可改），若继续把全文喂给 procedural 会在 rubric_body 里
+    # 混入已退役/转地板的维度判据（论断锚定率/证据诚实/解读分离/新颖增量/边强度匹配），
+    # 复现 R2/wA#2 记录过的同类 bug：模型看到额外维度定义后按旧维度名输出 →
+    # enum 不匹配 → parse 失败 → 退 gemini。仅当 rubric.yaml 无本车道 dimensions
+    # （lane_key 未登记，如空车道）才回落全文 md（无处可取车道专属判据时的兜底）。
+    if isinstance(lane_dim_specs, list) and lane_dim_specs:
         rubric_body = "本车道维度判据（来自 rubric.yaml）:\n" + "\n".join(
             f"- {d.get('name')}（weight={d.get('weight')}）: {d.get('note', '')}"
             for d in lane_dim_specs
