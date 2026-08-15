@@ -541,6 +541,8 @@ def run_harvest_with_ledger(
             接收 (run_id, dest_filename) 作为参数,返回 dict:
             {"raw_abspath": str, "success": bool, "error": str | None}。
             成功时 raw_abspath 为已落位的绝对路径。
+            phase='place' 的第二次回调额外接收 reservation=destname_rsv
+            (本次 DESTNAME 预约凭证,凭它可直接 _place,无需自行 reserve)。
 
     Returns:
         dict: {"outcome": "created" | "already_committed" | "destname_conflict"
@@ -653,10 +655,12 @@ def run_harvest_with_ledger(
                 }
 
             with destname_rsv:
-                # 7. 调落位部分(rename)
+                # 7. 调落位部分(rename);phase='place' 时把 destname_rsv 以
+                #    reservation= 透传,assemble_fn 凭它跳过自身 reserve 直用凭证
                 try:
                     place_result = assemble_fn(
-                        run_id=run_id, dest_filename=dest_filename, phase="place"
+                        run_id=run_id, dest_filename=dest_filename, phase="place",
+                        reservation=destname_rsv,
                     )
                 except Exception as exc:
                     return {
