@@ -509,28 +509,60 @@ def assemble(
     *,
     harvest_run_id: str,
     policy: RedactionPolicy = RedactionPolicy.Reject,
+    reservation: locks.Reservation | None = None,
+    dest_filename: str | None = None,
+    date_str: str | None = None,
 ) -> str:
-    """组装 harvest JSON → 隔离目录内 archive_raw → 脱敏 → 落位 → 返回文件名。
+    """组装 harvest JSON → 隔离目录内 archive_raw → 脱敏 → 落位 → 返回路径/文件名。
+
+    两种调用模式(按参数判别,禁止一语双义;三参必须同时提供或同时缺省):
+
+    - legacy(三参均缺省):内部自行 reserve DESTNAME + _place,日期取当下
+      UTC,返回最终落位文件名 basename(如 ``<slug>--<article_id>--raw--<date>.md``)。
+    - 生产注入(三参齐备):``reservation`` 为调用方(ledger 编排器)已持有的
+      有效 DESTNAME 预约,本函数跳过内部 reserve、第 10 步把该凭证交给
+      ``_place``;``date_str`` 为调用方算死的 UTC 日(不再 now());
+      ``dest_filename`` 为调用方预计算的落位名——archive_raw 产出 basename
+      必须与之相等,不等即拒且不 _place(预约键与落位目标必须同一把钥匙)。
+      返回绝对路径字符串(Path(roots.json['raw_dir'])/dest_filename 再
+      resolve,与隔离目录选址同一份 roots 读取;禁止 VAULT_ROOT、禁止另拼)。
 
     Args:
         payload: harvest JSON v1(schema + 车道校验先行,fail-closed)。
         harvest_run_id: 必填具名参数,只透传不生成;严格 UUID4。
         policy: RedactionPolicy.Reject(默认)或 Redact;只选策略、不能关闭扫描。
+        reservation: 生产注入模式下的 DESTNAME 预约凭证(须仍有效)。
+        dest_filename: 生产注入模式下的预计算落位文件名(单段 basename)。
+        date_str: 生产注入模式下的 UTC 日(YYYY-MM-DD)。
 
     Returns:
-        最终落位文件名(如 ``<slug>--<article_id>--raw--<date>.md``)。
+        legacy 模式:最终落位文件名(basename 字符串)。
+        生产注入模式:已落位文件的绝对路径字符串。
 
     Raises:
-        AssemblyRejectedError: schema/车道/隔离目录/终检/漂移复核失败(exit 2)。
+        TypeError: 三注入参部分提供(必须同时提供或同时缺省)。
+        AssemblyRejectedError: schema/车道/隔离目录/终检/漂移复核/产物名与
+            dest_filename 不符失败(exit 2)。
         RedactionRejectedError: policy=Reject 且扫描命中(exit 3)。
         PlaceExistsError: 落位目标已存在(exit 4)。
         AnchorDriftError: 锚点身份漂移(exit 2)。
         PreflightError: 落盘能力预检失败(exit 2)。
+        InvalidReservation: 传入的 reservation 已失效/键不符(locks 五项校验)。
     """
     # 0. run_id 严格解析:任何路径拼接之前的第一行(CLI 复用同一函数)
     if not validate_harvest_run_id(harvest_run_id):
         raise AssemblyRejectedError(
             f"harvest_run_id 非法(须为小写 canonical UUID4): {harvest_run_id!r}")
+
+    # 0b. 模式判别:三注入参必须同时提供(生产)或同时缺省(legacy),
+    #     部分注入是调用方编程错误,显式拒绝而非猜测语义。
+    _injected = (reservation is not None, dest_filename is not None,
+                 date_str is not None)
+    if any(_injected) and not all(_injected):
+        raise TypeError(
+            "reservation/dest_filename/date_str 必须同时提供(生产注入模式)"
+            f"或同时缺省(legacy 模式),实际注入: reservation={reservation!r}, "
+            f"dest_filename={dest_filename!r}, date_str={date_str!r}")
 
     # 1. schema + 车道校验(内容准入)
     violations = schema.validate(payload)
@@ -618,7 +650,8 @@ def assemble(
         sm = payload.get("source_meta") or {}
         slug = payload["session_id"]
         url = "cindy://session/" + payload["session_id"]  # sc-asm-sourceurl 定案
-        date_str = datetime.now(UTC).strftime("%Y-%m-%d")
+        if date_str is None:
+            date_str = datetime.now(UTC).strftime("%Y-%m-%d")
         result = archive_raw(
             slug=slug,
             url=url,
@@ -635,6 +668,13 @@ def assemble(
         if not result.success:
             raise AssemblyRejectedError(
                 result.error or "archive_raw 失败(锚点/字段断言)")
+        # 5b. 生产注入模式:archive_raw 产出 basename 必须恰为调用方预计算的
+        #     dest_filename——预约的 DESTNAME 键与落位目标必须同一把钥匙,
+        #     不等即拒且不 _place(隔离目录由 finally 清理,raw_dir 零落位)。
+        if dest_filename is not None and filename != dest_filename:
+            raise AssemblyRejectedError(
+                f"archive_raw 产物名与预计算 dest_filename 不符"
+                f"(期望 {dest_filename!r},实际 {filename!r}),拒绝落位")
 
         # 6. 读回产物 → (payload, markdown) 为对象强制扫描/脱敏
         md = _read_text(iso_fd, filename)
@@ -660,10 +700,20 @@ def assemble(
         _verify_leaf_in_place(raw_h2)
 
         try:
-            # 10. 落位:DESTNAME 预约 + _place 原子改名(唯一落盘路径)
-            with locks.reserve(locks.DESTNAME, filename) as reservation:
+            # 10. 落位:DESTNAME 预约 + _place 原子改名(唯一落盘路径)。
+            #     生产注入模式跳过内部 reserve,直接用调用方(编排器)传入的
+            #     凭证——_place 首行 assert_valid(DESTNAME, filename) 完成
+            #     五项校验;legacy 模式维持现网 reserve+_place。
+            if reservation is not None:
                 _place(iso_fd, filename, raw_h2.root_fd, filename, reservation)
+            else:
+                with locks.reserve(locks.DESTNAME, filename) as _rsv:
+                    _place(iso_fd, filename, raw_h2.root_fd, filename, _rsv)
             os.fsync(raw_h2.root_fd)
+            if dest_filename is not None:
+                # 生产注入模式:返回绝对路径(与隔离目录选址同一份 roots
+                # 读取的 raw_dir;不走 VAULT_ROOT、不发明 AnchorHandle.resolve)
+                return str((Path(_roots["raw_dir"]) / dest_filename).resolve())
             return filename
         finally:
             # 关闭第二组 handle(落位完毕或失败,root_fd 不再需要)
