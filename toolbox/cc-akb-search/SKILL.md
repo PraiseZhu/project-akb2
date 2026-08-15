@@ -59,9 +59,15 @@ cd ~/AI-Agent/Claude/projects/Project\ AKB2
 PYTHONPATH=src python3 -m akb2.retrieval.cli search "<关键词>" --limit 1000 --output json
 ```
 
-vault：`VAULT_ROOT` / `AKB2_ROOT` 优先。Mac mini 生产库是 `/Volumes/AKB2/Obsidian`；
-主力机通常没有该卷，用 `--vault-root /Users/praise/Obsidian` 或
-`AKB2_ROOT=/Users/praise/Obsidian/Praise Space/AKB2.0`。
+vault：`VAULT_ROOT` / `AKB2_ROOT` 优先。Mac mini 生产库是 `/Volumes/AKB2/Obsidian`
+（env 会规范化到 AKB2.0 子根）。主力机通常没有该卷，不要把 Obsidian 库根传给
+`--vault-root`（该参数不规范化，会静默搜空）。用下面任一：
+
+```bash
+VAULT_ROOT=/Users/praise/Obsidian PYTHONPATH=src python3 -m akb2.retrieval.cli search "<关键词>" --limit 1000 --output json
+AKB2_ROOT="/Users/praise/Obsidian/Praise Space/AKB2.0" PYTHONPATH=src python3 -m akb2.retrieval.cli search "<关键词>" --limit 1000 --output json
+python3 -m akb2.retrieval.cli search "<关键词>" --limit 1000 --output json --vault-root "/Users/praise/Obsidian/Praise Space/AKB2.0"
+```
 
 **工具库**：仍调 `akb_search` MCP，按 `scope=toolbox` 只留 toolbox/ 路径。
 
