@@ -13,10 +13,12 @@
     （解析时统一归一化为 classname.name 再比对）
 
 变异目标（Mutation.file）支持两种形态：
-    repo 相对路径（锚到 REPO_ROOT，git checkout 保证存在，启动即校验），或
-    仓外绝对路径（如 live skill 源，host-local 真相源，不随本仓 checkout
-    保证存在——存在性检查推迟到该条目被 --mutation 实际选中时才做，避免
-    CI / 缺该路径的机器上所有变异调用被一条无关条目拖累失败）。
+    repo 相对路径（锚到 REPO_ROOT），或仓外绝对路径（如 live skill 源，
+    host-local 真相源）。两类目标的存在性检查都推迟到该条目被 --mutation
+    实际选中时才做（run_once 内 fail-closed）：注册表是全项目单一事实源，
+    拆分链前节上后置条目的仓内目标尚未落地，CI 上仓外目标必然缺失——
+    启动期拦截会让无关变异调用被拖累失败。启动期只校验结构性约束
+    （禁改路径 / anchor != replacement / 键名）。
 
 机器可读输出（stdout，行首 token）：
     SOURCE_RESTORED path=<repo相对路径> sha256=<变异前摘要>
@@ -196,12 +198,13 @@ def _validate_registry() -> list[str]:
     禁改校验对绝对路径同样生效：先归一化到绝对路径，再判是否落在仓内
     FORBIDDEN_PREFIX 之下（防止用仓外前缀字符串绕过 startswith 检查）。
 
-    存在性检查只对仓内相对路径强制（git checkout 保证任何环境下都存在，
-    缺失即注册表配置错误，应立即拦截全部调用）。仓外绝对路径（如 live
-    skill 源）是 host-local 真相源，不随本仓 checkout 保证存在——CI /
-    其他机器上必然缺失；若在此处一并拦截，会让缺失该外部路径的机器上
-    *所有*变异调用（包括与该条目无关的）都失败。这类条目的存在性检查
-    推迟到 run_once 里、且仅在该条目被 --mutation 实际选中时才做。
+    存在性检查不在启动期做（无论仓内相对路径还是仓外绝对路径）：注册表是
+    全项目单一事实源，后置 PR 尚未落地时其仓内目标文件在本节 checkout 上
+    必然缺失——若启动期拦截，会让拆分链前节上*所有*变异调用（包括只依赖
+    ledger / signatures 等已落地文件的基线条目）都被无关条目拖累成 exit 2。
+    仓外绝对路径（如 live skill 源）同理：host-local 真相源在 CI / 其他
+    机器上必然缺失。两类条目的存在性检查统一推迟到 run_once 里、且仅在该
+    条目被 --mutation 实际选中时才做（缺失时 fail-closed，报可诊断错误）。
     """
     problems: list[str] = []
     for mut in REGISTRY.values():
@@ -212,8 +215,6 @@ def _validate_registry() -> list[str]:
             problems.append(f"{mut.name}: 目标在禁改路径 {mut.file}")
         if mut.anchor == mut.replacement:
             problems.append(f"{mut.name}: anchor 与 replacement 相同")
-        if not Path(mut.file).is_absolute() and not target.is_file():
-            problems.append(f"{mut.name}: 目标文件不存在 {mut.file}")
     return problems
 
 
@@ -336,7 +337,8 @@ def run_once(args: argparse.Namespace) -> int:
     if not target.is_file():
         raise HarnessError(
             f"变异 {mut.name} 目标文件不存在: {mut.file}"
-            "（仓外路径是 host-local 真相源，本机缺失该路径时无法执行此条变异）"
+            "（仓外路径是 host-local 真相源，本机缺失时无法执行；"
+            "仓内路径缺失说明该条目所属 PR 尚未落地到当前 checkout）"
         )
     original = target.read_bytes()
     sha_pre = _sha256_bytes(original)
