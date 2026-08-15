@@ -33,7 +33,7 @@ def _concept_dims() -> list[str]:
 
 
 def _concept_resp_no_score(pass_map: dict[str, bool]) -> dict:
-    """构造 concept 7 维 grader 响应（**无 score**，只有 pass/fail）——模拟 gpt-5.4 真实输出。"""
+    """构造当前 concept 5 维 grader 响应（**无 score**，只有 pass/fail）——模拟 gpt-5.4 真实输出。"""
     return {
         "dimensions": [
             {
@@ -122,9 +122,9 @@ class TestConceptParsePassBased:
         dims = _concept_dims()
         data = {
             "dimensions": [
-                {"dimension": d, "pass": True, "defects": []} for d in dims[:6]
+                {"dimension": d, "pass": True, "defects": []} for d in dims[:4]
             ]
-        }  # 缺第 7 维
+        }  # 缺第 5 维
         defects, ok = grader._parse_grader_output(data, "concept")
         assert ok is False, "concept 缺整维应 parse fail"
 
@@ -253,17 +253,17 @@ class TestComputeConceptPassDerived:
         assert r.passed is True
 
     def test_compute_concept_partial_pass_below_threshold(self):
-        """G3: concept 只 H3 pass（1.0）其它 fail（0.0）→ weighted=3.5 < 6.0 → reject。"""
+        """G3: concept 只 H3 pass（1.0）其它 fail（0.0）→ weighted=4.0 < 6.0 → reject。"""
         w = _lane_weight_map(_load_rubric_spec(), "concept")
         scores = {name: (1.0 if "H3" in name else 0.0) for name in w}
         r = compute_weighted_score(scores, "concept")
-        assert abs(r.score - 3.5) < 1e-6
+        assert abs(r.score - 4.0) < 1e-6
         assert r.passed is False
 
     def test_compute_concept_missing_dim_fail_closed(self):
         """G3: concept 缺整维 → fail-closed（score=0/passed=False）。"""
         w = _lane_weight_map(_load_rubric_spec(), "concept")
-        scores = {name: 1.0 for name in list(w)[:5]}  # 缺 2 维
+        scores = {name: 1.0 for name in list(w)[:4]}  # 缺 1 维
         r = compute_weighted_score(scores, "concept")
         assert r.passed is False
         assert r.score == 0.0

@@ -266,31 +266,29 @@ def test_run_admission_marketing_reject_not_resurrected(tmp_path: Any) -> None:
 
 
 def test_rubric_130_cold_start_notes_and_dims_frozen() -> None:
-    """rubric 冷启动条款(1.3.0)+ advisory(1.4.0):concept 7 维名逐字不变(维度集不动)。"""
+    """rubric concept 5 维名、权重与阈值逐字匹配当前 YAML（维度集冻结）。"""
     spec = _load_rubric_spec()
     assert str(spec.get("rubric_version")) == "1.5.0"
     concept = (spec.get("lanes") or {}).get("concept") or {}
     dims = {str(d["name"]): d for d in concept.get("dimensions", [])}
-    # 维度集逐字冻结(只动 note 判据措辞,不动名与权重结构)
+    # 当前 5 维逐字冻结；advisory 维已从生产加权集退役。
     assert sorted(dims) == sorted(
         [
             "概念机制清晰度(H3)",
             "实现机制说明(H2)",
-            "图谱可调用性",
             "适用边界",
             "TLDR密度",
             "Future Questions质量",
-            "新颖增量",
         ]
     )
-    assert "冷启动校准" in str(dims["图谱可调用性"].get("note"))
-    assert "resolve 未命中" in str(dims["图谱可调用性"].get("note"))
-    assert "冷启动校准" in str(dims["新颖增量"].get("note"))
-    assert "缺少基线" in str(dims["新颖增量"].get("note"))
-    # 阈值与权重不动(标准冻结)
     assert concept.get("threshold") == 6.0
-    assert dims["图谱可调用性"]["weight"] == 2.0
-    assert dims["新颖增量"]["weight"] == 0.5
+    assert {name: dims[name]["weight"] for name in dims} == {
+        "概念机制清晰度(H3)": 4.0,
+        "实现机制说明(H2)": 1.0,
+        "适用边界": 2.0,
+        "TLDR密度": 1.5,
+        "Future Questions质量": 1.5,
+    }
 
 
 # ---------------------------------------------------------------------------

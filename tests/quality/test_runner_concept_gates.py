@@ -99,13 +99,13 @@ class TestRunnerEntailmentGate:
 class TestRunnerWeightedScoreGate:
     def test_low_score_rejected(self):
         """concept 加权分 <6.0 → runner reject（weighted_score_below_threshold）。"""
-        # 只 H3=1.0，其它 0 → 3.5 <6.0
+        # 只 H3=1.0，其它 0 → 4.0 <6.0
         low = {d: (1.0 if "H3" in d else 0.0) for d in _CONCEPT_DIMS}
         grader = _grader(defects=[], entailment=True, dim_scores=low)
         converged, error_class, _, meta = _run(grader)
         assert not converged
         assert error_class == "weighted_score_below_threshold"
-        assert meta["weighted_score"] == 3.5
+        assert meta["weighted_score"] == 4.0
         assert meta["weighted_threshold"] == 6.0
 
     def test_high_score_passes(self):
@@ -116,12 +116,12 @@ class TestRunnerWeightedScoreGate:
         assert converged
 
     def test_threshold_boundary(self):
-        """总分 6.5（>= threshold 6.0 → pass；pass meta 不含 weighted_score，只有 reject 才含）。"""
-        # H3=0 + 其它满分 → 10-3.5=6.5
+        """总分 6.0（>= threshold 6.0 → pass；pass meta 不含 weighted_score，只有 reject 才含）。"""
+        # H3=0 + 其它满分 → 10-4.0=6.0
         boundary = {d: (0.0 if "H3" in d else 1.0) for d in _CONCEPT_DIMS}
         grader = _grader(defects=[], entailment=True, dim_scores=boundary)
         converged, _, _, _ = _run(grader)
-        # 6.5 >= 6.0 → pass（pass meta 不带 weighted_score，故不在此断言该 key）
+        # 6.0 >= 6.0 → pass（pass meta 不带 weighted_score，故不在此断言该 key）
         assert converged
 
 

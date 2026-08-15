@@ -101,30 +101,19 @@ class TestNegativeSamples:
 
         ledger_path = tmp_path / "test-ledger.jsonl"
 
-        # 使用 LLMResponse 直接构造 mock 响应
-        mock_llm = make_mock_route_llm({
-            "deepseek-v4-pro:0": LLMResponse(
-                content={"pass": True, "reason": "命中 AI Agent 领域"},
-                model_used="gemini-2.5-flash",
-                calls_used=1,
-            ),
-            "deepseek-v4-pro:1": LLMResponse(
-                content={"pass": True, "reason": "含 agent 设计模式"},
-                model_used="gemini-2.5-flash",
-                calls_used=1,
-            ),
-            "deepseek-v4-pro:2": LLMResponse(
-                content={"pass": False, "reason": "与既有 wiki 高度重叠，零增量"},
-                model_used="gemini-2.5-flash",
-                calls_used=1,
-            ),
-        })
-
+        # exact slug/url 命中时，novelty 预筛直接拒收，不发起 unified LLM 判定。
+        mock_llm = make_mock_route_llm()
         result = run_admission(
             raw_path="raw/zynd-ai-x-article--raw--2026-06-13.md",
             raw_content=plagiarism_content,
             ledger_path=str(ledger_path),
-            wiki_references=["loop engineering design patterns", "agent harness architecture"],
+            wiki_references=[
+                {
+                    "slug": "zynd-ai-x-article",
+                    "source_url": "https://x.com/zyndai/status/2064344562110263722",
+                    "title": "Zynd AI on X",
+                },
+            ],
             route_llm_fn=mock_llm,
         )
 
@@ -132,14 +121,12 @@ class TestNegativeSamples:
             f"洗稿型负样本应被拒收，实际 passed={result.passed}"
         )
 
-        # 验证新颖度判定 fail
-        novelty_check = next(
-            (c for c in result.checks if c.name == "novelty"), None
-        )
-        assert novelty_check is not None, "应有新颖度判定"
-        assert novelty_check.passed is False, (
-            f"新颖度判定应为 fail: {novelty_check.reason}"
-        )
+        # exact slug/url 预筛只留下确定性 novelty 拒收证据。
+        assert len(result.checks) == 1
+        novelty_check = result.checks[0]
+        assert novelty_check.name == "novelty"
+        assert novelty_check.passed is False
+        assert "确定性拒收" in novelty_check.reason or "同源" in novelty_check.reason
 
     def test_news_rejected_by_admission(
         self, tmp_path: Path, news_content: str
@@ -151,27 +138,18 @@ class TestNegativeSamples:
 
         ledger_path = tmp_path / "test-ledger.jsonl"
 
+        # unified schema：新闻负样本由 non_knowledge / reject lane 拒收，
+        # 不再依赖 how_tendency / procedural 旧字段。
         mock_llm = make_mock_route_llm({
-            "deepseek-v4-pro:0": LLMResponse(
-                content={"pass": True, "reason": "命中 AI Agent 领域"},
-                model_used="gemini-2.5-flash",
-                calls_used=1,
-            ),
-            "deepseek-v4-pro:1": LLMResponse(
-                content={"pass": False, "reason": "纯新闻播报，无可执行步骤或代码"},
-                model_used="gemini-2.5-flash",
-                calls_used=1,
-            ),
-            "deepseek-v4-pro:2": LLMResponse(
-                content={"pass": True, "reason": "无既有 wiki 引用，默认通过"},
-                model_used="gemini-2.5-flash",
-                calls_used=1,
-            ),
-            # P0-c：news → LLM 判 reject（非知识），admission reject 门直接拒收。
-            # 旧测试 mock lane=procedural 靠 how 门拒 = 造假绿，绕过"新闻被判什么 lane"
-            # 的真实危险路径（W7/w9）。改 mock reject 真验 reject 门。
-            "lane": LLMResponse(
-                content={"content_lane": "reject", "reason": "mock: 纯新闻播报，非知识"},
+            "deepseek-v4-pro": LLMResponse(
+                content={
+                    "topic_pass": True,
+                    "lane": "reject",
+                    "non_knowledge": True,
+                    "mechanism_pass": False,
+                    "how_pass": False,
+                    "reason": "mock: 纯新闻播报，非知识",
+                },
                 model_used="gemini-2.5-flash",
                 calls_used=1,
             ),
@@ -221,25 +199,17 @@ fetched_via: defuddle
 Just news, no how-to content.
 """
 
+        # unified schema：reject / non_knowledge 直接拒收，非 how_tendency 拒因。
         mock_llm = make_mock_route_llm({
-            "deepseek-v4-pro:0": LLMResponse(
-                content={"pass": True, "reason": "命中领域"},
-                model_used="gemini-2.5-flash",
-                calls_used=1,
-            ),
-            "deepseek-v4-pro:1": LLMResponse(
-                content={"pass": False, "reason": "无 how-to"},
-                model_used="gemini-2.5-flash",
-                calls_used=1,
-            ),
-            "deepseek-v4-pro:2": LLMResponse(
-                content={"pass": True, "reason": "默认通过"},
-                model_used="gemini-2.5-flash",
-                calls_used=1,
-            ),
-            # P0-c：news → reject 门拒（非 how_tendency 造假绿）。
-            "lane": LLMResponse(
-                content={"content_lane": "reject", "reason": "mock: 纯新闻，非知识"},
+            "deepseek-v4-pro": LLMResponse(
+                content={
+                    "topic_pass": True,
+                    "lane": "reject",
+                    "non_knowledge": True,
+                    "mechanism_pass": False,
+                    "how_pass": False,
+                    "reason": "mock: 纯新闻，非知识",
+                },
                 model_used="gemini-2.5-flash",
                 calls_used=1,
             ),
