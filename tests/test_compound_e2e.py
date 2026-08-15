@@ -176,7 +176,7 @@ def test_save_trigger_plan_doc_exists(repo_root: Path):
 
 
 def test_search_routing_skill_md(repo_root: Path):
-    """Step 7 SKILL.md must define 3 search scopes."""
+    """Step 7 SKILL.md must define 3 search scopes and AKB2 graph-follow retrieval."""
     skill_md = repo_root / "toolbox" / "cc-akb-search" / "SKILL.md"
     assert skill_md.exists(), "cc-akb-search SKILL.md must exist"
     content = skill_md.read_text()
@@ -185,3 +185,15 @@ def test_search_routing_skill_md(repo_root: Path):
     assert "scope=all" in content
     assert content.count("知识库") >= 2
     assert content.count("工具库") >= 2
+    assert "akb2_retrieval_search" in content
+    assert "limit=1000" in content
+    assert "[[wikilink]]" in content
+    assert '--vault-root "/Users/praise/Obsidian/Praise Space/AKB2.0"' in content
+    assert 'AKB2_ROOT="/Users/praise/Obsidian/Praise Space/AKB2.0"' in content
+    assert (
+        'PYTHONPATH=src python3 -m akb2.retrieval.cli search "<关键词>" '
+        '--limit 1000 --output json --vault-root '
+        '"/Users/praise/Obsidian/Praise Space/AKB2.0"'
+    ) in content
+    assert "--vault-root /Users/praise/Obsidian\n" not in content
+    assert "--vault-root /Users/praise/Obsidian " not in content
