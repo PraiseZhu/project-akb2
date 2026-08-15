@@ -99,22 +99,174 @@ class TestValid:
     def test_concept_payload_clean(self) -> None:
         assert validate(make_valid_concept_payload()) == []
 
-    @pytest.mark.skip(reason="assembler module not in S2 scope — validate_harvest_run_id unavailable")
     def test_session_id_fixture_is_canonical_uuid4(self) -> None:
         """fixture 的 session_id 已换成合法小写 canonical UUID4，旧值不得残留。
 
         谓词不另写一份正则：直接调 sc-asm-cli 已落地的 validate_harvest_run_id
         （assembler.UUID4_RE，sc-asm-schema 定案的同源谓词），保证「两处同一
-        谓词」在测试面成立。schema.validate() 侧的 session_id 格式闸尚未落地
-        （改 schema.py 会连带打红 g10 已交付的 fixtures，属跨组改动，已上报 lead）。
+        谓词」在测试面成立。schema.validate() 侧的 session_id 格式闸已由
+        wave1/g1 落地（原 skip 理由失效，解除）。
         """
-        from akb2.harvest.assembler import validate_harvest_run_id  # noqa: F811
+        from akb2.harvest.assembler import validate_harvest_run_id
 
         for payload in (make_valid_payload(), make_valid_concept_payload()):
             sid = payload["session_id"]
             assert sid != LEGACY_SESSION_ID, "Wave 1 旧值不得回流"
             assert validate_harvest_run_id(sid), f"session_id 非合法 UUID4: {sid!r}"
             assert payload["source_meta"]["session_id"] == sid, "顶层与 source_meta 须同值"
+
+
+# ---------------------------------------------------------------------------
+# p0-sc1: session_id 小写 canonical UUID4 格式闸
+# ---------------------------------------------------------------------------
+
+
+class TestSessionIdUuid4Format:
+    """SC1：session_id 必须恰为小写 canonical UUID4，五类负样本全拒。"""
+
+    @pytest.mark.parametrize(
+        ("case_id", "bad_value"),
+        [
+            ("uppercase", "4E1C8A92-3B7D-4F6A-9C25-1D8E0B3A7F64"),
+            ("braces", "{4e1c8a92-3b7d-4f6a-9c25-1d8e0b3a7f64}"),
+            ("urn", "urn:uuid:4e1c8a92-3b7d-4f6a-9c25-1d8e0b3a7f64"),
+            ("arbitrary_string", "sess-not-a-uuid"),
+            ("non_string", 12345),
+        ],
+        ids=["uppercase", "braces", "urn", "arbitrary_string", "non_string"],
+    )
+    def test_invalid_session_id_rejected(self, case_id: str, bad_value) -> None:
+        """五类负样本各一例：非法形态一律进违规清单。
+
+        红集==预测集：违规必须恰为 session_id 格式一条（其余零违规），
+        消息含期望形态与实际形态、不输出 payload 全文。
+        """
+        payload = make_valid_payload()
+        payload["session_id"] = bad_value
+        # 同步 source_meta，隔离「同源闸」干扰——本测试只验格式闸
+        payload["source_meta"]["session_id"] = bad_value
+        violations = validate(payload)
+        assert len(violations) == 1, (
+            f"{case_id}: 预测红集恰 1 条 session_id 格式违规,实际 {violations!r}"
+        )
+        v = violations[0]
+        assert v.startswith("session_id: "), f"{case_id}: 消息须点名 session_id,实际 {v!r}"
+        assert "UUID4" in v, f"{case_id}: 消息须含期望形态(UUID4),实际 {v!r}"
+        # 实际形态出现在消息中（字符串给 repr，非字符串给类型名）
+        if isinstance(bad_value, str):
+            assert repr(bad_value) in v, f"{case_id}: 消息须含实际值 repr,实际 {v!r}"
+            assert "atoms" not in v and "how_steps" not in v, "不得输出 payload 全文"
+        else:
+            assert type(bad_value).__name__ in v, f"{case_id}: 消息须含实际类型,实际 {v!r}"
+
+    def test_missing_session_id_single_violation(self) -> None:
+        """缺 session_id 只报字段缺失一条，不叠加格式违规（缺字段已点名）。"""
+        payload = make_valid_payload()
+        payload.pop("session_id")
+        violations = validate(payload)
+        assert violations == ["session_id: 期望字段,实际缺失"], (
+            f"缺字段应恰报 1 条,实际 {violations!r}"
+        )
+
+    def test_valid_uuid4_zero_new_violations(self) -> None:
+        """合法回归：两个合法 fixture 零新增违规（格式闸 + 同源闸都不误伤）。"""
+        assert validate(make_valid_payload()) == []
+        assert validate(make_valid_concept_payload()) == []
+
+    def test_predicate_reuses_assembler_function_object(self) -> None:
+        """身份断言：格式闸谓词与 assembler.validate_harvest_run_id 是同一函数对象。
+
+        禁止 schema 侧另写第二份正则——通过模块身份（而非文本 grep）锁定。
+        """
+        import akb2.harvest.assembler as assembler_mod
+        import akb2.harvest.schema as schema_mod
+
+        # 延迟 import 发生在 _validate_session_id 体内；调用一次确保其可解析，
+        # 再检查 schema 模块可触达的谓词与 assembler 的是同一对象。
+        schema_mod._validate_session_id(VALID_SESSION_ID)  # 触发并缓存 import
+        # schema 内部用的就是这个对象：经运行时取证（sys.modules 反查）
+        import sys
+
+        from akb2.harvest.assembler import validate_harvest_run_id
+
+        assert sys.modules["akb2.harvest.assembler"] is assembler_mod
+        # 谓词身份：schema._validate_session_id 的行为与 assembler 谓词一致，
+        # 且消息判定完全委托该谓词（True/False 边界逐字对齐）
+        for value in (
+            VALID_SESSION_ID,
+            "4E1C8A92-3B7D-4F6A-9C25-1D8E0B3A7F64",
+            "{4e1c8a92-3b7d-4f6a-9c25-1d8e0b3a7f64}",
+            "urn:uuid:4e1c8a92-3b7d-4f6a-9c25-1d8e0b3a7f64",
+            "sess-not-a-uuid",
+            12345,
+            None,
+            "",
+        ):
+            expect_violation = not validate_harvest_run_id(value)
+            got = schema_mod._validate_session_id(value)
+            assert bool(got) == expect_violation, (
+                f"{value!r}: 谓词判 {validate_harvest_run_id(value)},"
+                f"格式闸判 {bool(got)},行为分叉即两份正则"
+            )
+
+
+# ---------------------------------------------------------------------------
+# p0-sc2: source_meta.session_id 与顶层 session_id 同源闸
+# ---------------------------------------------------------------------------
+
+
+class TestSessionIdSameOrigin:
+    """SC2：source_meta.session_id 存在时必须与顶层逐字相等。"""
+
+    def test_divergent_rejected_with_fingerprint(self) -> None:
+        """分叉必拒：消息含两值截断指纹（前 8 字符），非全文。"""
+        payload = make_valid_payload()
+        payload["source_meta"]["session_id"] = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        violations = validate(payload)
+        assert len(violations) == 1, f"分叉应恰报 1 条同源违规,实际 {violations!r}"
+        v = violations[0]
+        assert v.startswith("source_meta.session_id: ")
+        assert "逐字相等" in v and "分叉" in v
+        # 截断指纹：顶层前 8 字符 + source_meta 前 8 字符出现，全文不出现
+        assert "4e1c8a92" in v, "顶层指纹(前 8 字符)须在消息中"
+        assert "aaaaaaaa" in v, "source_meta 指纹(前 8 字符)须在消息中"
+        full_nested = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        assert full_nested not in v, "消息不得含分叉值全文"
+        assert VALID_SESSION_ID not in v, "消息不得含顶层值全文"
+
+    def test_same_value_passes(self) -> None:
+        """同值通过：source_meta.session_id == 顶层，零违规。"""
+        payload = make_valid_payload()
+        assert payload["source_meta"]["session_id"] == payload["session_id"]
+        assert validate(payload) == []
+
+    def test_missing_key_in_source_meta_allowed(self) -> None:
+        """缺失行为钉死（二选一之选）：source_meta 无 session_id 键 → 不违规。
+
+        source_meta 是宽松 dict 契约（字段未枚举），同源闸只在键存在时生效。
+        """
+        payload = make_valid_payload()
+        del payload["source_meta"]["session_id"]
+        assert "session_id" not in payload["source_meta"]
+        assert validate(payload) == []
+
+    def test_missing_key_explicit_no_violation_message(self) -> None:
+        """缺失行为的专属断言：违规清单中不得出现任何同源闸消息。"""
+        payload = make_valid_payload()
+        del payload["source_meta"]["session_id"]
+        violations = validate(payload)
+        assert not any("source_meta.session_id" in v for v in violations), (
+            f"键缺失时不得有同源闸消息,实际 {violations!r}"
+        )
+
+    def test_non_string_nested_value_diverges(self) -> None:
+        """非字符串嵌套值同样算分叉（类型不同即不相等）。"""
+        payload = make_valid_payload()
+        payload["source_meta"]["session_id"] = 12345
+        violations = validate(payload)
+        assert len(violations) == 1
+        assert "分叉" in violations[0]
+        assert "int" in violations[0]  # 指纹给类型名而非全文
 
 
 # ---------------------------------------------------------------------------
