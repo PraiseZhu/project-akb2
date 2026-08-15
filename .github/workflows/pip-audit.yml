@@ -1,0 +1,53 @@
+name: pip-audit
+
+on:
+  # 每周扫描钉住的依赖组合里新披露的 CVE。本仓治理：新增 schedule 触发器须 owner 确认。
+  schedule:
+    - cron: "17 3 * * 1"
+  pull_request:
+    paths:
+      - "pyproject.toml"
+      - ".github/workflows/pip-audit.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pip-audit-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  pip-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # 钉 v1.1.0 = 1220774d901786e6f652ae159f7b6bc8fea6d266
+      # 默认扫「当前环境已解析的整棵树」会把传递依赖（cryptography 等）一锅端，
+      # 与本仓「钉住 pyproject 声明的直接依赖」口径不一致，也会让门永远红。
+      # 这里导出直接依赖清单 + --no-deps，只审我们亲手钉住的包。
+      - name: Export direct dependencies
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          try:
+              import tomllib
+          except ImportError:
+              import tomli as tomllib
+          data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          deps = list(data["project"]["dependencies"])
+          deps += data.get("project", {}).get("optional-dependencies", {}).get("dev", [])
+          Path("direct-deps.txt").write_text("\n".join(deps) + "\n", encoding="utf-8")
+          print("\n".join(deps))
+          PY
+      - uses: pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266 # v1.1.0
+        with:
+          inputs: direct-deps.txt
+          no-deps: "true"
+          # 2026-08-15 本地实测：直接依赖清单只命中 PYSEC-2026-1845（pytest 8.4.2）。
+          # 修复版 9.0.3 跨 major，与 pyproject 的 <9 封顶冲突；漏洞是 /tmp 本地 DoS。
+          ignore-vulns: PYSEC-2026-1845
