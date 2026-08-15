@@ -8,14 +8,22 @@ on:
 permissions:
   contents: read
 
+# PR 连推取消旧 run；main 不取消，避免门禁被后到的空提交冲掉。
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   ruff:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     # 2026-07-28 摘除 continue-on-error：`ruff check src tests` 本地已全绿，
     # 且历史证明该开关会让 run conclusion 与 job 结论脱钩（job 失败 run 仍报
     # success，"CI success" 信息量为 0）。此后 ruff 为硬闸。
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
@@ -26,13 +34,20 @@ jobs:
   # 本 job 是阻断的 —— 它的作用就是让"某个依赖发了新版把仓库搞坏"在 PR 上变红。
   tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # 兑现 requires-python>=3.11：3.11 下界 + 3.13 CI 基线。fail-fast=false
+        # 避免一边红把另一边也掐掉，两边结论都要看见。
+        python-version: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v7
         with:
-          # 跟实际运行时对齐(本地 pyenv 3.13.12)。requires-python 声明 >=3.11,
-          # 但 3.11 路径从未被真实执行过 —— 若要兑现该承诺,这里加 matrix 补 3.11。
-          python-version: "3.13"
+          python-version: ${{ matrix.python-version }}
           cache: pip
 
       # ── defuddle:intake 抽取层的外部 CLI 依赖(Node 包,不在 pyproject 里) ──

@@ -350,3 +350,16 @@ SDK 内部尝试，需要另行调整 `llm_router` 的重试所有权与相应�
 补充：非法值会静默落到两个取值里**较宽松的那个**（`partial_ok_recoverable`，见
 `src/akb2/feishu_sync/config.py:21,61-65`），因此运维想收紧成 `fail_all` 而拼错时，系统按更宽松
 模式运行且无任何告警。改动 `config.py` 的下一个 PR 应一并修掉，届时删除本条。
+
+---
+
+## pip_audit_2026_08_15（云端 CI 依赖扫描首跑）
+
+| 项 | 值 |
+|---|---|
+| 扫描命令 | 本机 `python3 -m pip_audit --progress-spinner off -f json .`（项目路径，不是把 `pyproject.toml` 当 requirements 喂） |
+| 结果 | 0 个已知漏洞（136 个解析到的依赖） |
+| workflow 豁免 | **无**。`.github/workflows/pip-audit.yml` 不设置 `ignore-vulns` |
+| 与 pyproject 注释的关系 | `PYSEC-2026-1845`（pytest `/tmp` 本地 DoS，修复版跨 major 到 9.0.3）仍写在 `pyproject.toml` 的「不升 9.x」接受说明里。本次扫描未把它报成当前锁定组合的命中项，因此不把它写进 workflow 豁免名单 |
+| 复审条件 | 下次扫描若出现清单外 CVE：改依赖或升级；只有已在本段登记过、且理由仍成立的项才允许加 `ignore-vulns` |
+

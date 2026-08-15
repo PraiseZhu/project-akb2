@@ -1,0 +1,48 @@
+name: actionlint
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/**"
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: actionlint-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # 官方二进制钉 v1.7.12；checksum 来自同版本 checksums.txt 的 linux_amd64 行。
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: "1.7.12"
+        run: |
+          set -euo pipefail
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL -o "$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
+          curl -fsSL -o checksums.txt \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_checksums.txt"
+          expected="$(awk -v f="$archive" '$2 == f { print $1 }' checksums.txt)"
+          actual="$(sha256sum "$archive" | awk '{ print $1 }')"
+          if [ -z "$expected" ] || [ "$actual" != "$expected" ]; then
+            echo "::error::actionlint checksum mismatch actual=$actual expected=$expected"
+            exit 1
+          fi
+          tar -xzf "$archive" actionlint
+          sudo mv actionlint /usr/local/bin/actionlint
+          actionlint -version
+      - name: Lint workflows
+        run: actionlint -color

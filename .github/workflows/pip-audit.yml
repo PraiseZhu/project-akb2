@@ -1,0 +1,33 @@
+name: pip-audit
+
+on:
+  # 每周扫描钉住的依赖组合里新披露的 CVE。本仓治理：新增 schedule 触发器须 owner 确认。
+  schedule:
+    - cron: "17 3 * * 1"
+  pull_request:
+    paths:
+      - "pyproject.toml"
+      - ".github/workflows/pip-audit.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pip-audit-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  pip-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # 钉 v1.1.0 = 1220774d901786e6f652ae159f7b6bc8fea6d266
+      # 扫项目路径（不是把 pyproject.toml 当 requirements 喂进去）。
+      # 2026-08-15 本地 `pip-audit .` 对当前依赖组合 0 个已知漏洞；
+      # 因此这里不预置 ignore-vulns。pyproject 注释里的 PYSEC-2026-1845
+      # 是「不跨 major 升 pytest」的接受说明，不是本 workflow 的豁免名单。
+      - uses: pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266

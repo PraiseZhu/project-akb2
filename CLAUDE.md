@@ -46,7 +46,7 @@ python3 -m akb2.quality.calibration \
     --report-out reports/calibration/factory.json
 ```
 
-- `requires-python >= 3.11`。**实测跑绿过的是 3.12.13（本机全局，2797 项）与 CI 的 3.13**；3.11 路径未被执行过
+- `requires-python >= 3.11`。**本机实测跑绿过的是 3.12.13（全局）**；CI `tests` job 用 `['3.11', '3.13']` matrix（fail-fast: false）兑现下界承诺。3.11 是否在云端全绿以合入后的 matrix job 为准，不得靠收窄 `requires-python` 豁免
 - **外部 CLI 依赖 `defuddle`**（5 项 extract 测试真调它）：装法与「包身份陷阱」见 `docs/runbooks/intake-tools-setup.md` §6 —— 钉的是 `defuddle-cli@0.7.0`，**不要**按 `defuddle --version` 打印的 `0.1.0` 去装同名包 `defuddle@0.1.0`（那个包没有 bin）。缺失时本地 skip、CI 靠 `AKB2_REQUIRE_DEFUDDLE=1` 强制 fail
 - **CI 历史坑（2026-07-28 查实）**：pytest job 在 2026-06-27 被删除（commit `755d5cf`，理由"消除远端长期红"），直到 2026-07-25 才加回、07-27 首次真跑。期间约一个月的 "CI success" 因单 job + `continue-on-error` 而与实际结论脱钩（抽样到 job 全 failure 但 run 报 success）。`ruff` 的 `continue-on-error` 已于 2026-07-28 摘除转硬闸。**不要把历史绿当作回归基线**
 - `pythonpath = ["src", "src/akb2/toolbox_scan"]` 由 pytest 配置注入，无需安装即可跑测试
