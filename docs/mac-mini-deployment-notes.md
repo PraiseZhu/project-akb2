@@ -226,7 +226,9 @@ logs/akb2-quality-runner.log`）。想让它硬闸，在 plist 的 `EnvironmentV
 | Mac Mini | `AKB2_RUNNER_SHARDS=8-15` |
 
 写法：`all`（或不设）= 独占全部、`3`、`0-7`、`0,3,5-6`。**非法写法直接 FATAL**，不会静默
-退化成"独占全部"。启动日志会打印本机分片，两台核对一次即可确认没有交集。
+退化成"独占全部"。启动日志会打印本机分片，两台核对一次即可确认没有交集。改完 plist 记得
+按上文「main-pipeline plist 改动后的重载纪律」执行 `bootout` + `bootstrap`，只 `load` 不会
+让新配置生效。
 
 分片有效性的前提是两台的并集覆盖 0..15；漏配的分片没人处理，只能靠下面的接管。
 
@@ -243,6 +245,8 @@ logs/akb2-quality-runner.log`）。想让它硬闸，在 plist 的 `EnvironmentV
 才允许接管，每次接管在日志打印 `接管外机分片项: shard=… 已滞留 …s`。未超时的项绝不抢。
 
 ⚠️ **两台都开 takeover = 又变成同时抢同一篇**。接管默认关闭，就是为了让这件事必须显式决定。
+同上，改完 plist 记得按上文「main-pipeline plist 改动后的重载纪律」执行 `bootout` +
+`bootstrap`，只 `load` 不会让新配置生效。
 
 ### intake 游标仍在仓库内（需人工改 plist）
 
