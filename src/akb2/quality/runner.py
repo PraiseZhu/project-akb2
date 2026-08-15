@@ -2689,7 +2689,6 @@ def _run_main_loop(config: RunnerConfig) -> int:
         if not queue:
             time.sleep(config.poll_interval_seconds)
             continue
-            continue
 
         # 获取处理锁
         if not _acquire_processing_lock(config):
