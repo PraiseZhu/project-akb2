@@ -6,7 +6,7 @@
 目标: 两件收尾一起排：先把合进 main 后仍停在旧 proposal 口径的存量稿用既有 requeue CLI 再入队（名单从生产 quality-ledger 现算，账本现算 32 篇，不把 31 当常数）；再把 CI/本地 44 红里可修的 43 条按簇对齐到新主链路，harvest 1 条（test_skill_md_template_expansion）标残余保留红。
 优先级: p0-ops-requeue-31 / p1-ci-stale-suite
 非目标: 不改 CI 配置；不向 vault 写 .py/.sh；harvest 残余 tests/harvest/test_smoke_manual.py 不改绿；本轮不开 PR、不 mark ready、不 merge；不改 requeue.py / backfill_requeue.py / runner.py / ledger.py 生产语义
-验收: 19 条 SC 全 verified（approve-exec ledger akb2-ci-requeue-20260815）；e2e 114 passed + TESTS_STRICT_OK、harvest 三视图干净；intent-check status ∈ {OK, REBUILT}；size/format 闸 --base 4a62c487a7610ed0fb5a67971903576680698b25 对 candidate HEAD e3de4f9 绑定
+验收: 19 条 SC 全 verified（approve-exec ledger akb2-ci-requeue-20260815）；e2e 114 passed + TESTS_STRICT_OK、harvest 三视图干净；intent-check status ∈ {OK, REBUILT}；size/format 闸 --base 4a62c487a7610ed0fb5a67971903576680698b25，final 验收凭据绑定最终 HEAD（以 goal-dir 的 final-e2e-report.json / final-presubmit/* / final-verdict.json / final-gpt-review.json 落盘值为准，不在仓内文本硬编码 final SHA）
 <!-- pr-intent:end -->
 
 ## 变更说明
@@ -39,6 +39,6 @@
 ## 验收证据
 
 - 19 条 SC 全部 verified（approve-exec ledger `akb2-ci-requeue-20260815`）
-- e2e：候选树 e3de4f9 上 strict pytest 簇 114 passed（`TESTS_STRICT_OK`）；g5 退役后 `tests/quality/test_repair_loop.py` 缺失属预期（rc=4 已记录）；harvest 三视图干净
+- e2e：strict pytest 簇 114 passed（`TESTS_STRICT_OK`，先在 wave 集成 tip e3de4f9 上取得，final HEAD 复跑见 goal-dir final-e2e-report.json）；g5 退役后 `tests/quality/test_repair_loop.py` 缺失属预期（rc=4 已记录）；harvest 三视图干净
 - intent-check：PR body marker 区块与 `.pr-intent.md` 工作副本 digest 一致（status ∈ {OK, REBUILT}）
 - size / format 闸：`--base 4a62c487a7610ed0fb5a67971903576680698b25`（本 run 口径；本地 origin/main 已漂移，对其跑 size 闸会误计堆叠 diff）
