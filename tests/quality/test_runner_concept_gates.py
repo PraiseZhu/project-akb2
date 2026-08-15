@@ -12,6 +12,7 @@ codex cross-review P1 修复验证：_run_quality_segments 在 concept 车道 gr
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from src.akb2.quality.grader import (
@@ -173,85 +174,58 @@ def _repair_result(entailment, dim_scores):
     }
 
 
-class TestRepairConvergedConceptGates:
-    """codex P1：repair 收敛后必须复查 concept 硬门（之前直接写 PASS 绕过）。"""
+class TestRepairPathAbsent:
+    """P1 重构（drop-repair-residency）：repair 收敛路径已从 runner 删除。
 
-    def test_repair_converged_poisoned_trace_rejected(self):
-        """initial defect → repair 收敛 → final entailment=false → reject（不写 PASS）。"""
+    原 TestRepairConvergedConceptGates 验证「repair 收敛后复查 concept 硬门，
+    防 poisoned-trace/低分被 repair 绕过」——repair 循环删除后该绕过路径本身
+    不复存在。本类改钉三件事：
+      ① runner 不再 import/调用 repair 循环入口（源码级）
+      ② initial defect → 直接终态（blocking_defects_present），无 repair 可言
+      ③ 无 defects 路径的 concept 硬门不受本次重构影响（entailment 门照常拒）
+    """
+
+    def test_runner_does_not_call_repair_loop(self):
+        """源码级：runner.py 不得 import/调用 run_repair_loop。"""
+        runner_src = (
+            Path(__file__).resolve().parents[2]
+            / "src" / "akb2" / "quality" / "runner.py"
+        ).read_text(encoding="utf-8")
+        assert "from src.akb2.quality.repair import run_repair_loop" not in runner_src
+        assert "run_repair_loop(" not in runner_src
+
+    def test_initial_defect_is_terminal_no_repair_bypass(self):
+        """initial defect（concept 车道）→ converged=False + blocking_defects_present。
+
+        旧语义「defect → repair → 收敛后复查硬门」已删；新语义 defect 即终态，
+        poisoned-trace/低分不再可能经 repair 绕过（绕过路径不存在本身即防线）。
+        """
         from src.akb2.quality.checks_structural import Defect
         from src.akb2.quality.runner import _run_quality_segments
 
         defect = Defect(dimension="x", location="L", defect="d", suggestion="s")
         initial_grader = _grader(defects=[defect], entailment=False, dim_scores={})
-        repair = _repair_result(entailment=False, dim_scores={})
-        with patch("src.akb2.quality.checks_structural.run_candidate_self_gate", return_value=[]), \
-             patch("src.akb2.quality.grader.run_grader_detailed", return_value=initial_grader), \
-             patch("src.akb2.quality.runner._load_golden_sample", return_value="golden"), \
-             patch("src.akb2.quality.repair.run_repair_loop", return_value=repair):
-            converged, error_class, _, meta = _run_quality_segments(
-                "candidate", "/tmp/x.md", "raw", config=MagicMock(),
-                content_lane="concept", floor_result=_pass_floor(),
-            )
-        assert not converged
-        assert error_class == "poisoned_trace_entailment"
-        assert meta["interpretation_entailment"] is False
-
-    def test_repair_converged_low_score_rejected(self):
-        """initial defect → repair 收敛 → final 低分 → reject（加权分不能靠 repair 绕过）。"""
-        from src.akb2.quality.checks_structural import Defect
-        from src.akb2.quality.runner import _run_quality_segments
-
-        defect = Defect(dimension="x", location="L", defect="d", suggestion="s")
-        initial_grader = _grader(defects=[defect], entailment=True, dim_scores={})
-        # final 只 H3=1.0 → 3.5 <6.0
-        low = {d: (1.0 if "H3" in d else 0.0) for d in _CONCEPT_DIMS}
-        repair = _repair_result(entailment=True, dim_scores=low)
-        with patch("src.akb2.quality.checks_structural.run_candidate_self_gate", return_value=[]), \
-             patch("src.akb2.quality.grader.run_grader_detailed", return_value=initial_grader), \
-             patch("src.akb2.quality.runner._load_golden_sample", return_value="golden"), \
-             patch("src.akb2.quality.repair.run_repair_loop", return_value=repair):
-            converged, error_class, _, meta = _run_quality_segments(
-                "candidate", "/tmp/x.md", "raw", config=MagicMock(),
-                content_lane="concept", floor_result=_pass_floor(),
-            )
-        assert not converged
-        assert error_class == "weighted_score_below_threshold"
-        assert meta["weighted_score"] == 3.5
-
-    def test_repair_converged_entailment_none_fail_closed(self):
-        """repair 收敛但 final entailment=None（grader 未评）→ concept fail-closed reject。"""
-        from src.akb2.quality.checks_structural import Defect
-        from src.akb2.quality.runner import _run_quality_segments
-
-        defect = Defect(dimension="x", location="L", defect="d", suggestion="s")
-        initial_grader = _grader(defects=[defect], entailment=None, dim_scores={})
-        repair = _repair_result(entailment=None, dim_scores={})
-        with patch("src.akb2.quality.checks_structural.run_candidate_self_gate", return_value=[]), \
-             patch("src.akb2.quality.grader.run_grader_detailed", return_value=initial_grader), \
-             patch("src.akb2.quality.runner._load_golden_sample", return_value="golden"), \
-             patch("src.akb2.quality.repair.run_repair_loop", return_value=repair):
+        with patch(
+            "src.akb2.quality.checks_structural.run_candidate_self_gate", return_value=[]
+        ), patch(
+            "src.akb2.quality.grader.run_grader_detailed", return_value=initial_grader
+        ), patch(
+            "src.akb2.quality.repair.run_repair_loop"
+        ) as mock_repair:
             converged, error_class, _, _ = _run_quality_segments(
                 "candidate", "/tmp/x.md", "raw", config=MagicMock(),
                 content_lane="concept", floor_result=_pass_floor(),
             )
         assert not converged
-        assert error_class == "entailment_not_evaluated"
+        assert error_class == "blocking_defects_present"
+        mock_repair.assert_not_called()
 
-    def test_repair_converged_high_score_entailment_true_passes(self):
-        """repair 收敛 + final entailment=true + 高分 → PASS（concept 门通过）。"""
-        from src.akb2.quality.checks_structural import Defect
-        from src.akb2.quality.runner import _run_quality_segments
+    def test_no_defects_concept_gates_still_enforced(self):
+        """无 defects → concept 硬门照常（entailment=false → poisoned_trace 拒）。
 
-        defect = Defect(dimension="x", location="L", defect="d", suggestion="s")
-        initial_grader = _grader(defects=[defect], entailment=True, dim_scores={})
-        high = {d: 1.0 for d in _CONCEPT_DIMS}  # 全 1.0 → 10.0
-        repair = _repair_result(entailment=True, dim_scores=high)
-        with patch("src.akb2.quality.checks_structural.run_candidate_self_gate", return_value=[]), \
-             patch("src.akb2.quality.grader.run_grader_detailed", return_value=initial_grader), \
-             patch("src.akb2.quality.runner._load_golden_sample", return_value="golden"), \
-             patch("src.akb2.quality.repair.run_repair_loop", return_value=repair):
-            converged, _, _, _ = _run_quality_segments(
-                "candidate", "/tmp/x.md", "raw", config=MagicMock(),
-                content_lane="concept", floor_result=_pass_floor(),
-            )
-        assert converged
+        锁「本次重构只删 repair 路径，不动无缺陷路径的 concept 硬门」。
+        """
+        grader = _grader(defects=[], entailment=False)
+        converged, error_class, _, _ = _run(grader)
+        assert not converged
+        assert error_class == "poisoned_trace_entailment"
