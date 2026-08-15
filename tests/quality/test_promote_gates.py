@@ -236,7 +236,7 @@ class TestFiveGates:
 
 
 # ---------------------------------------------------------------------------
-# §0.2/D8：proposed_node_only 冷启动分叉（allow_proposed_node_only + AUTO_PROMOTE 二次拒）
+# §0.2/D8：proposed_node_only 冷启动分叉（allow_proposed_node_only；P2 后无二次拒）
 # ---------------------------------------------------------------------------
 
 
@@ -324,12 +324,12 @@ Q2: Test two?
 
 
 class TestD8ProposedNodeOnly:
-    """§0.2/D8：proposed_node_only 冷启动分叉。
+    """§0.2/D8：proposed_node_only 冷启动分叉（P2 双模式拆除后语义）。
 
     - evaluate_five_gates(allow_proposed_node_only=True) → 过（medium + proposed_node_only）
     - evaluate_five_gates(allow=False) → Gate-3 fail（real_link required）
-    - run_promote AUTO_PROMOTE=1 → 二次拒 proposed_node_only 写 active
-    - run_promote AUTO_PROMOTE=0 → proposal 成功（不写 active）
+    - run_promote（不读环境变量）+ proposed_node_only → 写 active + graph_pending 落账
+    - run_promote + AKB2_AUTO_PROMOTE=0 → **仍**写 active（env 零影响）
     """
 
     def test_graph_readiness_is_proposed_node_only(self, tmp_path):
@@ -386,13 +386,13 @@ class TestD8ProposedNodeOnly:
             f"默认模式 proposed_node_only 应被 Gate-2/3 拒: {failed}"
         )
 
-    def test_run_promote_auto_promote_accepts_proposed_node_only(self, tmp_path, monkeypatch):
-        """[修宪 2026-07-06,用户裁决「那就改宪法 我要自动化」] AUTO_PROMOTE=1 +
-        proposed_node_only → **允许**写 active(旧二次拒废除,冷启动死锁打破)。
+    def test_run_promote_accepts_proposed_node_only_env_one(self, tmp_path, monkeypatch):
+        """[修宪 2026-07-06 + P2 拆双模式] proposed_node_only → **允许**写 active
+        (旧二次拒废除,冷启动死锁打破;环境开关已拆除,env=1 作回归锚点)。
 
         质量底线不变:五闸仍须全过(本测试 mock lint/grader pass,gate CLI 真跑);
         graph_pending 落账可见(fail-visible);缺失概念进 pending 队列。"""
-        from src.akb2.quality.promote import run_promote
+        from src.akb2.quality.promote import _resolve_ledger_path, run_promote
 
         vault = _cold_start_vault(tmp_path)
         cand = vault / "staging" / "candidate" / "test-batch" / "test-gates.md"
@@ -410,14 +410,20 @@ class TestD8ProposedNodeOnly:
         # active 已写入(第一篇冷启动条目)
         active = vault / "wiki" / "sources" / "test-gates.md"
         assert active.exists(), "修宪后 proposed_node_only 应写 active"
-        # 账本可见 graph_pending 升格事件(fail-visible,非静默)
-        ledger = vault / "staging" / "quality-ledger.jsonl"
-        if ledger.exists():
-            content = ledger.read_text(encoding="utf-8")
-            assert "auto_active_graph_pending" in content
+        # 账本可见 graph_pending 升格事件(fail-visible,非静默)。
+        # 账本在机器本地 state root(2026-07-28 迁移),按 promote 同一解析取路径。
+        ledger = _resolve_ledger_path(vault, "quality-ledger.jsonl")
+        assert ledger.exists(), (
+            f"graph_pending 升格必须落账(fail-visible): {ledger}"
+        )
+        content = ledger.read_text(encoding="utf-8")
+        assert "auto_active_graph_pending" in content
 
-    def test_run_promote_proposal_mode_accepts_proposed_node_only(self, tmp_path, monkeypatch):
-        """§0.2/D8：AUTO_PROMOTE=0 + proposed_node_only → proposal 成功（不写 active）。"""
+    def test_run_promote_env_zero_writes_active_proposed_node_only(
+        self, tmp_path, monkeypatch
+    ):
+        """[P2 sc-p2-env-zero-mutation] AKB2_AUTO_PROMOTE=0 + proposed_node_only
+        六闸全过 → **仍**写 active（旧 proposal 模式已拆除，env 零影响）。"""
         from src.akb2.quality.promote import run_promote
 
         vault = _cold_start_vault(tmp_path)
@@ -432,10 +438,10 @@ class TestD8ProposedNodeOnly:
             lambda p: (True, "mock grader pass"),
         )
         success, detail, snapshot_id = run_promote(cand, vault, None)
-        assert success is True, "AUTO_PROMOTE=0 + proposed_node_only 应 proposal 成功"
-        assert snapshot_id is None, "proposal 模式不写 active（无 snapshot）"
+        assert success is True, f"env=0 不应影响升格: {detail}"
+        assert snapshot_id is not None, "env=0 六闸全过必须走快照+active 写入"
         active = vault / "wiki" / "sources" / "test-gates.md"
-        assert not active.exists(), "proposal 模式不写 active"
+        assert active.exists(), "env=0 六闸全过必须写 active（proposal 路径已拆除）"
 
 
 class TestGate0Provenance:
