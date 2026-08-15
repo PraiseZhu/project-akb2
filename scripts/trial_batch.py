@@ -4,7 +4,9 @@
 本脚本校验 trial-batch.json 的结构完整性和 payload 的 schema+车道合规性。
 只校验、不生成 payload。payload 由人工写入的完整 harvest JSON v1 组成。
 
-依赖: 复用 akb2.harvest.schema 的 validate + run_lane_check，不另写第二套。
+依赖: 复用 akb2.harvest.schema 的 validate + run_lane_check，不另写第二套；
+顶层 session_id 身份闸复用 akb2.harvest.assembler.validate_harvest_run_id
+（与 schema 侧同一判定函数对象，单一真相源，不另写正则）。
 """
 
 from __future__ import annotations
@@ -12,11 +14,20 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
-from akb2.harvest.schema import run_lane_check
-from akb2.harvest.schema import validate as validate_harvest
+# assembler 内部带 `from src.akb2...` 前缀 import（全仓惯例），要求 repo root
+# 在 sys.path。脚本直跑时 sys.path[0] 是 scripts/、测试只注入 src+scripts，
+# 都不含 repo root——先幂等注入再 import。
+_REPO_ROOT = str(Path(__file__).resolve().parents[1])
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from akb2.harvest.assembler import validate_harvest_run_id  # noqa: E402
+from akb2.harvest.schema import run_lane_check  # noqa: E402
+from akb2.harvest.schema import validate as validate_harvest  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # 契约常量
@@ -88,8 +99,31 @@ def _has_path_traversal(raw_path: str) -> bool:
     return False
 
 
+def _validate_session_id_identity(
+    sid: Any, payload_sid: Any, label: str
+) -> list[str]:
+    """顶层 session_id 身份闸：小写 canonical UUID4 + 与内嵌 payload 逐字同源。
+
+    UUID4 判定复用 assembler.validate_harvest_run_id（与 schema 侧同一函数
+    对象，单一真相源，不另写正则）。违规进校验清单（fail-closed 同级）。
+    payload_sid 为 None 表示该条目无内嵌 payload（attempted 条目），
+    同源检查自然跳过，UUID4 闸仍生效。
+    """
+    violations: list[str] = []
+    if isinstance(sid, str) and not validate_harvest_run_id(sid):
+        violations.append(
+            f"{label}.session_id: 期望小写 canonical UUID4,实际 {sid!r}"
+        )
+    if payload_sid is not None and sid != payload_sid:
+        violations.append(
+            f"{label}.session_id({sid!r}): 与内嵌 payload session_id"
+            f"({payload_sid!r}) 不同源"
+        )
+    return violations
+
+
 def _validate_planned_item(item: Any, idx: int) -> list[str]:
-    """校验单个 planned 条目：session_id/title 非空 + payload 走 schema+车道校验。"""
+    """校验单个 planned 条目：session_id 身份闸+title 非空 + payload 走 schema+车道校验。"""
     violations: list[str] = []
     label = f"planned[{idx}]"
     if not isinstance(item, dict):
@@ -101,9 +135,25 @@ def _validate_planned_item(item: Any, idx: int) -> list[str]:
     payload = item.get("payload")
     if payload is None:
         violations.append(f"{label}.payload: 期望 harvest JSON v1,实际缺失")
+        violations.extend(
+            _validate_session_id_identity(
+                item.get("session_id"), None, label
+            )
+        )
     elif not isinstance(payload, dict):
         violations.append(f"{label}.payload: 期望对象,实际 {type(payload).__name__}")
+        violations.extend(
+            _validate_session_id_identity(
+                item.get("session_id"), None, label
+            )
+        )
     else:
+        payload_sid = payload.get("session_id")
+        violations.extend(
+            _validate_session_id_identity(
+                item.get("session_id"), payload_sid, label
+            )
+        )
         # 复用 akb2.harvest.schema 校验器（硬不变量 7）
         violations.extend(validate_harvest(payload))
         if not violations:
@@ -148,6 +198,11 @@ def _validate_attempted_item(item: Any, idx: int) -> list[str]:
         _nonempty_str(item.get("harvest_run_id"), f"{label}.harvest_run_id")
     )
     violations.extend(_nonempty_str(item.get("session_id"), f"{label}.session_id"))
+    # 身份闸：顶层 session_id 必须小写 canonical UUID4（与 planned 同级）。
+    # attempted 条目无内嵌 payload，同源检查不适用（payload_sid=None）。
+    violations.extend(
+        _validate_session_id_identity(item.get("session_id"), None, label)
+    )
     violations.extend(
         _nonempty_str(item.get("expected_slug"), f"{label}.expected_slug")
     )

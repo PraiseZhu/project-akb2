@@ -6,6 +6,8 @@
 - 阶段特定字段：intent/in_flight/settled/failed 各阶段字段约束
 - 结构违规：version/planned 数量/phase 枚举/路径形态/status 校验
 - 跨条目校验：attempted ⊆ planned / 全局唯一性 / 终态枚举
+- 顶层 session_id 身份闸：小写 canonical UUID4 + 与内嵌 payload 同源
+  （判定函数复用 assembler.validate_harvest_run_id，单一真相源）
 - 函数与 CLI 一致性
 """
 
@@ -23,12 +25,16 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
+# 判定函数复用断言锚点：batch 侧身份闸必须与 schema 侧同一函数对象
+import trial_batch  # noqa: E402
 from trial_batch import (  # noqa: E402  # type: ignore[import-untyped]
     BATCH_VERSION,
     CLI_EXIT_INVALID,
     CLI_EXIT_OK,
     validate_trial_batch,
 )
+
+from akb2.harvest.assembler import validate_harvest_run_id  # noqa: E402
 
 CLI_ENV = dict(os.environ, PYTHONPATH=str(REPO_ROOT / "src"))
 
@@ -456,6 +462,154 @@ class TestNegativeFields:
         joined = " ".join(violations)
         assert "attempted[0]" in joined
         assert "期望对象" in joined
+
+
+# ---------------------------------------------------------------------------
+# 顶层 session_id 身份闸（sc-trial-batch-dual-entry）
+# ---------------------------------------------------------------------------
+
+
+class TestSessionIdIdentityGate:
+    """planned[]/attempted[] 顶层 session_id 身份闸：
+
+    - 必须小写 canonical UUID4（判定复用 assembler.validate_harvest_run_id，
+      与 schema 侧同一函数对象，单一真相源）
+    - planned 条目还必须与内嵌 payload.session_id 逐字同源
+    - 两入口（_validate_planned_item / _validate_attempted_item）fail-closed
+      等级一致
+    """
+
+    def test_gate_reuses_assembler_predicate_object(self) -> None:
+        """单一真相源：batch 侧闸用的就是 assembler.validate_harvest_run_id 本尊。"""
+        assert trial_batch.validate_harvest_run_id is validate_harvest_run_id
+
+    def test_planned_top_level_non_uuid4_rejected(self) -> None:
+        """planned 顶层 session_id 非 UUID4 必拒（payload 同步改，排除同源干扰）。"""
+        batch = make_valid_batch()
+        batch["planned"][0]["session_id"] = "not-a-uuid"
+        batch["planned"][0]["payload"]["session_id"] = "not-a-uuid"
+        batch["planned"][0]["payload"]["source_meta"]["session_id"] = "not-a-uuid"
+        violations = validate_trial_batch(batch)
+        assert violations
+        joined = " ".join(violations)
+        assert "planned[0].session_id" in joined
+        assert "期望小写 canonical UUID4" in joined
+
+    def test_planned_top_level_uppercase_uuid4_rejected(self) -> None:
+        """大写 UUID4 非小写 canonical 形态，必拒。"""
+        batch = make_valid_batch()
+        up = batch["planned"][0]["session_id"].upper()
+        batch["planned"][0]["session_id"] = up
+        batch["planned"][0]["payload"]["session_id"] = up
+        batch["planned"][0]["payload"]["source_meta"]["session_id"] = up
+        violations = validate_trial_batch(batch)
+        assert violations
+        joined = " ".join(violations)
+        assert "期望小写 canonical UUID4" in joined
+
+    def test_planned_uuid1_style_rejected(self) -> None:
+        """version 位非 4（UUID1 形态）必拒。"""
+        batch = make_valid_batch()
+        sid = "4e1c8a92-3b7d-1f6a-9c25-1d8e0b3a7f64"
+        batch["planned"][0]["session_id"] = sid
+        batch["planned"][0]["payload"]["session_id"] = sid
+        batch["planned"][0]["payload"]["source_meta"]["session_id"] = sid
+        violations = validate_trial_batch(batch)
+        joined = " ".join(violations)
+        assert "期望小写 canonical UUID4" in joined
+
+    def test_planned_top_level_diverges_from_payload_rejected(self) -> None:
+        """顶层 session_id 与内嵌 payload.session_id 分叉必拒（各自都是合法 UUID4）。"""
+        batch = make_valid_batch()
+        # 换成另一个 planned 的合法 UUID4：UUID4 闸过、同源闸必红
+        batch["planned"][0]["session_id"] = batch["planned"][2]["session_id"]
+        violations = validate_trial_batch(batch)
+        assert violations
+        joined = " ".join(violations)
+        assert "不同源" in joined
+        assert "planned[0].session_id" in joined
+
+    def test_attempted_top_level_non_uuid4_rejected(self) -> None:
+        """attempted 顶层 session_id 非 UUID4 必拒（attempted 无内嵌 payload，
+        只走 UUID4 一闸；与 planned 入口 fail-closed 等级一致）。"""
+        batch = make_valid_batch()
+        batch["attempted"][0]["session_id"] = "plain-session-id"
+        violations = validate_trial_batch(batch)
+        assert violations
+        joined = " ".join(violations)
+        assert "attempted[0].session_id" in joined
+        assert "期望小写 canonical UUID4" in joined
+
+    def test_attempted_uppercase_uuid4_rejected(self) -> None:
+        """attempted 侧大写 UUID4 同样必拒。"""
+        batch = make_valid_batch()
+        batch["attempted"][0]["session_id"] = (
+            "4E1C8A92-3B7D-4F6A-9C25-1D8E0B3A7F64"
+        )
+        violations = validate_trial_batch(batch)
+        joined = " ".join(violations)
+        assert "期望小写 canonical UUID4" in joined
+
+    def test_missing_session_id_still_reports_nonempty(self) -> None:
+        """身份闸不吞既有非空校验：缺失仍报「期望字符串」。"""
+        batch = make_valid_batch()
+        batch["planned"][0].pop("session_id")
+        violations = validate_trial_batch(batch)
+        joined = " ".join(violations)
+        assert "planned[0].session_id" in joined
+        assert "期望字符串" in joined
+
+
+class TestSessionIdGateMutationIsolation:
+    """反向变异：挖掉 batch 侧身份闸后，上述用例必须转红。
+
+    演示方式：monkeypatch trial_batch.validate_harvest_run_id 为恒 True
+    （等价于「UUID4 闸被移除」），断言非 UUID4 用例从「拒」翻转为「放行」
+    ——证明这些用例钉死的正是 batch 侧闸本身，而非 schema 侧或别处行为。
+    注：monkeypatch 只影响 trial_batch 模块绑定，assembler 原函数对象不动，
+    schema 侧用例（test_schema.py）不受影响。
+    """
+
+    def test_mutation_non_uuid4_flips_to_pass(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        batch = make_valid_batch()
+        batch["planned"][0]["session_id"] = "not-a-uuid"
+        batch["planned"][0]["payload"]["session_id"] = "not-a-uuid"
+        batch["planned"][0]["payload"]["source_meta"]["session_id"] = "not-a-uuid"
+
+        # 基线：闸在 → 必拒
+        with_uuid4_gate = validate_trial_batch(batch)
+        assert any("UUID4" in v for v in with_uuid4_gate)
+
+        # 变异：闸挖掉 → 同一输入必须不再因 UUID4 拒（用例转红）
+        monkeypatch.setattr(
+            trial_batch, "validate_harvest_run_id", lambda _s: True
+        )
+        mutated = validate_trial_batch(batch)
+        assert not any("UUID4" in v for v in mutated), (
+            "挖掉 batch 侧 UUID4 闸后仍拒 = 用例没钉在 batch 侧闸上: "
+            f"{mutated!r}"
+        )
+        # assembler 原函数对象不受 monkeypatch 影响（schema 侧不受影响）
+        assert validate_harvest_run_id("not-a-uuid") is False
+
+    def test_mutation_attempted_flips_to_pass(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        batch = make_valid_batch()
+        batch["attempted"][0]["session_id"] = "plain-session-id"
+
+        with_gate = validate_trial_batch(batch)
+        assert any("UUID4" in v for v in with_gate)
+
+        monkeypatch.setattr(
+            trial_batch, "validate_harvest_run_id", lambda _s: True
+        )
+        mutated = validate_trial_batch(batch)
+        assert not any("UUID4" in v for v in mutated), (
+            f"attempted 侧同样未钉死在 batch 闸: {mutated!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
