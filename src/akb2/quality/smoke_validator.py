@@ -9,7 +9,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import subprocess
 import sys
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -19,6 +22,12 @@ import yaml
 from akb2.common.plist_parse import parse_plist_file
 
 LAUNCHD_LABEL = "com.akb2.main-pipeline"
+# Env keys under three-way parity (repo template ↔ installed plist ↔ live job).
+# Same key set for both drift legs so launchd-static and env-parity share one
+# verdict — the F0 incident was exactly a leg this list used to miss.
+ENV_PARITY_KEYS = ("AKB2_AUTO_PROMOTE", "AKB2_AMENDMENT_APPLIED")
+
+LiveEnvReader = Callable[[str], dict[str, str]]
 TERMINAL_EVENTS = {"grade_llm", "promote", "finalize"}
 SENSITIVE_PATH_MARKERS = (
     "/Users/praise/Obsidian",
@@ -57,35 +66,126 @@ def _launchd_mode_from_env(env: dict[str, Any]) -> str:
     return "active" if auto_promote == "1" else "proposal"
 
 
+def _env_drift_parts(
+    left_env: dict[str, Any],
+    right_env: dict[str, Any],
+    left_name: str,
+    right_name: str,
+) -> list[str]:
+    """Per-key drift lines for one parity leg. Shared by all three-way legs."""
+    parts: list[str] = []
+    for key in ENV_PARITY_KEYS:
+        left_value = str(left_env.get(key, "0"))
+        right_value = str(right_env.get(key, "0"))
+        if left_value != right_value:
+            parts.append(f"{key} {left_name}={left_value} {right_name}={right_value}")
+    return parts
+
+
 def _assert_repo_plist_matches_installed(
     installed_plist_path: str | Path,
     repo_plist_path: str | Path | None,
+    live_env_reader: LiveEnvReader | None = None,
 ) -> None:
-    if repo_plist_path is None:
+    if repo_plist_path is None and live_env_reader is None:
         return
 
     installed_path = Path(installed_plist_path)
-    repo_path = Path(repo_plist_path)
     installed = _load_plist(installed_path)
-    repo = _load_plist(repo_path)
     installed_env = installed.get("EnvironmentVariables", {})
-    repo_env = repo.get("EnvironmentVariables", {})
     if not isinstance(installed_env, dict):
         raise SmokeValidationError("installed launchd EnvironmentVariables invalid")
-    if not isinstance(repo_env, dict):
-        raise SmokeValidationError("repo launchd EnvironmentVariables invalid")
 
-    drift_parts: list[str] = []
-    for key in ("AKB2_AUTO_PROMOTE", "AKB2_AMENDMENT_APPLIED"):
-        repo_value = str(repo_env.get(key, "0"))
-        installed_value = str(installed_env.get(key, "0"))
-        if repo_value != installed_value:
-            drift_parts.append(f"{key} repo={repo_value} installed={installed_value}")
+    if repo_plist_path is not None:
+        repo_path = Path(repo_plist_path)
+        repo = _load_plist(repo_path)
+        repo_env = repo.get("EnvironmentVariables", {})
+        if not isinstance(repo_env, dict):
+            raise SmokeValidationError("repo launchd EnvironmentVariables invalid")
+        drift_parts = _env_drift_parts(repo_env, installed_env, "repo", "installed")
+        if drift_parts:
+            raise SmokeValidationError(
+                "launchd env drift between repo and installed plist: "
+                + ", ".join(drift_parts)
+                + f" repo_path={repo_path} installed_path={installed_path}"
+            )
+
+    if live_env_reader is not None:
+        _assert_live_env_matches_installed(installed_env, live_env_reader)
+
+
+def parse_launchctl_env(launchctl_print_output: str) -> dict[str, str]:
+    """Parse the ``environment = { ... }`` block of ``launchctl print`` output.
+
+    Only the job-set ``environment`` block counts (NOT ``inherited environment``
+    or ``default environment``): that block is what launchd actually gave the
+    running job, i.e. the ground truth for the live leg of three-way parity.
+    """
+    env: dict[str, str] = {}
+    in_block = False
+    for line in launchctl_print_output.splitlines():
+        stripped = line.strip()
+        if not in_block:
+            if stripped == "environment = {":
+                in_block = True
+            continue
+        if stripped == "};":
+            break
+        # lines look like "\t\tKEY => value" (value may itself contain " => ")
+        match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*) => (.*)$", stripped)
+        if match:
+            env[match.group(1)] = match.group(2)
+    return env
+
+
+def read_live_job_env(launchd_label: str) -> dict[str, str]:
+    """Read EnvironmentVariables of the currently loaded launchd job.
+
+    Fail-closed: a job that is not loaded (launchctl rc != 0) or loaded without
+    a readable environment block raises SmokeValidationError instead of being
+    skipped — the F0 incident was exactly a live daemon env that nobody looked
+    at, so "cannot see live" must never silently pass as parity.
+    """
+    proc = subprocess.run(
+        ["launchctl", "print", f"gui/{os.getuid()}/{launchd_label}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise SmokeValidationError(
+            f"cannot read live launchd job {launchd_label}: "
+            f"launchctl print rc={proc.returncode} "
+            f"(job not loaded in gui/{os.getuid()}? bootout+bootstrap required) "
+            f"stderr={proc.stderr.strip()[:200]}"
+        )
+    env = parse_launchctl_env(proc.stdout)
+    if not env:
+        raise SmokeValidationError(
+            f"live launchd job {launchd_label} printed no environment block"
+        )
+    return env
+
+
+def _assert_live_env_matches_installed(
+    installed_env: dict[str, Any],
+    live_env_reader: LiveEnvReader,
+) -> None:
+    """Live leg of three-way parity: loaded job env must match installed plist.
+
+    This is the leg the F0 incident lived in: the installed plist said
+    AKB2_AUTO_PROMOTE=1 but the daemon booted earlier still ran 0, and every
+    on-disk check stayed green. Only a disk-plist edit without bootout+
+    bootstrap produces this state, so the message names the exact sides.
+    """
+    live_env = live_env_reader(LAUNCHD_LABEL)
+    drift_parts = _env_drift_parts(installed_env, live_env, "installed", "live")
     if drift_parts:
         raise SmokeValidationError(
-            "launchd env drift between repo and installed plist: "
+            "launchd env drift between installed plist and live job "
+            "(plist edited without bootout+bootstrap?): "
             + ", ".join(drift_parts)
-            + f" repo_path={repo_path} installed_path={installed_path}"
+            + f" label={LAUNCHD_LABEL}"
         )
 
 
@@ -382,8 +482,15 @@ def validate_launchd_static(
     expected_mode: str = DEFAULT_EXPECTED_LAUNCHD_MODE,
     require_label_absent: bool = False,
     repo_plist_path: str | Path | None = None,
+    live_env_reader: LiveEnvReader | None = None,
 ) -> dict[str, Any]:
-    """Validate main-pipeline launchd plist without loading it."""
+    """Validate main-pipeline launchd plist without loading it.
+
+    ``live_env_reader`` extends the check from two-way (repo ↔ installed) to
+    three-way parity by also reading the loaded job's environment; pass
+    ``read_live_job_env`` for the production verdict. ``None`` keeps the
+    file-only check for isolated/CI replay (CLI decides what to inject).
+    """
     plist = _load_plist(Path(plist_path))
     label = plist.get("Label")
     if label != LAUNCHD_LABEL:
@@ -413,7 +520,15 @@ def validate_launchd_static(
     env = plist.get("EnvironmentVariables", {})
     if not isinstance(env, dict):
         raise SmokeValidationError("launchd EnvironmentVariables invalid")
-    _assert_repo_plist_matches_installed(plist_path, repo_plist_path)
+    _assert_repo_plist_matches_installed(
+        plist_path,
+        repo_plist_path,
+        live_env_reader=(
+            # Pre-install check (--require-label-absent): no live job is the
+            # expected state there, so the live leg does not apply.
+            live_env_reader if not require_label_absent else None
+        ),
+    )
     actual_mode = _launchd_mode_from_env(env)
     if expected_mode not in {"proposal", "active"}:
         raise SmokeValidationError(f"expected_mode invalid: {expected_mode}")
@@ -427,8 +542,6 @@ def validate_launchd_static(
 
     label_absent = None
     if require_label_absent:
-        import subprocess
-
         proc = subprocess.run(
             ["launchctl", "print", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"],
             capture_output=True,
@@ -455,13 +568,22 @@ def validate_env_parity(
     smoke_amendment_applied: str = "0",
     active_ready: bool = False,
     repo_plist_path: str | Path | None = None,
+    live_env_reader: LiveEnvReader | None = None,
 ) -> dict[str, Any]:
-    """Ensure smoke result is not confused with the plist deployment mode."""
+    """Ensure smoke result is not confused with the plist deployment mode.
+
+    ``live_env_reader`` extends parity to the loaded job (three-way). The CLI
+    always injects ``read_live_job_env`` so the production entry point fails
+    closed on a missing live leg; the default ``None`` keeps the function
+    reusable for isolated replay where no daemon is loaded.
+    """
     plist = _load_plist(Path(plist_path))
     env = plist.get("EnvironmentVariables", {})
     if not isinstance(env, dict):
         raise SmokeValidationError("launchd EnvironmentVariables invalid")
-    _assert_repo_plist_matches_installed(plist_path, repo_plist_path)
+    _assert_repo_plist_matches_installed(
+        plist_path, repo_plist_path, live_env_reader=live_env_reader
+    )
     plist_mode = _launchd_mode_from_env(env)
     smoke_mode = "active" if smoke_auto_promote == "1" else "proposal"
     if plist_mode == "active" and smoke_mode != "active" and not active_ready:
@@ -719,6 +841,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--repo-plist", help="Optional repo template plist to compare")
     parser.add_argument(
+        "--skip-live-parity",
+        action="store_true",
+        help=(
+            "Skip the loaded-job (launchctl print) leg of env parity. "
+            "Only for environments with no launchd (CI); hides real drift, "
+            "so production runs must NOT set this."
+        ),
+    )
+    parser.add_argument(
         "--expected-mode",
         choices=["proposal", "active"],
         default=DEFAULT_EXPECTED_LAUNCHD_MODE,
@@ -762,6 +893,10 @@ def main(argv: list[str] | None = None) -> int:
                 expected_mode=args.expected_mode,
                 require_label_absent=args.require_label_absent,
                 repo_plist_path=args.repo_plist,
+                live_env_reader=(
+                    None if args.require_label_absent or args.skip_live_parity
+                    else read_live_job_env
+                ),
             )
         elif args.mode == "env-parity":
             result = validate_env_parity(
@@ -770,6 +905,9 @@ def main(argv: list[str] | None = None) -> int:
                 smoke_amendment_applied=args.smoke_amendment_applied,
                 active_ready=args.active_ready,
                 repo_plist_path=args.repo_plist,
+                live_env_reader=(
+                    None if args.skip_live_parity else read_live_job_env
+                ),
             )
         else:
             if not args.before_metadata or not args.after_metadata:
