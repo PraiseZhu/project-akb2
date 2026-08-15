@@ -68,19 +68,21 @@ log = logging.getLogger("akb2.harvest.assembler")
 # ---------------------------------------------------------------------------
 
 # 小写 canonical UUID4(与 sc-asm-sourceurl 对 session_id 的同一谓词)
+# 无锚点 + fullmatch:整串必须恰好匹配。不用 $——Python 的 $ 会放过尾随 \n。
 UUID4_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+    r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 
 
 def validate_harvest_run_id(run_id: str) -> bool:
-    """run_id 严格解析:恰为小写 canonical UUID4。
+    """run_id 严格解析:恰为小写 canonical UUID4,不多一个字符。
 
-    空串 / 绝对路径 / 含 `/` / 含 `.` / 含分隔符 / 非 UUID4 一律 False。
+    空串 / 绝对路径 / 含 `/` / 含 `.` / 含分隔符 / 非 UUID4 一律 False;
+    尾随空白/换行也一律 False(fullmatch,不认 `$` 的尾换行宽容)。
     run_id 参与隔离目录名派生,必须在任何路径拼接之前过此闸。
     """
     if not isinstance(run_id, str):
         return False
-    return UUID4_RE.match(run_id) is not None
+    return UUID4_RE.fullmatch(run_id) is not None
 
 
 # ---------------------------------------------------------------------------

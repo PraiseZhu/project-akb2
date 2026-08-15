@@ -79,8 +79,10 @@ def join_raw_by_run_id(
 
     1. 行自带 ``harvest_run_id`` 且与某 committed 行**逐字相等** → 联结
        (via=run_id;不做前缀/子串匹配);
-    2. 行缺 run_id 或未命中,但 ``content_key`` 与某 committed 行相等 →
-       二级映射联结(via=content_key);
+    2. 行**缺 run_id**(空/缺键)时,若 ``content_key`` 与某 committed 行相等 →
+       二级映射联结(via=content_key)。行自带非空 run_id 但未逐字命中
+       committed 时**不得**走 content_key 兜底——否则 run-B 的反馈会经共享
+       content_key 错记到 run-A 名下;
     3. 两者皆不可联结 → unmatched,计数与其自带 run_id 一并进顶层
        ``raw_join.unmatched``,不静默丢弃。
 
@@ -101,10 +103,16 @@ def join_raw_by_run_id(
             run_id_by_content_key[ck] = rid
 
     def resolve(row: dict) -> tuple[str, str] | None:
-        """单行联结裁定:返回 (run_id, via);不可联结返回 None。"""
+        """单行联结裁定:返回 (run_id, via);不可联结返回 None。
+
+        content_key 兜底仅适用于行缺 run_id 的情形;行自带非空 run_id
+        且未逐字命中 committed → 直接 unmatched,防止跨 run 错记。
+        """
         rid = str(row.get("harvest_run_id", "") or "")
-        if rid and rid in raw_by_run_id:
-            return rid, "run_id"
+        if rid:
+            if rid in raw_by_run_id:
+                return rid, "run_id"
+            return None
         ck = str(row.get("content_key", "") or "")
         if ck and ck in run_id_by_content_key:
             return run_id_by_content_key[ck], "content_key"

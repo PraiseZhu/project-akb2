@@ -509,6 +509,47 @@ class TestRunIdJoin:
         assert rj["unmatched"]["quality_entries"] == 2
         assert rj["unmatched"]["quality_run_ids"] == []  # 无自带 run_id 不列
 
+    def test_mismatched_run_id_no_content_key_fallback(self) -> None:
+        """行自带非空 run_id 且未逐字命中 committed → 不得走 content_key 兜底。
+
+        否则 run-B 的反馈行会经共享 content_key 错记到 run-A 名下
+        （reviewer major finding）：只允许缺 run_id 的行走二级映射。
+        """
+        committed = [
+            _committed_row(run_id="run-A", raw_abspath="/vault/raw/a.json",
+                           content_key="ck-a"),
+        ]
+        trial = [{"kind": "blocked", "harvest_run_id": "run-B",
+                  "content_key": "ck-a"}]
+        quality = [{"event": "finalize", "harvest_run_id": "run-B",
+                    "content_key": "ck-a"}]
+        rj = join_raw_by_run_id(committed, trial, quality)
+        assert rj["joined_via_content_key"] == 0  # 不经 content_key 错记
+        assert rj["joined_via_run_id"] == 0
+        assert rj["by_run_id"]["run-A"]["trial_events_joined"] == 0
+        assert rj["by_run_id"]["run-A"]["quality_entries_joined"] == 0
+        assert rj["unmatched"]["trial_events"] == 1
+        assert rj["unmatched"]["quality_entries"] == 1
+        assert rj["unmatched"]["trial_run_ids"] == ["run-B"]
+        assert rj["unmatched"]["quality_run_ids"] == ["run-B"]
+
+    def test_missing_run_id_still_joins_via_content_key(self) -> None:
+        """合法兜底保留：缺 run_id（空串/缺键）+ content_key 命中仍可联结。"""
+        committed = [
+            _committed_row(run_id="run-A", raw_abspath="/vault/raw/a.json",
+                           content_key="ck-a"),
+        ]
+        trial = [{"kind": "blocked", "harvest_run_id": "",
+                  "content_key": "ck-a"}]       # 空 run_id → 允许兜底
+        quality = [{"event": "finalize",
+                    "content_key": "ck-a"}]     # 缺键 → 允许兜底
+        rj = join_raw_by_run_id(committed, trial, quality)
+        assert rj["joined_via_content_key"] == 2
+        assert rj["by_run_id"]["run-A"]["trial_events_joined"] == 1
+        assert rj["by_run_id"]["run-A"]["quality_entries_joined"] == 1
+        assert rj["unmatched"]["trial_events"] == 0
+        assert rj["unmatched"]["quality_entries"] == 0
+
     def test_missing_raw_goes_unmatched(self, tmp_path: Path) -> None:
         """查无 raw（run_id 未知/typo）进 unmatched，不静默丢弃。"""
         committed = [_committed_row(run_id="real-run")]

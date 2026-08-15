@@ -549,6 +549,26 @@ class TestRunIdContract:
         """CLI 与 assembler 共用同一 validate_harvest_run_id 函数对象。"""
         assert cli.validate_harvest_run_id is assembler.validate_harvest_run_id
 
+    def test_run_id_rejects_trailing_whitespace(self) -> None:
+        """恰为 canonical UUID4：尾随换行/空白/大写一律拒（fullmatch）。
+
+        Python 的 `$` 在串尾换行前也匹配，旧正则会把带尾随换行的 UUID
+        错判为合法（reviewer blocker finding）；fullmatch 要求整串恰好匹配。
+        """
+        good = "4e1c8a92-3b7d-4f6a-9c25-1d8e0b3a7f64"
+        assert assembler.validate_harvest_run_id(good)
+        assert not assembler.validate_harvest_run_id(f"{good}\n")
+        assert not assembler.validate_harvest_run_id(f"{good} ")
+        assert not assembler.validate_harvest_run_id(good.upper())
+
+    def test_schema_rejects_trailing_newline_session_id(self) -> None:
+        """schema.validate 复用同一谓词：顶层 session_id 带 \\n 同样违规。"""
+        bad = "4e1c8a92-3b7d-4f6a-9c25-1d8e0b3a7f64\n"
+        violations = schema_mod.validate(_payload(bad))
+        assert any(v.startswith("session_id: ") for v in violations), (
+            f"带尾随换行的 session_id 必须违规,实际 {violations!r}"
+        )
+
     def test_bad_run_id_rejected_both_sides(self, deployment, deploy_env: None,
                                             ids: SimpleNamespace,
                                             tmp_path: Path) -> None:
