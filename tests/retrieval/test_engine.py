@@ -302,6 +302,31 @@ def test_how_start_heading_inside_fence_ignored(tmp_path):
     ]
 
 
+def test_extract_how_section_linear_on_large_headingless_note():
+    """性能回归：无 How 标题的大笔记必须线性耗时，不得逐行回扫前缀。
+
+    反例（O(n²) 起始扫描）：10k 行无标题笔记在修前耗 cpu ≈3.2s，二次
+    曲线（n 翻倍 ≈4×）；线性实现应为毫秒级。上限给 0.25s 松阈防 flake，
+    同时用 n=5k vs 10k 的耗时比 <=4 排除「快了但仍二次」的假阴性。
+    """
+    import time
+
+    def _probe(n: int) -> float:
+        body = "\n".join(f"line {i} some text without heading" for i in range(n))
+        t0 = time.process_time()
+        result = engine.extract_how_section(body)
+        elapsed = time.process_time() - t0
+        assert result == "", "无 How 标题的笔记必须返回空串"
+        return elapsed
+
+    t5k = _probe(5_000)
+    t10k = _probe(10_000)
+    assert t10k < 0.25, f"10k 行耗时 {t10k:.3f}s 超上限（疑似回到二次扫描）"
+    assert t10k <= max(t5k * 4, 0.05), (
+        f"耗时随 n 二次增长：5k={t5k:.4f}s 10k={t10k:.4f}s"
+    )
+
+
 def test_inline_backticks_inside_fence_not_extracted_as_commands(tmp_path):
     """围栏代码块内部的反引号跨度（示例文本）不得混入可执行命令清单。"""
     root = tmp_path / "vault"

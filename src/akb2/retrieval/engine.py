@@ -113,18 +113,23 @@ def _extract_title(fm_text: str, fallback: str) -> str:
     return title or fallback
 
 
-def _in_fence(lines: list[str], idx: int) -> bool:
-    """判定第 idx 行是否位于围栏代码块内（从文件头线性扫描到该行）。
+def _fence_state_table(lines: list[str]) -> list[bool]:
+    """逐行预计算「该行是否位于围栏代码块内」，一次线性扫描。
 
     与 _section_after 的行内 fence 判定同一规则：以 ``` 开头的行是围栏
-    开关。起始标题扫描用它过滤伪标题，保证起始与结束两侧共用一套
-    fence 状态机，不存在「结束认 fence、起始不认」的不对称。
+    开关（开关行自身记为 fence 外的边界态 False，块内行 True）。起始
+    标题扫描用它过滤伪标题，保证起始与结束两侧共用一套 fence 状态机，
+    不存在「结束认 fence、起始不认」的不对称。
     """
+    states: list[bool] = []
     in_fence = False
-    for line in lines[:idx]:
+    for line in lines:
         if line.lstrip().startswith(_CODE_FENCE_PREFIX):
             in_fence = not in_fence
-    return in_fence
+            states.append(False)  # 开关行本身不是块内伪标题来源
+            continue
+        states.append(in_fence)
+    return states
 
 
 def _section_after(lines: list[str], heading_idx: int) -> str:
@@ -157,15 +162,19 @@ def extract_how_section(body: str) -> str:
     起始标题扫描与 _section_after 的结束扫描共用同一 fence 状态机：
     围栏代码块里的伪标题（如示例 markdown 里的 `### 操作步骤`）不是文档
     结构，不能当 How 起点——否则截出来的正文以围栏残留内容开头。
+
+    fence 状态一次线性预计算后两轮扫描共用——不得对每行从文件头重扫
+    前缀（O(n²)：MAX_NOTE_BYTES=2MiB 下约百万短行会拖垮整个检索）。
     """
     lines = body.splitlines()
+    fenced = _fence_state_table(lines)
     for i, line in enumerate(lines):
-        if _in_fence(lines, i):
+        if fenced[i]:
             continue
         if _HOW_SUBSECTION_RE.match(line):
             return _section_after(lines, i)
     for i, line in enumerate(lines):
-        if _in_fence(lines, i):
+        if fenced[i]:
             continue
         if _HOW_TEMPLATE_HEADING_RE.match(line):
             return _section_after(lines, i)
