@@ -1,67 +1,49 @@
-"""test_f46_needs_repair_residency.py — F46 needs_repair 驻留通路测试。
+"""test_f46_needs_repair_residency.py — needs_repair 驻留通路**缺席**测试。
 
-覆盖 6 项可观测行为(lead 硬要求):
-    ① 不收敛 → needs_repair 事件(非 abort)
-    ② 3 掷耗尽 → expired abort
-    ③ 收敛 → 正常 promote 链(mock 到 promote 入口)
-    ④ 间隔守卫(MIN_INTERVAL_H)
-    ⑤ _is_processed 三态语义(终态/驻留/未处理)
-    ⑥ 预算具名(MAX_RETAKES/MIN_INTERVAL_H/PER_CYCLE)
+P1 重构（drop-repair-residency，2026-08）：needs_repair 驻留池已从 runner
+生产代码删除。历史背景:驻留池生还率约 6%(358 篇约 20 篇生还),却养出
+197 篇僵尸和 62 篇误判终态——内容性失败被反复补丁拖死,入库率被拖住。
 
-判定链零动:驻留只给"再掷一轮"入口,不碰 grader/floor/A层/五闸。
+本文件钉住「机制不存在」:
+    ① 驻留常量/目录/函数族从 runner 生产代码消失(absent 断言,防回退)
+    ② needs_repair 事件写入路径从生产代码消失(源码级)
+    ③ 历史账本读容忍:旧 needs_repair 事件(无终态)不触发主扫描重跑
+       (防 197 篇僵尸无界重启);F26 requeue 仍可手动重开
+    ④ 终态语义:blocking 缺陷直接终态(repair 循环已删,无中间态)
+
+突变验证:把 NEEDS_REPAIR_SUBDIR / needs_repair 驻留写入加回 runner 必红。
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
-import pytest
+from src.akb2.quality.runner import _is_processed
 
-from src.akb2.quality import runner
-from src.akb2.quality.runner import (
-    NEEDS_REPAIR_MAX_RETAKES,
-    NEEDS_REPAIR_MIN_INTERVAL_H,
-    NEEDS_REPAIR_PER_CYCLE,
-    _is_processed,
-    _is_resident,
-    _needs_repair_dir,
-    _needs_repair_event_count,
-    _persist_resident,
-    _route_to_residency,
-    _run_residency_cycle,
-    _run_residency_rethrow,
-    _scan_residency,
+_RUNNER_SRC = (
+    Path(__file__).resolve().parents[2] / "src" / "akb2" / "quality" / "runner.py"
 )
 
 
-def _mk_config(tmp_path: Path):
-    """Stub config: staging_dir + ledger_path + grader_result_dir 全指向 tmp_path。"""
-    staging = tmp_path / "staging"
-    staging.mkdir(parents=True, exist_ok=True)
-    (staging / "needs-repair").mkdir(parents=True, exist_ok=True)
-    ledger = staging / "quality-ledger.jsonl"
+def _runner_src() -> str:
+    return _RUNNER_SRC.read_text(encoding="utf-8")
+
+
+def _mk_ledger(tmp_path: Path) -> Path:
+    ledger = tmp_path / "quality-ledger.jsonl"
     ledger.write_text("", encoding="utf-8")
-
-    class _Cfg:
-        pass
-
-    cfg = _Cfg()
-    cfg.staging_dir = str(staging)
-    cfg.ledger_path = str(ledger)
-    cfg.grader_result_dir = str(staging / "grader-results")
-    return cfg, ledger
+    return ledger
 
 
-def _append_event(ledger: Path, content_hash: str, event: str,
-                  ts: str = "2026-07-12T00:00:00Z", **details) -> None:
+def _append_event(ledger: Path, content_hash: str, event: str, **details) -> None:
     entry = {
         "loop_id": "loop1",
-        "node": event if event in ("admission", "repair_loop", "promote",
-                                   "finalize", "integrity_floor") else "repair_loop",
+        "node": "repair_loop",
         "event": event,
         "content_hash": content_hash,
-        "ts": ts,
+        "ts": "2026-07-12T00:00:00Z",
         "details": details,
     }
     with open(ledger, "a", encoding="utf-8") as f:
@@ -69,258 +51,159 @@ def _append_event(ledger: Path, content_hash: str, event: str,
 
 
 # ---------------------------------------------------------------------------
-# ⑥ 预算具名(宪法 P1)
+# ① 驻留机制缺席:常量 / 子目录 / 函数族全部从生产代码消失
 # ---------------------------------------------------------------------------
 
 
-class TestBudget:
-    def test_named_constants(self) -> None:
-        assert NEEDS_REPAIR_MAX_RETAKES == 3
-        assert NEEDS_REPAIR_MIN_INTERVAL_H == 20
-        assert NEEDS_REPAIR_PER_CYCLE == 4  # F49 提速 2→4
+class TestResidencyMechanismAbsent:
+    def test_needs_repair_constants_absent(self) -> None:
+        """驻留预算常量族必须不存在(写回即红——SC mutation 防线)。"""
+        src = _runner_src()
+        for banned in (
+            "NEEDS_REPAIR_MAX_RETAKES",
+            "NEEDS_REPAIR_SUBDIR",
+            "NEEDS_REPAIR_MIN_INTERVAL_H",
+            "NEEDS_REPAIR_PER_CYCLE",
+            "NEEDS_REPAIR_STALL_REQUEUE_MAX",
+            "_NEEDS_REPAIR_STALL_REASON_PREFIX",
+        ):
+            assert banned not in src, f"驻留常量 {banned} 不得回到 runner 生产代码"
+
+    def test_needs_repair_subdir_literal_absent(self) -> None:
+        """驻留目录字面量 needs-repair 不得出现在 runner(写入路径已删)。"""
+        src = _runner_src()
+        assert "needs-repair" not in src, "驻留子目录字面量不得回到 runner"
+
+    def test_residency_function_family_absent(self) -> None:
+        """驻留函数族(路由/持久化/扫描/重掷/升级/超龄)必须整体消失。"""
+        src = _runner_src()
+        for fn in (
+            "_route_to_residency",
+            "_run_residency_rethrow",
+            "_run_residency_cycle",
+            "_scan_residency",
+            "_persist_resident",
+            "_load_resident",
+            "_purge_resident",
+            "_escalate_stalled_resident",
+            "_expire_capped_resident",
+            "_stall_requeue_used",
+            "_needs_repair_event_count",
+            "_is_resident",
+            "_is_content_no_converge",
+        ):
+            assert fn not in src, f"驻留函数 {fn} 不得回到 runner 生产代码"
 
 
 # ---------------------------------------------------------------------------
-# ⑤ _is_processed 三态语义
+# ② needs_repair 事件写入路径消失(源码级)
 # ---------------------------------------------------------------------------
 
 
-class TestIsProcessedThreeState:
-    def test_resident_is_processed_and_resident(self, tmp_path: Path) -> None:
-        cfg, ledger = _mk_config(tmp_path)
-        _append_event(ledger, "h1", "needs_repair")
-        # 驻留中:主扫描跳过(_is_processed=True),由驻留扫描接管(_is_resident=True)
-        assert _is_processed("h1", str(ledger)) is True
-        assert _is_resident("h1", str(ledger)) is True
+class TestNeedsRepairEventWritePathAbsent:
+    def test_no_needs_repair_event_emission(self) -> None:
+        """生产代码不得再**写** needs_repair 事件。
 
-    def test_terminal_is_processed_not_resident(self, tmp_path: Path) -> None:
-        cfg, ledger = _mk_config(tmp_path)
-        _append_event(ledger, "h1", "finalize")
-        assert _is_processed("h1", str(ledger)) is True
-        assert _is_resident("h1", str(ledger)) is False
+        精确匹配 _log_event(..., "needs_repair", ...) 事件名形态;
+        _is_processed 的历史读容忍(elif ev == "needs_repair")不在此列。
+        """
+        src = _runner_src()
+        import re
 
-    def test_expired_abort_not_resident(self, tmp_path: Path) -> None:
-        cfg, ledger = _mk_config(tmp_path)
-        _append_event(ledger, "h1", "needs_repair")
-        _append_event(ledger, "h1", "abort", reason="needs_repair_expired")
-        # 超龄 abort 后:终态(_is_processed=True),不再是驻留(_is_resident=False)
-        # → 恢复可被 F26 requeue 手动重开(语义不变)
-        assert _is_processed("h1", str(ledger)) is True
-        assert _is_resident("h1", str(ledger)) is False
+        emissions = re.findall(r'_log_event\([^)]*?"needs_repair"', src, re.DOTALL)
+        assert not emissions, (
+            "runner 不得再落 needs_repair 事件——终态只剩 finalize/abort(或 requeue)"
+        )
 
-    def test_unprocessed(self, tmp_path: Path) -> None:
-        cfg, ledger = _mk_config(tmp_path)
+    def test_no_stall_escalation_requeue_reason(self) -> None:
+        """F50 stall 升级的 requeue 理由前缀必须消失。"""
+        src = _runner_src()
+        assert "needs_repair_stall_redistill" not in src
+
+
+# ---------------------------------------------------------------------------
+# ③ 历史账本读容忍(防僵尸无界重启) + F26 requeue 重开
+# ---------------------------------------------------------------------------
+
+
+class TestHistoricalNeedsRepairTolerance:
+    def test_legacy_needs_repair_event_keeps_processed(self, tmp_path: Path) -> None:
+        """旧机制时代的 needs_repair 事件(无终态)→ 视为已处理,不重跑。
+
+        反证:若无读容忍,删除驻留扫描后 197 篇僵尸会被主扫描当新文章
+        全链重掷——无界重启,违反宪法 P1 有界。
+        """
+        ledger = _mk_ledger(tmp_path)
         _append_event(ledger, "h1", "intake_raw")
-        assert _is_processed("h1", str(ledger)) is False
-        assert _is_resident("h1", str(ledger)) is False
+        _append_event(ledger, "h1", "needs_repair")
+        assert _is_processed("h1", str(ledger)) is True
 
-    def test_requeue_after_needs_repair_reopens(self, tmp_path: Path) -> None:
-        """F26 requeue 手动重开驻留 → 重新 intake 全链(_is_processed=False)。"""
-        cfg, ledger = _mk_config(tmp_path)
+    def test_manual_requeue_reopens_legacy_needs_repair(self, tmp_path: Path) -> None:
+        """F26 手动 requeue 在 needs_repair 事件之后 → 重开全链(可处理)。"""
+        ledger = _mk_ledger(tmp_path)
         _append_event(ledger, "h1", "needs_repair")
         _append_event(ledger, "h1", "requeue")
         assert _is_processed("h1", str(ledger)) is False
-        assert _is_resident("h1", str(ledger)) is False
+
+    def test_terminal_after_needs_repair_stays_processed(self, tmp_path: Path) -> None:
+        """needs_repair 后有终态(finish/abort)→ 终态语义不变。"""
+        ledger = _mk_ledger(tmp_path)
+        _append_event(ledger, "h1", "needs_repair")
+        _append_event(ledger, "h1", "abort")
+        assert _is_processed("h1", str(ledger)) is True
 
 
 # ---------------------------------------------------------------------------
-# ① 不收敛 → needs_repair(非 abort)+ ② 3 掷耗尽 → expired abort
+# ④ 终态语义:blocking 缺陷直接终态,无中间态
 # ---------------------------------------------------------------------------
 
 
-def _quality_meta_nonconverge(final_text: str) -> dict:
-    return {
-        "final_text": final_text,
-        "repair_rounds": 2,
-        "final_defects_summary": [{"dimension": "mechanism", "defect": "组件罗列"}],
-        "repair_trace_paths": [],
-    }
+class TestNoIntermediateState:
+    def test_blocking_defects_are_terminal(self) -> None:
+        """blocking 缺陷存在 → 直接 converged=False + blocking_defects_present,
+        repair 循环入口不再被调用(SC1 核心断言)。"""
+        from src.akb2.quality.checks_structural import Defect
+        from src.akb2.quality.grader import PRIMARY_GRADER_MODEL, GraderResult
+        from src.akb2.quality.integrity_floor import FloorResult
+        from src.akb2.quality.runner import _run_quality_segments
 
-
-class TestRouteToResidency:
-    def test_content_nonconverge_routes_to_needs_repair_not_abort(
-        self, tmp_path: Path
-    ) -> None:
-        """① 不收敛 + 预算内 → needs_repair 事件(非 abort),final_text 持久化。"""
-        cfg, ledger = _mk_config(tmp_path)
-        result = _route_to_residency(
-            config=cfg, content_hash="h1", raw_path="/raw/x.md",
-            candidate_path="/cand/x.md", content_lane="concept", slug="x",
-            rounds=2,
-            final_defects_summary=[{"dimension": "mechanism", "defect": "组件罗列"}],
-            quality_meta=_quality_meta_nonconverge("final-text-body"),
-            error_class="distill_no_converge",
-            error_detail="修复不收敛: 1 项缺陷残留",
+        defect = Defect(
+            dimension="A7-图谱证据",
+            location="图谱关系/evidence/x",
+            defect="图谱 evidence 缺少 provenance",
+            suggestion="补 provenance",
         )
-        # 断言:final_status=needs_repair(非 failed/abort)
-        assert result["final_status"] == "needs_repair"
-        assert result["needs_repair_retake"] == 1
-        # 账本:needs_repair 事件(非 abort)
-        events = [json.loads(x) for x in ledger.read_text().splitlines()]
-        assert events[-1]["event"] == "needs_repair"
-        assert events[-1]["node"] == "repair_loop"
-        assert events[-1]["details"]["retake_count"] == 1
-        assert events[-1]["details"]["max_retakes"] == NEEDS_REPAIR_MAX_RETAKES
-        # final_text 持久化(不丢进度硬要求)
-        text_path = _needs_repair_dir(cfg) / "h1.md"
-        meta_path = _needs_repair_dir(cfg) / "h1.json"
-        assert text_path.read_text(encoding="utf-8") == "final-text-body"
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        assert meta["content_lane"] == "concept"
-        assert meta["raw_path"] == "/raw/x.md"
-
-    def test_budget_exhausted_routes_to_expired_abort(self, tmp_path: Path) -> None:
-        """② 3 掷耗尽 → expired abort(reason=needs_repair_expired)+ 清理驻留文件。"""
-        cfg, ledger = _mk_config(tmp_path)
-        # 预写 3 次 needs_rerepair(预算耗尽)
-        for i in range(NEEDS_REPAIR_MAX_RETAKES):
-            _append_event(ledger, "h1", "needs_repair", ts=f"2026-07-{10+i}T00:00:00Z")
-        assert _needs_repair_event_count("h1", str(ledger)) == NEEDS_REPAIR_MAX_RETAKES
-        # 预存驻留文件(应被 expired 路径清理)
-        _persist_resident(cfg, "h1", "/raw/x.md", "/cand/x.md", "final-text",
-                          "concept", "x", [], 2)
-        text_path = _needs_repair_dir(cfg) / "h1.md"
-        assert text_path.exists()
-        result = _route_to_residency(
-            config=cfg, content_hash="h1", raw_path="/raw/x.md",
-            candidate_path="/cand/x.md", content_lane="concept", slug="x",
-            rounds=2, final_defects_summary=[],
-            quality_meta=_quality_meta_nonconverge("final-text"),
-            error_class="distill_no_converge", error_detail="修复不收敛",
+        grader = GraderResult(
+            defects=[],
+            model_used="gpt-5.4",
+            suspended=False,
+            primary_model=PRIMARY_GRADER_MODEL,
+            content_lane="concept",
+            interpretation_entailment=True,
+            dimension_scores={},
         )
-        # 断言:expired abort
-        assert result["final_status"] == "failed"
-        assert result["needs_repair_expired"] is True
-        events = [json.loads(x) for x in ledger.read_text().splitlines()]
-        aborts = [e for e in events if e["event"] == "abort"]
-        assert aborts and aborts[-1]["details"]["reason"] == "needs_repair_expired"
-        assert aborts[-1]["details"]["retake_count"] == NEEDS_REPAIR_MAX_RETAKES
-        # 驻留文件清理(防目录膨胀)
-        assert not text_path.exists()
+        with patch(
+            "src.akb2.quality.checks_structural.run_candidate_self_gate",
+            return_value=[defect],
+        ), patch(
+            "src.akb2.quality.grader.run_grader_detailed", return_value=grader
+        ), patch(
+            "src.akb2.quality.repair.run_repair_loop"
+        ) as mock_repair:
+            converged, error_class, error_detail, meta = _run_quality_segments(
+                "candidate",
+                "/tmp/x.md",
+                "raw",
+                config=MagicMock(),
+                content_lane="concept",
+                floor_result=FloorResult(
+                    passed=True, failed_floors=[], reason="", content_lane="concept"
+                ),
+            )
 
-
-# ---------------------------------------------------------------------------
-# ③ 收敛 → 正常 promote 链(mock 到 promote 入口)
-# ---------------------------------------------------------------------------
-
-
-class TestResidencyRethrowConverge:
-    def test_converge_rethrow_runs_promote_chain(self, tmp_path: Path,
-                                                  monkeypatch: pytest.MonkeyPatch) -> None:
-        """③ 重掷收敛 → 走完全链下游(promote 五闸 → finalize),同函数同判定不开旁门。"""
-        cfg, ledger = _mk_config(tmp_path)
-        # 预存驻留候选
-        _persist_resident(cfg, "h1", str(tmp_path / "raw.md"),
-                          str(tmp_path / "cand.md"), "final-text", "concept",
-                          "x", [{"dimension": "mechanism"}], 2)
-        (tmp_path / "raw.md").write_text("raw-content", encoding="utf-8")
-        _append_event(ledger, "h1", "needs_repair", ts="2026-07-10T00:00:00Z")
-
-        # mock 重函数:不跑真机 LLM
-        monkeypatch.setattr(runner, "_load_vault_concept_index",
-                            lambda *a, **k: {"known_concepts": [], "pending_queue": []})
-        called: dict = {}
-
-        def fake_quality_segments(candidate_text, candidate_path, raw_content,
-                                  config, grader_result_path, content_lane="",
-                                  floor_result=None, known_concepts=None,
-                                  pending_queue=None):
-            called["quality"] = True
-            assert candidate_text == "final-text"  # 从 final_text 续,不重新 intake
-            return True, "", "", {
-                "repair_rounds": 1, "final_defects_summary": [],
-                "repair_trace_paths": [], "final_text": "final-text",
-            }
-
-        monkeypatch.setattr(runner, "_run_quality_segments", fake_quality_segments)
-
-        def fake_promote(candidate_path, config, grader_result_path=None):
-            called["promote"] = True
-            return True, "active", "ok"
-
-        monkeypatch.setattr(runner, "_run_promote_segment", fake_promote)
-
-        result = _run_residency_rethrow(cfg, "h1")
-        # 断言:收敛 → promoted,走 promote 链
-        assert result["final_status"] == "promoted"
-        assert result["needs_repair_resolved"] is True
-        assert called.get("quality") is True
-        assert called.get("promote") is True
-        # 账本:repair_loop(converged, needs_repair_resolved=True) + promote + finalize
-        events = [json.loads(x) for x in ledger.read_text().splitlines()]
-        assert any(e["event"] == "repair_loop" and e["details"].get("needs_repair_resolved")
-                    for e in events)
-        assert any(e["event"] == "promote" for e in events)
-        assert any(e["event"] == "finalize" for e in events)
-        # 收敛后清理驻留文件
-        assert not (_needs_repair_dir(cfg) / "h1.md").exists()
-
-
-# ---------------------------------------------------------------------------
-# ④ 间隔守卫(MIN_INTERVAL_H)
-# ---------------------------------------------------------------------------
-
-
-class TestIntervalGuard:
-    def test_recent_needs_repair_not_scannable(self, tmp_path: Path) -> None:
-        """④ 间隔 < MIN_INTERVAL_H → 不重掷(让 grader 骰子跨会话)。"""
-        cfg, ledger = _mk_config(tmp_path)
-        # 1h 前刚驻留 → 间隔未到
-        _persist_resident(cfg, "h1", "/raw.md", "/cand.md", "ft", "concept", "x", [], 2)
-        _append_event(ledger, "h1", "needs_repair", ts="2026-07-12T00:00:00Z")
-        # _now() 是真实当前时间(2026-07-12),1h 前的事件间隔不足 20h
-        # 用一个明确的近期 ts(相对当前)构造:写一个 1h 前的 ts
-        from src.akb2.quality.runner import _now
-        recent = _now().strftime("%Y-%m-%dT%H:00:00Z")  # 当天,间隔 < 20h
-        # 重写 ledger 用近期 ts
-        ledger.write_text("", encoding="utf-8")
-        _append_event(ledger, "h1", "needs_repair", ts=recent)
-        assert _scan_residency(cfg) == []
-
-    def test_old_needs_repair_scannable(self, tmp_path: Path) -> None:
-        """间隔 ≥ MIN_INTERVAL_H → 可重掷。"""
-        cfg, ledger = _mk_config(tmp_path)
-        _persist_resident(cfg, "h1", "/raw.md", "/cand.md", "ft", "concept", "x", [], 2)
-        # 25h 前(≥ 20h 间隔)
-        old_ts = "2026-07-10T00:00:00Z"
-        _append_event(ledger, "h1", "needs_repair", ts=old_ts)
-        scanned = _scan_residency(cfg)
-        assert "h1" in scanned
-
-    def test_per_cycle_cap(self, tmp_path: Path) -> None:
-        """每轮最多 PER_CYCLE 篇。"""
-        cfg, ledger = _mk_config(tmp_path)
-        for i in range(NEEDS_REPAIR_PER_CYCLE + 2):
-            ch = f"h{i}"
-            _persist_resident(cfg, ch, "/raw.md", "/cand.md", "ft", "concept", "x", [], 2)
-            _append_event(ledger, ch, "needs_repair", ts="2026-07-10T00:00:00Z")
-        scanned = _scan_residency(cfg)
-        assert len(scanned) == NEEDS_REPAIR_PER_CYCLE
-
-
-# ---------------------------------------------------------------------------
-# 异常兜底:驻留扫描抛错不得杀死主循环
-# ---------------------------------------------------------------------------
-
-
-class TestResidencyScanErrorHandling:
-    def test_rethrow_error_caught_and_fail_visible(self, tmp_path: Path,
-                                                    monkeypatch: pytest.MonkeyPatch) -> None:
-        """主循环 7×24 生命线:驻留扫描异常不杀主循环(catch + ledger fail-visible)。"""
-        cfg, ledger = _mk_config(tmp_path)
-        _persist_resident(cfg, "h1", "/raw.md", "/cand.md", "ft", "concept", "x", [], 2)
-        _append_event(ledger, "h1", "needs_repair", ts="2026-07-10T00:00:00Z")
-
-        def boom(*a, **k):
-            raise RuntimeError("simulated residency explosion")
-
-        monkeypatch.setattr(runner, "_run_residency_rethrow", boom)
-        # _run_residency_cycle 必须 catch,不抛
-        results = _run_residency_cycle(cfg)
-        assert len(results) == 1
-        assert results[0]["final_status"] == "error"
-        # fail-visible:ledger 记 abort needs_repair reason=residency_rethrow_error
-        events = [json.loads(x) for x in ledger.read_text().splitlines()]
-        aborts = [e for e in events if e["event"] == "abort"
-                  and e["details"].get("reason") == "residency_rethrow_error"]
-        assert aborts
+        assert converged is False
+        assert error_class == "blocking_defects_present"
+        assert "blocking 缺陷" in error_detail
+        assert meta["repair_rounds"] == 0
+        assert meta["final_defects_summary"][0]["dimension"] == "A7-图谱证据"
+        mock_repair.assert_not_called()

@@ -1,66 +1,57 @@
-"""test_f48_residency_gate_signature.py — F46 驻留门签名匹配修复(F48)。
+"""test_f48_residency_gate_signature.py — 驻留门签名匹配的**缺席**测试。
 
-账本实锤(2026-07-13):repair 的 _fail_closed 落账的是 record_failure 完整签名
-"loop1/repair_loop/<class>",而 F46 驻留门只认裸 "distill_no_converge" →
-上线后驻留通路 0 触发:62 例 repair_idle_early_stop 内容性不收敛全部误走
-终态 abort(9 例仅 1 项缺陷残留),needs_repair 事件全库 0 条。
+P1 重构（drop-repair-residency，2026-08）：F48 驻留签名族门
+(_is_content_no_converge / _RESIDENCY_ELIGIBLE_CLASSES)随 F46 驻留池整体删除。
+历史背景:F48 曾把"裸串等值门"修成"签名族匹配门"让驻留通路真正触发;
+如今驻留通路本身已删,该门及其适格族必须从 runner 生产代码消失。
 
-修复:门改签名族匹配(_is_content_no_converge)——distill_no_converge(轮数
-耗尽)与 repair_idle_early_stop(空转早停)同为内容性不收敛(文本完好、
-final_text/final_defects 俱全)均适格驻留;repair_route_failed / grader_all_down
-等过程性死亡仍走 abort + F39。判定链零动,只修路由。
+本文件钉住:
+    ① _is_content_no_converge 门函数与适格族常量不存在
+    ② 分流点不再存在——内容性失败与过程性死亡统一 abort 终态
+    ③ 旧门形态(裸串等值/签名族匹配)都不得回潮
 """
 
 from __future__ import annotations
 
-import inspect
+from pathlib import Path
 
-from src.akb2.quality import runner
-from src.akb2.quality.runner import _is_content_no_converge
-
-
-class TestContentNoConvergeMatch:
-    def test_full_signature_matches(self) -> None:
-        """账本实际形态:loop/node/class 全签名必须命中(修复的核心)。"""
-        assert _is_content_no_converge("loop1/repair_loop/distill_no_converge")
-        assert _is_content_no_converge("loop1/repair_loop/repair_idle_early_stop")
-
-    def test_bare_class_matches(self) -> None:
-        """裸类名(runner 1790 行 .get 默认值路径)同样命中。"""
-        assert _is_content_no_converge("distill_no_converge")
-        assert _is_content_no_converge("repair_idle_early_stop")
-
-    def test_process_deaths_excluded(self) -> None:
-        """过程性死亡不适格驻留(仍走 abort + F39 全链重跑)。"""
-        assert not _is_content_no_converge("loop1/repair_loop/repair_route_failed")
-        assert not _is_content_no_converge("loop1/repair_loop/grader_all_down")
-        assert not _is_content_no_converge("grader_fallback_not_allowed")
-        assert not _is_content_no_converge("integrity_floor_failed")
-
-    def test_none_and_empty_excluded(self) -> None:
-        """fail-closed:异常输入不适格(宁 abort 不误驻留)。"""
-        assert not _is_content_no_converge(None)
-        assert not _is_content_no_converge("")
+_RUNNER_SRC = (
+    Path(__file__).resolve().parents[2] / "src" / "akb2" / "quality" / "runner.py"
+)
 
 
-class TestGateUsesHelper:
-    def _block(self) -> str:
-        src = inspect.getsource(runner)
-        i = src.index("F46/F48: repair 不收敛分流")
-        return src[i:i + 900]
+def _runner_src() -> str:
+    return _RUNNER_SRC.read_text(encoding="utf-8")
 
-    def test_gate_calls_helper(self) -> None:
-        blk = self._block()
-        assert "if not _is_content_no_converge(error_class):" in blk, (
-            "F48: 驻留门必须走签名族匹配(兼容全签名前缀)")
 
-    def test_old_bare_equality_removed(self) -> None:
-        src = inspect.getsource(runner)
+class TestResidencyGateAbsent:
+    def test_gate_helper_absent(self) -> None:
+        """F48 门函数 _is_content_no_converge 必须从生产代码消失。"""
+        src = _runner_src()
+        assert "_is_content_no_converge" not in src
+
+    def test_eligible_classes_frozenset_absent(self) -> None:
+        """适格族常量 _RESIDENCY_ELIGIBLE_CLASSES 必须消失。"""
+        src = _runner_src()
+        assert "_RESIDENCY_ELIGIBLE_CLASSES" not in src
+
+    def test_no_bare_or_family_gate_forms(self) -> None:
+        """旧门两种形态都不得回潮:裸串等值 与 签名族匹配。"""
+        src = _runner_src()
         assert 'error_class != "distill_no_converge"' not in src, (
-            "旧裸串等值门必须移除(它对 _fail_closed 全签名永不命中)")
-
-    def test_eligible_classes_bounded(self) -> None:
-        """适格族有界:只有两类内容性不收敛,不得悄悄扩到过程性死亡。"""
-        assert runner._RESIDENCY_ELIGIBLE_CLASSES == frozenset(
-            {"distill_no_converge", "repair_idle_early_stop"}
+            "旧裸串等值门不得回来(它属于已删除的驻留分流)"
         )
+        assert "if not _is_content_no_converge(error_class):" not in src, (
+            "签名族驻留分流不得回来——内容性失败直接 abort"
+        )
+
+    def test_unified_abort_is_terminal(self) -> None:
+        """分流删除后:质量失败统一走 abort(repair_loop)终态 + F39 infra 探测。
+
+        源码级形态锁:abort 落账点存在且后随 _maybe_auto_infra_requeue。
+        """
+        src = _runner_src()
+        i = src.index('质量不达标: ')
+        blk = src[max(0, i - 1600):i]
+        assert '_log_event(config, "abort", "repair_loop"' in blk
+        assert "_maybe_auto_infra_requeue(config, content_hash" in blk
