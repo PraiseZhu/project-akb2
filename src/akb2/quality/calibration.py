@@ -249,7 +249,6 @@ def _process_corpus_entry(
         failures_path=config.get("failures_path", ""),
         grader_result_dir=config.get("grader_result_dir", ""),
         poll_interval_seconds=1,
-        auto_promote=config.get("auto_promote", False),
     )
 
     # 创建临时的 raw 文件表示

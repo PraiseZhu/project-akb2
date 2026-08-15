@@ -89,13 +89,13 @@ def _mock_extractor_return(html: str) -> dict[str, Any]:
 def _mock_pipeline_success(
     raw_path: str, raw_content: str, config: Any
 ) -> dict[str, Any]:
-    """mock _run_pipeline_segments 返回成功（正样本 proposal_passed）。"""
+    """mock _run_pipeline_segments 返回成功（正样本 promoted）。"""
     return {
         "converged": True,
         "rounds": 0,
         "promoted": True,
-        "promotion_mode": "proposal",
-        "final_status": "proposal_passed",
+        "promotion_mode": "active",
+        "final_status": "promoted",
         "error": None,
     }
 

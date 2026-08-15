@@ -92,7 +92,6 @@ class TestRunnerQueue:
             failures_path=str(tmp_path / "failures.jsonl"),
             grader_result_dir=str(tmp_path / "grader-results"),
             poll_interval_seconds=1,
-            auto_promote=False,
         )
 
         queue = _scan_queue(config)
@@ -125,7 +124,6 @@ class TestRunnerQueue:
             failures_path=str(tmp_path / "failures.jsonl"),
             grader_result_dir=str(tmp_path / "grader-results"),
             poll_interval_seconds=1,
-            auto_promote=False,
         )
 
         queue = _scan_queue(config)
@@ -157,7 +155,6 @@ class TestRunnerQueue:
             failures_path=str(tmp_path / "failures.jsonl"),
             grader_result_dir=str(tmp_path / "grader-results"),
             poll_interval_seconds=1,
-            auto_promote=False,
         )
 
         queue = _scan_queue(config)
@@ -181,7 +178,6 @@ class TestRunnerQueue:
             failures_path=str(tmp_path / "failures.jsonl"),
             grader_result_dir=str(tmp_path / "grader-results"),
             poll_interval_seconds=1,
-            auto_promote=False,
         )
 
         queue = _scan_queue(config)
@@ -204,7 +200,6 @@ class TestRunnerQueue:
             failures_path=str(tmp_path / "failures.jsonl"),
             grader_result_dir=str(tmp_path / "grader-results"),
             poll_interval_seconds=1,
-            auto_promote=False,
             lock_dir=str(lock_dir),
         )
 
@@ -244,7 +239,6 @@ class TestRunnerQueue:
             failures_path=str(tmp_path / "failures.jsonl"),
             grader_result_dir=str(tmp_path / "grader-results"),
             poll_interval_seconds=1,
-            auto_promote=False,
             lock_dir=str(lock_dir),
         )
 
@@ -336,7 +330,6 @@ class TestRunnerSigterm:
             failures_path=str(tmp_path / "failures.jsonl"),
             grader_result_dir=str(tmp_path / "grader-results"),
             poll_interval_seconds=1,
-            auto_promote=False,
         )
 
         # shutdown_flag=True 时，_process_one 应该快速返回 (跳过)

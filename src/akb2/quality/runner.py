@@ -274,7 +274,6 @@ class RunnerConfig:
     failures_path: str
     grader_result_dir: str
     poll_interval_seconds: int = POLL_INTERVAL_SECONDS
-    auto_promote: bool = False
     lock_dir: str = ""
     # 跨机队列分片（缺陷 #11c）。空 → 读 env AKB2_RUNNER_SHARDS；env 也空 → 独占
     # 全部分片（单机形态，向后兼容）。shard_takeover=None → 读 env（默认关）。
@@ -2046,9 +2045,9 @@ def _run_promote_segment(
         grader_result_path=grader_result_path,
     )
 
-    mode = "active" if config.auto_promote else "proposal"
-    if snapshot_id:
-        mode = "active"
+    # 写路径权威在 promote.py：六闸全过唯一终态 = 写 active，
+    # snapshot_id 非 None 即 active（p2 已拆双模式开关）。
+    mode = "active" if snapshot_id else "proposal"
 
     return success, mode, detail
 
@@ -2377,24 +2376,15 @@ def _run_pipeline_segments(
         _log_event(config, "abort", "promote", content_hash,
                    {"reason": promote_detail})
 
-    # §0.2/D4：promote 三分类——active_promoted / proposal_passed / promotion_blocked。
-    # active_promoted: AUTO_PROMOTE=1 + 真写 active（real_link+high）；proposal_passed:
-    # AUTO_PROMOTE=0 + proposal 口径过（含 proposed_node_only 灰区）；promotion_blocked:
-    # quality 过但 Gate-1/4/5/CLI 非允许失败或 AUTO_PROMOTE=1 proposed_node_only 二次拒
-    # （不计 positive pass，防 proposal_passed 虚高）。
-    _auto_promote_env = os.environ.get("AKB2_AUTO_PROMOTE", "0")
-    if promoted and _auto_promote_env == "1":
+    # promote 终态收敛为二分类（p2 拆双模式开关后 proposal 口径已退场）：
+    # promoted → active 入库；未 promoted → promotion_blocked
+    # （Gate-1/4/5/CLI 非允许失败，不计 positive pass）。
+    if promoted:
         _promotion_outcome = "active_promoted"
-    elif promoted:
-        _promotion_outcome = "proposal_passed"
+        _final_status = "promoted"
     else:
         _promotion_outcome = "promotion_blocked"
-    # §0.2/F4：final_status 从 promotion_outcome 派生（旧 blocked 时仍写 proposal_passed 矛盾）
-    _final_status = {
-        "active_promoted": "promoted",
-        "proposal_passed": "proposal_passed",
-        "promotion_blocked": "promotion_blocked",
-    }.get(_promotion_outcome, "proposal_passed")
+        _final_status = "promotion_blocked"
 
     return {
         "converged": True,
@@ -2662,11 +2652,6 @@ def _run_main_loop(config: RunnerConfig) -> int:
         f"poll={config.poll_interval_seconds}s",
         file=sys.stderr,
     )
-    print(
-        f"{_log_ts()} [runner] "
-        f"auto_promote={'ON' if config.auto_promote else 'OFF (proposal mode)'}",
-        file=sys.stderr,
-    )
 
     last_spot_check_date: str = ""
 
@@ -2724,7 +2709,6 @@ def main(argv: list[str] | None = None) -> int:
     """daemon 主入口。
 
     环境变量:
-        AKB2_AUTO_PROMOTE=1  启用自动升格（出厂形态）
         AKB2_VAULT_ROOT      覆盖 vault 根路径
         AKB2_POLL_INTERVAL   覆盖轮询间隔（秒）
     """
@@ -2799,7 +2783,6 @@ def main(argv: list[str] | None = None) -> int:
     else:
         staging_dir = os.path.join(vault_root, "staging")
 
-    auto_promote = os.environ.get("AKB2_AUTO_PROMOTE", "0") == "1"
     poll_interval = args.poll_interval or int(
         os.environ.get("AKB2_POLL_INTERVAL", str(POLL_INTERVAL_SECONDS))
     )
@@ -2834,7 +2817,6 @@ def main(argv: list[str] | None = None) -> int:
         failures_path=failures_path,
         grader_result_dir=os.path.join(staging_dir, "grader-results"),
         poll_interval_seconds=poll_interval,
-        auto_promote=auto_promote,
     )
 
     # 缺陷 #11c：跨机安全检测（队列在同步范围 + 未配分片 → 告警/严格模式拒启）

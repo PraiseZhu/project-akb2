@@ -28,7 +28,11 @@ def _make_runner_config(
     auto_promote: bool = False,
     poll_interval: int = 1,
 ) -> RunnerConfig:
-    """创建测试用的 RunnerConfig。"""
+    """创建测试用的 RunnerConfig。
+
+    auto_promote 形参仅为兼容既有调用点保留（p2 已拆双模式开关，字段已删），
+    传入任何值都不再影响行为。
+    """
     from src.akb2.quality.runner import RunnerConfig as RC
 
     raw_dir = tmp_path / "raw"
@@ -46,7 +50,6 @@ def _make_runner_config(
         failures_path=str(tmp_path / "failures.jsonl"),
         grader_result_dir=str(grader_dir),
         poll_interval_seconds=poll_interval,
-        auto_promote=auto_promote,
     )
 
 
@@ -818,7 +821,7 @@ class TestRunnerLifelineSegments:
         assert not grader_path.exists()
 
     def test_promote_proposal_mode_no_active_write(self, tmp_path: Path) -> None:
-        """提议模式 (AKB2_AUTO_PROMOTE=0): 不写 active。"""
+        """promote 成功（snapshot_id 语义单一）→ mode=active、final_status=promoted。"""
         from src.akb2.quality.runner import (
             _run_pipeline_segments,
         )
@@ -856,19 +859,19 @@ class TestRunnerLifelineSegments:
                     ) as mock_promote:
                         mock_promote.return_value = (
                             True,
-                            "proposal",
-                            "Proposal mode: no active write",
+                            "active",
+                            "Auto-promote success",
                         )
                         result = _run_pipeline_segments(
                             str(f), str(f.read_text(encoding="utf-8")), config
                         )
 
         assert result["converged"] is True
-        assert result["promotion_mode"] == "proposal"
-        # §0.2/F4：proposal mode（AUTO_PROMOTE=0, promoted=True）→ final_status=proposal_passed
-        # （旧 buggy 写 "promoted"，F4 修正为 proposal_passed，避免与 active 混淆）
-        assert result["final_status"] == "proposal_passed"
-        assert result["promotion_outcome"] == "proposal_passed"
+        assert result["promotion_mode"] == "active"
+        # p2 拆双模式开关后：promoted=True → final_status=promoted、
+        # promotion_outcome=active_promoted（proposal 口径已退场）
+        assert result["final_status"] == "promoted"
+        assert result["promotion_outcome"] == "active_promoted"
 
     def test_grade_llm_logs_final_zero_after_repair(self, tmp_path: Path) -> None:
         """repair 收敛后 grade_llm.defect_count 表示最终缺陷数，初始缺陷另存。"""
@@ -1667,10 +1670,10 @@ class TestRegradeSampleRejectsDegradedGrader:
 
         assert results == [False], "有缺陷的非 degraded 结果必须判 fail"
 
-    def test_f4_promote_failure_returns_promotion_blocked_not_proposal_passed(self, tmp_path: Path) -> None:
-        """§0.2/F4：promote failure（gates fail）→ final_status=promotion_blocked（不返 proposal_passed）。
+    def test_f4_promote_failure_returns_promotion_blocked(self, tmp_path: Path) -> None:
+        """§0.2/F4：promote failure（gates fail）→ final_status=promotion_blocked。
 
-        旧 buggy：blocked 时 final_status 仍写 proposal_passed（矛盾）。F4 修正。
+        旧 buggy：blocked 时 final_status 仍写成功终态（矛盾）。F4 修正。
         """
         from src.akb2.quality.runner import _run_pipeline_segments
 
@@ -1691,11 +1694,13 @@ class TestRegradeSampleRejectsDegradedGrader:
             mock_qual.return_value = (True, "", "", {"repair_trace_paths": []})
             # promote failure（gates fail → promoted=False）
             mock_promote.return_value = (False, "proposal", "Gate-5 grader FAIL")
+            # 注：mode 位置传 "proposal" 仅为模拟异常返回形态，runner 的 blocked
+            # 判定只看 promoted 布尔，不受该字符串影响。
             result = _run_pipeline_segments(str(f), str(f.read_text(encoding="utf-8")), config)
 
         assert result["converged"] is True
         assert result["promoted"] is False
-        # F4：blocked → final_status=promotion_blocked（不返 proposal_passed）
+        # F4：blocked → final_status=promotion_blocked（不返成功终态）
         assert result["final_status"] == "promotion_blocked", (
             f"promote failure 应 final_status=promotion_blocked, got {result['final_status']}"
         )
