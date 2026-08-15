@@ -523,9 +523,9 @@ def _is_processed(content_hash: str, ledger_path: str) -> bool:
     未处理,daemon 下轮 poll 重审;重审产生的新终态再次生效(可再 requeue,
     每次都需显式手动 CLI,无自动循环)。按账本行序判定,幂等。
 
-    接管重掷;收敛记 finalize / 超龄记 abort 后恢复可被 F26 requeue 手动重开
-    (语义不变)。三态:终态(processed=True,resident=False)/ 驻留中
-    (processed=True,resident=True)/ 未处理(both=False)。
+    P1 重构（drop-repair-residency）后只剩二态:已处理(processed=True，含
+    finalize/abort 终态，以及历史遗留的 needs_repair 只读容忍)/ 未处理
+    (processed=False)。旧"驻留中"三态语义随驻留通路整体删除,不再适用。
     """
     ledger = Path(ledger_path)
     if not ledger.exists():
