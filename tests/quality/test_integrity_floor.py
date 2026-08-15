@@ -340,6 +340,163 @@ class TestCoreValueF4:
         assert FLOOR_CORE_VALUE_F4 in r.failed_floors
 
 
+# ---------------------------------------------------------------------------
+# GPT 单审 P1：F4 按车道化——pattern/design 不再要求 H1 命令，改锚定 H3/H2 门
+# （对齐 distill._LANE_HOW_PARAMS_CORE_INSTRUCTIONS：pattern/design 典型条目
+#   command=""、executable=false；H3=模式间关系/设计系统组件、H2=数据流/可见效果；
+#   H1 仅原文有命令才标。旧「一律 H1≥1」把 pattern/design 在评分前拦死。）
+# ---------------------------------------------------------------------------
+
+
+def _pattern_design_extract(lane: str, steps: list[dict]) -> dict:
+    """构造 pattern/design extract：grounded §A claim + 给定 how_steps。"""
+    return {
+        "claims": [_grounded_claim("核心条目", anchor="§A")],
+        "argumentation": [],
+        "mechanism_components": [],
+        "causal_edges": [],
+        "how_steps": steps,
+        "content_lane": lane,
+    }
+
+
+class TestF4LaneSplitPatternDesign:
+    """F4 车道化：pattern/design 核心价值 = ≥1 条可锚定的 H3/H2 how_step。"""
+
+    def test_pattern_h3_no_h1_passes_f4(self):
+        """pattern：锚定 H3（模式间关系）+ 无 H1 → F4 pass（不再被 H1 门拦死）。"""
+        d = _pattern_design_extract("pattern", [
+            {"instruction": "模式 X 与模式 Y 组合使用", "command": "",
+             "executable": False, "anchor": "§A", "provenance": "source_grounded",
+             "how_level": "H3"},
+        ])
+        r = evaluate_integrity_floor(d, "pattern", raw_anchors={"§A"})
+        assert r.passed is True
+        assert FLOOR_CORE_VALUE_F4 not in r.failed_floors, (
+            f"pattern 锚定 H3 无 H1 应过 F4（车道核心价值=可复用模式，非命令）: {r.reason}"
+        )
+
+    def test_design_h2_no_h1_passes_f4(self):
+        """design：锚定 H2（决策的可见效果）+ 无 H1 → F4 pass。"""
+        d = _pattern_design_extract("design", [
+            {"instruction": "层级决策：副标题降一级灰度", "command": "",
+             "executable": False, "anchor": "§A", "provenance": "source_grounded",
+             "how_level": "H2"},
+        ])
+        r = evaluate_integrity_floor(d, "design", raw_anchors={"§A"})
+        assert r.passed is True
+        assert FLOOR_CORE_VALUE_F4 not in r.failed_floors, (
+            f"design 锚定 H2 无 H1 应过 F4（车道核心价值=设计决策，非命令）: {r.reason}"
+        )
+
+    def test_pattern_h2_also_passes_f4(self):
+        """pattern：H2（模式的数据流效果）同样计核心价值 → pass。"""
+        d = _pattern_design_extract("pattern", [
+            {"instruction": "模式 X 的数据流效果说明", "command": "",
+             "executable": False, "anchor": "§A", "provenance": "source_grounded",
+             "how_level": "H2"},
+        ])
+        r = evaluate_integrity_floor(d, "pattern", raw_anchors={"§A"})
+        assert FLOOR_CORE_VALUE_F4 not in r.failed_floors
+
+    def test_pattern_fails_when_no_anchorable_core_step(self):
+        """pattern：只有 H1（不可锚定——伪 §Z）→ F4 fail（拒伪锚）。"""
+        d = _pattern_design_extract("pattern", [
+            {"instruction": "模式 X 描述", "command": "",
+             "executable": False, "anchor": "§Z", "provenance": "source_grounded",
+             "how_level": "H3"},
+        ])
+        r = evaluate_integrity_floor(d, "pattern", raw_anchors={"§A"})
+        assert FLOOR_CORE_VALUE_F4 in r.failed_floors, (
+            "伪 §Z 锚不可信 → 0 条可锚定核心条目 → F4 fail"
+        )
+
+    def test_pattern_fails_when_no_h2_h3(self):
+        """pattern：只有 H1 命令级（车道语义上异常但结构性允许）→ 不满足 H3/H2 门 → fail。
+
+        与 tutorial 的 H1 门互补：pattern 的核心价值门是「可锚定的模式条目」，
+        纯 H1 命令不构成 pattern 车道的核心价值。
+        """
+        d = _pattern_design_extract("pattern", [
+            {"instruction": "run x", "command": "run x", "executable": True,
+             "anchor": "§A", "provenance": "source_grounded", "how_level": "H1"},
+        ])
+        r = evaluate_integrity_floor(d, "pattern", raw_anchors={"§A"})
+        assert FLOOR_CORE_VALUE_F4 in r.failed_floors
+
+    def test_pattern_empty_anchor_fails(self):
+        """pattern：H3 但 anchor 空（无据飘浮模式名）→ 不算可锚定 → fail。"""
+        d = _pattern_design_extract("pattern", [
+            {"instruction": "模式 X 描述", "command": "",
+             "executable": False, "anchor": "", "provenance": "akb_interpretation",
+             "how_level": "H3"},
+        ])
+        r = evaluate_integrity_floor(d, "pattern", raw_anchors={"§A"})
+        assert FLOOR_CORE_VALUE_F4 in r.failed_floors
+
+    def test_design_fails_when_no_anchorable_core_step(self):
+        """design：伪锚 H3 → F4 fail（与 pattern 同口径）。"""
+        d = _pattern_design_extract("design", [
+            {"instruction": "决策 D", "command": "", "executable": False,
+             "anchor": "§Z", "provenance": "source_grounded", "how_level": "H3"},
+        ])
+        r = evaluate_integrity_floor(d, "design", raw_anchors={"§A"})
+        fail_floor = FLOOR_CORE_VALUE_F4 in r.failed_floors
+        assert fail_floor, "design 伪锚 → 0 可锚定核心条目 → F4 fail"
+
+    def test_tutorial_h2_h3_only_still_fails(self):
+        """tutorial（canonical）：只有 H2/H3、无 H1 → F4 仍 fail（H1 命令门不放松）。"""
+        d = _pattern_design_extract("tutorial", [
+            {"instruction": "数据流说明", "command": "", "executable": False,
+             "anchor": "§A", "provenance": "source_grounded", "how_level": "H2"},
+        ])
+        r = evaluate_integrity_floor(d, "tutorial", raw_anchors={"§A"})
+        assert FLOOR_CORE_VALUE_F4 in r.failed_floors, (
+            "tutorial 保持 H1≥1 命令门（车道化不得放松操作型门）"
+        )
+
+    def test_procedural_alias_h2_h3_only_still_fails(self):
+        """procedural（别名）：只有 H2/H3、无 H1 → F4 仍 fail（旧默认偏严保留）。"""
+        d = _pattern_design_extract("procedural", [
+            {"instruction": "数据流说明", "command": "", "executable": False,
+             "anchor": "§A", "provenance": "source_grounded", "how_level": "H2"},
+        ])
+        r = evaluate_integrity_floor(d, "procedural", raw_anchors={"§A"})
+        assert FLOOR_CORE_VALUE_F4 in r.failed_floors
+
+    def test_empty_lane_h2_h3_only_still_fails(self):
+        """空车道：只有 H2/H3、无 H1 → F4 仍 fail（fail-closed 偏严默认）。"""
+        d = _pattern_design_extract("", [
+            {"instruction": "数据流说明", "command": "", "executable": False,
+             "anchor": "§A", "provenance": "source_grounded", "how_level": "H2"},
+        ])
+        r = evaluate_integrity_floor(d, "", raw_anchors={"§A"})
+        assert FLOOR_CORE_VALUE_F4 in r.failed_floors
+
+    def test_unknown_lane_h2_h3_only_still_fails(self):
+        """未知车道：只有 H2/H3、无 H1 → F4 仍 fail（fail-closed 偏严默认）。"""
+        d = _pattern_design_extract("mystery", [
+            {"instruction": "data flow note", "command": "", "executable": False,
+             "anchor": "§A", "provenance": "source_grounded", "how_level": "H2"},
+        ])
+        lanes = {"tutorial", "procedural", "concept", "pattern", "design"}
+        assert "mystery" not in lanes  # sanity: mystery 确非已知车道
+        r = evaluate_integrity_floor(d, "mystery", raw_anchors={"§A"})
+        assert FLOOR_CORE_VALUE_F4 in r.failed_floors
+
+    def test_pattern_no_raw_anchors_fail_closed(self):
+        """pattern：不传 raw_anchors（trusted=∅）→ 0 可锚定核心条目 → F4 fail（fail-closed）。"""
+        d = _pattern_design_extract("pattern", [
+            {"instruction": "模式 X 描述", "command": "",
+             "executable": False, "anchor": "§A", "provenance": "source_grounded",
+             "how_level": "H3"},
+        ])
+        r = evaluate_integrity_floor(d, "pattern")
+        assert FLOOR_CORE_VALUE_F4 in r.failed_floors, (
+            "无 raw_anchors → trusted 空 → 锚不可信 → F4 fail（不回落 claims）"
+        )
+
+
 # ----------------------------- 整体 evaluate ----------------------------- #
 
 
@@ -436,6 +593,122 @@ class TestRunnerFloorEarlyReturn:
 
         # floor pass → self-gate 被调（没 early-return）
         assert mock_sg.call_count == 1
+
+
+class TestRunnerFloorLaneSplit:
+    """GPT 单审 P1：pattern/design 的 floor 正向路径——floor 过 → 不以
+    integrity_floor_failed / H1<1 早退，评分段（self-gate/grader）被触达。"""
+
+    def _lane_floor_pass(self, lane: str) -> FloorResult:
+        """构造 pattern/design 车道 F4 pass 的 FloorResult（锚定 H3/H2、无 H1）。"""
+        from src.akb2.quality.integrity_floor import evaluate_integrity_floor
+
+        d = {
+            "claims": [_grounded_claim("核心条目", anchor="§A")],
+            "argumentation": [],
+            "mechanism_components": [],
+            "causal_edges": [],
+            "how_steps": [
+                {"instruction": "模式/决策核心条目", "command": "",
+                 "executable": False, "anchor": "§A",
+                 "provenance": "source_grounded", "how_level": "H3"},
+            ],
+        }
+        return evaluate_integrity_floor(d, lane, raw_anchors={"§A"})
+
+    def test_pattern_floor_pass_reaches_grader_stage(self):
+        """pattern：锚定 H3 无 H1 → floor pass → 不 early-return，grader 会被调用。"""
+        from src.akb2.quality.runner import _run_quality_segments
+
+        floor_pass = self._lane_floor_pass("pattern")
+        assert floor_pass.passed, f"fixture 应 floor 全过: {floor_pass.reason}"
+
+        with patch("src.akb2.quality.checks_structural.run_candidate_self_gate") as mock_sg, \
+             patch("src.akb2.quality.grader.run_grader_detailed"), \
+             patch("src.akb2.quality.repair.run_repair_loop"):
+            mock_sg.return_value = []
+            converged, error_class, error_detail, meta = _run_quality_segments(
+                candidate_text="c",
+                candidate_path="/tmp/x.md",
+                raw_content="r",
+                config=None,
+                content_lane="pattern",
+                floor_result=floor_pass,
+            )
+
+        assert error_class != "integrity_floor_failed", (
+            f"pattern floor pass 不应被完整性地板早退: {error_class} / {error_detail}"
+        )
+        assert "H1" not in error_detail or error_class == "", (
+            f"不应因 H1<1 早退: {error_detail}"
+        )
+        # 评分段被触达：self-gate 被调、grader mock 会被后续流程使用（不再 floor 拦死）
+        assert mock_sg.call_count == 1
+        assert meta.get("grader_not_called") is not True
+        assert meta.get("weighted_score_not_computed") is not True
+
+    def test_design_floor_pass_reaches_grader_stage(self):
+        """design：锚定 H2 无 H1 → floor pass → 不 early-return，评分段被触达。"""
+        from src.akb2.quality.runner import _run_quality_segments
+
+        floor_pass = self._lane_floor_pass("design")
+        assert floor_pass.passed, f"fixture 应 floor 全过: {floor_pass.reason}"
+
+        with patch("src.akb2.quality.checks_structural.run_candidate_self_gate") as mock_sg, \
+             patch("src.akb2.quality.grader.run_grader_detailed"), \
+             patch("src.akb2.quality.repair.run_repair_loop"):
+            mock_sg.return_value = []
+            converged, error_class, error_detail, meta = _run_quality_segments(
+                candidate_text="c",
+                candidate_path="/tmp/x.md",
+                raw_content="r",
+                config=None,
+                content_lane="design",
+                floor_result=floor_pass,
+            )
+
+        assert error_class != "integrity_floor_failed", (
+            f"design floor pass 不应被完整性地板早退: {error_class} / {error_detail}"
+        )
+        assert mock_sg.call_count == 1
+        assert meta.get("grader_not_called") is not True
+        assert meta.get("weighted_score_not_computed") is not True
+
+    def test_pattern_floor_fail_still_early_returns(self):
+        """pattern：floor fail（0 可锚定核心条目）→ 仍 integrity_floor_failed 早退。"""
+        from src.akb2.quality.runner import _run_quality_segments
+
+        d = {
+            "claims": [_grounded_claim("核心条目", anchor="§A")],
+            "argumentation": [],
+            "mechanism_components": [],
+            "causal_edges": [],
+            "how_steps": [
+                {"instruction": "模式 X 描述", "command": "",
+                 "executable": False, "anchor": "§Z",
+                 "provenance": "source_grounded", "how_level": "H3"},
+            ],
+        }
+        floor_fail = evaluate_integrity_floor(d, "pattern", raw_anchors={"§A"})
+        assert not floor_fail.passed
+
+        with patch("src.akb2.quality.checks_structural.run_candidate_self_gate") as mock_sg, \
+             patch("src.akb2.quality.grader.run_grader_detailed") as mock_grader, \
+             patch("src.akb2.quality.repair.run_repair_loop"):
+            converged, error_class, error_detail, meta = _run_quality_segments(
+                candidate_text="c",
+                candidate_path="/tmp/x.md",
+                raw_content="r",
+                config=None,
+                content_lane="pattern",
+                floor_result=floor_fail,
+            )
+
+        assert converged is False
+        assert error_class == "integrity_floor_failed"
+        assert mock_sg.call_count == 0
+        assert mock_grader.call_count == 0
+        assert meta["floor_failed"] == [FLOOR_CORE_VALUE_F4]
 
 
 # ---------------------------------------------------------------------------
