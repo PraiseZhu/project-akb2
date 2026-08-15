@@ -9,6 +9,11 @@
     - 模型名含 "-preview" 直接拒绝（宪法 P7）
     - key 从环境变量获取，缺失即抛 RouterConfigError（宪法 P7）
     - 预算具名常量: MAX_CALLS_PER_ARTICLE=5, TIMEOUT_S=120, MAX_RETRIES=2（宪法 P4）
+    - per-article 调用预算强制（sc-p3-max-calls-enforced）：route_llm(article_key=...)
+      同一 article_key 的第 MAX_CALLS_PER_ARTICLE+1 次调用在发起 API 请求**之前**
+      fail-closed（ArticleBudgetExceededError，RuntimeError 子类），并在 quality
+      账本落 llm_article_budget_exceeded 事件行。计数真相源是账本（flock 原子
+      预留），跨进程共享——repair 的 subprocess 直调与本进程调用同一计数。
 
 端点/模型环境覆盖（走 OpenAI 兼容代理网关，缺省回退官方端点）:
     - DEEPSEEK_BASE_URL / DEEPSEEK_MODEL_ID
@@ -17,14 +22,17 @@
     - AI_GATEWAY_BASE_URL / OPENROUTER_BASE_URL / TAPTAP_BASE_URL
 
 公开接口:
-    route_llm(model_family, messages, response_schema=None, ...) -> LLMResponse
+    route_llm(model_family, messages, response_schema=None, ..., article_key=None) -> LLMResponse
     LLMResponse = dataclass(content, model_used, calls_used)
     RouterConfigError — key 缺失时抛出
+    ArticleBudgetExceededError — 同 article_key 第 MAX_CALLS_PER_ARTICLE+1 次调用抛出
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -42,6 +50,11 @@ MAX_RETRIES: int = 2
 _DEFAULT_REASONING_EFFORT = "__default__"
 DEEPSEEK_BETA_BASE_URL = "https://api.deepseek.com/beta"
 QUALITY_LEDGER_FILE = "quality-ledger.jsonl"
+
+# per-article 调用预算的账本事件名（sc-p3-max-calls-enforced）。
+ARTICLE_BUDGET_EVENT = "llm_article_budget_exceeded"
+# per-article 预留计数文件（与账本同目录；flock 原子判定真相源）。
+ARTICLE_CALLS_FILE = "llm-article-calls.json"
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +173,14 @@ class LLMProviderError(RuntimeError):
     """LLM provider/API 调用错误。"""
 
 
+class ArticleBudgetExceededError(RuntimeError):
+    """同 article_key 的 LLM 调用超出 MAX_CALLS_PER_ARTICLE（sc-p3-max-calls-enforced）。
+
+    继承 RuntimeError：grader / repair 既有的 ``except (RouterConfigError, RuntimeError)``
+    分支无需改动即统一 fail-closed（与 admission.SecondAdmissionCallError 同范式）。
+    """
+
+
 # ---------------------------------------------------------------------------
 # 内部辅助
 # ---------------------------------------------------------------------------
@@ -254,6 +275,117 @@ def _diagnostics_from_provider_error(exc: Exception) -> BudgetDiagnostics:
 
 def _quality_ledger_path() -> str:
     return str(resolve_state_file(QUALITY_LEDGER_FILE, subdir=LEDGER_SUBDIR))
+
+
+def _article_calls_path() -> str:
+    return str(resolve_state_file(ARTICLE_CALLS_FILE, subdir=LEDGER_SUBDIR))
+
+
+def _normalise_article_key(article_key: str) -> str:
+    """article_key → 计数文件/账本共用的稳定 id（SHA-256 前 16 hex）。
+
+    归一化而不是裸存 key：调用方传的 key 可能是 raw 文件路径或 content_hash，
+    含路径分隔符时直接当 JSON key 也能用，但落账本/日志时统一短 id 可避免
+    把机器本地路径带进公开错误消息（脱敏口径同 _public_provider_detail）。
+    """
+    return hashlib.sha256(article_key.encode("utf-8")).hexdigest()[:16]
+
+
+def reserve_article_call(
+    article_key: str, *, limit: int = MAX_CALLS_PER_ARTICLE
+) -> bool:
+    """原子预留同 article_key 的一次 LLM 调用名额（sc-p3-max-calls-enforced）。
+
+    计数真相源是状态目录下的 JSON 文件（flock 临界区内 read-modify-write），
+    不用进程内 dict——repair live 模式经 subprocess 直调 route_llm，进程内
+    计数会在每次 spawn 归零；文件计数让**函数入口与任何包装/子进程入口同源**。
+
+    Returns:
+        True —— 名额已预留（当前次数 +1 ≤ limit），可以发起调用。
+        False —— 已达上限（不写计数文件），调用方必须 fail-closed。
+    """
+    calls_path = _article_calls_path()
+    key = _normalise_article_key(article_key)
+    os.makedirs(os.path.dirname(calls_path), exist_ok=True)
+    lock_path = calls_path + ".lock"
+    with open(lock_path, "a+") as lock_fh:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+        try:
+            counts: dict[str, int] = {}
+            if os.path.exists(calls_path):
+                try:
+                    with open(calls_path, encoding="utf-8") as fh:
+                        loaded = json.load(fh)
+                    if isinstance(loaded, dict):
+                        counts = {
+                            k: int(v)
+                            for k, v in loaded.items()
+                            if isinstance(v, int)
+                        }
+                except (json.JSONDecodeError, OSError) as exc:
+                    # 计数文件损坏 = 无法证明还有名额 → fail-closed 拒绝放行
+                    # （宪法 P3/P4：不降级、失败可见）。
+                    raise ArticleBudgetExceededError(
+                        f"per-article 调用计数文件损坏，fail-closed 拒绝新调用:"
+                        f" {calls_path} ({exc})"
+                    ) from None
+            current = counts.get(key, 0)
+            if current >= limit:
+                return False
+            counts[key] = current + 1
+            tmp = calls_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(counts, fh, ensure_ascii=False, sort_keys=True)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, calls_path)
+            return True
+        finally:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+
+
+def _record_article_budget_exceeded(
+    *, article_key: str, model_family: str, consumer: str, limit: int
+) -> None:
+    """超限事件落 quality 账本（失败可见，宪法 P4）。
+
+    与 _append_quality_budget_event 同范式：落账失败只告警不吞——本函数在抛
+    ArticleBudgetExceededError **之前**调用，落账异常不能把 fail-closed 变成
+    别的失败形态，所以这里捕获后用 logger.error 响亮暴露，再继续抛超限异常。
+    """
+    key = _normalise_article_key(article_key)
+    try:
+        append_event(
+            _quality_ledger_path(),
+            {
+                "loop_id": "loop1",
+                "node": "llm_router",
+                "event": ARTICLE_BUDGET_EVENT,
+                "content_hash": key,
+                "ts": dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "budget": {
+                    "token_count": 0,
+                    "retry_count": 0,
+                    "calls_limit": limit,
+                },
+                "details": {
+                    "article_key_id": key,
+                    "model_family": model_family,
+                    "consumer": consumer,
+                    "message": (
+                        f"同 article 第 {limit + 1} 次调用超出 MAX_CALLS_PER_ARTICLE"
+                        f"={limit}，fail-closed 拒绝（sc-p3-max-calls-enforced）"
+                    ),
+                },
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - 落账失败不改变 fail-closed 语义
+        logger.error(
+            "failed to append %s ledger event for article %s: %s",
+            ARTICLE_BUDGET_EVENT,
+            key,
+            exc,
+        )
 
 
 def _append_quality_budget_event(
@@ -746,6 +878,7 @@ def route_llm(
     max_tokens: int | None = None,
     extra_body: dict[str, Any] | None = None,
     budget_consumer: str = "quality.llm_router",
+    article_key: str | None = None,
 ) -> LLMResponse:
     """OpenAI 兼容端点路由入口。
 
@@ -763,16 +896,39 @@ def route_llm(
             ``{"enable_thinking": False}``，关闭思维链，让 token 预算落到 content 而非
             reasoning，避免 repair 重写被 reasoning 吃光 token / 拖超时）。None 时不发送。
         budget_consumer: 预算闸/诊断里的调用方标签，默认统一记为 quality.llm_router。
+        article_key: per-article 调用预算的 article 身份（sc-p3-max-calls-enforced）。
+            传入时同一 key 的第 MAX_CALLS_PER_ARTICLE+1 次调用在发起 API 请求之前
+            fail-closed（ArticleBudgetExceededError）并落 quality 账本；计数跨进程
+            共享。None（既有调用方现状）不参与计数——per-article 上限只对声明了
+            article 身份的链路强制。
 
     Returns:
         LLMResponse: 含 content / model_used / calls_used。
 
     Raises:
         RouterConfigError: 配置错误（缺 key / 非法模型名）。
+        ArticleBudgetExceededError: 同 article_key 调用超出 MAX_CALLS_PER_ARTICLE。
         RuntimeError: API 调用超时或返回非 200。
     """
     config = _validate_model_family(model_family)
     api_key = _get_api_key(config["key_env_candidates"])
+
+    # sc-p3-max-calls-enforced：per-article 预算强制在 API 请求发起之前。
+    # 放在 budget gate 之前——超限是确定性本地判定，不该再花一次闸查询。
+    if article_key is not None:
+        if not reserve_article_call(article_key, limit=MAX_CALLS_PER_ARTICLE):
+            _record_article_budget_exceeded(
+                article_key=article_key,
+                model_family=model_family,
+                consumer=budget_consumer,
+                limit=MAX_CALLS_PER_ARTICLE,
+            )
+            raise ArticleBudgetExceededError(
+                f"article {_normalise_article_key(article_key)} 的 LLM 调用已达"
+                f" MAX_CALLS_PER_ARTICLE={MAX_CALLS_PER_ARTICLE}，"
+                f"第 {MAX_CALLS_PER_ARTICLE + 1} 次调用 fail-closed 拒绝"
+                f"（sc-p3-max-calls-enforced）；已落账 {ARTICLE_BUDGET_EVENT}"
+            )
 
     try:
         import openai

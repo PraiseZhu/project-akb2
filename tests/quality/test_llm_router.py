@@ -6,23 +6,29 @@
     - 多模型路由
     - 预算具名常量
     - reasoning_effort 透传验证
+    - per-article 调用预算强制（sc-p3-max-calls-enforced）：第 N+1 次同篇调用
+      fail-closed 并落 quality 账本
 """
 
 from __future__ import annotations
 
+import json
 import os
 import plistlib
 import stat
 import subprocess
+import sys
 import types
 from unittest import mock
 
 import pytest
 
 from src.akb2.quality.llm_router import (
+    ARTICLE_BUDGET_EVENT,
     MAX_CALLS_PER_ARTICLE,
     MAX_RETRIES,
     TIMEOUT_S,
+    ArticleBudgetExceededError,
     RouterConfigError,
     build_deepseek_beta_tool_payload,
     build_outbound_payload,
@@ -30,6 +36,30 @@ from src.akb2.quality.llm_router import (
 )
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
+def _install_fake_openai(monkeypatch) -> dict:
+    """注入假 openai 模块，捕获 create() 是否被调用（不打真 API）。"""
+    captured: dict[str, object] = {"create_calls": 0}
+
+    class _FakeCompletions:
+        def create(self, **kwargs):
+            captured["create_calls"] = int(captured["create_calls"]) + 1
+            message = types.SimpleNamespace(content='{"ok": true}')
+            choice = types.SimpleNamespace(message=message)
+            return types.SimpleNamespace(choices=[choice])
+
+    class _FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.chat = types.SimpleNamespace(completions=_FakeCompletions())
+
+    fake_openai = types.SimpleNamespace(
+        OpenAI=_FakeOpenAI,
+        APITimeoutError=TimeoutError,
+        APIError=RuntimeError,
+    )
+    monkeypatch.setitem(__import__("sys").modules, "openai", fake_openai)
+    return captured
 
 
 class TestRouterConfig:
@@ -165,6 +195,164 @@ class TestBudgetConstants:
         """MAX_RETRIES 是显式具名常量，SDK 默认重试不可隐式漂移。"""
         assert isinstance(MAX_RETRIES, int)
         assert MAX_RETRIES == 2
+
+
+class TestArticleBudgetEnforcement:
+    """sc-p3-max-calls-enforced：per-article 调用预算真正强制（不只是常量相等）。
+
+    计数真相源是 AKB2_STATE_ROOT 下的账本目录（tests/quality/conftest.py 的
+    autouse fixture 已隔离到 tmp），不打真 API——openai 模块整体被替换成假实现。
+
+    ⚠ 环境基线用 fixture 内 monkeypatch.setenv 合并而非 mock.patch.dict(clear=True)：
+    clear=True 会把 autouse fixture 钉好的 AKB2_STATE_ROOT 一并清掉，测试就写进
+    真实生产状态目录（本测试文件曾实测污染 ~/Library/Application Support/akb2）。
+    """
+
+    def _env(self, monkeypatch) -> None:
+        """清网关相关变量但保留 AKB2_STATE_ROOT 等隔离变量，再注入假 key。"""
+        for name in (
+            "AI_GATEWAY_API_KEY",
+            "OPENROUTER_API_KEY",
+            "TAPTAP_API_KEY",
+            "OPENAI_BASE_URL",
+            "DEEPSEEK_BASE_URL",
+            "GEMINI_BASE_URL",
+            "AI_GATEWAY_BASE_URL",
+            "OPENROUTER_BASE_URL",
+            "TAPTAP_BASE_URL",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("AI_GATEWAY_API_KEY", "gw-test-key")
+
+    def _mk_msg(self, i: int = 0):
+        return [{"role": "user", "content": f"call-{i}"}]
+
+    def test_nth_plus_one_call_same_article_fail_closed(self, monkeypatch, tmp_path):
+        """同一 article_key 第 MAX_CALLS_PER_ARTICLE+1 次 route_llm 被拒绝。
+
+        前 N 次正常返回（假 openai），第 N+1 次必须抛 ArticleBudgetExceededError
+        且 **不发起 API 请求**（超限判定在请求之前）。
+        """
+        self._env(monkeypatch)
+        captured = _install_fake_openai(monkeypatch)
+
+        key = "article-alpha"
+        for i in range(MAX_CALLS_PER_ARTICLE):
+            resp = route_llm(
+                "gpt-5.4", self._mk_msg(i), article_key=key
+            )
+            assert json.loads(resp.content) == {"ok": True}
+        assert int(captured["create_calls"]) == MAX_CALLS_PER_ARTICLE
+
+        with pytest.raises(ArticleBudgetExceededError, match="MAX_CALLS_PER_ARTICLE"):
+            route_llm("gpt-5.4", self._mk_msg(99), article_key=key)
+
+        # 超限的那次调用没打到 API：请求计数停在 N
+        assert int(captured["create_calls"]) == MAX_CALLS_PER_ARTICLE
+
+    def test_exceeded_event_lands_in_quality_ledger(self, monkeypatch, tmp_path):
+        """第 N+1 次超限拒绝把 llm_article_budget_exceeded 事件落进 quality 账本。"""
+        self._env(monkeypatch)
+        _install_fake_openai(monkeypatch)
+        from src.akb2.common.state_paths import (
+            LEDGER_SUBDIR,
+            resolve_state_file,
+        )
+
+        key = "article-ledger"
+        for i in range(MAX_CALLS_PER_ARTICLE):
+            route_llm("gpt-5.4", self._mk_msg(i), article_key=key)
+        with pytest.raises(ArticleBudgetExceededError):
+            route_llm("gpt-5.4", self._mk_msg(99), article_key=key)
+
+        ledger = resolve_state_file("quality-ledger.jsonl", subdir=LEDGER_SUBDIR)
+        assert ledger.exists(), "超限事件必须落账（宪法 P4 失败可见）"
+        rows = [
+            json.loads(line)
+            for line in ledger.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        events = [r for r in rows if r.get("event") == ARTICLE_BUDGET_EVENT]
+        assert len(events) == 1
+        row = events[0]
+        # loop-ledger.schema.json 必填字段齐全
+        for field in ("loop_id", "node", "event", "content_hash", "ts"):
+            assert field in row and row[field] != ""
+        assert row["event"] == ARTICLE_BUDGET_EVENT
+        assert row["budget"]["calls_limit"] == MAX_CALLS_PER_ARTICLE
+        assert row["details"]["model_family"] == "gpt-5.4"
+
+    def test_distinct_articles_do_not_share_budget(self, monkeypatch):
+        """不同 article_key 各自有独立预算——计数按 article，不是全局。"""
+        self._env(monkeypatch)
+        captured = _install_fake_openai(monkeypatch)
+
+        for i in range(MAX_CALLS_PER_ARTICLE):
+            route_llm("gpt-5.4", self._mk_msg(i), article_key="article-a")
+        # article-b 不受 article-a 打满影响
+        resp = route_llm("gpt-5.4", self._mk_msg(0), article_key="article-b")
+        assert json.loads(resp.content) == {"ok": True}
+        assert int(captured["create_calls"]) == MAX_CALLS_PER_ARTICLE + 1
+
+    def test_no_article_key_keeps_legacy_behaviour(self, monkeypatch):
+        """article_key=None（既有调用方）不参与计数，行为不变。"""
+        self._env(monkeypatch)
+        captured = _install_fake_openai(monkeypatch)
+
+        for i in range(MAX_CALLS_PER_ARTICLE + 3):
+            resp = route_llm("gpt-5.4", self._mk_msg(i))
+            assert json.loads(resp.content) == {"ok": True}
+        assert int(captured["create_calls"]) == MAX_CALLS_PER_ARTICLE + 3
+
+    def test_direct_and_subprocess_entries_share_one_counter(self, monkeypatch, tmp_path):
+        """函数入口与子进程（repair_worker 形态）入口同一计数（boundary 要求）。
+
+        用真实 subprocess 起新 Python 进程直调 route_llm——若计数只在本进程内存，
+        子进程计数会归零绕过预算；计数真相源在账本文件时，子进程打满后父进程
+        第 N+1 次必须被拒。
+        """
+        self._env(monkeypatch)
+        _install_fake_openai(monkeypatch)
+
+        # 子进程跑在真实环境（无假 openai 注入），只跑 N 次、每次给假 key 但
+        # openai 导入会失败——所以子进程里改用「预期内抛 RouterConfigError 前
+        # 先消耗名额」不行：名额预留发生在 _get_api_key 之后。改用直接调用
+        # reserve_article_call 验证跨进程同源。
+        root_literal = json.dumps(PROJECT_ROOT)
+        script = (
+            f"import sys; sys.path.insert(0, {root_literal});"
+            "from src.akb2.quality.llm_router import reserve_article_call;"
+            f"results = [reserve_article_call('article-x') for _ in range({MAX_CALLS_PER_ARTICLE})];"
+            "print(results)"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            cwd=PROJECT_ROOT,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.strip() == f"{[True] * MAX_CALLS_PER_ARTICLE}"
+
+        # 子进程已把 article-x 名额打满 → 本进程（route_llm 直调入口）第 N+1 次被拒
+        captured = _install_fake_openai(monkeypatch)
+        with pytest.raises(ArticleBudgetExceededError, match="MAX_CALLS_PER_ARTICLE"):
+            route_llm("gpt-5.4", self._mk_msg(0), article_key="article-x")
+        assert int(captured["create_calls"]) == 0
+
+    def test_corrupt_counter_file_fails_closed(self, monkeypatch, tmp_path):
+        """计数文件损坏时拒绝放行（无法证明还有名额 → fail-closed）。"""
+        self._env(monkeypatch)
+        _install_fake_openai(monkeypatch)
+        from src.akb2.common.state_paths import LEDGER_SUBDIR, get_state_root
+        from src.akb2.quality.llm_router import ARTICLE_CALLS_FILE
+
+        counter_path = get_state_root() / LEDGER_SUBDIR / ARTICLE_CALLS_FILE
+        counter_path.parent.mkdir(parents=True, exist_ok=True)
+        counter_path.write_text("{not-valid-json", encoding="utf-8")
+
+        with pytest.raises(ArticleBudgetExceededError, match="计数文件损坏"):
+            route_llm("gpt-5.4", self._mk_msg(0), article_key="article-corrupt")
 
 
 class TestBuildOutboundPayload:
@@ -464,10 +652,15 @@ exit 0
         vault_root = env["AKB2_VAULT_ROOT"]
 
         assert vault_root.endswith("Praise Space/AKB2.0")
-        # env 依赖：plist 为未安装模板（__AKB2_VAULT_ROOT__ 占位）或 vault 未挂载时跳过
-        # （launchd plist 安装/挂载属部署环境，非代码缺陷；红线不动 launchd/plist）
-        if not os.path.exists(vault_root):
-            pytest.skip(
-                f"AKB2 vault 未挂载或 plist 为模板（{vault_root}），launchd 安装属部署环境"
+        # 仓库内 plist 有两种确定形态，都显式验收（不 skip——skip 会把部署回归
+        # 藏进 "绿" 里）：
+        #   1. 未安装模板：占位符 __AKB2_VAULT_ROOT__（bootstrap 脚本负责替换）
+        #   2. 已安装实例：真实路径，且必须真实挂载存在
+        if "__AKB2_VAULT_ROOT__" in vault_root:
+            # 模板态：占位符必须原样保留，禁止提交时预替换成某台机器的路径
+            assert vault_root.startswith("__AKB2_VAULT_ROOT__")
+        else:
+            assert os.path.exists(vault_root), (
+                f"plist 指向已实例化的 vault 但该路径不存在: {vault_root}"
+                "（launchd 安装属部署环境；红线不动 launchd/plist）"
             )
-        assert os.path.exists(vault_root)
