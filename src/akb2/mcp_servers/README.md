@@ -7,6 +7,7 @@
 | slug | 权威源 | install target |
 |------|--------|----------------|
 | akb-search-readonly | `toolbox/cc-akb-search/mcp_server/server.py` | `Codex/plugins/.../mcp-servers/akb-search-readonly/` |
+| akb2-retrieval | `toolbox/cc-akb2-retrieval/mcp_server/server.py` | `PYTHONPATH=<repo>/src` 直跑权威源（stdio） |
 
 > 注：MCP server 实际权威源在 `toolbox/<slug>/mcp_server/`（按 5 条规则的规则 3）。本目录用于工程层 wrapper / shim，非工具自身的 MCP server。
 
