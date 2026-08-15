@@ -123,7 +123,7 @@ def _run_judgment(extract: dict, grader_content: dict) -> tuple[bool, str]:
 
 class TestConceptPositive:
     def test_concept_positive_passes(self):
-        """concept 正样本走 **runner quality segment** → converged=True（proposal_passed）。
+        """concept 正样本走 **runner quality segment** → converged=True（质量段过）。
 
         codex worker #1：之前用 _run_judgment thin slice（floor+grader+score helper），
         没覆盖 runner 真链路。改成跑 _run_quality_segments（self-gate + grader + concept 硬门），
@@ -146,7 +146,7 @@ class TestConceptPositive:
                 content_lane="concept",
                 floor_result=FloorResult(passed=True, failed_floors=[], reason="", content_lane="concept"),
             )
-        assert converged, f"concept 正样本应 proposal_passed，实际 error={error_class}"
+        assert converged, f"concept 正样本应质量段通过，实际 error={error_class}"
         assert error_class == ""
 
 

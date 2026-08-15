@@ -109,8 +109,8 @@ class TestFieldSurfacing:
         pr = {
             "converged": True,
             "rounds": 1,
-            "final_status": "proposal_passed",
-            "promotion_outcome": "proposal_passed",
+            "final_status": "promoted",
+            "promotion_outcome": "active_promoted",
             "failed_node": None,
             "error_class": None,
             "content_lane": "concept",

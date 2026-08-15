@@ -1,6 +1,7 @@
-"""AKB2 Quality -- 五闸升格判定与收尾模块。
+"""AKB2 Quality -- 六闸升格判定与收尾模块。
 
-五闸自动升格判定 + AKB2_AUTO_PROMOTE 提议模式开关(默认 0,fail-closed)
+六闸自动升格判定(Gate-0 溯源 + 五闸;全过唯一终态=写 wiki/sources active,
+双模式拆除后无 proposal 写路径)
 + 升格前快照与 rollback CLI + 升格收尾完整动作(frontmatter 翻转/索引摘要行/
 概念回链/维护记录/lint 复验 0)。
 
@@ -12,7 +13,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -240,7 +240,7 @@ def evaluate_five_gates(
     Gate 5: grader result PASS
 
     §0.2/D8：allow_proposed_node_only 让冷启动 concept 候选（proposed_graph_nodes，
-    无 real_link）过 Gate-2/3。[修宪 2026-07-06,用户裁决] 旧「AUTO_PROMOTE=1 二次拒
+    无 real_link）过 Gate-2/3。[修宪 2026-07-06,用户裁决] 旧「开关=1 二次拒
     proposed_node_only 写 active」已废除——五闸全过即可 auto-active,graph_pending
     落账可见,缺失概念进 pending 队列由图谱兜底链路补全。
 
@@ -299,7 +299,7 @@ def evaluate_five_gates(
     if not grader_ok:
         return False, "Gate-5 (grader PASS)", grader_detail
 
-    # §0.2/D8：proposed_node_only 过闸时标 graph_pending（run_promote 据此二次拒 active）
+    # §0.2/D8：proposed_node_only 过闸时标 graph_pending（run_promote 据此落账，P2 后不再拒 active）
     pending_marker = " [graph_pending=true]" if is_proposed_node_only else ""
     return True, "ALL", (
         f"Five gates passed: {gate_detail}; {lint_detail}; {grader_detail}{pending_marker}"
@@ -479,7 +479,7 @@ def rollback_snapshot(snapshot_id: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# 收尾动作(开关 1)
+# 升格收尾动作
 # ---------------------------------------------------------------------------
 
 
@@ -850,7 +850,7 @@ def finalize_promotion(
     source_label: str = "",
     core_content: str = "",
 ) -> tuple[bool, str, list[Path]]:
-    """执行升格收尾动作（开关 1 时调用）。
+    """执行升格收尾动作（run_promote 六闸全过后调用）。
 
     顺序:
     1. frontmatter 翻转 → active 页
@@ -1018,7 +1018,7 @@ def finalize_promotion(
 
 
 # ---------------------------------------------------------------------------
-# 提议模式开关与主入口
+# 主入口（账本事件 + run_promote）
 # ---------------------------------------------------------------------------
 
 
@@ -1078,7 +1078,12 @@ def run_promote(
     vault_root: Path,
     grader_result_path: Path | None = None,
 ) -> tuple[bool, str, str | None]:
-    """主入口：读 AKB2_AUTO_PROMOTE 环境变量，执行提议或自动升格。
+    """主入口：六闸判定（含 Gate-0 溯源），全过唯一终态 = 写 active。
+
+    [P2 重构] 双模式环境开关已拆除：不再有 proposal 写路径，
+    六闸全过即写 wiki/sources active；旧开关环境变量（无论 0/1/任意值/未设置）
+    对本函数零影响（p2-drop-dual-mode / p2-env-zero-mutation）。
+    runner 只消费本函数返回值。
 
     Args:
         candidate_path: 候选页绝对路径。
@@ -1089,11 +1094,9 @@ def run_promote(
         (success, detail, snapshot_id)
         snapshot_id 仅在自动升格成功时非 None。
     """
-    auto_promote = os.environ.get("AKB2_AUTO_PROMOTE", "0")
     candidate_hash = _sha256_file(candidate_path) if candidate_path.exists() else ""
 
-    # 五闸判定（§0.2/D8：allow_proposed_node_only 让冷启动 concept 过 proposal 闸；
-    # run_promote 在 AUTO_PROMOTE=1 时二次拒 proposed_node_only 写 active）
+    # 六闸判定（§0.2/D8：allow_proposed_node_only 让冷启动 concept 过 Gate-2/3）
     gates_ok, failed_gate, gates_detail = evaluate_five_gates(
         candidate_path, vault_root, grader_result_path,
         allow_proposed_node_only=True,
@@ -1108,12 +1111,12 @@ def run_promote(
         return False, f"Five gates failed at {failed_gate}: {gates_detail}", None
 
     # [修宪 2026-07-06,用户裁决「那就改宪法 我要自动化」] §0.2/D8 旧二次拒废除:
-    # AUTO_PROMOTE=1 + graph_readiness=proposed_node_only(graph_pending)**允许**写
-    # active——冷启动死锁(wiki 空 → 无 real_link 可指 → 第一篇永远进不来)由此打破。
-    # 质量底线不变:候选仍须五闸全过(gate 10/10 + lint 0 + grader PASS);缺失概念
+    # graph_readiness=proposed_node_only(graph_pending)**允许**写 active——冷启动
+    # 死锁(wiki 空 → 无 real_link 可指 → 第一篇永远进不来)由此打破。
+    # 质量底线不变:候选仍须六闸全过(gate 10/10 + lint 0 + grader PASS);缺失概念
     # 落 pending 队列,图谱由 D8 兜底链路(pending 共指累积 → 图谱校准补边)补全。
-    # fail-visible:graph_pending 状态随 gates_detail 落账,不静默。
-    if auto_promote == "1" and "[graph_pending=true]" in gates_detail:
+    # fail-visible:graph_pending 状态随 gates_detail 落账,不静默(p2-keep-graph-pending)。
+    if "[graph_pending=true]" in gates_detail:
         _write_ledger_event(
             vault_root, "promote", "promote", candidate_hash,
             {
@@ -1124,25 +1127,6 @@ def run_promote(
             }
         )
 
-    if auto_promote != "1":
-        # 提议模式（fail-closed 默认）：只写 gate manifest
-        _run_gate_manifest_write(candidate_path, vault_root)
-
-        # 落账 proposal 事件
-        _write_ledger_event(
-            vault_root, "promote", "promote", candidate_hash,
-            {
-                "mode": "proposal",
-                "gates_detail": gates_detail,
-                "note": "AKB2_AUTO_PROMOTE=0, proposal only, no active write",
-            }
-        )
-        return True, (
-            f"Proposal mode (AKB2_AUTO_PROMOTE=0): five gates passed, "
-            f"gate manifest written, no active write. {gates_detail}"
-        ), None
-
-    # 自动升格模式（开关 1）
     # 确定受影响文件列表
     slug = candidate_path.stem
     fm_match = re.match(
@@ -1218,36 +1202,6 @@ def run_promote(
         return False, f"Auto-promote failed: {detail}", snapshot_id
 
 
-def _run_gate_manifest_write(candidate_path: Path, vault_root: Path) -> None:
-    """提议模式：写 gate manifest（不写 active）。"""
-    if not _GATE_SCRIPT.exists():
-        return
-
-    candidate_path = candidate_path.expanduser().resolve()
-    vault_root = vault_root.expanduser().resolve()
-
-    try:
-        rel_input = candidate_path.relative_to(vault_root)
-    except ValueError:
-        return
-
-    cmd = [
-        sys.executable,
-        str(_GATE_SCRIPT),
-        "check",
-        "--akb-root", str(vault_root),
-        "--input", str(rel_input),
-        "--write-manifest",
-        "--allow-l3-manifest-write",
-    ]
-    try:
-        subprocess.run(
-            cmd, capture_output=True, text=True, timeout=GATE_SUBPROCESS_TIMEOUT_SEC
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        pass
-
-
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -1260,7 +1214,7 @@ def _cmd_rollback(snapshot_id: str) -> int:
 
 
 def _cmd_promote(args: argparse.Namespace) -> int:
-    """promote 子命令：执行五闸判定 + 升格/提议。"""
+    """promote 子命令：执行六闸判定 + 升格（全过唯一终态=写 active）。"""
     candidate_path = Path(args.candidate).resolve()
     vault_root = Path(args.vault_root).resolve() if args.vault_root else None
 
@@ -1285,12 +1239,12 @@ def _cmd_promote(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="AKB2 Quality — Five-Gate Promote CLI"
+        description="AKB2 Quality — Six-Gate Promote CLI"
     )
     sub = parser.add_subparsers(dest="cmd")
 
     # promote 子命令
-    prom = sub.add_parser("promote", help="Run five-gate check and promote")
+    prom = sub.add_parser("promote", help="Run six-gate check and promote")
     prom.add_argument("--candidate", required=True, help="Path to candidate .md file")
     prom.add_argument("--vault-root", required=True, help="AKB2.0 vault root directory")
     prom.add_argument("--grader-result", help="Path to step-4 grader result JSON")

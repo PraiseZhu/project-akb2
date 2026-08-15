@@ -304,7 +304,7 @@ def _fake_entry_result(idx: int, passed: bool, expected: str) -> dict[str, Any]:
         "url": f"fixture:mock-{idx}",
         "expected": expected,
         "passed": passed,
-        "final_status": "proposal_passed" if passed else "failed",
+        "final_status": "promoted" if passed else "failed",
         "failure_class": None if passed else "unknown",
         "repair_rounds": 0,
     }

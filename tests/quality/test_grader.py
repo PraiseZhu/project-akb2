@@ -1,541 +1,483 @@
-"""B 层评分器测试 — 10 维量规 + 定位化缺陷清单。
+"""test_grader.py — 完整性地板（integrity floor）行为锁（intake-rebuild p4）。
 
-全 fixture LLM 响应，不打真 API。
+本文件是 sc-p4-floor-uncompensated / sc-p4-high-score-low-floor-mutation 的验收套件，
+全部测试围绕地板语义命名（含 "floor"）——`pytest -k floor` 须匹配本文件全部用例
+（零 deselected，verify 纪律：skip/xfail/deselected 不当通过）。
+
+锁定不变式：
+  1. 地板四成员对全车道（concept / procedural / tutorial 别名 / 未来 pattern-design）生效，
+     任一成员 fail → FloorResult.passed=False 且 failed_floors 恰含该成员（精确归因）。
+  2. F4「≥3 组件+因果边」仅 concept 车道；非 concept 车道（procedural/tutorial/pattern）
+     用 H1≥1 步骤判据——pattern/design 不得误用 concept F4 阈值。
+  3. 不可补偿（宪法 8(a)）：地板任一成员 fail 时 runner 评分段 early-return——
+     grader 不被调用、加权分不算，即使加权分潜在满分（mutation：删短路则红）。
 """
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
-from src.akb2.quality.grader import (
-    RUBRIC_DIMENSIONS,
-    _build_grader_schema,
-    _load_rubric_text,
-    _parse_grader_output,
-    run_grader_with_fixture,
+from src.akb2.quality.grader import RUBRIC_DIMENSIONS_BY_LANE
+from src.akb2.quality.integrity_floor import (
+    FLOOR_CLAIM_ANCHOR_RATE,
+    FLOOR_CORE_VALUE_F4,
+    FLOOR_EVIDENCE_HONESTY,
+    FLOOR_INTERPRETATION_TRACEABILITY,
+    FloorResult,
+    evaluate_integrity_floor,
 )
-from src.akb2.quality.llm_router import LLMResponse
 
 # ---------------------------------------------------------------------------
-# Fixtures
+# Fixtures：全成员 pass 的 baseline extract + 单成员 fail 的最小变形
 # ---------------------------------------------------------------------------
 
+_RAW_ANCHORS = {"§A", "§B"}
 
-@pytest.fixture
-def valid_candidate_page() -> str:
-    """完整的候选页 fixture。"""
-    return """---
-status: candidate
-gate_decision: null
-source_refs:
-  - raw/addy-osmani-loop-engineering--raw--2026-06-11.md
-gate_reason: 待评审
-future_questions:
-  - Loop 工程在实时系统中如何适配延迟约束？
-  - 多 agent 协作场景下 loop 的故障隔离如何设计？
-related_concepts:
-  - harness-engineering
-  - agent-collaboration
-artifact_type: wiki
-pipeline_version: v1
----
+_GROUNDED_CLAIMS = [
+    {
+        "provenance": "source_grounded",
+        "claim": "claim A",
+        "anchor": "§A",
+        "evidence_gap": "未提供 X 的量化对比",
+    },
+    {
+        "provenance": "source_grounded",
+        "claim": "claim B",
+        "anchor": "§B",
+        "evidence_gap": "未覆盖 Y 场景",
+    },
+]
 
-## TLDR
+_CONCEPT_COMPONENTS = [
+    {"name": "组件A", "role": "r"},
+    {"name": "组件B", "role": "r"},
+    {"name": "组件C", "role": "r"},
+]
 
-Loop Engineering 是一种设计有界、收敛、可观测 AI Agent 循环的工程实践 [raw §A]。
-它提出了五组件模板（trigger, selector, executor, gate, ledger）[raw §B]。
-核心原则：收敛优先于重跑 [raw §C]。
-
-## 关键发现
-
-1. 每个 loop 必须有显式停止条件 [raw §A]
-2. 定点修复优于整体重跑 [raw §C]
-3. Maker/Checker 必须异族分离 [raw §E]
-
-## 入选理由
-
-本文提供了完整的 loop 设计模板和可执行组件，填补了 AKB 在 agent 工程方法论的空白。
-
-## 证据地图
-
-| 论点 | 锚点 | 证据强度 | 未覆盖 |
-|------|------|---------|--------|
-| Loop 五组件 | §B | strong | 实时系统场景 |
-| 收敛优先 | §C | strong | 大规模系统 |
-| Maker/Checker | §E | strong | 非 LLM 裁决 |
-
-## 核心论点
-
-1. 有界循环设计 [raw §A]: 每个 loop 必须有显式停止条件（source_grounded）
-2. 五组件模板 [raw §B]: trigger, selector, executor, gate, ledger（source_grounded）
-3. 收敛优先 [raw §C]: 定点修复成本远低于整体重跑（source_grounded）
-4. 预算约束 [raw §D]: 预算必须是具名常量（source_grounded）
-5. Maker/Checker 分离 [raw §E]: 生产与裁决使用不同模型家族（source_grounded）
-
-## 论证与解释
-
-Loop engineering 的核心洞察是: 先写账本再执行，崩溃恢复只需读最后一条账本记录 [raw §B]。
-每个 loop 的 budget 必须声明在可见处（具名常量），不得使用内联魔数 [raw §D]。
-
-## 适用边界
-
-适用: Agent pipeline 自动化、内容质量门控、定时任务编排
-不适用: 简单 CRUD 脚本、一次性数据迁移、无外部依赖的纯计算任务
-
-## 图谱关系
-
-| target | relation | strength | evidence |
-|--------|----------|----------|----------|
-| harness-engineering | 上游概念 | strong | 原文明示 "楼上一层" |
-| agent-collaboration | 相关领域 | medium | 场景应用 |
-| context-engineering | 下游应用 | medium | loop 设计决策依赖 context 工程 |
-
-## Future Questions
-
-1. Loop 工程在实时系统中如何适配延迟约束？
-2. 多 agent 协作场景下 loop 的故障隔离如何设计？
-3. 跨语言/跨运行时环境下 loop ledger 的一致性如何保证？
-
-## 维护记录
-
-- 2026-06-13: 初始创建（待评审）
-"""
+_CONCEPT_ELIGIBLE_EDGE = {
+    "from": "组件A",
+    "to": "组件B",
+    "edge_kind": "source_causal",
+    "evidence": "raw 明示因果",
+    "evidence_anchor": "§A",
+}
 
 
-@pytest.fixture
-def all_pass_grader_response() -> dict:
-    """B 层评分全 pass 的 fixture 响应。"""
+def _concept_extract_all_floor_pass() -> dict:
+    """concept 地板四成员全 pass 的 extract。"""
     return {
-        "gpt-5.4": LLMResponse(
-            content={
-                "dimensions": [
-                    {"dimension": dim, "pass": True, "defects": []}
-                    for dim in RUBRIC_DIMENSIONS
-                ]
-            },
-            model_used="gpt-5.4",
-            calls_used=1,
-        ),
+        "claims": [dict(c) for c in _GROUNDED_CLAIMS],
+        "argumentation": [],
+        "mechanism_components": [dict(c) for c in _CONCEPT_COMPONENTS],
+        "causal_edges": [dict(_CONCEPT_ELIGIBLE_EDGE)],
+        "how_steps": [],
     }
 
 
-@pytest.fixture
-def some_fail_grader_response() -> dict:
-    """B 层评分部分 fail 的 fixture 响应（含定位化缺陷）。"""
+def _procedural_extract_all_floor_pass() -> dict:
+    """procedural 地板四成员全 pass 的 extract（H1 步骤 + 组件/边可缺）。"""
     return {
-        "gpt-5.4": LLMResponse(
-            content={
-                "dimensions": [
-                    {"dimension": "论断锚定率", "pass": True, "defects": []},
-                    {"dimension": "How 密度", "pass": True, "defects": []},
-                    {"dimension": "How 可执行性", "pass": True, "defects": []},
-                    {
-                        "dimension": "证据诚实",
-                        "pass": False,
-                        "defects": [
-                            {
-                                "location": "证据地图",
-                                "defect": "证据地图缺少未覆盖列",
-                                "suggestion": "为每行添加未覆盖列",
-                            }
-                        ],
-                    },
-                    {"dimension": "解读分离", "pass": True, "defects": []},
-                    {
-                        "dimension": "TLDR 密度",
-                        "pass": False,
-                        "defects": [
-                            {
-                                "location": "TLDR",
-                                "defect": "TLDR 超过 3 句话",
-                                "suggestion": "精简到 3 句以内",
-                            }
-                        ],
-                    },
-                    {"dimension": "新颖增量", "pass": True, "defects": []},
-                    {"dimension": "边强度匹配", "pass": True, "defects": []},
-                    {"dimension": "Future Questions 质量", "pass": True, "defects": []},
-                    {"dimension": "适用边界", "pass": True, "defects": []},
-                ]
-            },
-            model_used="gpt-5.4",
-            calls_used=1,
-        ),
+        "claims": [dict(c) for c in _GROUNDED_CLAIMS],
+        "argumentation": [],
+        "mechanism_components": [],  # 非概念车道不需要机制组件
+        "causal_edges": [],
+        "how_steps": [
+            {"step": "python3 -m pytest tests/quality -q", "how_level": "H1"},
+            {"step": "先读量规再评", "how_level": "H2"},
+        ],
     }
 
 
-@pytest.fixture
-def missing_location_response() -> dict:
-    """FR-006 测试: 缺陷缺 location。"""
-    return {
-        "gpt-5.4": LLMResponse(
-            content={
-                "dimensions": [
-                    {
-                        "dimension": "论断锚定率",
-                        "pass": False,
-                        "defects": [
-                            {
-                                "location": "",
-                                "defect": "some defect",
-                                "suggestion": "fix it",
-                            }
-                        ],
-                    },
-                ]
-            },
-            model_used="gpt-5.4",
-            calls_used=1,
-        ),
-    }
+def _fail_member_extract(lane: str, member: str) -> dict:
+    """构造「仅指定地板成员 fail」的最小变形 extract（其余成员保持 pass）。
 
-
-# ---------------------------------------------------------------------------
-# 量规加载
-# ---------------------------------------------------------------------------
-
-
-class TestRubricLoading:
-    def test_rubric_file_exists(self):
-        """量规文件存在且可加载。"""
-        text = _load_rubric_text()
-        assert len(text) > 0
-        assert "版本" in text or "version" in text.lower()
-
-    def test_rubric_has_10_dimensions(self):
-        """量规含 10 维。"""
-        text = _load_rubric_text()
-        for dim in RUBRIC_DIMENSIONS:
-            assert dim in text, f"Missing rubric dimension: {dim}"
-
-
-# ---------------------------------------------------------------------------
-# 解析逻辑
-# ---------------------------------------------------------------------------
-
-
-class TestParseGraderOutput:
-    def test_parse_all_pass(self, all_pass_grader_response):
-        """解析全 pass 输出 → 空缺陷列表。"""
-        response = all_pass_grader_response["gpt-5.4"]
-        defects, ok = _parse_grader_output(response.content)
-        assert ok
-        assert len(defects) == 0
-
-    def test_parse_some_fail(self, some_fail_grader_response):
-        """解析部分 fail 输出 → 非空缺陷列表。"""
-        response = some_fail_grader_response["gpt-5.4"]
-        defects, ok = _parse_grader_output(response.content)
-        assert ok
-        assert len(defects) > 0
-        # 每条缺陷必须有 location
-        for d in defects:
-            assert d.location, f"Defect missing location: {d}"
-
-    def test_parse_accepts_canonical_name_with_english_suffix(self):
-        """gpt-5.4 常把维度名写成中文 canonical + 英文括注，应归一化后接收。"""
-        english_suffixes = [
-            "Claim Anchor Rate",
-            "How Density",
-            "How Actionability",
-            "Evidence Honesty",
-            "Interpretation Separation",
-            "TLDR Density",
-            "Novelty Increment",
-            "Edge Strength Matching",
-            "Future Questions Quality",
-            "Applicability Boundary",
+    member ∈ {claim_anchor_rate, evidence_honesty, interpretation_traceability, core_value_f4}
+    """
+    extract = (
+        _concept_extract_all_floor_pass()
+        if lane == "concept"
+        else _procedural_extract_all_floor_pass()
+    )
+    if member == "claim_anchor_rate":
+        # ①：grounded claim 缺 § 锚点
+        extract["claims"][0]["anchor"] = "no-anchor"
+    elif member == "evidence_honesty":
+        # ②：证据盲区全为「已覆盖」——无任何真实盲区标注
+        for c in extract["claims"]:
+            c["evidence_gap"] = "原文已完整覆盖"
+    elif member == "interpretation_traceability":
+        # ③：akb_interpretation 缺 traces_to（grounded anchors 存在 → 不可满足豁免不触发）
+        extract["argumentation"] = [
+            {
+                "provenance": "akb_interpretation",
+                "point": "解读飘浮",
+                "traces_to": [],
+            }
         ]
-        dims = []
-        for dim, suffix in zip(RUBRIC_DIMENSIONS, english_suffixes, strict=True):
-            dims.append({"dimension": f"{dim} ({suffix})", "pass": True, "defects": []})
-        dims[0] = {
-            "dimension": "论断锚定率 (Claim Anchor Rate)",
-            "pass": False,
-            "defects": [
-                {
-                    "location": "入选理由",
-                    "defect": "入选理由缺 raw 锚点",
-                    "suggestion": "补充 raw § 引用",
-                }
-            ],
-        }
-
-        defects, ok = _parse_grader_output({"dimensions": dims})
-
-        assert ok
-        assert len(defects) == 1
-        assert defects[0].dimension == "论断锚定率"
-
-    def test_parse_rejects_unknown_dimension_even_with_suffix(self):
-        """只接受已知 canonical 维度名的括注变体。"""
-        dims = [
-            {"dimension": dim, "pass": True, "defects": []}
-            for dim in RUBRIC_DIMENSIONS
-        ]
-        dims[0] = {"dimension": "论断覆盖率 (Claim Anchor Rate)", "pass": True, "defects": []}
-
-        defects, ok = _parse_grader_output({"dimensions": dims})
-
-        assert not ok
-        assert defects == []
-
-    def test_parse_missing_location_rejected(self, missing_location_response):
-        """FR-006: 缺 location 的条目整批拒收。"""
-        response = missing_location_response["gpt-5.4"]
-        defects, ok = _parse_grader_output(response.content)
-        assert not ok, "Should reject batch with missing location"
-
-    def test_parse_invalid_json(self):
-        """解析非法 JSON → 失败。"""
-        defects, ok = _parse_grader_output("not valid json at all")
-        assert not ok
-
-    def test_parse_string_content(self):
-        """解析字符串形式的 dict → 成功。"""
-        dims = [
-            {"dimension": dim, "pass": True, "defects": []}
-            for dim in RUBRIC_DIMENSIONS
-        ]
-        import json
-
-        content = json.dumps({"dimensions": dims}, ensure_ascii=False)
-        defects, ok = _parse_grader_output(content)
-        assert ok
-
-    def test_parse_malformed_dimensions(self):
-        """dimensions 不是 list → 失败。"""
-        defects, ok = _parse_grader_output({"dimensions": "not_a_list"})
-        assert not ok
-
-    def test_parse_rejects_partial_qwen_like_shape(self):
-        """网关模型只返回半结构化对象时必须拒收，不许当 0 缺陷通过。"""
-        content = {
-            "dimensions": [
-                {"id": 1, "pass": True, "defects": []},
-                {
-                    "id": 2,
-                    "pass": False,
-                    "defects": [{"location": "## Future Questions"}],
-                },
+    elif member == "core_value_f4":
+        if lane == "concept":
+            # ④ concept：组件 3→2（跌破 ≥3 命名组件）
+            extract["mechanism_components"] = _CONCEPT_COMPONENTS[:2]
+        else:
+            # ④ procedural/tutorial：抽掉 H1 步骤（只剩 H2）
+            extract["how_steps"] = [
+                {"step": "先读量规再评", "how_level": "H2"},
             ]
-        }
-        defects, ok = _parse_grader_output(content)
-        assert not ok
-        assert defects == []
-
-    def test_parse_requires_all_10_dimensions(self):
-        """缺维度时拒收，避免单维 pass 被误作整体验收。"""
-        content = {
-            "dimensions": [
-                {"dimension": "论断锚定率", "pass": True, "defects": []},
-            ]
-        }
-        defects, ok = _parse_grader_output(content)
-        assert not ok
-        assert defects == []
-
-    def test_parse_missing_pass_field_rejected(self):
-        """10 维都缺 pass 时拒收，避免 defects=[] 被静默当全 pass。"""
-        content = {
-            "dimensions": [
-                {"dimension": dim, "defects": []}
-                for dim in RUBRIC_DIMENSIONS
-            ]
-        }
-        defects, ok = _parse_grader_output(content)
-        assert not ok
-        assert defects == []
+    else:  # pragma: no cover - 防御
+        raise ValueError(f"unknown floor member: {member}")
+    return extract
 
 
-class TestGraderSchema:
-    def test_dimension_schema_is_canonical_enum(self):
-        """结构化输出 schema 固定 10 个 canonical 中文维度名。"""
-        schema = _build_grader_schema()
-        dim_schema = schema["properties"]["dimensions"]["items"]["properties"]["dimension"]
-        assert dim_schema["enum"] == RUBRIC_DIMENSIONS
+_FLOOR_MEMBERS = [
+    ("claim_anchor_rate", FLOOR_CLAIM_ANCHOR_RATE),
+    ("evidence_honesty", FLOOR_EVIDENCE_HONESTY),
+    ("interpretation_traceability", FLOOR_INTERPRETATION_TRACEABILITY),
+    ("core_value_f4", FLOOR_CORE_VALUE_F4),
+]
 
 
 # ---------------------------------------------------------------------------
-# 完整评分流程（fixture LLM）
+# SC2 锚点 1：地板四成员全车道生效 + 单成员 fail 精确归因
 # ---------------------------------------------------------------------------
 
 
-class TestGraderWithFixture:
-    def test_all_pass(self, valid_candidate_page, all_pass_grader_response):
-        """全 pass 评分 → 空缺陷列表。"""
-        from tests.quality.conftest import make_mock_route_llm
+class TestFloorAllLanesAllMembers:
+    """地板 4 项对全车道生效：任一成员单 fail → passed=False 且 failed_floors 恰含该成员。"""
 
-        mock_llm = make_mock_route_llm(all_pass_grader_response)
-        defects, model_used, suspended = run_grader_with_fixture(
-            valid_candidate_page, mock_llm
+    @pytest.mark.parametrize("member_key,floor_key", _FLOOR_MEMBERS)
+    def test_floor_single_member_fail_concept(self, member_key, floor_key):
+        """concept：单成员 fail → 整体 fail，failed_floors 恰含该成员（红集=该成员）。"""
+        extract = _fail_member_extract("concept", member_key)
+        r = evaluate_integrity_floor(extract, "concept", raw_anchors=set(_RAW_ANCHORS))
+        assert r.passed is False, f"地板成员 {floor_key} fail 必须使整体 fail"
+        assert r.failed_floors == [floor_key], (
+            f"红集必须恰为 [{floor_key}]（精确归因），实际 {r.failed_floors}"
         )
-        assert not suspended
-        assert len(defects) == 0
-        assert model_used == "gpt-5.4"
+        assert r.reason.strip() != ""
 
-    def test_some_fail(self, valid_candidate_page, some_fail_grader_response):
-        """部分 fail 评分 → 非空缺陷列表，全部可定位。"""
-        from tests.quality.conftest import make_mock_route_llm
-
-        mock_llm = make_mock_route_llm(some_fail_grader_response)
-        defects, model_used, suspended = run_grader_with_fixture(
-            valid_candidate_page, mock_llm
+    @pytest.mark.parametrize("member_key,floor_key", _FLOOR_MEMBERS)
+    def test_floor_single_member_fail_procedural(self, member_key, floor_key):
+        """procedural：单成员 fail → 整体 fail，failed_floors 恰含该成员。"""
+        extract = _fail_member_extract("procedural", member_key)
+        r = evaluate_integrity_floor(extract, "procedural", raw_anchors=set(_RAW_ANCHORS))
+        assert r.passed is False
+        assert r.failed_floors == [floor_key], (
+            f"红集必须恰为 [{floor_key}]，实际 {r.failed_floors}"
         )
-        assert not suspended
-        assert len(defects) > 0
-        assert model_used == "gpt-5.4"
-        for d in defects:
-            assert d.location, f"Defect missing location: {d}"
-            assert d.dimension
-            assert d.defect
-            assert d.suggestion
 
-    def test_defects_are_localized(self, valid_candidate_page, some_fail_grader_response):
-        """缺陷清单每条含 dimension + location + defect + suggestion。"""
-        from tests.quality.conftest import make_mock_route_llm
+    @pytest.mark.parametrize("member_key,floor_key", _FLOOR_MEMBERS)
+    def test_floor_single_member_fail_tutorial_alias(self, member_key, floor_key):
+        """tutorial（p5 别名，车道字符串直达地板分支）：同 procedural 判据。"""
+        extract = _fail_member_extract("procedural", member_key)
+        r = evaluate_integrity_floor(extract, "tutorial", raw_anchors=set(_RAW_ANCHORS))
+        assert r.passed is False
+        assert r.failed_floors == [floor_key]
 
-        mock_llm = make_mock_route_llm(some_fail_grader_response)
-        defects, _, _ = run_grader_with_fixture(valid_candidate_page, mock_llm)
-        for d in defects:
-            assert isinstance(d.dimension, str) and d.dimension
-            assert isinstance(d.location, str) and d.location
-            assert isinstance(d.defect, str) and d.defect
-            assert isinstance(d.suggestion, str) and d.suggestion
+    def test_floor_all_members_pass_concept(self):
+        """baseline：四成员全 pass → passed=True（防夹具本身全红造成的假阳性）。"""
+        r = evaluate_integrity_floor(
+            _concept_extract_all_floor_pass(), "concept", raw_anchors=set(_RAW_ANCHORS)
+        )
+        assert r.passed is True, f"baseline 必须 pass，实际 fail: {r.failed_floors}"
 
-
-# ---------------------------------------------------------------------------
-# 10 维覆盖验证
-# ---------------------------------------------------------------------------
-
-
-class TestRubricCoverage:
-    def test_all_10_dimensions_in_response(self, all_pass_grader_response):
-        """fixture 响应覆盖全部 10 维。"""
-        response = all_pass_grader_response["gpt-5.4"]
-        data = response.content
-        dims = [d["dimension"] for d in data["dimensions"]]
-        for expected in RUBRIC_DIMENSIONS:
-            assert expected in dims, f"Missing dimension in response: {expected}"
+    def test_floor_all_members_pass_procedural_without_concept_f4(self):
+        """procedural baseline：0 机制组件 + 0 因果边仍 pass——concept F4 阈值不外溢。"""
+        r = evaluate_integrity_floor(
+            _procedural_extract_all_floor_pass(), "procedural", raw_anchors=set(_RAW_ANCHORS)
+        )
+        assert r.passed is True, (
+            f"procedural 不要求机制组件/因果边，实际 fail: {r.failed_floors}"
+        )
 
 
 # ---------------------------------------------------------------------------
-# SC-6.1 重试 + SC-6.4 异族分离（step-6: grader degraded fail-closed 护栏）
+# SC2 锚点 2：F4「≥3 组件+因果边」仅 concept；tutorial/procedural 用 H1
 # ---------------------------------------------------------------------------
 
 
-class TestGraderRetryAndIsolation:
-    """重试循环（解析失败时按 MAX_GRADER_RETRIES 重试）+ Maker/Checker 异族守护。"""
+class TestFloorF4ConceptOnly:
+    """F4 车道分支：concept=≥3 组件+≥1 eligible 边；非 concept=H1≥1。"""
 
-    def test_run_grader_detailed_retry_exhausted_to_degraded(
-        self, monkeypatch, valid_candidate_page
-    ):
-        """SC-6.1: primary 持续返回坏 JSON → 重试有界，耗尽走兜底标 degraded。
+    def test_floor_f4_concept_two_components_fail(self):
+        """concept 组件 2 < 3 → F4 fail（红集恰为 core_value_f4）。"""
+        extract = _concept_extract_all_floor_pass()
+        extract["mechanism_components"] = _CONCEPT_COMPONENTS[:2]
+        r = evaluate_integrity_floor(extract, "concept", raw_anchors=set(_RAW_ANCHORS))
+        assert r.failed_floors == [FLOOR_CORE_VALUE_F4]
 
-        F18: 重试上限 = MAX_GRADER_RETRIES + SCHEMA_MISMATCH_RETRY_BUDGET
-        （schema-mismatch 专用 +1 预算，工单 F18）。仍 fail-closed（不降级放行）。
+    def test_floor_f4_concept_zero_eligible_edge_fail(self):
+        """concept 组件齐但 0 eligible 边（只剩 inferred 弱边）→ F4 fail。"""
+        extract = _concept_extract_all_floor_pass()
+        extract["causal_edges"] = [
+            {
+                "from": "组件A",
+                "to": "组件B",
+                "edge_kind": "inferred_from_structure",
+                "evidence": "",
+                "evidence_anchor": "",
+            }
+        ]
+        r = evaluate_integrity_floor(extract, "concept", raw_anchors=set(_RAW_ANCHORS))
+        assert r.failed_floors == [FLOOR_CORE_VALUE_F4]
+
+    def test_floor_f4_procedural_sparse_components_pass(self):
+        """procedural 仅 1 组件 0 边 + H1 在 → F4 pass（不套 concept 阈值）。"""
+        extract = _procedural_extract_all_floor_pass()
+        extract["mechanism_components"] = [{"name": "唯一组件", "role": "r"}]
+        r = evaluate_integrity_floor(extract, "procedural", raw_anchors=set(_RAW_ANCHORS))
+        assert FLOOR_CORE_VALUE_F4 not in r.failed_floors
+        assert r.passed is True
+
+    def test_floor_f4_procedural_no_h1_fail(self):
+        """procedural 无 H1 命令级步骤 → F4 fail（tutorial 用地板步骤/H1 判据）。"""
+        extract = _procedural_extract_all_floor_pass()
+        extract["how_steps"] = [{"step": "概念性指导", "how_level": "H2"}]
+        r = evaluate_integrity_floor(extract, "procedural", raw_anchors=set(_RAW_ANCHORS))
+        assert r.failed_floors == [FLOOR_CORE_VALUE_F4]
+
+    def test_floor_f4_tutorial_alias_uses_h1_not_components(self):
+        """tutorial 别名：H1 在即过；不按 ≥3 组件判（p5 前置语义锁）。"""
+        extract = _procedural_extract_all_floor_pass()
+        extract["mechanism_components"] = []  # 无组件也行
+        r = evaluate_integrity_floor(extract, "tutorial", raw_anchors=set(_RAW_ANCHORS))
+        assert FLOOR_CORE_VALUE_F4 not in r.failed_floors
+
+    def test_floor_f4_future_lane_not_concept_branch(self):
+        """未来车道（pattern）不得误用 concept F4 阈值：concept 型结构（2 组件 0 H1）
+        在 pattern 车道按 H1 分支判 → F4 fail 于 H1 缺失而非组件数。"""
+        extract = _concept_extract_all_floor_pass()
+        extract["how_steps"] = []  # 无任何步骤
+        r = evaluate_integrity_floor(extract, "pattern", raw_anchors=set(_RAW_ANCHORS))
+        assert r.failed_floors == [FLOOR_CORE_VALUE_F4]
+        assert "H1" in r.reason, (
+            f"非 concept 车道 F4 须按 H1 判据报因（防 pattern/design 误用组件阈值）: {r.reason}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# SC2/SC3 锚点 3：地板不可补偿——高加权分救不了地板 fail（runner 评分段短路）
+# ---------------------------------------------------------------------------
+
+
+def _max_dimension_scores(lane: str) -> dict[str, float]:
+    """按车道构造全维满分的 dimension_scores（加权分 = 权重和 = 10 ≥ 阈值）。"""
+    return {d: 1.0 for d in RUBRIC_DIMENSIONS_BY_LANE[lane]}
+
+
+class TestFloorUncompensatedHighScore:
+    """加权分很高但地板 fail → 整篇 reject（不可补偿；mutation：删短路则红）。"""
+
+    def test_floor_high_score_low_honesty_rejected(self):
+        """SC3 主断言：evidence_honesty fail + 全维满分 grader → 整篇 reject。
+
+        grader mock 返回全维满分（若被调用即会通过），断言 grader 根本没被调——
+        拒绝发生在地板层，加权分未参与（宪法 8(a)）。
         """
-        from src.akb2.quality import grader as grader_mod
-        from src.akb2.quality.grader import (
-            MAX_GRADER_RETRIES,
-            SCHEMA_MISMATCH_RETRY_BUDGET,
-            run_grader_detailed,
+        from src.akb2.quality.grader import GraderResult
+        from src.akb2.quality.runner import _run_quality_segments
+
+        extract = _fail_member_extract("concept", "evidence_honesty")
+        floor_fail = evaluate_integrity_floor(
+            extract, "concept", raw_anchors=set(_RAW_ANCHORS)
         )
-        from src.akb2.quality.llm_router import LLMResponse
-        from tests.quality.conftest import make_mock_route_llm
+        assert floor_fail.failed_floors == [FLOOR_EVIDENCE_HONESTY]
 
-        bad = LLMResponse(content="not valid json", model_used="gpt-5.4", calls_used=1)
-        good_dims = [
-            {"dimension": dim, "pass": True, "defects": []} for dim in RUBRIC_DIMENSIONS
-        ]
-        good_gemini = LLMResponse(
-            content={"dimensions": good_dims}, model_used="gemini-flash", calls_used=1
+        max_grader = GraderResult(
+            defects=[],
+            model_used="gpt-5.4",
+            suspended=False,
+            content_lane="concept",
+            dimension_scores=_max_dimension_scores("concept"),
+            interpretation_entailment=True,
         )
-        mock_llm = make_mock_route_llm({"gpt-5.4": bad, "gemini-flash": good_gemini})
-        monkeypatch.setattr(grader_mod, "route_llm", mock_llm)
+        with patch(
+            "src.akb2.quality.checks_structural.run_candidate_self_gate"
+        ) as mock_sg, patch(
+            "src.akb2.quality.grader.run_grader_detailed", return_value=max_grader
+        ) as mock_grader, patch(
+            "src.akb2.quality.repair.run_repair_loop"
+        ) as mock_repair:
+            converged, error_class, _detail, meta = _run_quality_segments(
+                candidate_text="candidate",
+                candidate_path="/tmp/x.md",
+                raw_content="raw",
+                config=None,
+                content_lane="concept",
+                floor_result=floor_fail,
+            )
 
-        result = run_grader_detailed(valid_candidate_page)
-
-        gpt_calls = mock_llm.call_counts.get("gpt-5.4", 0)
-        total_budget = MAX_GRADER_RETRIES + SCHEMA_MISMATCH_RETRY_BUDGET
-        # 重试发生：至少 2 次（初试 + 重试）
-        assert gpt_calls >= 2, f"应触发重试，实际 gpt-5.4 调用 {gpt_calls} 次"
-        # 重试上限 ≤ MAX_GRADER_RETRIES + SCHEMA_MISMATCH_RETRY_BUDGET（F18 +1）
-        assert gpt_calls <= total_budget, (
-            f"重试次数超上限：{gpt_calls} > {total_budget}"
+        # 整篇 reject：地板层拦下，grader/A 层/repair 全未触达
+        assert converged is False, "地板 fail 必须整篇 reject"
+        assert error_class == "integrity_floor_failed"
+        assert meta["floor_failed"] == [FLOOR_EVIDENCE_HONESTY]
+        assert meta["grader_not_called"] is True
+        assert meta["weighted_score_not_computed"] is True
+        assert mock_grader.call_count == 0, (
+            "地板 fail 时 grader 不得被调用（满分 grader 不得有机会补偿）"
         )
-        # 耗尽后走 gemini 兜底 → degraded（fallback_used=True）
-        assert result.fallback_used is True
-        assert result.suspended is False
-        assert len(result.defects) == 0
+        assert mock_sg.call_count == 0
+        assert mock_repair.call_count == 0
 
-    def test_run_grader_detailed_retry_then_succeed(
-        self, monkeypatch, valid_candidate_page
-    ):
-        """SC-6.1: 首次坏 JSON、重试后成功 → 不走兜底，未 degraded。"""
-        from src.akb2.quality import grader as grader_mod
-        from src.akb2.quality.grader import run_grader_detailed
-        from src.akb2.quality.llm_router import LLMResponse
-        from tests.quality.conftest import make_mock_route_llm
+    def test_floor_high_score_counterfactual_weighted_would_pass(self):
+        """反事实锚点：同构满分 dimension_scores 的加权分确实过阈——
+        证明上一用例拒绝的唯一原因就是地板（不存在『加权分也不过』的混淆解释）。"""
+        from src.akb2.quality.weighted_score import compute_weighted_score
 
-        bad = LLMResponse(content="not valid json", model_used="gpt-5.4", calls_used=1)
-        good_dims = [
-            {"dimension": dim, "pass": True, "defects": []} for dim in RUBRIC_DIMENSIONS
-        ]
-        good = LLMResponse(
-            content={"dimensions": good_dims}, model_used="gpt-5.4", calls_used=1
+        r = compute_weighted_score(_max_dimension_scores("concept"), "concept")
+        assert r.score >= r.threshold and r.passed is True, (
+            f"满分加权分必须过阈（否则 reject 无法归因于地板）: {r.score} < {r.threshold}"
         )
-        # 首次（call_index 0）坏，第二次（call_index 1）好
-        mock_llm = make_mock_route_llm({"gpt-5.4:0": bad, "gpt-5.4:1": good})
-        monkeypatch.setattr(grader_mod, "route_llm", mock_llm)
 
-        result = run_grader_detailed(valid_candidate_page)
+    def test_floor_pass_same_high_score_accepted_mutation_contrast(self):
+        """mutation 对照分支：同 extract 修好 honesty（地板 pass）+ 同满分 grader
+        → converged=True。与 reject 分支构成判别对——若有人删掉 runner 的地板
+        early-return，reject 分支将走到 grader（grader_not_called 断言变红）。"""
+        from src.akb2.quality.grader import GraderResult
+        from src.akb2.quality.runner import _run_quality_segments
 
-        assert mock_llm.call_counts.get("gpt-5.4", 0) == 2  # 初试 + 1 重试
-        assert result.fallback_used is False
-        assert result.suspended is False
-        assert len(result.defects) == 0
-        assert result.model_used == "gpt-5.4"
-
-    def test_run_grader_detailed_both_models_unavailable_suspends(
-        self, monkeypatch, valid_candidate_page
-    ):
-        """FR-008 fail-closed: primary+fallback 都挂 → suspended=True + 空缺陷。
-
-        这是「评分器双不可用 → 稿件挂起，绝不当通过」的核心闸门（grader.py 双挂出口）。
-        现有 test_both_unavailable_suspends 走的是 fixture 版函数(run_grader_with_fixture)，
-        真实路径 run_grader_detailed 的双挂出口零覆盖：少这个检查就会把「两模型全挂」
-        误判成「0 缺陷通过」，账本骗人。让 route_llm 对两家都抛 RuntimeError 证伪。
-        """
-        from src.akb2.quality import grader as grader_mod
-        from src.akb2.quality.grader import run_grader_detailed
-
-        calls: dict[str, int] = {}
-
-        def boom_route_llm(model_family, messages, response_schema=None, **kwargs):
-            calls[model_family] = calls.get(model_family, 0) + 1
-            raise RuntimeError(f"{model_family} gateway 401/unreachable")
-
-        monkeypatch.setattr(grader_mod, "route_llm", boom_route_llm)
-
-        result = run_grader_detailed(valid_candidate_page)
-
-        # 双不可用 → fail-closed 挂起，不可信缺陷列表必须为空（不得当通过）。
-        assert result.suspended is True, "双模型全挂必须 suspended=True，不得放行"
-        assert result.defects == [], "挂起态缺陷列表必须为空，不得伪造 0 缺陷通过"
-        # primary 和 fallback 都被尝试过（确实走到双挂出口而非提前返回）。
-        assert calls.get("gpt-5.4", 0) >= 1, "primary gpt-5.4 必须被尝试"
-        assert calls.get("gemini-flash", 0) >= 1, "fallback gemini 必须被尝试"
-        assert result.primary_failed is True
-        assert result.fallback_failed is True
-
-    def test_grader_distill_model_family_isolation(self):
-        """SC-6.4: Maker/Checker 异族分离 — distill(deepseek) != grader(gpt-5.4)。"""
-        from src.akb2.quality.distill import DISTILL_MODEL_FAMILY
-        from src.akb2.quality.grader import PRIMARY_GRADER_MODEL
-
-        assert DISTILL_MODEL_FAMILY != PRIMARY_GRADER_MODEL, (
-            "Maker/Checker 必须异族分离，distill 与 grader 不得同模型"
+        floor_pass = evaluate_integrity_floor(
+            _concept_extract_all_floor_pass(), "concept", raw_anchors=set(_RAW_ANCHORS)
         )
-        assert PRIMARY_GRADER_MODEL == "gpt-5.4"
-        assert DISTILL_MODEL_FAMILY == "deepseek-v4-pro"
+        assert floor_pass.passed is True
+
+        max_grader = GraderResult(
+            defects=[],
+            model_used="gpt-5.4",
+            suspended=False,
+            content_lane="concept",
+            dimension_scores=_max_dimension_scores("concept"),
+            interpretation_entailment=True,
+        )
+        with patch(
+            "src.akb2.quality.checks_structural.run_candidate_self_gate", return_value=[]
+        ), patch(
+            "src.akb2.quality.grader.run_grader_detailed", return_value=max_grader
+        ) as mock_grader, patch(
+            "src.akb2.quality.repair.run_repair_loop"
+        ) as mock_repair:
+            converged, error_class, _detail, _meta = _run_quality_segments(
+                candidate_text="candidate",
+                candidate_path="/tmp/x.md",
+                raw_content="raw",
+                config=None,
+                content_lane="concept",
+                floor_result=floor_pass,
+            )
+
+        assert converged is True, f"地板 pass + 满分 grader 必须通过: {error_class}"
+        assert mock_grader.call_count == 1
+        assert mock_repair.call_count == 0
+
+    def test_floor_procedural_member_fail_also_rejects_before_grader(self):
+        """procedural 车道同样不可补偿：F4(H1 缺失) fail → grader 不调用。"""
+        from src.akb2.quality.grader import GraderResult
+        from src.akb2.quality.runner import _run_quality_segments
+
+        extract = _fail_member_extract("procedural", "core_value_f4")
+        floor_fail = evaluate_integrity_floor(
+            extract, "procedural", raw_anchors=set(_RAW_ANCHORS)
+        )
+        assert floor_fail.failed_floors == [FLOOR_CORE_VALUE_F4]
+
+        max_grader = GraderResult(
+            defects=[],
+            model_used="gpt-5.4",
+            suspended=False,
+            content_lane="procedural",
+            dimension_scores=_max_dimension_scores("procedural"),
+        )
+        with patch(
+            "src.akb2.quality.checks_structural.run_candidate_self_gate"
+        ) as mock_sg, patch(
+            "src.akb2.quality.grader.run_grader_detailed", return_value=max_grader
+        ) as mock_grader, patch(
+            "src.akb2.quality.repair.run_repair_loop"
+        ) as mock_repair:
+            converged, error_class, _detail, meta = _run_quality_segments(
+                candidate_text="candidate",
+                candidate_path="/tmp/x.md",
+                raw_content="raw",
+                config=None,
+                content_lane="procedural",
+                floor_result=floor_fail,
+            )
+
+        assert converged is False
+        assert error_class == "integrity_floor_failed"
+        assert meta["grader_not_called"] is True
+        assert meta["weighted_score_not_computed"] is True
+        assert mock_grader.call_count == 0
+        assert mock_sg.call_count == 0
+        assert mock_repair.call_count == 0
+
+    @pytest.mark.parametrize(
+        "member_key,floor_key",
+        _FLOOR_MEMBERS,
+    )
+    def test_floor_any_member_rejects_without_weighted_score(self, member_key, floor_key):
+        """SC2 主断言（全成员 × concept）：任一地板成员 fail 即 reject，
+        grader/加权分不参与——不可补偿对四个成员逐一成立。"""
+        from src.akb2.quality.grader import GraderResult
+        from src.akb2.quality.runner import _run_quality_segments
+
+        extract = _fail_member_extract("concept", member_key)
+        floor_fail = evaluate_integrity_floor(
+            extract, "concept", raw_anchors=set(_RAW_ANCHORS)
+        )
+        assert floor_fail.failed_floors == [floor_key]
+
+        max_grader = GraderResult(
+            defects=[],
+            model_used="gpt-5.4",
+            suspended=False,
+            content_lane="concept",
+            dimension_scores=_max_dimension_scores("concept"),
+            interpretation_entailment=True,
+        )
+        with patch(
+            "src.akb2.quality.checks_structural.run_candidate_self_gate"
+        ) as mock_sg, patch(
+            "src.akb2.quality.grader.run_grader_detailed", return_value=max_grader
+        ) as mock_grader, patch(
+            "src.akb2.quality.repair.run_repair_loop"
+        ):
+            converged, error_class, _detail, meta = _run_quality_segments(
+                candidate_text="candidate",
+                candidate_path="/tmp/x.md",
+                raw_content="raw",
+                config=None,
+                content_lane="concept",
+                floor_result=floor_fail,
+            )
+
+        assert converged is False
+        assert error_class == "integrity_floor_failed"
+        assert meta["floor_failed"] == [floor_key]
+        assert meta["grader_not_called"] is True
+        assert meta["weighted_score_not_computed"] is True
+        assert mock_grader.call_count == 0
+        assert mock_sg.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# 地板结果对象语义（failed_floors 机读 key 与 rubric.yaml 地板 4 项对齐）
+# ---------------------------------------------------------------------------
+
+
+class TestFloorResultContract:
+    def test_floor_failed_floors_keys_are_machine_names(self):
+        """failed_floors 用机读 key（snake_case），不混入 rubric 中文名。"""
+        extract = _fail_member_extract("concept", "evidence_honesty")
+        r = evaluate_integrity_floor(extract, "concept", raw_anchors=set(_RAW_ANCHORS))
+        assert r.failed_floors == ["evidence_honesty"]
+        assert r.content_lane == "concept"
+        assert isinstance(r, FloorResult)
+
+    def test_floor_reason_visible_on_fail(self):
+        """失败原因非空（fail-visible，宪法 P4）。"""
+        extract = _fail_member_extract("procedural", "claim_anchor_rate")
+        r = evaluate_integrity_floor(extract, "procedural", raw_anchors=set(_RAW_ANCHORS))
+        assert r.passed is False
+        assert r.reason.strip() != ""

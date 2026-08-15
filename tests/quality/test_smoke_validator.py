@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import plistlib
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -757,8 +758,14 @@ def test_default_arguments_do_not_raise(tmp_path: Path) -> None:
     assert result["passed"] is True
     assert result["mode"] == "active"
 
-    # ② CLI 默认（只覆盖 --plist，其余全默认）
-    assert sv.main(["--mode", "launchd-static", "--plist", str(plist)]) == 0
+    # ② CLI 默认（只覆盖 --plist；--skip-live-parity 因 CI/本机未加载 job，
+    #    live 三方腿另有专测，本条只守 expected-mode 默认值不漂移）
+    assert (
+        sv.main(
+            ["--mode", "launchd-static", "--plist", str(plist), "--skip-live-parity"]
+        )
+        == 0
+    )
     assert (
         inspect.signature(validate_launchd_static).parameters["expected_mode"].default
         == sv.DEFAULT_EXPECTED_LAUNCHD_MODE
@@ -844,6 +851,194 @@ def test_validate_env_parity_requires_active_ready(tmp_path: Path) -> None:
     result = validate_env_parity(plist, smoke_auto_promote="0", active_ready=True)
     assert result["plist_mode"] == "active"
     assert result["smoke_mode"] == "proposal"
+
+
+# ---- live (launchctl print) three-way parity ---------------------------------
+# F0 事故形态：installed plist 已是 AKB2_AUTO_PROMOTE=1，但 2026-08-06 拉起的
+# daemon 运行态仍是 0 —— 只改磁盘 plist、没 bootout+bootstrap。旧 env-parity
+# 只比 repo/installed 两份文件，比不出这种漂移。以下用例把 live 腿钉进判定。
+
+
+def _live_reader_returning(env: dict[str, str]):
+    def reader(label: str) -> dict[str, str]:
+        assert label == "com.akb2.main-pipeline"
+        return dict(env)
+
+    return reader
+
+
+_LAUNCHCTL_SAMPLE = """\
+com.akb2.main-pipeline = {
+\tactive count = 1
+\tinherited environment = {
+\t\tPATH => /usr/bin:/bin
+\t\tAKB2_AUTO_PROMOTE => 9
+\t}
+
+\tdefault environment = {
+\t\tPATH => /usr/bin:/bin
+\t}
+
+\tenvironment = {
+\t\tAKB2_AUTO_PROMOTE => 1
+\t\tAKB2_AMENDMENT_APPLIED => 0
+\t\tPATH => /some/path
+\t}
+
+\tdomain = gui/501 [100023]
+};
+"""
+
+
+def test_parse_launchctl_env_live_block_only() -> None:
+    """解析器只认 job-set environment 块，不受 inherited/default 干扰。"""
+    from src.akb2.quality.smoke_validator import parse_launchctl_env
+
+    env = parse_launchctl_env(_LAUNCHCTL_SAMPLE)
+
+    assert env["AKB2_AUTO_PROMOTE"] == "1"
+    assert env["AKB2_AMENDMENT_APPLIED"] == "0"
+    assert env["PATH"] == "/some/path"
+
+
+def test_validate_env_parity_live_drift_installed_one_live_zero_fails(tmp_path: Path) -> None:
+    """F0 复刻：installed plist=1、live job=0 → 必红，并点名两侧与值。
+
+    这正是「只改磁盘 plist、不 bootout+bootstrap」的形态：旧实现（无 live 腿）
+    对此报 passed —— 本用例是 sc-p0-live-check-mutation 的锚点，删掉 live 比对
+    （_assert_live_env_matches_installed 或其调用）后本用例必须转红。
+    """
+    script = tmp_path / "akb2-main-pipeline.sh"
+    script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    os.chmod(script, 0o755)
+    plist = tmp_path / "com.akb2.main-pipeline.plist"
+    repo_plist = tmp_path / "repo.plist"
+    # repo=installed=1（两方对齐——旧实现到此即绿），live job 仍是 0
+    _write_plist(plist, script, tmp_path, tmp_path / "logs" / "runner.log", auto_promote="1")
+    _write_plist(
+        repo_plist, script, tmp_path, tmp_path / "logs" / "repo.log", auto_promote="1"
+    )
+
+    live_reader = _live_reader_returning({"AKB2_AUTO_PROMOTE": "0"})
+
+    with pytest.raises(SmokeValidationError, match="installed=1 live=0") as exc_info:
+        validate_env_parity(
+            plist,
+            smoke_auto_promote="1",
+            repo_plist_path=repo_plist,
+            live_env_reader=live_reader,
+        )
+
+    message = str(exc_info.value)
+    assert "bootout+bootstrap" in message
+    assert "com.akb2.main-pipeline" in message
+
+
+def test_validate_env_parity_live_green_when_three_way_matches(tmp_path: Path) -> None:
+    """repo=installed=live 三方一致 → passed，live 腿不误伤正常部署。"""
+    script = tmp_path / "akb2-main-pipeline.sh"
+    script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    os.chmod(script, 0o755)
+    plist = tmp_path / "com.akb2.main-pipeline.plist"
+    repo_plist = tmp_path / "repo.plist"
+    _write_plist(plist, script, tmp_path, tmp_path / "logs" / "runner.log", auto_promote="1")
+    _write_plist(
+        repo_plist, script, tmp_path, tmp_path / "logs" / "repo.log", auto_promote="1"
+    )
+
+    result = validate_env_parity(
+        plist,
+        smoke_auto_promote="1",
+        repo_plist_path=repo_plist,
+        live_env_reader=_live_reader_returning(
+            {"AKB2_AUTO_PROMOTE": "1", "AKB2_AMENDMENT_APPLIED": "0"}
+        ),
+    )
+
+    assert result["passed"] is True
+    assert result["plist_mode"] == "active"
+
+
+def test_validate_env_parity_live_missing_reader_fails_closed(tmp_path: Path) -> None:
+    """live 读取失败（job 未加载/launchctl rc!=0）→ fail-closed，不得当绿。
+
+    缺 live 句柄 = 无法完成三方判定；跳过等于把 F0 那扇门重新打开。
+    """
+    script = tmp_path / "akb2-main-pipeline.sh"
+    script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    os.chmod(script, 0o755)
+    plist = tmp_path / "com.akb2.main-pipeline.plist"
+    _write_plist(plist, script, tmp_path, tmp_path / "logs" / "runner.log", auto_promote="1")
+
+    from src.akb2.quality.smoke_validator import SmokeValidationError as SVE
+
+    def broken_reader(label: str) -> dict[str, str]:
+        raise SVE(f"cannot read live launchd job {label}: launchctl print rc=113")
+
+    with pytest.raises(SmokeValidationError, match="rc=113"):
+        validate_env_parity(
+            plist, smoke_auto_promote="1", live_env_reader=broken_reader
+        )
+
+
+def test_env_parity_cli_defaults_to_live_reader_no_job_loaded_fails_closed(
+    tmp_path: Path,
+) -> None:
+    """CLI --mode env-parity 默认注入真 launchctl 读取 → 无加载 job 必 fail-closed。
+
+    本机/CI 未加载 com.akb2.main-pipeline（rc=113），正好当「缺 live 句柄」
+    的真实验证：函数入口与 CLI 同一套判定，且生产入口无法静默跳过 live 腿。
+    """
+    from src.akb2.quality import smoke_validator as sv
+
+    script = tmp_path / "akb2-main-pipeline.sh"
+    script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    os.chmod(script, 0o755)
+    plist = tmp_path / "com.akb2.main-pipeline.plist"
+    _write_plist(plist, script, tmp_path, tmp_path / "logs" / "runner.log", auto_promote="1")
+
+    # rc=113（job 未加载）在测试机上稳定复现；若真机恰好加载了 job 且三方
+    # 一致，这里会得到 0 —— 与「无 job 必红」同样证明 CLI 走到了 live 腿。
+    rc = sv.main(
+        ["--mode", "env-parity", "--plist", str(plist), "--smoke-auto-promote", "1"]
+    )
+    job_loaded = (
+        subprocess.run(
+            ["launchctl", "print", f"gui/{os.getuid()}/com.akb2.main-pipeline"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).returncode
+        == 0
+    )
+    if not job_loaded:
+        assert rc == 1, "job 未加载时 CLI env-parity 必须 fail-closed rc=1"
+
+
+def test_validate_launchd_static_live_drift_also_fails(tmp_path: Path) -> None:
+    """launchd-static 与 env-parity 同一 owner 判定：live 漂移在两模式都红。"""
+    script = tmp_path / "akb2-main-pipeline.sh"
+    script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    os.chmod(script, 0o755)
+    plist = tmp_path / "com.akb2.main-pipeline.plist"
+    _write_plist(plist, script, tmp_path, tmp_path / "logs" / "runner.log", auto_promote="1")
+
+    with pytest.raises(SmokeValidationError, match="installed=1 live=0"):
+        validate_launchd_static(
+            plist,
+            expected_mode="active",
+            live_env_reader=_live_reader_returning({"AKB2_AUTO_PROMOTE": "0"}),
+        )
+
+    # live 一致时同一入口正常通过
+    result = validate_launchd_static(
+        plist,
+        expected_mode="active",
+        live_env_reader=_live_reader_returning(
+            {"AKB2_AUTO_PROMOTE": "1", "AKB2_AMENDMENT_APPLIED": "0"}
+        ),
+    )
+    assert result["passed"] is True
 
 
 def test_validate_root_isolation_metadata(tmp_path: Path) -> None:

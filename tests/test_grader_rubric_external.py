@@ -42,7 +42,12 @@ def _mock_route_returns(content: dict | str):
 
 
 def _write_tmp_rubric(tmp_dir: Path, weight: float, threshold: float) -> None:
-    """在 tmp_dir 写一份改了全局 weight/threshold 的 rubric.yaml + 配套 10-dimensions.md。"""
+    """在 tmp_dir 写一份改了全局 weight/threshold 的 rubric.yaml + 配套 10-dimensions.md。
+
+    intake-rebuild p4：tmp spec 须过 _load_rubric_spec 全量校验——
+    每车道 dimensions 4–5 项（name+weight）、integrity_floor 恰 4 项全 hard、
+    lanes.<lane>.threshold 数值。车道地板用与生产一致的四成员名。
+    """
     dims = grader.RUBRIC_DIMENSIONS
 
     def _dim_block(indent: str) -> str:
@@ -50,13 +55,23 @@ def _write_tmp_rubric(tmp_dir: Path, weight: float, threshold: float) -> None:
             f'{indent}- name: "{d}"\n{indent}  weight: {weight}' for d in dims
         )
 
+    def _floor_block(indent: str) -> str:
+        names = [
+            "论断锚定率(raw-anchor)",
+            "证据诚实",
+            "解读分离(F3溯源)",
+            "车道核心价值",
+        ]
+        return "\n".join(
+            f'{indent}- name: "{n}"\n{indent}  hard: true\n{indent}  evaluated_by: structural'
+            for n in names
+        )
+
     rubric = f"""rubric_version: "{grader.REQUIRED_RUBRIC_VERSION}"
 dimensions:
 {_dim_block("  ")}
 integrity_floor:
-  - name: "论断锚定率(raw-anchor)"
-    hard: true
-    evaluated_by: structural
+{_floor_block("  ")}
 threshold: {threshold}
 lanes:
   procedural:
@@ -64,9 +79,7 @@ lanes:
     dimensions:
 {_dim_block("      ")}
     integrity_floor:
-      - name: "论断锚定率(raw-anchor)"
-        hard: true
-        evaluated_by: structural
+{_floor_block("      ")}
 """
     (tmp_dir / "rubric.yaml").write_text(rubric, encoding="utf-8")
     # 配套 md（_load_rubric_text 读它验版本 = REQUIRED_RUBRIC_VERSION + 维名在文本里）

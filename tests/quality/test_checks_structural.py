@@ -1457,8 +1457,9 @@ class TestSGMustCoverCallSiteProvenance:
         assert "raw_content: str," in src
         # raw_content 源头是磁盘读真实 raw 文件。
         assert "raw_content = raw_file.read_text(encoding=\"utf-8\")" in src
-        # run_repair_loop 接收的 raw_text 同源 raw_content。
-        assert "raw_text=raw_content," in src
+        # P1 重构（drop-repair-residency）：run_repair_loop 调用点已从 runner 删除
+        # （raw_text=raw_content 是其调用形态锁）。改钉「不回潮」。
+        assert "raw_text=raw_content," not in src, "repair 调用点不得回到 runner"
 
     def test_smoke_validator_callsite_reads_raw_from_disk_or_none(self):
         """smoke_validator.py: raw_content 来自 _load_candidate_raw 读盘；缺失显式 None。"""

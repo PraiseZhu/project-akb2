@@ -1,8 +1,11 @@
-"""test_runner_lane_threading.py — step-1 content_lane 贯穿全链到 ledger。
+"""test_runner_lane_threading.py — content_lane 贯穿全链到 ledger（intake-rebuild p5 契约）。
 
-覆盖 SC-6:
+覆盖 SC-6 + sc-p5-add-pattern-design:
     - lane_visible_in_ledger: lane 贯穿全链——grader/repair/runner 入口可见，
       并向 ledger 写出（账本事件含 details.content_lane）。
+    - p5: admission 输出侧的 tutorial canonical（procedural 别名已归一）流经
+      runner 侧 payload/账本；pattern/design 三车道在 runner 入口的 attempt
+      预算与穿线不回归。
 """
 
 from __future__ import annotations
@@ -15,7 +18,10 @@ import pytest
 
 from src.akb2.quality import grader, repair, runner
 from src.akb2.quality.admission import (
-    LANE_PROCEDURAL,
+    LANE_CONCEPT,
+    LANE_DESIGN,
+    LANE_PATTERN,
+    LANE_TUTORIAL,
     AdmissionCheck,
     _log_rejection,
 )
@@ -34,7 +40,7 @@ class TestLaneVisibleInLedger:
             "raw/proc--raw--2026-06-26.md",
             checks,
             str(ledger_path),
-            content_lane=LANE_PROCEDURAL,
+            content_lane=LANE_TUTORIAL,
         )
         lines = [
             json.loads(line)
@@ -44,7 +50,7 @@ class TestLaneVisibleInLedger:
         assert lines, "拒收应落账"
         details = lines[0]["details"]
         assert "content_lane" in details, "账本事件 details 必须含 content_lane 键"
-        assert details["content_lane"] == LANE_PROCEDURAL
+        assert details["content_lane"] == LANE_TUTORIAL
 
     def test_runner_admission_segment_returns_lane(self) -> None:
         """runner._run_admission_segment 返回 4 元组（末位 content_lane），lane 在 runner 入口可见。"""
@@ -65,10 +71,13 @@ class TestLaneVisibleInLedger:
             in inspect.signature(runner._run_quality_segments).parameters
         )
 
+    @pytest.mark.parametrize(
+        "lane", [LANE_CONCEPT, LANE_TUTORIAL, LANE_PATTERN, LANE_DESIGN]
+    )
     def test_pipeline_admission_event_carries_lane(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lane: str
     ) -> None:
-        """pipeline 准入通过事件向 ledger 写 content_lane（端到端穿线，mock 下游段）。"""
+        """pipeline 准入通过事件向 ledger 写 content_lane（四车道端到端穿线，mock 下游段）。"""
         config = runner.RunnerConfig(
             raw_dir=str(tmp_path / "raw"),
             ledger_path=str(tmp_path / "ledger.jsonl"),
@@ -90,11 +99,11 @@ class TestLaneVisibleInLedger:
                 "source_paths": [],
             },
         )
-        # admission 返回 4 元组携 lane（procedural 通过）
+        # admission 返回 4 元组携 lane（该车道通过）
         monkeypatch.setattr(
             runner,
             "_run_admission_segment",
-            lambda *a, **k: (True, "", [], LANE_PROCEDURAL),
+            lambda *a, **k: (True, "", [], lane),
         )
         # 下游 distill 直接失败停链（聚焦验证 admission 事件已写 lane）
         monkeypatch.setattr(
@@ -105,7 +114,7 @@ class TestLaneVisibleInLedger:
         monkeypatch.setattr(runner, "_existing_source_page_for_raw", lambda *a, **k: None)
 
         runner._run_pipeline_segments(
-            "raw/proc--raw--2026-06-26.md", "RAW BODY", config
+            f"raw/{lane}--raw--2026-06-26.md", "RAW BODY", config
         )
 
         lines = [
@@ -117,7 +126,48 @@ class TestLaneVisibleInLedger:
             e for e in lines if e["event"] == "admission" and e["details"].get("passed")
         ]
         assert admission_events, "应有准入通过事件"
-        assert admission_events[0]["details"].get("content_lane") == LANE_PROCEDURAL
+        assert admission_events[0]["details"].get("content_lane") == lane
+
+    def test_pipeline_extract_max_attempts_per_lane(self) -> None:
+        """p5：attempt 预算按车道——concept=4（F32 质量重试 +1），tutorial/pattern/design=3。
+
+        admission 输出侧 procedural 已归一 tutorial；runner._extract_max_attempts
+        对三新车道与旧操作型同预算（无 F32），账本 retries_used ≤ max 自洽。
+        """
+        assert runner._extract_max_attempts(LANE_CONCEPT) == 4
+        assert runner._extract_max_attempts(LANE_TUTORIAL) == 3
+        assert runner._extract_max_attempts(LANE_PATTERN) == 3
+        assert runner._extract_max_attempts(LANE_DESIGN) == 3
+
+    def test_worker_payload_carries_tutorial_canonical(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """p5：runner worker payload 携 admission canonical lane（tutorial）穿子进程。"""
+        captured: dict = {}
+
+        class _FakeProc:
+            returncode = 0
+            pid = 99999
+
+            def communicate(self, input=None, timeout=None):
+                captured["input"] = input
+                return (
+                    json.dumps(
+                        {"success": True, "data": {}, "retries_used": 0, "error": ""}
+                    ),
+                    "",
+                )
+
+            def poll(self):
+                return 0
+
+        def _fake_popen(cmd, **kwargs):
+            return _FakeProc()
+
+        monkeypatch.setattr(runner.subprocess, "Popen", _fake_popen)
+        runner._run_extract_claims_worker("RAW", content_lane=LANE_TUTORIAL)
+        payload = json.loads(captured["input"])
+        assert payload["content_lane"] == LANE_TUTORIAL
 
 
 class TestVaultConceptIndexLoader:

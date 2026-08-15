@@ -94,6 +94,30 @@ launchctl unload ~/Library/LaunchAgents/com.akb2.briefing.plist
 launchctl load ~/Library/LaunchAgents/com.akb2.briefing.plist
 ```
 
+## main-pipeline plist 改动后的重载纪律（bootout + bootstrap）
+
+`com.akb2.main-pipeline` 是 KeepAlive 常驻 runner daemon。**改了已安装的
+`~/Library/LaunchAgents/com.akb2.main-pipeline.plist` 之后**——包括下方「跨机并跑」各方案
+往 `EnvironmentVariables` 加 `AKB2_RUNNER_SHARDS` / `AKB2_RUNNER_REQUIRE_SHARDING` /
+`AKB2_RUNNER_SHARD_TAKEOVER`，以及任何 ProgramArguments / KeepAlive / 日志路径改动——
+**必须**用 `bootout` + `bootstrap` 成对执行，让 launchd 丢弃旧配置、按新 plist 重新拉起：
+
+```bash
+launchctl bootout gui/$(id -u)/com.akb2.main-pipeline
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.akb2.main-pipeline.plist
+```
+
+验证新配置已生效（服务存在且 state = running，启动日志里分片/互斥配置是新值）：
+
+```bash
+launchctl print gui/$(id -u)/com.akb2.main-pipeline | grep -E "state|program"
+```
+
+**禁止把 `launchctl load` 当重载用**：对一个已加载的服务再执行 `load`，launchd 不会用新
+plist 内容替换旧实例——命令看似成功，daemon 跑的还是旧配置（典型症状：改了分片 env 但
+启动日志里的分片没变）。`load`/`unload` 是 deprecated 的遗留接口，本服务统一按上面的
+`bootout` + `bootstrap` 走。
+
 ## Verification (SC-7/SC-8)
 
 After the first scheduled run, verify output:
@@ -187,7 +211,8 @@ logs/akb2-quality-runner.log`）。想让它硬闸，在 plist 的 `EnvironmentV
 ```
 
 此时未配分片 → runner 直接 FATAL 退出（`launchctl` 会按 ThrottleInterval 重试并在日志留痕），
-不会静默双跑。
+不会静默双跑。改完 plist 记得按上文「main-pipeline plist 改动后的重载纪律」执行
+`bootout` + `bootstrap`，只 `load` 不会让新配置生效。
 
 ### 方案 B：分片并跑（两台都要处理队列时）
 
@@ -201,7 +226,9 @@ logs/akb2-quality-runner.log`）。想让它硬闸，在 plist 的 `EnvironmentV
 | Mac Mini | `AKB2_RUNNER_SHARDS=8-15` |
 
 写法：`all`（或不设）= 独占全部、`3`、`0-7`、`0,3,5-6`。**非法写法直接 FATAL**，不会静默
-退化成"独占全部"。启动日志会打印本机分片，两台核对一次即可确认没有交集。
+退化成"独占全部"。启动日志会打印本机分片，两台核对一次即可确认没有交集。改完 plist 记得
+按上文「main-pipeline plist 改动后的重载纪律」执行 `bootout` + `bootstrap`，只 `load` 不会
+让新配置生效。
 
 分片有效性的前提是两台的并集覆盖 0..15；漏配的分片没人处理，只能靠下面的接管。
 
@@ -218,6 +245,8 @@ logs/akb2-quality-runner.log`）。想让它硬闸，在 plist 的 `EnvironmentV
 才允许接管，每次接管在日志打印 `接管外机分片项: shard=… 已滞留 …s`。未超时的项绝不抢。
 
 ⚠️ **两台都开 takeover = 又变成同时抢同一篇**。接管默认关闭，就是为了让这件事必须显式决定。
+同上，改完 plist 记得按上文「main-pipeline plist 改动后的重载纪律」执行 `bootout` +
+`bootstrap`，只 `load` 不会让新配置生效。
 
 ### intake 游标仍在仓库内（需人工改 plist）
 

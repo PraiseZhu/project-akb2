@@ -7,9 +7,11 @@ extract_worker_timeout),≈21 篇已过准入的合格候选每天白死。根�
    里没进探测 → F39 永不触发。
 2. 指纹表缺 "调用超时" / "extract_worker_timeout" 两种账本实际形态。
 
-另修 F50 半生效:_needs_repair_event_count 数全史,requeue(全链重掷出新文本)
-后不清零 → 重掷者新文本只拿 1/3 驻留额度。改为代际计数(requeue 处清零);
-有界性不破——每 hash 的 requeue 来源各有一生一次预算(F39/F50)。
+P1 重构(drop-repair-residency,2026-08):驻留通路删除后,本文件锁
+「基础设施失败按 content hash 至多重掷 1 次」(AUTO_INFRA_REQUEUE_MAX=1):
+    - 超时/传输/上游 400 指纹命中 → 第一次 abort 自动 requeue 一次
+    - 同 hash 第二次 infra 死 → 终态,不再 requeue(预算一生一次)
+    - 内容性死因永不触发(质量否决不重掷)
 """
 
 from __future__ import annotations
@@ -20,9 +22,9 @@ from pathlib import Path
 
 from src.akb2.quality import runner
 from src.akb2.quality.runner import (
+    AUTO_INFRA_REQUEUE_MAX,
     _is_infra_error,
     _maybe_auto_infra_requeue,
-    _needs_repair_event_count,
 )
 
 
@@ -106,6 +108,10 @@ class TestExtractAbortWiring:
 
 
 class TestAutoRequeueBudget:
+    def test_budget_is_named_constant_one(self) -> None:
+        """SC3 锁定:infra 重掷预算是具名常量且 == 1(宪法 P1 有界)。"""
+        assert AUTO_INFRA_REQUEUE_MAX == 1
+
     def test_timeout_death_requeued_once(self, tmp_path: Path) -> None:
         cfg, ledger = _mk_config(tmp_path)
         h = "timeout000000001"
@@ -119,29 +125,3 @@ class TestAutoRequeueBudget:
         requeues = [e for e in _events(ledger, h) if e["event"] == "requeue"]
         assert len(requeues) == 1
         assert requeues[0]["details"]["reason"].startswith("auto_infra_retry(F39)")
-
-
-class TestRetakeGenerationReset:
-    def test_count_resets_after_requeue(self, tmp_path: Path) -> None:
-        """F51: requeue = 新一代文本,驻留额度重新计数。"""
-        cfg, ledger = _mk_config(tmp_path)
-        h = "gen0000000000001"
-        for _ in range(3):
-            _append_event(ledger, h, "needs_repair")
-        assert _needs_repair_event_count(h, cfg.ledger_path) == 3
-
-        _append_event(ledger, h, "requeue")
-        assert _needs_repair_event_count(h, cfg.ledger_path) == 0, "重掷后清零"
-
-        _append_event(ledger, h, "needs_repair")
-        assert _needs_repair_event_count(h, cfg.ledger_path) == 1
-
-    def test_no_requeue_keeps_lifetime_count(self, tmp_path: Path) -> None:
-        """无 requeue 时语义与 F46 原版一致(僵尸 expired 判定不受影响)。"""
-        cfg, ledger = _mk_config(tmp_path)
-        h = "nogen00000000001"
-        _append_event(ledger, h, "intake_raw")
-        _append_event(ledger, h, "needs_repair")
-        _append_event(ledger, h, "abort")
-        _append_event(ledger, h, "needs_repair")
-        assert _needs_repair_event_count(h, cfg.ledger_path) == 2

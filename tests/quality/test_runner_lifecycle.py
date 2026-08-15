@@ -28,7 +28,11 @@ def _make_runner_config(
     auto_promote: bool = False,
     poll_interval: int = 1,
 ) -> RunnerConfig:
-    """创建测试用的 RunnerConfig。"""
+    """创建测试用的 RunnerConfig。
+
+    auto_promote 形参仅为兼容既有调用点保留（p2 已拆双模式开关，字段已删），
+    传入任何值都不再影响行为。
+    """
     from src.akb2.quality.runner import RunnerConfig as RC
 
     raw_dir = tmp_path / "raw"
@@ -46,7 +50,6 @@ def _make_runner_config(
         failures_path=str(tmp_path / "failures.jsonl"),
         grader_result_dir=str(grader_dir),
         poll_interval_seconds=poll_interval,
-        auto_promote=auto_promote,
     )
 
 
@@ -632,9 +635,9 @@ class TestRunnerLifelineSegments:
                     )
 
         assert result["converged"] is False
-        # F46: 内容不收敛(distill_no_converge)路由到 needs_repair 驻留(非 abort),
-        # 仍停链(无 promote);infra/过程性死亡才走 failed。
-        assert result["final_status"] in ("needs_repair", "failed", "quarantined")
+        # P1 重构:内容不收敛(distill_no_converge)直接 abort 终态(驻留已删),
+        # fail-visible 停链(无 promote)。
+        assert result["final_status"] == "failed"
         assert not result.get("promoted")
 
     def test_repair_route_failed_writes_abort_without_promote(self, tmp_path: Path) -> None:
@@ -766,8 +769,13 @@ class TestRunnerLifelineSegments:
         assert "finalize" not in events
         mock_promote.assert_not_called()
 
-    def test_structural_defects_enter_repair_before_abort(self, tmp_path: Path) -> None:
-        """A 层结构缺陷必须进入 repair，不能在 structural_fail 处提前停链。"""
+    def test_structural_defects_are_terminal_after_repair_removal(self, tmp_path: Path) -> None:
+        """P1 重构后:A 层结构缺陷 → 直接终态拒绝(repair 循环已删)。
+
+        旧语义"结构缺陷进 repair 修复再收敛"随 repair 循环删除;新语义是
+        blocking 缺陷(含 A 层)存在即 converged=False + blocking_defects_present,
+        不再重写候选文本、不落 grader PASS、repair 入口零调用。
+        """
         from src.akb2.quality.checks_structural import Defect
         from src.akb2.quality.runner import _run_quality_segments
 
@@ -789,20 +797,7 @@ class TestRunnerLifelineSegments:
         ) as mock_self_gate, mock.patch(
             "src.akb2.quality.grader.run_grader_detailed"
         ) as mock_grader, mock.patch(
-            "src.akb2.quality.repair.run_repair_loop",
-            return_value={
-                "converged": True,
-                "rounds": 1,
-                "final_text": "candidate repaired",
-                "final_defects": [],
-                "trace_paths": ["trace.json"],
-                "final_grader_meta": {
-                    "grader_model_used": "gpt-5.4",
-                    "grader_primary_model": "gpt-5.4",
-                    "grader_fallback_used": False,
-                    "grader_suspended": False,
-                },
-            },
+            "src.akb2.quality.repair.run_repair_loop"
         ) as mock_repair:
             converged, error_class, error_detail, meta = _run_quality_segments(
                 candidate.read_text(encoding="utf-8"),
@@ -812,25 +807,21 @@ class TestRunnerLifelineSegments:
                 grader_path,
             )
 
-        assert converged is True
-        assert error_class == ""
-        assert error_detail == ""
+        assert converged is False
+        assert error_class == "blocking_defects_present"
+        assert "blocking 缺陷" in error_detail
         mock_self_gate.assert_called_once()
         mock_grader.assert_not_called()
-        mock_repair.assert_called_once()
-        assert mock_repair.call_args.kwargs["a_defects"] == [initial_defect]
-        assert mock_repair.call_args.kwargs["b_defects"] == []
+        mock_repair.assert_not_called()
         assert meta["a_defect_count"] == 1
-        assert meta["repair_rounds"] == 1
-        assert meta["repair_trace_paths"] == ["trace.json"]
-        assert meta["grader_model_used"] == "gpt-5.4"
-        assert candidate.read_text(encoding="utf-8") == "candidate repaired"
-        persisted = json.loads(grader_path.read_text(encoding="utf-8"))
-        assert persisted["status"] == "PASS"
-        assert persisted["model_used"] == "gpt-5.4"
+        assert meta["repair_rounds"] == 0
+        assert meta["final_defects_summary"][0]["dimension"] == "A7-图谱证据"
+        # 候选不被重写(无 repair 重写路径);不落 PASS artifact(未收敛)
+        assert candidate.read_text(encoding="utf-8") == "candidate with structural issue"
+        assert not grader_path.exists()
 
     def test_promote_proposal_mode_no_active_write(self, tmp_path: Path) -> None:
-        """提议模式 (AKB2_AUTO_PROMOTE=0): 不写 active。"""
+        """promote 成功（snapshot_id 语义单一）→ mode=active、final_status=promoted。"""
         from src.akb2.quality.runner import (
             _run_pipeline_segments,
         )
@@ -868,19 +859,19 @@ class TestRunnerLifelineSegments:
                     ) as mock_promote:
                         mock_promote.return_value = (
                             True,
-                            "proposal",
-                            "Proposal mode: no active write",
+                            "active",
+                            "Auto-promote success",
                         )
                         result = _run_pipeline_segments(
                             str(f), str(f.read_text(encoding="utf-8")), config
                         )
 
         assert result["converged"] is True
-        assert result["promotion_mode"] == "proposal"
-        # §0.2/F4：proposal mode（AUTO_PROMOTE=0, promoted=True）→ final_status=proposal_passed
-        # （旧 buggy 写 "promoted"，F4 修正为 proposal_passed，避免与 active 混淆）
-        assert result["final_status"] == "proposal_passed"
-        assert result["promotion_outcome"] == "proposal_passed"
+        assert result["promotion_mode"] == "active"
+        # p2 拆双模式开关后：promoted=True → final_status=promoted、
+        # promotion_outcome=active_promoted（proposal 口径已退场）
+        assert result["final_status"] == "promoted"
+        assert result["promotion_outcome"] == "active_promoted"
 
     def test_grade_llm_logs_final_zero_after_repair(self, tmp_path: Path) -> None:
         """repair 收敛后 grade_llm.defect_count 表示最终缺陷数，初始缺陷另存。"""
@@ -1679,10 +1670,10 @@ class TestRegradeSampleRejectsDegradedGrader:
 
         assert results == [False], "有缺陷的非 degraded 结果必须判 fail"
 
-    def test_f4_promote_failure_returns_promotion_blocked_not_proposal_passed(self, tmp_path: Path) -> None:
-        """§0.2/F4：promote failure（gates fail）→ final_status=promotion_blocked（不返 proposal_passed）。
+    def test_f4_promote_failure_returns_promotion_blocked(self, tmp_path: Path) -> None:
+        """§0.2/F4：promote failure（gates fail）→ final_status=promotion_blocked。
 
-        旧 buggy：blocked 时 final_status 仍写 proposal_passed（矛盾）。F4 修正。
+        旧 buggy：blocked 时 final_status 仍写成功终态（矛盾）。F4 修正。
         """
         from src.akb2.quality.runner import _run_pipeline_segments
 
@@ -1703,11 +1694,13 @@ class TestRegradeSampleRejectsDegradedGrader:
             mock_qual.return_value = (True, "", "", {"repair_trace_paths": []})
             # promote failure（gates fail → promoted=False）
             mock_promote.return_value = (False, "proposal", "Gate-5 grader FAIL")
+            # 注：mode 位置传 "proposal" 仅为模拟异常返回形态，runner 的 blocked
+            # 判定只看 promoted 布尔，不受该字符串影响。
             result = _run_pipeline_segments(str(f), str(f.read_text(encoding="utf-8")), config)
 
         assert result["converged"] is True
         assert result["promoted"] is False
-        # F4：blocked → final_status=promotion_blocked（不返 proposal_passed）
+        # F4：blocked → final_status=promotion_blocked（不返成功终态）
         assert result["final_status"] == "promotion_blocked", (
             f"promote failure 应 final_status=promotion_blocked, got {result['final_status']}"
         )

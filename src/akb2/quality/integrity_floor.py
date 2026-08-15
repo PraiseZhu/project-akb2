@@ -3,22 +3,33 @@
 step-3 SC-3b/SC-3h/A3-2/A3-5：循环1 在 distill 段评估结构化 extract 的四个完整性地板成员，
 任一 fail → FloorResult.passed=False，runner 评分段 early-return 直接 reject、加权分函数 NOT 调用。
 
-四成员（concept，全 evaluated_by=structural）：
+intake-rebuild p4：四成员对**全车道**生效（concept / procedural / tutorial 别名 /
+未来 pattern-design 车道同一入口）；④按车道分支判据，成员集不随车道增减。
+
+四成员（全车道，全 evaluated_by=structural）：
   ① claim_anchor_rate     — 每条 source_grounded claim 都带真实 anchor（覆盖率<100% fail，A3-2，
                             区别于 SG-raw-anchor 的「有任意锚点」）
   ② evidence_honesty      — 证据地图含「未覆盖」列且 ≥1 行标真实盲区（裸来源断言 fail，A3-2）
   ③ interpretation_traceability(层①) — 每条 akb_interpretation 带 traces_to 指向 claims 中真实
                             存在的 source_grounded anchor（确定性 pre-grader 地板；F3 层② entailment
                             由 grader 异族硬判，见 grader.interpretation_entailment）
-  ④ F4 车道核心价值        — concept: ≥3 唯一命名组件 + ≥1 eligible edge（source_causal/
-                            llm_evidence 带 evidence + evidence_anchor ∈ raw 声明全集）；
+  ④ F4 车道核心价值        — **仅 concept** 车道: ≥3 唯一命名组件 + ≥1 eligible edge
+                            （source_causal/llm_evidence 带 evidence + evidence_anchor
+                            且 ∈ raw 声明全集）；
                             inferred_from_structure 弱边不计 F4；0 eligible fail（§0.2 D1+F1）；
-                            procedural: H1≥1
+                            tutorial/procedural（含空/未知车道，fail-closed 偏严默认）:
+                            how_steps 中 ≥1 条 how_level==H1 命令级步骤（H1≥1）；
+                            pattern/design: ≥1 条可锚定的 H3/H2 how_step（anchor ∈ raw
+                            真实声明集，伪 §Z 不算；GPT 单审 P1 车道化——pattern/design
+                            的车道核心价值是可复用模式/设计决策，不是命令，对齐 distill
+                            p5 车道内芯「command=""、executable=false、仅原文有命令才标
+                            H1」的抽取契约；不得误用 concept 组件阈值）
 
 设计原则：
 - 二值（pass/fail），无连续分（宪法原则 8）。
 - 不可补偿：任一 fail 即 reject，与加权质量分无关（加权分只在地板全 pass 后才算）。
-- 结构真相源：F4 只读 mechanism_components/causal_edges 结构字段，不从自然语言/H3 标签反解。
+- 结构真相源：F4 只读 mechanism_components/causal_edges/how_steps 结构字段，
+  不从自然语言/H3 标签反解。
 """
 
 from __future__ import annotations
@@ -33,6 +44,12 @@ FLOOR_CORE_VALUE_F4 = "core_value_f4"
 
 # concept F4 命名机制组件下限（与 distill.CONCEPT_MIN_MECHANISM_COMPONENTS 同语义）
 CONCEPT_MIN_MECHANISM_COMPONENTS: int = 3
+
+# F4 车道化（GPT 单审 P1）：pattern/design 的核心条目 how_level 门——H3/H2 计，
+# H1 不计（车道核心价值是模式/决策，非命令）。tutorial/procedural/空/未知车道
+# 保持旧 H1≥1 门（fail-closed 偏严默认）。
+LANE_CORE_HOW_LEVELS: tuple[str, ...] = ("H3", "H2")
+_LANE_CORE_VALUE_LANES: frozenset[str] = frozenset({"pattern", "design"})
 
 # 证据盲区词（与 distill._validate_extract_output 的 gap_words 同源）——
 # evidence_honesty 要求 ≥1 条 claim 标注真实盲区，盲区文本须含这些词之一。
@@ -255,7 +272,12 @@ def _core_value_f4_failed(
     审语义）。0 eligible edge → F4 fail（runner 据需 retake 信号补抽，仍 0 才 fail-closed）。
 
     - concept: ≥3 唯一命名组件 + ≥1 eligible edge（anchor 必须真实）。
-    - procedural: how_steps 中至少 1 条 how_level==H1（命令级），即 H1≥1。
+    - tutorial/procedural（含空/未知车道，旧默认 fail-closed 偏严）: how_steps 中
+      至少 1 条 how_level==H1（命令级），即 H1≥1。
+    - pattern/design（GPT 单审 P1 车道化）: how_steps 中至少 1 条可锚定的
+      H3/H2 核心条目——anchor ∈ 可信 raw anchor 集（与 eligible edge 同口径，
+      伪 §Z/空锚不算）。不要求 H1：车道核心价值是可复用模式/设计决策，
+      对齐 distill p5 内芯「command=""、executable=false、仅原文有命令才标 H1」。
     """
     if _is_concept_lane(content_lane):
         components = extract_data.get("mechanism_components", []) or []
@@ -289,8 +311,31 @@ def _core_value_f4_failed(
             )
         return False, ""
 
-    # procedural F4：H1≥1
+    # 非 concept 车道分支（GPT 单审 P1 车道化）：
+    # - pattern/design：≥1 条可锚定的 H3/H2 核心条目（anchor ∈ 可信 raw anchor 集，
+    #   与 concept eligible edge 同用 _trusted_raw_anchors 口径——只认 raw 真实声明
+    #   §X 全集，伪 §Z/空锚/无 raw_anchors（trusted=∅）一律不算，fail-closed 不放水）。
+    # - tutorial/procedural/空/未知车道：保持旧 H1≥1 命令门（偏严默认，不放松）。
     how_steps = extract_data.get("how_steps", []) or []
+    lane = str(content_lane or "").strip().lower()
+    if lane in _LANE_CORE_VALUE_LANES:
+        trusted = _trusted_raw_anchors(extract_data, raw_anchors)
+        core_count = sum(
+            1
+            for s in how_steps
+            if isinstance(s, dict)
+            and s.get("how_level") in LANE_CORE_HOW_LEVELS
+            and str(s.get("anchor", "")).strip() in trusted
+        )
+        if core_count < 1:
+            return True, (
+                f"{lane} F4：无可锚定的 H3/H2 核心条目（模式名+适用条件/设计决策+"
+                f"理由/效果，how_step 须挂真实 raw anchor；H1 命令不构成 {lane} 车道"
+                "核心价值）"
+            )
+        return False, ""
+
+    # tutorial/procedural/空/未知车道 F4：H1≥1（旧默认）
     h1_count = sum(
         1 for s in how_steps if isinstance(s, dict) and s.get("how_level") == "H1"
     )
@@ -304,7 +349,7 @@ def evaluate_integrity_floor(
     content_lane: str = "",
     raw_anchors: set[str] | None = None,
 ) -> FloorResult:
-    """评估完整性地板四成员（concept）/ 对应 procedural 成员。
+    """评估完整性地板四成员（全车道：①②③车道无关；④按车道分支判据）。
 
     任一成员 fail → passed=False；runner 评分段须先看本结果 early-return。
 

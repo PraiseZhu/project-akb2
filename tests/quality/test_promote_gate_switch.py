@@ -1,7 +1,8 @@
-"""SC-5.1 (master SC-7): AKB2_AUTO_PROMOTE=0 下 active 目录 tree_sha256 不变。
+"""sc-p2-drop-dual-mode / sc-p2-env-zero-mutation: promote 双模式拆除后，
+环境变量 AKB2_AUTO_PROMOTE 无论何值（0/未设置/垃圾值/1），六闸全过一律写 active。
 
-开关 0（默认/未设置/非 "1" 值一律按 0）时 promote 只走 gate --write-manifest
-提议路径，对 wiki/ active 区零写入。
+[P2 重构] 旧「开关 0 → proposal 模式零 active 写入」语义已废除——promote.py
+不再读取该环境变量，proposal 写路径（gate manifest only）已删除。
 """
 
 from __future__ import annotations
@@ -95,7 +96,7 @@ Q2: Test question two?
 
 | 2026-06-13 | Initial candidate | gate: null |""")
 
-    # 先有 active 文件（用于验证不变）
+    # 先有 active 文件（用于验证不被误改）
     active_file = vault / "wiki" / "sources" / "existing-active.md"
     active_file.write_text("""---
 page_status: active
@@ -109,33 +110,12 @@ This page should be unchanged.""")
     return vault
 
 
-def tree_sha256(directory: Path) -> str:
-    """计算目录下所有文件的聚合 SHA-256（同 conftest.py）。"""
-    import hashlib
-    h = hashlib.sha256()
-    files = sorted(
-        p for p in directory.rglob("*")
-        if p.is_file()
-        and p.name != ".DS_Store"
-        and p.suffix != ".pyc"
-        and "__pycache__" not in p.parts
-    )
-    for p in files:
-        h.update(str(p.relative_to(directory)).encode())
-        with open(p, "rb") as f:
-            for chunk in iter(lambda: f.read(65536), b""):
-                h.update(chunk)
-    return h.hexdigest()
-
-
 class TestPromoteGateSwitch:
-    """开关 0 下 active 目录不变。"""
+    """环境变量任何形态下六闸全过都写 active（p2-env-zero-mutation）。"""
 
-    def test_switch_0_keeps_active_unchanged(self, switch_vault_root: Path, monkeypatch):
-        """AKB2_AUTO_PROMOTE=0 时 evaluate_five_gates 不触发 active write。"""
-        # Mock subprocess 调用避免依赖真实 CLI
+    def _mock_gates_pass(self, monkeypatch):
+        """六闸全 mock 为过（gate CLI 10/10 + lint 0 + grader PASS）。"""
         import src.akb2.quality.promote as promote_mod
-        from src.akb2.quality.promote import evaluate_five_gates
 
         def mock_run_gate(*args, **kwargs):
             return True, "mock gate: 10/10 pass", {
@@ -148,107 +128,99 @@ class TestPromoteGateSwitch:
         def mock_run_lint(*args, **kwargs):
             return True, "mock lint: 0 findings"
 
+        def mock_grader(*args, **kwargs):
+            return True, "mock grader: PASS"
+
         monkeypatch.setattr(promote_mod, "_run_gate_check", mock_run_gate)
         monkeypatch.setattr(promote_mod, "_run_lint_check", mock_run_lint)
+        monkeypatch.setattr(promote_mod, "_read_grader_result", mock_grader)
 
-        active_dir = switch_vault_root / "wiki"
-        hash_before = tree_sha256(active_dir)
+    def _run_promote_env(self, switch_vault_root: Path, monkeypatch, env_value):
+        """在指定环境变量形态下跑 run_promote，返回结果三元组。"""
+        from src.akb2.quality.promote import run_promote
 
-        candidate = switch_vault_root / "staging" / "candidate" / "test-batch" / "test-switch.md"
+        if env_value is _UNSET:
+            monkeypatch.delenv("AKB2_AUTO_PROMOTE", raising=False)
+        else:
+            os.environ["AKB2_AUTO_PROMOTE"] = env_value
+
+        candidate = (
+            switch_vault_root / "staging" / "candidate" / "test-batch" / "test-switch.md"
+        )
         grader_path = switch_vault_root / "grader_result.json"
-        grader_path.write_text('{"status": "PASS", "dimensions_checked": 5, "findings": []}')
-
-        # 开关 0: 只评估五闸，不应写 active
-        os.environ["AKB2_AUTO_PROMOTE"] = "0"
+        grader_path.write_text(
+            '{"status": "PASS", "dimensions_checked": 5, "findings": []}'
+        )
         try:
-            gates_ok, failed_gate, detail = evaluate_five_gates(
-                candidate, switch_vault_root, grader_path
-            )
+            return run_promote(candidate, switch_vault_root, grader_path)
         finally:
             os.environ.pop("AKB2_AUTO_PROMOTE", None)
 
-        assert gates_ok is True, f"Gates should pass, got: {failed_gate}: {detail}"
-
-        hash_after = tree_sha256(active_dir)
-        assert hash_before == hash_after, (
-            f"Active directory tree_sha256 changed under AKB2_AUTO_PROMOTE=0: "
-            f"before={hash_before[:16]}..., after={hash_after[:16]}..."
+    def _assert_active_written(self, switch_vault_root: Path, result):
+        """断言升格成功 + active 已写 + 既有 active 页未被动。"""
+        success, detail, snapshot_id = result
+        active_path = switch_vault_root / "wiki" / "sources" / "test-switch.md"
+        assert success is True, f"六闸全过应升格成功: {detail}"
+        assert snapshot_id is not None, "双模式拆除后必须走快照+active 写入路径"
+        assert active_path.exists(), (
+            f"env 值不得影响写 active——active 页缺失: {detail}"
         )
+        active_text = active_path.read_text(encoding="utf-8")
+        assert "page_status: active" in active_text
+        assert "status: active" in active_text
+        # 既有 active 页不被误改（fixture 写入的原文仍完整）
+        existing = switch_vault_root / "wiki" / "sources" / "existing-active.md"
+        assert "This page should be unchanged." in existing.read_text(encoding="utf-8")
 
-    def test_switch_unset_defaults_to_0(self, switch_vault_root: Path, monkeypatch):
-        """未设置 AKB2_AUTO_PROMOTE 时默认行为等价于 0。"""
-        import src.akb2.quality.promote as promote_mod
-        from src.akb2.quality.promote import evaluate_five_gates
+    def test_env_zero_still_writes_active(self, switch_vault_root, monkeypatch):
+        """AKB2_AUTO_PROMOTE=0 + 六闸全过 → 仍写 active（不再走 proposal）。"""
+        self._mock_gates_pass(monkeypatch)
+        result = self._run_promote_env(switch_vault_root, monkeypatch, "0")
+        self._assert_active_written(switch_vault_root, result)
 
-        def mock_run_gate(*args, **kwargs):
-            return True, "mock", {
-                "proposed_gate_decision": "active",
-                "decision_confidence": "high",
-                "graph_readiness": "real_link",
-                "all_10_pass": True,
-            }
+    def test_env_unset_still_writes_active(self, switch_vault_root, monkeypatch):
+        """未设置 AKB2_AUTO_PROMOTE + 六闸全过 → 仍写 active。"""
+        self._mock_gates_pass(monkeypatch)
+        result = self._run_promote_env(switch_vault_root, monkeypatch, _UNSET)
+        self._assert_active_written(switch_vault_root, result)
 
-        def mock_run_lint(*args, **kwargs):
-            return True, "mock lint: 0 findings"
+    def test_env_invalid_values_still_write_active(self, switch_vault_root, monkeypatch):
+        """垃圾值（true/yes/2/on/enabled/空串）逐个 + 六闸全过 → 每次都写 active。"""
+        from src.akb2.quality.promote import run_promote
 
-        monkeypatch.setattr(promote_mod, "_run_gate_check", mock_run_gate)
-        monkeypatch.setattr(promote_mod, "_run_lint_check", mock_run_lint)
-
-        active_dir = switch_vault_root / "wiki"
-        hash_before = tree_sha256(active_dir)
-
-        candidate = switch_vault_root / "staging" / "candidate" / "test-batch" / "test-switch.md"
-        grader_path = switch_vault_root / "grader_result.json"
-        grader_path.write_text('{"status": "PASS", "dimensions_checked": 5, "findings": []}')
-
-        # 确保环境变量未设置
-        monkeypatch.delenv("AKB2_AUTO_PROMOTE", raising=False)
-
-        gates_ok, failed_gate, detail = evaluate_five_gates(
-            candidate, switch_vault_root, grader_path
-        )
-        assert gates_ok is True
-
-        hash_after = tree_sha256(active_dir)
-        assert hash_before == hash_after, "Active directory should be unchanged when env var unset"
-
-    def test_switch_invalid_value_treated_as_0(self, switch_vault_root: Path, monkeypatch):
-        """非 '1' 值一律按 0 处理。"""
-        import src.akb2.quality.promote as promote_mod
-        from src.akb2.quality.promote import evaluate_five_gates
-
-        def mock_run_gate(*args, **kwargs):
-            return True, "mock", {
-                "proposed_gate_decision": "active",
-                "decision_confidence": "high",
-                "graph_readiness": "real_link",
-                "all_10_pass": True,
-            }
-
-        def mock_run_lint(*args, **kwargs):
-            return True, "mock lint: 0 findings"
-
-        monkeypatch.setattr(promote_mod, "_run_gate_check", mock_run_gate)
-        monkeypatch.setattr(promote_mod, "_run_lint_check", mock_run_lint)
-
-        active_dir = switch_vault_root / "wiki"
-        hash_before = tree_sha256(active_dir)
-
-        candidate = switch_vault_root / "staging" / "candidate" / "test-batch" / "test-switch.md"
-        grader_path = switch_vault_root / "grader_result.json"
-        grader_path.write_text('{"status": "PASS", "dimensions_checked": 5, "findings": []}')
-
+        self._mock_gates_pass(monkeypatch)
         for bad_value in ["true", "yes", "2", "on", "enabled", ""]:
+            candidate = (
+                switch_vault_root
+                / "staging" / "candidate" / "test-batch" / "test-switch.md"
+            )
+            grader_path = switch_vault_root / "grader_result.json"
+            grader_path.write_text(
+                '{"status": "PASS", "dimensions_checked": 5, "findings": []}'
+            )
+            # 每轮删掉上一轮写入的 active，证明下一轮是重新写入而非残留
+            active_path = switch_vault_root / "wiki" / "sources" / "test-switch.md"
+            if active_path.exists():
+                active_path.unlink()
+
             os.environ["AKB2_AUTO_PROMOTE"] = bad_value
             try:
-                gates_ok, _, _ = evaluate_five_gates(
+                success, detail, snapshot_id = run_promote(
                     candidate, switch_vault_root, grader_path
                 )
-                assert gates_ok is True
             finally:
                 os.environ.pop("AKB2_AUTO_PROMOTE", None)
+            assert success is True, f"env={bad_value!r} 不应影响六闸判定: {detail}"
+            assert active_path.exists(), (
+                f"env={bad_value!r} 下六闸全过必须写 active（proposal 路径已拆除）"
+            )
 
-        hash_after = tree_sha256(active_dir)
-        assert hash_before == hash_after, (
-            "Active directory changed with invalid AKB2_AUTO_PROMOTE value"
-        )
+    def test_env_one_still_writes_active(self, switch_vault_root, monkeypatch):
+        """AKB2_AUTO_PROMOTE=1 + 六闸全过 → 写 active（对齐旧 auto 行为，回归锚点）。"""
+        self._mock_gates_pass(monkeypatch)
+        result = self._run_promote_env(switch_vault_root, monkeypatch, "1")
+        self._assert_active_written(switch_vault_root, result)
+
+
+# 哨兵：_run_promote_env 用它表示「删除环境变量」
+_UNSET = object()

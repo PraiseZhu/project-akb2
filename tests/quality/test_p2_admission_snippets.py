@@ -146,7 +146,6 @@ class TestLoaderCap200:
             failures_path=str(tmp_path / "failures.jsonl"),
             grader_result_dir=str(tmp_path / "grader"),
             poll_interval_seconds=1,
-            auto_promote=False,
         )
         index = runner._load_vault_concept_index(config, exclude_slug="")
         assert index["status"] == runner.LANE_INDEX_STATUS_OK

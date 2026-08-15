@@ -1,9 +1,8 @@
 """黄金样张端到端重放测试 — SC-6.2 (master SC-1)。
 
 两档:
-  - proposal_mode: 默认门 (AKB2_AUTO_PROMOTE=0)，断言 proposal manifest 产出，
-    active 目录 tree_sha256 不变，零 active 写入。
-  - post_amendment: 出厂正式门 (AKB2_AUTO_PROMOTE=1)，断言 14 步含 active 收尾
+  - proposal_mode: 默认门回放（校准管线可完整走通）。
+  - post_amendment: 出厂正式门，断言 14 步含 active 收尾
     (索引摘要行、概念回边、lint 0)。
 
 build 期只验证可收集 (pytest --collect-only)，不打真 API。
@@ -34,7 +33,7 @@ _GOLDEN_14_STEPS = [
 
 @pytest.mark.integration
 class TestGoldenReplayProposal:
-    """默认门 (AKB2_AUTO_PROMOTE=0): proposal mode。"""
+    """默认门回放: proposal mode。"""
 
     def test_proposal_mode_collectable(self) -> None:
         """build 期: 至少 1 用例可收集 (no errors)。"""
@@ -150,7 +149,7 @@ class TestGoldenReplayProposal:
 
 @pytest.mark.integration
 class TestGoldenReplayActive:
-    """出厂正式门 (AKB2_AUTO_PROMOTE=1): post-amendment mode。"""
+    """出厂正式门: post-amendment mode。"""
 
     def test_post_amendment_collectable(self) -> None:
         """build 期: 至少 1 用例可收集。"""
@@ -161,12 +160,10 @@ class TestGoldenReplayActive:
         """执行期: 14 步含 active 收尾。
 
         断言: 索引摘要行、概念回边、lint 0、factory_acceptance=true。
-        前置: vault 修宪已应用 + AKB2_AUTO_PROMOTE=1 + AKB2_AMENDMENT_APPLIED=1。
-        运行时: AKB2_RUN_INTEGRATION=1 AKB2_AUTO_PROMOTE=1 AKB2_AMENDMENT_APPLIED=1
+        前置: vault 修宪已应用 + AKB2_AMENDMENT_APPLIED=1。
+        运行时: AKB2_RUN_INTEGRATION=1 AKB2_AMENDMENT_APPLIED=1
                 python3 -m pytest ... -m 'integration and post_amendment'
         """
-        if os.environ.get("AKB2_AUTO_PROMOTE") != "1":
-            pytest.skip("AKB2_AUTO_PROMOTE=1 required")
         if os.environ.get("AKB2_AMENDMENT_APPLIED") != "1":
             pytest.skip("AKB2_AMENDMENT_APPLIED=1 required")
         if not os.environ.get("AKB2_RUN_INTEGRATION"):
