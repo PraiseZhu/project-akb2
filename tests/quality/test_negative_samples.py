@@ -96,7 +96,6 @@ class TestNegativeSamples:
     ) -> None:
         """洗稿型负样本被准入段拒收。"""
         from src.akb2.quality.admission import run_admission
-        from src.akb2.quality.llm_router import LLMResponse
         from tests.quality.conftest import make_mock_route_llm
 
         ledger_path = tmp_path / "test-ledger.jsonl"
