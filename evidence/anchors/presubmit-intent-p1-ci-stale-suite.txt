@@ -1,0 +1,1 @@
+intent-check.mjs --pr-body PR_BODY.md (in candidate clone): rc=0, status=OK; PR_BODY.md marker block and .pr-intent.md working copy digests match after rewrite to this run's goal (p0-ops-requeue-31 + p1-ci-stale-suite, ledger-computed 32 not constant 31). Presubmit artifact: presubmit/intent.json result=OK with candidate_sha=e3de4f9ebc10ab605cd865217721b6a4a72f961b.

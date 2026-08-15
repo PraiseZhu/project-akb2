@@ -1,0 +1,1 @@
+g2-verify.json: flock pin matched e3de4f9ebc10ab605cd865217721b6a4a72f961b; pytest tests/quality/test_grader_fallback.py tests/quality/test_grader_antifill.py => 10 passed in 0.36s; TESTS_STRICT_OK. Full strict cluster on e3de4f9: 114 passed (e2e-pytest.log).
