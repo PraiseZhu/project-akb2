@@ -190,5 +190,10 @@ def test_search_routing_skill_md(repo_root: Path):
     assert "[[wikilink]]" in content
     assert '--vault-root "/Users/praise/Obsidian/Praise Space/AKB2.0"' in content
     assert 'AKB2_ROOT="/Users/praise/Obsidian/Praise Space/AKB2.0"' in content
+    assert (
+        'PYTHONPATH=src python3 -m akb2.retrieval.cli search "<关键词>" '
+        '--limit 1000 --output json --vault-root '
+        '"/Users/praise/Obsidian/Praise Space/AKB2.0"'
+    ) in content
     assert "--vault-root /Users/praise/Obsidian\n" not in content
     assert "--vault-root /Users/praise/Obsidian " not in content

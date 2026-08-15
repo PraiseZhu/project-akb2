@@ -66,7 +66,7 @@ vault：`VAULT_ROOT` / `AKB2_ROOT` 优先。Mac mini 生产库是 `/Volumes/AKB2
 ```bash
 VAULT_ROOT=/Users/praise/Obsidian PYTHONPATH=src python3 -m akb2.retrieval.cli search "<关键词>" --limit 1000 --output json
 AKB2_ROOT="/Users/praise/Obsidian/Praise Space/AKB2.0" PYTHONPATH=src python3 -m akb2.retrieval.cli search "<关键词>" --limit 1000 --output json
-python3 -m akb2.retrieval.cli search "<关键词>" --limit 1000 --output json --vault-root "/Users/praise/Obsidian/Praise Space/AKB2.0"
+PYTHONPATH=src python3 -m akb2.retrieval.cli search "<关键词>" --limit 1000 --output json --vault-root "/Users/praise/Obsidian/Praise Space/AKB2.0"
 ```
 
 **工具库**：仍调 `akb_search` MCP，按 `scope=toolbox` 只留 toolbox/ 路径。
