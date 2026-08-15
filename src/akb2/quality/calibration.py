@@ -88,20 +88,18 @@ def _now_iso() -> str:
 
 
 def _init_report(total_samples: int, negative_count: int) -> dict[str, Any]:
-    """初始化校准报告骨架。fail-closed: auto_promote 开启但修宪未应用时拒绝。"""
-    auto_promote = os.environ.get("AKB2_AUTO_PROMOTE", "0") == "1"
-    amendment_applied = os.environ.get("AKB2_AMENDMENT_APPLIED", "0") == "1"
+    """初始化校准报告骨架。运行模式判定唯一权威 = smoke_validator._launchd_mode_from_env。
 
-    # fail-closed: auto_promote 开启但修宪未应用 → 强制退回 proposal 模式
-    if auto_promote and not amendment_applied:
-        promotion = "proposal"
-        amendment = "not_applied"
-    elif auto_promote and amendment_applied:
-        promotion = "active"
-        amendment = "applied"
-    else:
-        promotion = "proposal"
-        amendment = "not_applied"
+    不再本地解释 AKB2_AUTO_PROMOTE / AKB2_AMENDMENT_APPLIED（sc-p2-unify-mode-judgment）：
+    promotion_mode 由权威函数从 AKB2_AUTO_PROMOTE 单独分类（与 promote.py / runner.py
+    实际执行一致）；AKB2_AMENDMENT_APPLIED 只是修宪留痕标记，透传为 amendment_status，
+    不驱动运行时模式。
+    """
+    from src.akb2.quality.smoke_validator import _launchd_mode_from_env
+
+    promotion = _launchd_mode_from_env(dict(os.environ))
+    amendment_applied = os.environ.get("AKB2_AMENDMENT_APPLIED", "0") == "1"
+    amendment = "applied" if amendment_applied else "not_applied"
 
     return {
         "calibration_ts": _now_iso(),
@@ -1445,7 +1443,11 @@ def _default_config() -> dict[str, Any]:
     if not raw_dir:
         raw_dir = os.path.join(vault_root, "raw")
 
-    auto_promote = os.environ.get("AKB2_AUTO_PROMOTE", "0") == "1"
+    # 运行模式唯一权威（sc-p2）：auto_promote 布尔也经 smoke_validator 权威函数派生，
+    # 与 _init_report / smoke 校验同源，不在 calibration 侧另立第二套 env 解释。
+    from src.akb2.quality.smoke_validator import _launchd_mode_from_env
+
+    auto_promote = _launchd_mode_from_env(dict(os.environ)) == "active"
 
     return {
         "vault_root": vault_root,

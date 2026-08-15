@@ -14,13 +14,16 @@ mock 边界：合成 report/entry dict，不发网络/不跑 pipeline/不调 LLM
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from src.akb2.quality.calibration import (
     _classify_failure_class_chain,
     _compute_raw_content_sha256,
     _compute_statistics,
+    _default_config,
     _extract_body_for_hash,
+    _init_report,
 )
 
 # ---------------------------------------------------------------------------
@@ -266,6 +269,111 @@ def _neg_entry(idx: int, rejected: bool = True) -> dict[str, Any]:
         "mechanism_present": False, "reject_reason": "no_mechanism",
         "review_status": "confirmed",
     }
+
+
+# ---------------------------------------------------------------------------
+# sc-p2-unify-mode-judgment: 运行模式判定唯一权威
+# ---------------------------------------------------------------------------
+
+
+class TestUnifyModeJudgment:
+    """calibration 的 promotion_mode 必须与 smoke_validator 权威函数同源。
+
+    - calibration 不得再独立解释 AKB2_AUTO_PROMOTE / AKB2_AMENDMENT_APPLIED；
+    - AKB2_AMENDMENT_APPLIED 是修宪留痕标记，只透传为 amendment_status，
+      不得驱动运行时模式（AUTO_PROMOTE=1 + AMENDMENT=0 也必须是 active，
+      与 promote.py / runner.py 实际执行一致——旧代码在此组合回退 proposal，
+      造成 calibration 与 runtime 对同一 env 各说各话）。
+    """
+
+    def test_mode_matches_authoritative_function_all_env_combos(self, monkeypatch):
+        """四组 env 组合下 _init_report 的 promotion_mode == _launchd_mode_from_env。"""
+        from src.akb2.quality.smoke_validator import _launchd_mode_from_env
+
+        for auto, amend in [("0", "0"), ("0", "1"), ("1", "0"), ("1", "1")]:
+            monkeypatch.setenv("AKB2_AUTO_PROMOTE", auto)
+            monkeypatch.setenv("AKB2_AMENDMENT_APPLIED", amend)
+            report = _init_report(0, 0)
+            expected = _launchd_mode_from_env(dict(os.environ))
+            assert report["promotion_mode"] == expected, (
+                f"AUTO_PROMOTE={auto} AMENDMENT={amend}: "
+                f"calibration={report['promotion_mode']} != authoritative={expected}"
+            )
+
+    def test_amendment_marker_does_not_drive_mode(self, monkeypatch):
+        """AMENDMENT 标记不驱动模式：AUTO_PROMOTE=1 + AMENDMENT=0 → active（非回退 proposal）。"""
+        monkeypatch.setenv("AKB2_AUTO_PROMOTE", "1")
+        monkeypatch.setenv("AKB2_AMENDMENT_APPLIED", "0")
+        report = _init_report(0, 0)
+        assert report["promotion_mode"] == "active", (
+            "amendment 标记不得被当成运行时模式：AUTO_PROMOTE=1 即 active"
+        )
+        assert report["amendment_status"] == "not_applied", (
+            "amendment_status 只是留痕透传（env=0 → not_applied）"
+        )
+
+    def test_amendment_status_passthrough_only(self, monkeypatch):
+        """amendment_status 纯透传 env：AUTO_PROMOTE=1 + AMENDMENT=1 → active/applied。"""
+        monkeypatch.setenv("AKB2_AUTO_PROMOTE", "1")
+        monkeypatch.setenv("AKB2_AMENDMENT_APPLIED", "1")
+        report = _init_report(0, 0)
+        assert report["promotion_mode"] == "active"
+        assert report["amendment_status"] == "applied"
+
+    def test_no_second_env_interpretation_in_source(self):
+        """calibration.py 源码不再含第二套 env→模式分支（AST 级锁）。"""
+        import ast
+        from pathlib import Path
+
+        src_path = (
+            Path(__file__).resolve().parents[2]
+            / "src" / "akb2" / "quality" / "calibration.py"
+        )
+        tree = ast.parse(src_path.read_text(encoding="utf-8"))
+
+        # 收集 _init_report / _default_config 函数体内的 os.environ 比较表达式
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.FunctionDef) and node.name == "_init_report"):
+                continue
+            for sub in ast.walk(node):
+                # 禁止 Compare 里直接出现 "AKB2_AUTO_PROMOTE" 字面量
+                if isinstance(sub, ast.Compare):
+                    for cmp_node in ast.walk(sub):
+                        if (
+                            isinstance(cmp_node, ast.Constant)
+                            and cmp_node.value == "AKB2_AUTO_PROMOTE"
+                        ):
+                            raise AssertionError(
+                                "_init_report 内不得再出现 AKB2_AUTO_PROMOTE 字面量比较"
+                                "（第二套模式解释）；模式判定应来自 smoke_validator 权威函数"
+                            )
+
+    def test_default_config_auto_promote_same_authority(self, monkeypatch):
+        """_default_config 的 auto_promote 布尔与权威函数同源（active ⇔ True）。"""
+        from src.akb2.quality.smoke_validator import _launchd_mode_from_env
+
+        for auto, amend in [("0", "0"), ("0", "1"), ("1", "0"), ("1", "1")]:
+            monkeypatch.setenv("AKB2_AUTO_PROMOTE", auto)
+            monkeypatch.setenv("AKB2_AMENDMENT_APPLIED", amend)
+            config = _default_config()
+            expected_active = _launchd_mode_from_env(dict(os.environ)) == "active"
+            assert config["auto_promote"] == expected_active, (
+                f"AUTO_PROMOTE={auto} AMENDMENT={amend}: "
+                f"auto_promote={config['auto_promote']} != authoritative active={expected_active}"
+            )
+
+    def test_default_config_promote_off_default(self, monkeypatch):
+        """默认 env（无 AUTO_PROMOTE）→ auto_promote=False（proposal 回放不变）。"""
+        monkeypatch.delenv("AKB2_AUTO_PROMOTE", raising=False)
+        monkeypatch.delenv("AKB2_AMENDMENT_APPLIED", raising=False)
+        config = _default_config()
+        assert config["auto_promote"] is False
+        report = _init_report(0, 0)
+        assert report["promotion_mode"] == "proposal"
+        assert report["amendment_status"] == "not_applied"
+
+
+
 
 
 class TestRepairAcceptance:
