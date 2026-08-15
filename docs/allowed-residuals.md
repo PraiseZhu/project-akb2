@@ -357,9 +357,9 @@ SDK 内部尝试，需要另行调整 `llm_router` 的重试所有权与相应�
 
 | 项 | 值 |
 |---|---|
-| 扫描命令 | 本机 `python3 -m pip_audit --progress-spinner off -f json .`（项目路径，不是把 `pyproject.toml` 当 requirements 喂） |
-| 结果 | 0 个已知漏洞（136 个解析到的依赖） |
-| workflow 豁免 | **无**。`.github/workflows/pip-audit.yml` 不设置 `ignore-vulns` |
-| 与 pyproject 注释的关系 | `PYSEC-2026-1845`（pytest `/tmp` 本地 DoS，修复版跨 major 到 9.0.3）仍写在 `pyproject.toml` 的「不升 9.x」接受说明里。本次扫描未把它报成当前锁定组合的命中项，因此不把它写进 workflow 豁免名单 |
-| 复审条件 | 下次扫描若出现清单外 CVE：改依赖或升级；只有已在本段登记过、且理由仍成立的项才允许加 `ignore-vulns` |
+| 扫描命令 | 与 CI 相同：从 `pyproject.toml` 导出直接依赖 + `pip-audit --no-deps -r direct-deps.txt` |
+| 首跑（环境树） | `pip-audit .` 扫已解析的 136 个包报 0 洞，但云端 action 默认解析传递依赖后爆出 cryptography 等一串 CVE，口径不可用 |
+| 收窄后实测 | 直接依赖清单命中 **1** 项：`pytest 8.4.2 / PYSEC-2026-1845`，修复版 9.0.3 |
+| workflow 豁免 | `ignore-vulns: PYSEC-2026-1845`。理由与 `pyproject.toml` 注释一致：修这个洞必须跨 major，而本仓封顶 `<9`；漏洞是 `/tmp/pytest-of-{user}` 本地 DoS，需同机其他用户配合 |
+| 复审条件 | 下次扫描若出现清单外 CVE：改依赖或升级，不得把新 ID 塞进同一豁免行了事。pytest 升到 9.x 并在本仓跑绿后删除本豁免 |
 

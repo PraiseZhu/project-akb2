@@ -21,10 +21,10 @@ jobs:
     # 且历史证明该开关会让 run conclusion 与 job 结论脱钩（job 失败 run 仍报
     # success，"CI success" 信息量为 0）。此后 ruff 为硬闸。
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
       - run: pip install ruff
@@ -42,10 +42,10 @@ jobs:
         # 避免一边红把另一边也掐掉，两边结论都要看见。
         python-version: ["3.11", "3.13"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -56,7 +56,7 @@ jobs:
       # 这 5 项的价值正是防真实输出退化(标题变硬编码桩 / 正文混入 HTML),
       # 用 mock 顶替等于删掉它们全部覆盖,所以 CI 装真 CLI 让它们真跑。
       # 包身份/钉版本理由/本地装法:docs/runbooks/intake-tools-setup.md §6
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           # 写死在 Active LTS 线(24.x = Krypton)。不用 latest / lts/*:
           # defuddle-cli 依赖 jsdom,Node 大版本跳变会改抽取行为,必须可复现。
@@ -67,7 +67,7 @@ jobs:
 
       # npm HTTP 缓存。key 是静态的(版本已钉死、内容不可变),首跑写入、后续恒命中,
       # 配合 --prefer-offline 让重装不走 registry。
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.npm
           key: ${{ runner.os }}-npm-defuddle-cli-0.7.0
