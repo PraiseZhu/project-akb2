@@ -1,7 +1,10 @@
-"""B 层评分器 — 10 维量规 LLM 评分，输出可定位缺陷清单。
+"""B 层评分器 — 车道量规 LLM 评分（每车道 4–5 加权维 + 全车道 4 项地板），输出可定位缺陷清单。
 
 裁决模型: GPT-5.4（经 llm_router），兜底 gemini-flash。
 量规文本: 从 skillpack/quality/rubric/ 读取，版本化。
+
+intake-rebuild p4：旧 10/7 维集退役——加权维每车道 4–5 项（rubric.yaml lanes 派生），
+完整性地板 4 项对全车道生效（地板维不进加权池，宪法 8(a) 不可补偿）。
 
 核心约束:
     - FR-005: A 全过才调 B（调用方保证，本模块不自我检查）
@@ -63,11 +66,55 @@ GRADER_TIMEOUT_S = 120
 SCHEMA_MISMATCH_RETRY_BUDGET: int = 1
 
 
+def _validate_rubric_dims(
+    dims: Any, where: str, spec_path: Any
+) -> None:
+    """校验一段 dimensions 列表的形状（intake-rebuild p4：缺字段 fail-closed）。
+
+    每项须为含非空 name 与数值 weight 的 mapping；advisory/note 可选。
+    维度数须在 4–5（每车道 4–5 项，p4 压缩契约）——超界即 RuntimeError。
+    """
+    if not isinstance(dims, list) or not dims:
+        raise RuntimeError(f"量规 spec {where} dimensions 为空或非列表: {spec_path}")
+    for dim in dims:
+        if not isinstance(dim, dict) or not str(dim.get("name", "")).strip():
+            raise RuntimeError(f"量规 spec {where} dimension 缺 name 字段: {dim!r}")
+        w = dim.get("weight")
+        if not isinstance(w, (int, float)) or isinstance(w, bool):
+            raise RuntimeError(
+                f"量规 spec {where} dimension {dim['name']!r} 缺数值 weight: {spec_path}"
+            )
+    if not 4 <= len(dims) <= 5:
+        raise RuntimeError(
+            f"量规 spec {where} dimensions 数 {len(dims)} 不在 4–5"
+            f"（intake-rebuild p4：加权维每车道 4–5 项）: {spec_path}"
+        )
+
+
+def _validate_rubric_floor(floor: Any, where: str, spec_path: Any) -> None:
+    """校验一段 integrity_floor 列表（p4：地板 4 项全车道、hard=true）。"""
+    if not isinstance(floor, list) or len(floor) != 4:
+        raise RuntimeError(
+            f"量规 spec {where} integrity_floor 须恰 4 项（完整性地板四成员）: {spec_path}"
+        )
+    for item in floor:
+        if not isinstance(item, dict) or not str(item.get("name", "")).strip():
+            raise RuntimeError(f"量规 spec {where} integrity_floor 项缺 name: {item!r}")
+        if item.get("hard") is not True:
+            raise RuntimeError(
+                f"量规 spec {where} integrity_floor 项 {item['name']!r} 须 hard: true"
+                f"（宪法 8(a) 地板不可被加权分补偿）: {spec_path}"
+            )
+
+
 def _load_rubric_spec() -> dict[str, Any]:
     """加载机器可读量规 spec（rubric.yaml）→ dict（dimensions+weights+threshold+floor+version）。
 
     spec FR-010：维度集/权重/阈值/完整性地板/版本从此文件读，不在 .py 写死。
     文件缺失或必需字段缺失 → RuntimeError（fail-closed，不给空标准跑空判定）。
+    intake-rebuild p4 强化：每车道 dimensions（4–5 项、逐项 name+weight）与
+    integrity_floor（恰 4 项、全 hard）逐段校验——spec 缺字段/坏形状直接拒跑，
+    不给空维度集或残缺地板放行。
     """
     spec_path = RUBRIC_DIR / RUBRIC_SPEC_FILE
     if not spec_path.exists():
@@ -84,8 +131,26 @@ def _load_rubric_spec() -> dict[str, Any]:
     for required_key in ("rubric_version", "dimensions", "threshold", "integrity_floor", "lanes"):
         if required_key not in spec:
             raise RuntimeError(f"量规 spec 缺必需字段 {required_key!r}: {spec_path}")
-    if not isinstance(spec["dimensions"], list) or not spec["dimensions"]:
-        raise RuntimeError(f"量规 spec dimensions 为空或非列表: {spec_path}")
+    _validate_rubric_dims(spec["dimensions"], "全局", spec_path)
+    _validate_rubric_floor(spec["integrity_floor"], "全局", spec_path)
+    lanes = spec["lanes"]
+    if not isinstance(lanes, dict) or not lanes:
+        raise RuntimeError(f"量规 spec lanes 为空或非 mapping: {spec_path}")
+    for lane_name, lane_cfg in lanes.items():
+        if not isinstance(lane_cfg, dict):
+            raise RuntimeError(f"量规 spec lanes.{lane_name} 非 mapping: {spec_path}")
+        for lane_key in ("dimensions", "threshold", "integrity_floor"):
+            if lane_key not in lane_cfg:
+                raise RuntimeError(
+                    f"量规 spec lanes.{lane_name} 缺必需字段 {lane_key!r}: {spec_path}"
+                )
+        _validate_rubric_dims(lane_cfg["dimensions"], f"lanes.{lane_name}", spec_path)
+        _validate_rubric_floor(lane_cfg["integrity_floor"], f"lanes.{lane_name}", spec_path)
+        t = lane_cfg["threshold"]
+        if not isinstance(t, (int, float)) or isinstance(t, bool):
+            raise RuntimeError(
+                f"量规 spec lanes.{lane_name} threshold 非数值: {spec_path}"
+            )
     return spec
 
 
@@ -111,19 +176,22 @@ def _rubric_dimension_names_by_lane(
 ) -> dict[str, list[str]]:
     """从 spec 派生 {lane: [维名]}（step-3 SC-3f/A3-6：grader 按 lane 选维度集）。
 
-    - procedural = 全局 dimensions（旧行为 10 维，零回归）。
-    - concept = lanes.concept.dimensions 7 维（逐字含 (H3)/(H2) 后缀）。
+    intake-rebuild p4：通用 lanes 遍历——spec 里每个 lane 键各派生一个维度集
+    （p5 新增 pattern/design 车道时零 .py 改动）。procedural 仍 = 全局 dimensions
+    （无 lane 信息时的默认回落，未知 lane 零回归）。
+    每车道维度数 4–5（p4 压缩契约，_load_rubric_spec 校验兜底）。
     不在 .py 手写维名——全部从 spec 动态派生（改 rubric.yaml 即改维度集）。
     """
     spec = spec or _load_rubric_spec()
     by_lane: dict[str, list[str]] = {}
     by_lane["procedural"] = _rubric_dimension_names(spec)
-    lanes = spec.get("lanes", {}) or {}
-    concept_dims: list[str] = []
-    for dim in (lanes.get("concept") or {}).get("dimensions", []) or []:
-        if isinstance(dim, dict) and dim.get("name"):
-            concept_dims.append(str(dim["name"]))
-    by_lane["concept"] = concept_dims
+    for lane_name, lane_cfg in (spec.get("lanes", {}) or {}).items():
+        dims: list[str] = []
+        for dim in (lane_cfg or {}).get("dimensions", []) or []:
+            if isinstance(dim, dict) and dim.get("name"):
+                dims.append(str(dim["name"]))
+        if dims:
+            by_lane[str(lane_name)] = dims
     return by_lane
 
 

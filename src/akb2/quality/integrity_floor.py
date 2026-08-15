@@ -3,22 +3,29 @@
 step-3 SC-3b/SC-3h/A3-2/A3-5：循环1 在 distill 段评估结构化 extract 的四个完整性地板成员，
 任一 fail → FloorResult.passed=False，runner 评分段 early-return 直接 reject、加权分函数 NOT 调用。
 
-四成员（concept，全 evaluated_by=structural）：
+intake-rebuild p4：四成员对**全车道**生效（concept / procedural / tutorial 别名 /
+未来 pattern-design 车道同一入口）；④按车道分支判据，成员集不随车道增减。
+
+四成员（全车道，全 evaluated_by=structural）：
   ① claim_anchor_rate     — 每条 source_grounded claim 都带真实 anchor（覆盖率<100% fail，A3-2，
                             区别于 SG-raw-anchor 的「有任意锚点」）
   ② evidence_honesty      — 证据地图含「未覆盖」列且 ≥1 行标真实盲区（裸来源断言 fail，A3-2）
   ③ interpretation_traceability(层①) — 每条 akb_interpretation 带 traces_to 指向 claims 中真实
                             存在的 source_grounded anchor（确定性 pre-grader 地板；F3 层② entailment
                             由 grader 异族硬判，见 grader.interpretation_entailment）
-  ④ F4 车道核心价值        — concept: ≥3 唯一命名组件 + ≥1 eligible edge（source_causal/
-                            llm_evidence 带 evidence + evidence_anchor ∈ raw 声明全集）；
+  ④ F4 车道核心价值        — **仅 concept** 车道: ≥3 唯一命名组件 + ≥1 eligible edge
+                            （source_causal/llm_evidence 带 evidence + evidence_anchor
+                            且 ∈ raw 声明全集）；
                             inferred_from_structure 弱边不计 F4；0 eligible fail（§0.2 D1+F1）；
-                            procedural: H1≥1
+                            非 concept 车道（procedural/tutorial/pattern/design）: how_steps 中
+                            ≥1 条 how_level==H1 命令级步骤（H1≥1）；pattern/design 不得
+                            误用 concept 的组件阈值（intake-rebuild p3/p5 车道收窄）
 
 设计原则：
 - 二值（pass/fail），无连续分（宪法原则 8）。
 - 不可补偿：任一 fail 即 reject，与加权质量分无关（加权分只在地板全 pass 后才算）。
-- 结构真相源：F4 只读 mechanism_components/causal_edges 结构字段，不从自然语言/H3 标签反解。
+- 结构真相源：F4 只读 mechanism_components/causal_edges/how_steps 结构字段，
+  不从自然语言/H3 标签反解。
 """
 
 from __future__ import annotations
@@ -304,7 +311,7 @@ def evaluate_integrity_floor(
     content_lane: str = "",
     raw_anchors: set[str] | None = None,
 ) -> FloorResult:
-    """评估完整性地板四成员（concept）/ 对应 procedural 成员。
+    """评估完整性地板四成员（全车道：①②③车道无关；④按车道分支判据）。
 
     任一成员 fail → passed=False；runner 评分段须先看本结果 early-return。
 

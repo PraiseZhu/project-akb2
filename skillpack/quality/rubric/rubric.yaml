@@ -4,42 +4,49 @@
 # grader.py 从此文件读取维度集/权重/阈值/完整性地板/版本，不在 .py 写死。
 # 改本文件的 weight/threshold 即改判分，无需改判定代码（spec SC-005）。
 #
-# 配套说明文本见 10-dimensions.md（人读版，维度判据要点）。
+# 配套说明文本见 10-dimensions.md（人读版，维度判据要点；procedural 旧 10 维全量判据
+# 仍在该 md，本表压缩后仅消费其中 5 维的判据段落）。
 #
 # 模型分层（宪法 P7 Maker/Checker 异族）：生产 deepseek 提炼，gpt-5.4 复核裁决。
 # 完整性地板（integrity_floor）以 hard: true 标记「不可被加权分补偿」（宪法原则 8(a)）。
 #
-# calibration_status: initial —— 全部 concept 权重/阈值为初始结构占位，真实数值由后续
+# intake-rebuild p4（2026-08-15）：B 层加权维从 10/7 维压缩为每车道 4–5 维。
+# 完整性地板 4 项（论断锚定率/证据诚实/解读分离/车道核心价值）对**全车道**生效——
+# 旧 10/7 维集中与地板重复的加权维（论断锚定率/证据诚实/解读分离）从加权集移除：
+# 同一判据不得既当二值硬门又当加权维（重复计分 + 高分补偿错觉）。advisory 维
+# （新颖增量/图谱可调用性）移除：真重复由 admission novelty 门拦、图谱补全由门控侧
+# 兜底链路承担（D8），候选阶段加权集不含加分项。边强度匹配并入 A 层 A4 结构缺陷。
+# rubric_version 维持 1.5.0：10-dimensions.md 的版本断言与本文件锁定同步，
+# 维度集变更随 intake-rebuild 交付，版本号 bump 由持有该 md 的后续变更统一处理。
+#
+# calibration_status: initial —— 各车道权重/阈值为结构占位，真实数值由后续
 # 满仓校准回填（spec FR-010），非终值。step-3 只读消费此表、不回写。
 
 rubric_version: "1.5.0"
 
-# 全局默认维度集（= procedural 旧 10 维，等价旧行为）。lanes 内可覆盖。
-# 这是 grader 在无 lane 信息时的默认维度集，保证旧行为零回归。
+# 全局默认维度集（= procedural 车道维度集）。lanes 内可覆盖。
+# 这是 grader 在无 lane 信息时的默认维度集，保证未知 lane 回落 procedural 行为。
+# 5 维与 integrity_floor 四成员零重叠（地板维不进加权池）。
 dimensions:
-  - name: "论断锚定率"
-    weight: 1.0
   - name: "How 密度"
-    weight: 1.0
+    weight: 3.0
+    note: "可执行步骤/代码/参数充分性（≥3 步且含具体参数）；教程型车道核心维。深度评分——硬性 H1≥1 由地板④承担（procedural F4），本维评步骤密度质量"
   - name: "How 可执行性"
-    weight: 1.0
-  - name: "证据诚实"
-    weight: 1.0
-  - name: "解读分离"
-    weight: 1.0
+    weight: 3.0
+    note: "How 内容可直接复制执行（含命令/函数签名/配置键/参数值），非概念性指导"
   - name: "TLDR 密度"
     weight: 1.0
-  - name: "新颖增量"
-    weight: 1.0
-    advisory: true
-  - name: "边强度匹配"
-    weight: 1.0
-  - name: "Future Questions 质量"
-    weight: 1.0
+    note: "TLDR ≤3 句覆盖核心信息，每句对应核心论点（含锚点）"
   - name: "适用边界"
-    weight: 1.0
+    weight: 1.5
+    note: "≥2 适用 + ≥1 不适用场景"
+  - name: "Future Questions 质量"
+    weight: 1.5
+    note: "2-3 条具体可研究问题，非泛泛而谈"
 
 # 全局默认完整性地板（hard=true：不进加权、不可被高分补偿）。
+# 四成员对全车道生效：①②③车道无关；④按车道分支
+#（concept=≥3 命名组件+≥1 eligible 因果边；procedural/tutorial=H1≥1 命令级步骤）。
 integrity_floor:
   - name: "论断锚定率(raw-anchor)"
     hard: true
@@ -59,34 +66,30 @@ threshold: 6.5
 
 # ---------------------------------------------------------------------------
 # 车道画像（lanes）：每车道含 dimensions + 逐维 weight + threshold + integrity_floor
+# 加权维每车道 4–5 项（intake-rebuild p4）；地板 4 项全车道一致。
 # ---------------------------------------------------------------------------
 lanes:
-  # 操作型车道：现 10 维「等价旧行为」保守占位（与全局默认一致，零回归）
+  # 操作型/教程型车道（tutorial 为 p5 别名，落点仍为 procedural 维度集）：
+  # 5 维加权集，权重和==10；H1 硬门由地板④承担。
   procedural:
     calibration_status: initial
     threshold: 6.5
     dimensions:
-      - name: "论断锚定率"
-        weight: 1.0
       - name: "How 密度"
-        weight: 1.0
+        weight: 3.0
+        note: "可执行步骤/代码/参数充分性（≥3 步且含具体参数）；教程型车道核心维"
       - name: "How 可执行性"
-        weight: 1.0
-      - name: "证据诚实"
-        weight: 1.0
-      - name: "解读分离"
-        weight: 1.0
+        weight: 3.0
+        note: "How 内容可直接复制执行（含命令/函数签名/配置键/参数值），非概念性指导"
       - name: "TLDR 密度"
         weight: 1.0
-      - name: "新颖增量"
-        weight: 1.0
-        advisory: true
-      - name: "边强度匹配"
-        weight: 1.0
-      - name: "Future Questions 质量"
-        weight: 1.0
+        note: "TLDR ≤3 句覆盖核心信息，每句对应核心论点（含锚点）"
       - name: "适用边界"
-        weight: 1.0
+        weight: 1.5
+        note: "≥2 适用 + ≥1 不适用场景"
+      - name: "Future Questions 质量"
+        weight: 1.5
+        note: "2-3 条具体可研究问题，非泛泛而谈"
     integrity_floor:
       - name: "论断锚定率(raw-anchor)"
         hard: true
@@ -100,37 +103,31 @@ lanes:
       - name: "车道核心价值"
         hard: true
         evaluated_by: structural
+        note: "F4：how_steps 中 ≥1 条 how_level==H1（命令级步骤）"
 
-  # 概念型车道：恰 7 个加权质量维（权重和==10），How密度/How可执行性/H1 从 dimensions 移除
-  # （absent，非零权重）。维名为 step-3 grader concept 维度集的逐字真相源（A3-6 动态派生）。
+  # 概念型车道：5 个加权质量维（权重和==10）。维名为 step-3 grader concept
+  # 维度集的逐字真相源（A3-6 动态派生）。advisory 维（图谱可调用性/新颖增量）
+  # 已移除（1.4.0/1.5.0 用户裁决的兜底归属不变：图谱→门控侧 D8 兜底，重复→admission）。
   # 注：calibration_status=initial，权重为结构占位、待满仓校准回填（spec FR-010）。
   concept:
     calibration_status: initial
     threshold: 6.0
     dimensions:
       - name: "概念机制清晰度(H3)"
-        weight: 3.5
+        weight: 4.0
         note: "§0.2/D6：H3 pass 需机制组件/因果边/edge evidence 在正文可读可追溯（## 机制组件与因果边证据 两表）。仅 1 条 inferred_from_structure 弱边、其余组件无因果说明 → H3 fail。无 evidence 的边不作机制清晰度证据。eligible 边（source_causal/llm_evidence）须带 evidence + evidence_anchor。"
       - name: "实现机制说明(H2)"
-        weight: 0.5
+        weight: 1.0
         note: "机制如何落地的说明（非命令密度）"
-      - name: "图谱可调用性"
-        weight: 2.0
-        advisory: true
-        note: "概念可被图谱 resolve（known/pending 命中、边强度匹配并入 A 层）。冷启动校准（1.3.0）：vault 无可 resolve 相邻概念（proposal 模式 proposed_graph_nodes+graph_pending，resolve 未命中非内容之过）时按候选自身图谱要素质量判——proposed_graph_nodes 结构完整且图谱边带真实 evidence_anchor → pass；不得仅以「resolve 未命中」为由 fail。图谱要素缺失/伪造仍 fail。加分项（advisory，1.5.0 用户裁决 2026-07-04）：图谱补全由入库门控侧兜底链路承担（D8 proposed_graph_nodes → pending 共指累积 → 图谱校准补边 → promote graph_readiness 闸），候选阶段本维不作为入库卡点（fail 不计 blocking 缺陷）——有可 resolve 图谱加分；仍照常评分记录（fail-visible）。图谱**诚实性**不在此维承担：假边/假 target 由 A4 四条件锁与 F4 硬门拦截（不放宽）。"
       - name: "适用边界"
-        weight: 1.5
+        weight: 2.0
         note: "≥2 适用 + ≥1 不适用场景"
       - name: "TLDR密度"
-        weight: 1.0
+        weight: 1.5
         note: "≤3 句覆盖核心机制"
       - name: "Future Questions质量"
-        weight: 1.0
+        weight: 1.5
         note: "2-3 条具体可研究问题"
-      - name: "新颖增量"
-        weight: 0.5
-        advisory: true
-        note: "对既有 wiki 的增量。冷启动校准（1.3.0）：无相邻 wiki 基线可比（比对集为空/未命中，属「缺少基线」非「证明无增量」）时按内容自证判——核心论点/机制自身成立且非常识复述 → pass；不得仅以「未发现相邻条目/无本地基线」为由 fail。与既有条目实际重合仍 fail。加分项（advisory，1.4.0 用户裁决 2026-07-04）：本维是加分项——有增量加分；缺失/未证不作为入库卡点（其 fail 不计 blocking 缺陷、不阻断 repair 收敛），仍照常评分与记录（fail-visible）。注意：真重复（洗稿）由 admission novelty 门拦截，不依赖本维。"
     integrity_floor:
       - name: "论断锚定率(raw-anchor)"
         hard: true
