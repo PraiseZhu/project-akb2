@@ -208,14 +208,58 @@ def _run_server(
     env.update(env_extra)
     for name in env_unsets:
         env.pop(name, None)
-    return subprocess.run(
+    # 规矩 stdio 客户端：写完帧后保持 stdin 打开，直到收齐全部带 id 请求的
+    # 响应才关流。一次性 input+EOF（subprocess.run）在慢 runner 上会输给
+    # server 的 EOF 关停竞态——CI 实证 initialize 有响应、后续请求被丢，
+    # 本机快机器则稳定全收。fail-closed 用例（server 起不来）走 EOF 分支。
+    expected_ids = {
+        payload["id"]
+        for line in stdin_frames.splitlines()
+        if line.strip()
+        for payload in [json.loads(line)]
+        if "id" in payload
+    }
+    proc = subprocess.Popen(
         ["bash", "-c", cmdline],
-        input=stdin_frames,
-        capture_output=True,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         cwd=str(repo_root),
         env=env,
-        timeout=timeout,
+    )
+    out_lines: list[str] = []
+    try:
+        assert proc.stdin is not None and proc.stdout is not None
+        proc.stdin.write(stdin_frames)
+        proc.stdin.flush()
+        got_ids: set[int] = set()
+        while got_ids < expected_ids:
+            line = proc.stdout.readline()
+            if not line:
+                break  # server 已退出（如 fail-closed 非零退出）
+            out_lines.append(line)
+            try:
+                payload = json.loads(line)
+            except ValueError:
+                continue
+            if "id" in payload:
+                got_ids.add(payload["id"])
+    finally:
+        try:
+            proc.stdin.close()
+        except OSError:
+            pass
+    try:
+        rest_out, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        rest_out, stderr = proc.communicate()
+    return subprocess.CompletedProcess(
+        args=["bash", "-c", cmdline],
+        returncode=proc.returncode,
+        stdout="".join(out_lines) + (rest_out or ""),
+        stderr=stderr or "",
     )
 
 
