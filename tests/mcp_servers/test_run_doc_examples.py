@@ -229,29 +229,28 @@ def _run_server(
         env=env,
     )
     out_lines: list[str] = []
+    assert proc.stdin is not None and proc.stdout is not None
     try:
-        assert proc.stdin is not None and proc.stdout is not None
         proc.stdin.write(stdin_frames)
         proc.stdin.flush()
-        got_ids: set[int] = set()
-        while got_ids < expected_ids:
-            line = proc.stdout.readline()
-            if not line:
-                break  # server 已退出（如 fail-closed 非零退出）
-            out_lines.append(line)
-            try:
-                payload = json.loads(line)
-            except ValueError:
-                continue
-            if "id" in payload:
-                got_ids.add(payload["id"])
-    finally:
+    except OSError:
+        pass  # fail-closed 用例：server 启动即死，写端断管
+    got_ids: set[int] = set()
+    while got_ids < expected_ids:
+        line = proc.stdout.readline()
+        if not line:
+            break  # server 已退出（如 fail-closed 非零退出）
+        out_lines.append(line)
         try:
-            proc.stdin.close()
-        except OSError:
-            pass
+            payload = json.loads(line)
+        except ValueError:
+            continue
+        if "id" in payload:
+            got_ids.add(payload["id"])
+    # EOF 交给 communicate(input="") 统一发出：手动 close 后 3.11 的
+    # communicate 会对已关闭 stdin 调 flush() 抛 ValueError（3.13 已容忍）。
     try:
-        rest_out, stderr = proc.communicate(timeout=timeout)
+        rest_out, stderr = proc.communicate(input="", timeout=timeout)
     except subprocess.TimeoutExpired:
         proc.kill()
         rest_out, stderr = proc.communicate()
