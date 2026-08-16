@@ -814,7 +814,11 @@ def validate_root_isolation(
     return {"passed": True, "root_metadata_unchanged": True}
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    live_env_reader: LiveEnvReader | None = None,
+) -> int:
     parser = argparse.ArgumentParser(
         description="Validate AKB2 isolated smoke output",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -894,8 +898,9 @@ def main(argv: list[str] | None = None) -> int:
                 require_label_absent=args.require_label_absent,
                 repo_plist_path=args.repo_plist,
                 live_env_reader=(
-                    None if args.require_label_absent or args.skip_live_parity
-                    else read_live_job_env
+                    None
+                    if args.require_label_absent or args.skip_live_parity
+                    else live_env_reader or read_live_job_env
                 ),
             )
         elif args.mode == "env-parity":
@@ -906,7 +911,7 @@ def main(argv: list[str] | None = None) -> int:
                 active_ready=args.active_ready,
                 repo_plist_path=args.repo_plist,
                 live_env_reader=(
-                    None if args.skip_live_parity else read_live_job_env
+                    None if args.skip_live_parity else live_env_reader or read_live_job_env
                 ),
             )
         else:

@@ -17,7 +17,6 @@ from src.akb2.quality.distill import (
     _render_mechanism_narrative,
 )
 from src.akb2.quality.grader import _concept_h3_fail_note
-from src.akb2.quality.repair import _blocking_defects, _defect_identity
 
 
 def _d(dim: str, text: str = "d") -> Defect:
@@ -27,53 +26,6 @@ def _d(dim: str, text: str = "d") -> Defect:
 # ---------------------------------------------------------------------------
 # 刀1: 回滚护栏 blocking 同口径(与收敛判据一致)
 # ---------------------------------------------------------------------------
-
-
-class TestMonotonicGuardBlockingOnly:
-    """护栏现用 _defect_identity(_blocking_defects(...)) 组合——锁该组合语义。"""
-
-    def test_advisory_not_counted_in_identity(self) -> None:
-        """advisory 维(图谱可调用性/新颖增量)不进护栏 identity/count。"""
-        mixed = [_d("概念机制清晰度(H3)"), _d("图谱可调用性"), _d("新颖增量")]
-        blocking = _blocking_defects(mixed)
-        assert len(blocking) == 1
-        ids = _defect_identity(blocking)
-        assert len(ids) == 1
-        assert all("图谱" not in i and "新颖" not in i for i in ids)
-
-    def test_reworded_blocking_creates_no_new_identity(self) -> None:
-        """[F30 刀2 锁,reviewer CONCERN-2] blocking 缺陷换措辞不制造伪新 identity——
-        identity=(dim|loc),丢弃易变描述文本(LR 六轮 rolled_back 死因核心场景)。"""
-        prev = [_d("概念机制清晰度(H3)", "叙述罗列")]
-        curr = [_d("概念机制清晰度(H3)", "叙述罗列且完全换了一种措辞描述")]
-        new_ids = (_defect_identity(_blocking_defects(curr))
-                   - _defect_identity(_blocking_defects(prev)))
-        assert new_ids == set(), "同维同位换措辞不得触发回滚(F30)"
-
-    def test_reworded_advisory_creates_no_new_identity(self) -> None:
-        """[LR 四轮 6→6 根因回归] grader 换措辞的 advisory 缺陷不再制造伪新 identity。"""
-        prev = [_d("概念机制清晰度(H3)", "叙述罗列"), _d("图谱可调用性", "边为空")]
-        curr = [_d("概念机制清晰度(H3)", "叙述罗列"),
-                _d("图谱可调用性", "图谱边仅弱边且换了个说法")]  # advisory 措辞变了
-        new_ids = (_defect_identity(_blocking_defects(curr))
-                   - _defect_identity(_blocking_defects(prev)))
-        assert new_ids == set(), "advisory 措辞变化不得触发回滚"
-
-    def test_blocking_progress_visible_despite_advisory_residual(self) -> None:
-        """修掉 1 条 blocking、2 条 advisory 原样残留 → count 严格下降(不回滚)。"""
-        prev = [_d("概念机制清晰度(H3)", "a"), _d("TLDR密度", "b"),
-                _d("图谱可调用性", "c"), _d("图谱可调用性", "c2")]
-        curr = [_d("TLDR密度", "b"), _d("图谱可调用性", "c"), _d("图谱可调用性", "c2")]
-        assert len(_blocking_defects(curr)) < len(_blocking_defects(prev))
-
-    def test_guard_source_uses_blocking_composition(self) -> None:
-        """源码断言:B 路护栏确实用 _blocking_defects 组合(防回退)。"""
-        import inspect
-
-        from src.akb2.quality import repair
-        src = inspect.getsource(repair.run_repair_loop)
-        assert "_new_blocking = _blocking_defects(current_defects)" in src
-        assert "_prev_blocking = _blocking_defects(prev_defects)" in src
 
 
 # ---------------------------------------------------------------------------

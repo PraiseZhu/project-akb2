@@ -1,0 +1,1 @@
+p0-source-checks.txt records REQUEUE_NO_PROMOTE=True: requeue.py does not call run_promote and does not mention wiki/sources writes. Live receipt p0-requeue-batches.json records wrote_wiki=false and changed_frontmatter=false; the 32 round-scoped ledger appends were all requeue events only.

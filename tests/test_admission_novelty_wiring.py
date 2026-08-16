@@ -128,7 +128,12 @@ class TestRewriteRejectedInRunnerPath:
             "_load_vault_concept_index",
             lambda cfg, exclude_slug="": {
                 "status": runner.LANE_INDEX_STATUS_OK,
-                "wiki_references": ["Loop Engineering: bounded convergent agent loops"],
+                "wiki_references": [{
+                    "slug": "loop-engineering-rewrite",
+                    "source_url": "https://example.com/loop-engineering",
+                    "title": "Loop Engineering Rewrite",
+                    "tldr": "Bounded convergent observable agent loops for engineering.",
+                }],
                 "known_concepts": ["loop-engineering"],
                 "pending_queue": [],
                 "counts": {},
@@ -137,24 +142,21 @@ class TestRewriteRejectedInRunnerPath:
         )
         monkeypatch.setattr(runner, "_existing_source_page_for_raw", lambda *a, **k: None)
 
-        # mock route_llm：topic/how/lane pass，novelty（有 wiki_references 时触发）fail
+        # mock route_llm：统一判定通过；novelty 由 slug/url 确定性预筛负责拒收。
         import src.akb2.quality.llm_router as router_mod
         from src.akb2.quality.llm_router import LLMResponse
 
         def _mock_route(model_family, messages, response_schema=None, **kwargs):
-            sys_prompt = messages[0]["content"] if messages else ""
-            if "新颖度" in sys_prompt or "增量信息" in sys_prompt:
-                return LLMResponse(
-                    content={"pass": False, "reason": "与既有 wiki 高度重叠，零增量"},
-                    model_used="gemini-2.5-flash",
-                )
-            if "概念型" in sys_prompt or "操作型" in sys_prompt:
-                return LLMResponse(
-                    content={"content_lane": "procedural", "reason": "含命令"},
-                    model_used="gemini-2.5-flash",
-                )
             return LLMResponse(
-                content={"pass": True, "reason": "ok"}, model_used="gemini-2.5-flash"
+                content={
+                    "topic_pass": True,
+                    "lane": "tutorial",
+                    "non_knowledge": False,
+                    "mechanism_pass": True,
+                    "how_pass": True,
+                    "reason": "含命令",
+                },
+                model_used="gemini-2.5-flash",
             )
 
         monkeypatch.setattr(router_mod, "route_llm", _mock_route)
@@ -163,6 +165,8 @@ class TestRewriteRejectedInRunnerPath:
         # P2 修:原 raw '# Rewrite\n\n1. Run npm test\nmake deploy' 与 wiki 零 token overlap,
         # 无近邻 → novelty 默认 pass → 未拒;改为真洗稿(overlap loop/agent/engineering)触发拒收路径
         rewrite_raw = (
+            "---\nsource_slug: loop-engineering-rewrite\n"
+            "source_url: https://example.com/loop-engineering\n---\n\n"
             "# Loop Engineering Rewrite\n\n"
             "Bounded convergent observable agent loops for engineering.\n\n"
             "1. Run the agent loop\n```bash\nmake deploy\n```\n"
@@ -255,14 +259,16 @@ class TestEmptyIndexPreservesGoldenWithExplicitAllowEmpty:
         from src.akb2.quality.llm_router import LLMResponse
 
         def _mock_route(model_family, messages, response_schema=None, **kwargs):
-            sys_prompt = messages[0]["content"] if messages else ""
-            if "概念型" in sys_prompt or "操作型" in sys_prompt:
-                return LLMResponse(
-                    content={"content_lane": "procedural", "reason": "含命令"},
-                    model_used="gemini-2.5-flash",
-                )
             return LLMResponse(
-                content={"pass": True, "reason": "ok"}, model_used="gemini-2.5-flash"
+                content={
+                    "topic_pass": True,
+                    "lane": "tutorial",
+                    "non_knowledge": False,
+                    "mechanism_pass": True,
+                    "how_pass": True,
+                    "reason": "含命令",
+                },
+                model_used="gemini-2.5-flash",
             )
 
         monkeypatch.setattr(router_mod, "route_llm", _mock_route)

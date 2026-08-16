@@ -1,0 +1,1 @@
+p0-semantics-suite.txt: tests/quality/test_requeue.py on fixed Mini #80 worktree at 4a62c487a7610ed0fb5a67971903576680698b25 (local origin/main had drifted). 11 passed in 0.09s, PYTEST_RC=0, TESTS_STRICT_OK; no skipped/xfailed/deselected.
