@@ -131,6 +131,22 @@ def _purge_akb2() -> None:
         del sys.modules[name]
 
 
+@pytest.fixture(autouse=True)
+def _restore_akb2_modules():
+    """快照并在用例结束后恢复 akb2.* 模块，替换审计期间产生的新副本。
+
+    _purge_akb2 会把收集期已加载的 akb2 模块从 sys.modules 删掉；若不恢复，
+    后续测试文件（收集期绑定了旧模块对象）与 monkeypatch 重新 import 的新副本
+    会双模块分裂——补丁打在新副本上、被测函数走旧副本，isinstance 也会因类
+    身份不同而失败（CI 实证：scrapling fallback / source_ops_scanners /
+    source_validator 全套跟着红）。"""
+    saved = {n: m for n, m in sys.modules.items() if n.startswith("akb2")}
+    yield
+    for name in [n for n in sys.modules if n.startswith("akb2")]:
+        del sys.modules[name]
+    sys.modules.update(saved)
+
+
 def test_runtime_import_set_exact(audit_vault: Path) -> None:
     """加载 + 真实调用工具后，进程内 akb2.* 模块集恰为允许前缀子集。
 
