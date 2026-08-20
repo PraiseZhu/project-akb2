@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 import uuid
@@ -72,6 +73,35 @@ PER_SOURCE_PER_RUN_CAP: int = 5
 DEFAULT_SOURCES_CONFIG = "config/main_sources.yaml"
 DEFAULT_STATE_FILE = "reports/intake/intake-state.jsonl"
 DEFAULT_OUTPUT_DIR = "reports/intake/raw/"
+RSS_SOURCE_TYPE = "rss"
+X_ACCOUNT_SOURCE_TYPE = "x_account"
+SOURCE_TYPE_ENV = "AKB2_INTAKE_SOURCE_TYPE"
+
+
+def resolve_source_type(explicit: str | None = None) -> str:
+    """解析本轮 intake 消费的源类型。
+
+    RSS 默认路径（com.akb2.intake --limit 30）只跑 rss/缺省 type；
+    X 账号由独立 com.akb2.intake-twitter.plist 设 --source-type x_account
+    （或环境变量 AKB2_INTAKE_SOURCE_TYPE）消费，避免挤占 RSS 配额。
+    """
+    raw = explicit if explicit is not None else os.environ.get(SOURCE_TYPE_ENV, RSS_SOURCE_TYPE)
+    value = str(raw or RSS_SOURCE_TYPE).strip().lower() or RSS_SOURCE_TYPE
+    if value not in {RSS_SOURCE_TYPE, X_ACCOUNT_SOURCE_TYPE}:
+        raise ValueError(f"unsupported source type: {value}")
+    return value
+
+
+def _source_type_of(source: dict[str, Any]) -> str:
+    return str(source.get("type") or RSS_SOURCE_TYPE).strip().lower() or RSS_SOURCE_TYPE
+
+
+def source_matches_run_type(source: dict[str, Any], run_type: str) -> bool:
+    """RSS 轮次跳过 x_account；X 轮次只收 x_account。"""
+    source_type = _source_type_of(source)
+    if run_type == X_ACCOUNT_SOURCE_TYPE:
+        return source_type == X_ACCOUNT_SOURCE_TYPE
+    return source_type != X_ACCOUNT_SOURCE_TYPE
 
 # ---------------------------------------------------------------------------
 # ledger 读写
@@ -333,6 +363,7 @@ def run_intake(
     limit: int = 0,
     failures_path: str | Path | None = None,
     source_offset: int | None = None,
+    source_type: str | None = None,
 ) -> dict[str, int]:
     """执行一次完整的 intake 流程。
 
@@ -345,6 +376,8 @@ def run_intake(
         limit: 最多处理文章总数（0=不限）
         source_offset: 源遍历起点轮转(F22 轮转公平,None=按时间自动算,0=不轮转)。
             防 sources 顺序固定时前 cap 源垄断每轮名额,后排源饿死。
+        source_type: rss（默认）只跑 RSS/listing；x_account 只跑 X 账号源。
+            未传时读 AKB2_INTAKE_SOURCE_TYPE，缺省 rss，保证 RSS --limit 30 不被挤占。
 
     Returns:
         {"discovered": N, "skipped": M, "archived": K, "discovery_errors": E} 统计字典。
@@ -352,7 +385,14 @@ def run_intake(
         非零时 CLI 在汇总行追加 discovery_errors=E 提示。
     """
     run_id = str(uuid.uuid4())
-    logger.info("Intake run started run_id=%s dry_run=%s limit=%d", run_id, dry_run, limit)
+    run_source_type = resolve_source_type(source_type)
+    logger.info(
+        "Intake run started run_id=%s dry_run=%s limit=%d source_type=%s",
+        run_id,
+        dry_run,
+        limit,
+        run_source_type,
+    )
 
     # 加载源配置
     try:
@@ -360,6 +400,7 @@ def run_intake(
     except FileNotFoundError as exc:
         logger.error("Sources config not found: %s", exc)
         raise
+    sources = [s for s in sources if source_matches_run_type(s, run_source_type)]
 
     # F22: 源轮转公平——按时间轮转起点,防 sources 顺序固定时前 cap 源垄断每轮名额。
     # cap=5 + limit=30 下每轮 6 源有份,轮转保证后排源也能排上(不饿死)。
@@ -533,6 +574,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="源遍历起点轮转(F22 轮转公平;不传=按时间自动算,0=不轮转)",
     )
     parser.add_argument(
+        "--source-type",
+        default=None,
+        choices=[RSS_SOURCE_TYPE, X_ACCOUNT_SOURCE_TYPE],
+        help=(
+            "本轮消费的源类型: rss（默认,RSS --limit 30）或 x_account"
+            "（独立 twitter plist）。不传则读 AKB2_INTAKE_SOURCE_TYPE。"
+        ),
+    )
+    parser.add_argument(
         "--log-level",
         default="WARNING",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -561,6 +611,7 @@ def main(argv: list[str] | None = None) -> int:
             limit=args.limit,
             failures_path=args.failures_path,
             source_offset=args.source_offset,
+            source_type=args.source_type,
         )
     except Exception as exc:
         logger.error("Intake run failed: %s", exc)
