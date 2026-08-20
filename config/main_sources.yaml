@@ -12,6 +12,8 @@
 #   sources[].rate_limit    — 最小请求间隔（秒）
 #   sources[].status        — trial（默认）
 #   sources[].category      — core | supplementary | authority（来源权威分级）
+#   sources[].type          — 可选源类型: rss（默认，可省略）| x_account
+#   sources[].handle        — type=x_account 时的 X handle（不含 @；与 smoke first_batch 对齐）
 #   sources[].lane          — 内容车道预期（可选）: concept | tutorial | pattern | design
 #                             与 admission.py LANE_* 常量及 skillpack/quality/
 #                             concept-index-injection.md「内容车道锚点」节 exact 对齐；
@@ -243,9 +245,9 @@ sources:
     feed_url: https://www.gamedeveloper.com/rss.xml
     listing_url: https://www.gamedeveloper.com
     rate_limit: 3600
-    status: trial
+    status: down
     category: core
-    notes: "Game Developer — 游戏设计 / 开发; [2026-07-22 feed 修复] 原 feed 失效,改用有效 rss.xml"
+    notes: "Game Developer — 游戏设计 / 开发; [2026-07-22 feed 修复] 原 feed 失效,改用有效 rss.xml; [2026-08-20 换血] 游戏设计与 AI Agent/Harness 主车道正交,标 down,恢复需人工改回 trial"
 
   - slug: lost-garden
     domain: lostgarden.com
@@ -255,7 +257,7 @@ sources:
     status: trial
     category: core
     lane: design
-    notes: "Lost Garden — 游戏设计理论 / 系统设计"
+    notes: "Lost Garden — 游戏设计理论 / 系统设计; [2026-08-20 换血] 保留观察(lane=design),不随 css/game-developer 一并 down"
 
   # =========================================================================
   # 补充源 (29) — 领域强相关但非一手定义者
@@ -378,10 +380,10 @@ sources:
     feed_url: https://css-tricks.com/feed
     listing_url: https://css-tricks.com
     rate_limit: 3600
-    status: trial
+    status: down
     category: supplementary
     lane: tutorial
-    notes: "CSS-Tricks — CSS / 前端技巧（汰换观察位）"
+    notes: "CSS-Tricks — CSS / 前端技巧（汰换观察位）; [2026-08-20 换血] 纯 CSS 技巧非 Design Engineering,标 down,恢复需人工改回 trial"
 
   - slug: a-list-apart
     domain: alistapart.com
@@ -464,10 +466,10 @@ sources:
     feed_url: https://css-irl.info/rss.xml
     listing_url: https://css-irl.info
     rate_limit: 3600
-    status: trial
+    status: down
     category: supplementary
     lane: tutorial
-    notes: "CSS {IRL} — CSS 实战"
+    notes: "CSS {IRL} — CSS 实战; [2026-08-20 换血] 纯前端垂直非主车道,标 down,恢复需人工改回 trial"
 
   - slug: jake-archibald
     domain: jakearchibald.com
@@ -1462,3 +1464,219 @@ sources:
     status: trial
     category: supplementary
     notes: "Zed — 编辑器/AI 编码工程  [AI coding 工具厂]"
+
+  # =========================================================================
+  # X account trial 首批 — handle 以 reports/x-account-smoke.json first_batch
+  # 为唯一真相（2026-08-20, 19 个）。MengTo/rileybrown/nickfloats 报告为
+  # rate_limited，不得入首批。走独立 com.akb2.intake-twitter.plist，
+  # RSS 默认 --limit 30 不消费这些源。
+  # =========================================================================
+
+  - slug: x-openai
+    type: x_account
+    handle: OpenAI
+    domain: x.com
+    listing_url: https://x.com/OpenAI
+    rate_limit: 3600
+    status: trial
+    category: authority
+    lane: concept
+    notes: "X @OpenAI — 2026-08-20 smoke first_batch"
+
+  - slug: x-anthropic
+    type: x_account
+    handle: AnthropicAI
+    domain: x.com
+    listing_url: https://x.com/AnthropicAI
+    rate_limit: 3600
+    status: trial
+    category: authority
+    lane: concept
+    notes: "X @AnthropicAI — 2026-08-20 smoke first_batch"
+
+  - slug: x-lmsys
+    type: x_account
+    handle: lmsysorg
+    domain: x.com
+    listing_url: https://x.com/lmsysorg
+    rate_limit: 3600
+    status: trial
+    category: authority
+    lane: concept
+    notes: "X @lmsysorg — 2026-08-20 smoke first_batch"
+
+  - slug: x-vllm
+    type: x_account
+    handle: vllm_project
+    domain: x.com
+    listing_url: https://x.com/vllm_project
+    rate_limit: 3600
+    status: trial
+    category: authority
+    lane: concept
+    notes: "X @vllm_project — 2026-08-20 smoke first_batch"
+
+  - slug: x-karpathy
+    type: x_account
+    handle: karpathy
+    domain: x.com
+    listing_url: https://x.com/karpathy
+    rate_limit: 3600
+    status: trial
+    category: authority
+    lane: concept
+    notes: "X @karpathy — 2026-08-20 smoke first_batch"
+
+  - slug: x-sama
+    type: x_account
+    handle: sama
+    domain: x.com
+    listing_url: https://x.com/sama
+    rate_limit: 3600
+    status: trial
+    category: authority
+    lane: concept
+    notes: "X @sama — 2026-08-20 smoke first_batch"
+
+  - slug: x-gdb
+    type: x_account
+    handle: gdb
+    domain: x.com
+    listing_url: https://x.com/gdb
+    rate_limit: 3600
+    status: trial
+    category: authority
+    lane: concept
+    notes: "X @gdb — 2026-08-20 smoke first_batch"
+
+  - slug: x-demis-hassabis
+    type: x_account
+    handle: demishassabis
+    domain: x.com
+    listing_url: https://x.com/demishassabis
+    rate_limit: 3600
+    status: trial
+    category: authority
+    lane: concept
+    notes: "X @demishassabis — 2026-08-20 smoke first_batch"
+
+  - slug: x-andrew-ng
+    type: x_account
+    handle: AndrewYNg
+    domain: x.com
+    listing_url: https://x.com/AndrewYNg
+    rate_limit: 3600
+    status: trial
+    category: authority
+    lane: concept
+    notes: "X @AndrewYNg — 2026-08-20 smoke first_batch"
+
+  - slug: x-swyx
+    type: x_account
+    handle: swyx
+    domain: x.com
+    listing_url: https://x.com/swyx
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    lane: concept
+    notes: "X @swyx — 2026-08-20 smoke first_batch"
+
+  - slug: x-simonw
+    type: x_account
+    handle: simonw
+    domain: x.com
+    listing_url: https://x.com/simonw
+    rate_limit: 3600
+    status: trial
+    category: authority
+    lane: concept
+    notes: "X @simonw — 2026-08-20 smoke first_batch"
+
+  - slug: x-ggerganov
+    type: x_account
+    handle: ggerganov
+    domain: x.com
+    listing_url: https://x.com/ggerganov
+    rate_limit: 3600
+    status: trial
+    category: authority
+    lane: concept
+    notes: "X @ggerganov — 2026-08-20 smoke first_batch"
+
+  - slug: x-rasbt
+    type: x_account
+    handle: rasbt
+    domain: x.com
+    listing_url: https://x.com/rasbt
+    rate_limit: 3600
+    status: trial
+    category: authority
+    lane: concept
+    notes: "X @rasbt — 2026-08-20 smoke first_batch"
+
+  - slug: x-omarsar0
+    type: x_account
+    handle: omarsar0
+    domain: x.com
+    listing_url: https://x.com/omarsar0
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    lane: concept
+    notes: "X @omarsar0 — 2026-08-20 smoke first_batch"
+
+  - slug: x-arav-srinivas
+    type: x_account
+    handle: AravSrinivas
+    domain: x.com
+    listing_url: https://x.com/AravSrinivas
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    lane: concept
+    notes: "X @AravSrinivas — 2026-08-20 smoke first_batch"
+
+  - slug: x-dotey
+    type: x_account
+    handle: dotey
+    domain: x.com
+    listing_url: https://x.com/dotey
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    lane: concept
+    notes: "X @dotey — 2026-08-20 smoke first_batch"
+
+  - slug: x-oran-ge
+    type: x_account
+    handle: oran_ge
+    domain: x.com
+    listing_url: https://x.com/oran_ge
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    lane: concept
+    notes: "X @oran_ge — 2026-08-20 smoke first_batch"
+
+  - slug: x-op7418
+    type: x_account
+    handle: op7418
+    domain: x.com
+    listing_url: https://x.com/op7418
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    lane: concept
+    notes: "X @op7418 — 2026-08-20 smoke first_batch"
+
+  - slug: x-dash-huang
+    type: x_account
+    handle: DashHuang
+    domain: x.com
+    listing_url: https://x.com/DashHuang
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    lane: concept
+    notes: "X @DashHuang — 2026-08-20 smoke first_batch"
