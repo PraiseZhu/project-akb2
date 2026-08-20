@@ -99,3 +99,41 @@ def test_query_result_template_type_in_enum(gate_source: str):
     assert '"query-result"' in gate_source or "'query-result'" in gate_source, (
         "TEMPLATE_TYPE_ENUM must include query-result"
     )
+
+
+def test_hc06_future_questions_still_requires_two_to_three():
+    """t6: HC-06 对 frontmatter future_questions 仍要求 2-3 条（与 A2 零改）。"""
+    from src.akb2.gate.akb2_gate_check import check_future_questions
+    from src.akb2.quality.checks_structural import check_a2_frontmatter
+
+    ok_fm = {"future_questions": ["短句一？", "短句二？"]}
+    passed, msg = check_future_questions(ok_fm)
+    assert passed, msg
+    too_few, _ = check_future_questions({"future_questions": ["only one"]})
+    assert too_few is False
+    too_many, _ = check_future_questions(
+        {"future_questions": ["a", "b", "c", "d"]}
+    )
+    assert too_many is False
+
+    page = """---
+status: candidate
+gate_decision: null
+source_refs:
+  - raw/test.md
+gate_reason: ok
+future_questions:
+  - 短句一？
+  - 短句二？
+related_concepts:
+  - c1
+  - c2
+---
+
+# Title
+
+## TLDR
+ok
+"""
+    a2 = check_a2_frontmatter(page)
+    assert [d for d in a2 if "future_questions" in d.location] == []

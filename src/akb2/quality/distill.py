@@ -28,6 +28,7 @@ import json
 import os
 import re
 import signal
+import sys
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -105,6 +106,38 @@ GATE_REASON_MAX_CHARS: int = 150
 FUTURE_QUESTIONS_MIN: int = 2
 FUTURE_QUESTIONS_MAX: int = 3
 RELATED_CONCEPTS_MIN: int = 2
+# TLDR 宪法 §3 第4条：机制句+组件句+must_cover，≤200 字
+TLDR_MAX_CHARS: int = 200
+# 配置示例：这些键是 AKB2 管线自身默认，不得当来源配置残渣写出
+PIPELINE_DEFAULT_PARAM_KEYS: frozenset[str] = frozenset(
+    {
+        "max_repair_rounds",
+        "max_rounds",
+        "distill_timeout_seconds",
+        "grader_timeout_seconds",
+        "max_retries",
+        "max_parallel_items",
+        "maker_model",
+        "checker_model",
+        "ledger_event",
+        "fallback_allowed",
+        "budget_seconds",
+    }
+)
+# 可复用模式表述（concept 0组件/0因果边 → pattern 降级）
+_PATTERN_LANE_MARKERS: tuple[str, ...] = (
+    "可复用模式",
+    "可复用",
+    "反模式",
+    "最佳实践",
+    "design pattern",
+    "reusable pattern",
+    "anti-pattern",
+    "antipattern",
+    "best practice",
+    "best practices",
+    "pattern language",
+)
 DISTILL_MODEL_FAMILY: str = os.environ.get("AKB2_DISTILL_FAMILY", "deepseek-v4-pro")
 DISTILL_TIMEOUT_S: float = 60.0
 DISTILL_MAX_RETRIES: int = 0
@@ -4898,7 +4931,9 @@ def build_deterministic_extract_result(
             retries_used=0,
             error=f"deterministic_maker_fallback_failed: {exc}",
         )
-    # §0.2/M1/D9：concept fallback 质量基线检查（<3 组件或 0 eligible edge → fail-closed）
+    # §0.2/M1/D9：concept fallback 质量基线检查
+    # 0组件/0因果边不再直接 abort：先尝试车道降级（tutorial / pattern），
+    # 降级落账（ledger event=lane_demotion）；两者都不满足才 abort。
     if _is_concept_lane(content_lane):
         basis = _build_fallback_quality_basis(data)
         data["fallback_quality_basis"] = basis
@@ -4906,6 +4941,11 @@ def build_deterministic_extract_result(
             basis["component_count"] < CONCEPT_MIN_MECHANISM_COMPONENTS
             or basis["source_causal_edge_count"] == 0
         ):
+            demoted = _maybe_demote_concept_lane(
+                data, raw_content, basis, raw_path=raw_path
+            )
+            if demoted is not None:
+                return demoted
             return ExtractResult(
                 success=False,
                 data={"fallback_quality_basis": basis},
@@ -4915,7 +4955,7 @@ def build_deterministic_extract_result(
                     f"{basis['component_count']} 组件 / "
                     f"{basis['source_causal_edge_count']} eligible 因果边 "
                     f"（需 ≥{CONCEPT_MIN_MECHANISM_COMPONENTS} 组件且 ≥1 eligible edge，"
-                    f"§0.2 D1；inferred 弱边不计）"
+                    f"§0.2 D1；inferred 弱边不计；无可执行步/可复用模式，车道降级失败）"
                 ),
             )
     return ExtractResult(
@@ -4957,6 +4997,148 @@ def _build_fallback_quality_basis(data: dict[str, Any]) -> dict[str, Any]:
             str(c.get("evidence_anchor", "")) for c in components if isinstance(c, dict)
         ],
     }
+
+
+_EXECUTABLE_OP_SOURCES: frozenset[str] = frozenset(
+    {"cli_commands", "code_blocks", "api_signatures", "mcp_protocol"}
+)
+
+
+def _count_executable_how_steps(data: dict[str, Any], raw_content: str = "") -> int:
+    """Count executable steps for tutorial 降级。
+
+    优先看 extract how_steps；concept fallback 会清空 how_steps，再扫 raw
+    的真实命令/API（不计 numbered_steps，避免把组件列表当可执行步）。
+    """
+    how_steps = data.get("how_steps") or []
+    from_extract = sum(
+        1
+        for s in how_steps
+        if isinstance(s, dict)
+        and s.get("executable") is True
+        and str(s.get("command", "")).strip()
+    )
+    if from_extract >= HOW_STEPS_MIN_EXECUTABLE:
+        return from_extract
+    if not raw_content:
+        return from_extract
+    from src.akb2.quality.source_ops_scanners import scan_all
+
+    from_raw = sum(
+        1
+        for item in scan_all(raw_content)
+        if item.kind == "source_operation" and item.source in _EXECUTABLE_OP_SOURCES
+    )
+    return max(from_extract, from_raw)
+
+
+def _has_reusable_pattern_signal(raw_content: str, data: dict[str, Any]) -> bool:
+    """Detect reusable-pattern wording for concept → pattern 降级。不编造组件。"""
+    blobs: list[str] = [raw_content or ""]
+    for claim in data.get("claims") or []:
+        if isinstance(claim, dict):
+            blobs.append(str(claim.get("text", "")))
+    blobs.append(str(data.get("tldr", "")))
+    blobs.append(str(data.get("applicability_boundary", "")))
+    haystack = "\n".join(blobs).lower()
+    return any(marker.lower() in haystack for marker in _PATTERN_LANE_MARKERS)
+
+
+def _record_lane_demotion(
+    *,
+    from_lane: str,
+    to_lane: str,
+    reason: str,
+    raw_path: str,
+    basis: dict[str, Any],
+) -> None:
+    """宪法 P4：车道降级必须落账。账本不可用时 stderr 可见，不静默吞。"""
+    import hashlib
+    from datetime import UTC, datetime
+
+    from src.akb2.loops.ledger import append_event
+
+    event = {
+        "loop_id": "loop1",
+        "node": "distill_extract",
+        "event": "lane_demotion",
+        "content_hash": hashlib.sha256(raw_path.encode("utf-8")).hexdigest()[:16],
+        "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "details": {
+            "from_lane": from_lane,
+            "to_lane": to_lane,
+            "reason": reason,
+            "raw_path": raw_path,
+            "component_count": basis.get("component_count"),
+            "source_causal_edge_count": basis.get("source_causal_edge_count"),
+        },
+    }
+    ledger_path = os.environ.get("AKB2_QUALITY_LEDGER", "").strip()
+    if not ledger_path:
+        try:
+            from src.akb2.loops.paths import get_staging_root
+
+            ledger_path = str(get_staging_root() / "quality-ledger.jsonl")
+        except Exception:
+            ledger_path = ""
+    if not ledger_path:
+        print(
+            f"[distill] lane_demotion {from_lane}→{to_lane}: {reason} (ledger path unresolved)",
+            file=sys.stderr,
+        )
+        return
+    try:
+        append_event(ledger_path, event)
+    except Exception as exc:
+        print(
+            f"[distill] lane_demotion 落账失败 {from_lane}→{to_lane}: {exc}",
+            file=sys.stderr,
+        )
+
+
+def _maybe_demote_concept_lane(
+    data: dict[str, Any],
+    raw_content: str,
+    basis: dict[str, Any],
+    *,
+    raw_path: str = "",
+) -> ExtractResult | None:
+    """concept 0组件/0因果边：先 tutorial（≥3 可执行步），再 pattern（可复用模式）。
+
+    不为凑数编造组件。降级成功返回 ExtractResult；两边都不满足返回 None 由调用方 abort。
+    """
+    executable = _count_executable_how_steps(data, raw_content)
+    if executable >= HOW_STEPS_MIN_EXECUTABLE:
+        data["content_lane"] = CONTENT_LANE_TUTORIAL
+        data["lane_demotion"] = {
+            "from": CONTENT_LANE_CONCEPT,
+            "to": CONTENT_LANE_TUTORIAL,
+            "reason": f"{executable} executable how_steps ≥ {HOW_STEPS_MIN_EXECUTABLE}",
+        }
+        _record_lane_demotion(
+            from_lane=CONTENT_LANE_CONCEPT,
+            to_lane=CONTENT_LANE_TUTORIAL,
+            reason=data["lane_demotion"]["reason"],
+            raw_path=raw_path,
+            basis=basis,
+        )
+        return ExtractResult(success=True, data=data, retries_used=0)
+    if _has_reusable_pattern_signal(raw_content, data):
+        data["content_lane"] = CONTENT_LANE_PATTERN
+        data["lane_demotion"] = {
+            "from": CONTENT_LANE_CONCEPT,
+            "to": CONTENT_LANE_PATTERN,
+            "reason": "reusable pattern wording in source",
+        }
+        _record_lane_demotion(
+            from_lane=CONTENT_LANE_CONCEPT,
+            to_lane=CONTENT_LANE_PATTERN,
+            reason=data["lane_demotion"]["reason"],
+            raw_path=raw_path,
+            basis=basis,
+        )
+        return ExtractResult(success=True, data=data, retries_used=0)
+    return None
 
 
 def _is_vacuous_raw_text(text: str) -> bool:
@@ -5376,6 +5558,12 @@ def compose_candidate(
     candidate_filename = f"{slug}.md"
     candidate_path = os.path.join(output_dir, candidate_filename)
 
+    # 车道降级（t1）可能把 extract_data.content_lane 改成 tutorial/pattern；
+    # compose 必须跟抽取终值走，否则 frontmatter/self-gate 仍按 concept 卡组件。
+    content_lane = str(
+        extract_result.data.get("content_lane") or content_lane or ""
+    )
+
     # 构建 frontmatter（确定性代码写死，防范已知坑 1-3）
     # WP-3.4: 透传 known_concepts/pending_queue 给 _build_frontmatter，使 frontmatter
     # related_* 与 body graph 同源 resolve——不写悬空 [[...]] 伪装 real_link（round-2 P1）。
@@ -5386,6 +5574,19 @@ def compose_candidate(
         known_concepts=known_concepts,
         pending_queue=pending_queue,
     )
+    related_now = frontmatter.get("related_concepts") or []
+    proposed_now = frontmatter.get("proposed_graph_nodes") or []
+    if (
+        (not isinstance(related_now, list) or len(related_now) < RELATED_CONCEPTS_MIN)
+        and (not isinstance(proposed_now, list) or len(proposed_now) < 1)
+    ):
+        return ComposeResult(
+            success=False,
+            error=(
+                "compose_self_gate_failed: related_concepts<2 且 proposed_graph_nodes 为空"
+                "（冷启动必须从 referenced_concepts 兜底写 proposed_graph_nodes）"
+            ),
+        )
 
     # raw_content 同源读取：must_cover 扫描与 self-gate A3 锚点校验共用同一份原文，
     # 避免截断/不一致导致 must_cover 账本与锚点校验脱节。
@@ -5438,6 +5639,7 @@ def compose_candidate(
             known_concepts=known_concepts,
             pending_queue=pending_queue,
             content_lane=content_lane,
+            promotion_mode="proposal",
         )
     except Exception as exc:
         return ComposeResult(
@@ -5678,23 +5880,32 @@ def _build_frontmatter(
     raw_reason = f"候选来源锚点 [raw {first_anchor}]；待 GPT-5.4 裁判与五闸确认。"
     gate_reason = raw_reason[:GATE_REASON_MAX_CHARS]
 
-    # §0.2/D8：冷启动分叉——resolver 提供但 related 不足 RELATED_CONCEPTS_MIN 时，
-    # 写 proposed_graph_nodes（未 resolve 的 referenced_concepts，每项 {slug,label,
-    # reason,source_anchor}）+ graph_pending=true。proposal 模式（check_a2_frontmatter
-    # concept）接受 proposed_graph_nodes>=1；auto-promote/active 仍要求真实 related_*
-    # （run_promote AUTO_PROMOTE=1 二次拒 proposed_node_only 写 active，D8 底线）。
+    # §0.2/D8：related resolve 不足 RELATED_CONCEPTS_MIN → 必写 proposed_graph_nodes
+    # （从 referenced_concepts 兜底，带 source_anchor）。proposal 模式接受
+    # proposed_graph_nodes>=1；auto-promote/active 仍要求真实 related_*。
+    # 两者都空由 compose_candidate abort（不放垃圾）。
     proposed_graph_nodes: list[dict[str, str]] = []
     graph_pending = False
-    if resolver_provided and len(related) < RELATED_CONCEPTS_MIN:
+    if len(related) < RELATED_CONCEPTS_MIN:
         graph_pending = True
-        unresolved = [
-            str(c) for c in (concepts if concepts else []) if str(c) not in related
-        ]
+        related_plain = {
+            str(c).strip("[]") for c in related
+        }
+        unresolved: list[str] = []
+        for c in concepts or []:
+            label = str(c).strip()
+            if not label:
+                continue
+            if label in related or label.strip("[]") in related_plain:
+                continue
+            unresolved.append(label)
+        if not unresolved:
+            unresolved = [str(c).strip() for c in (concepts or []) if str(c).strip()]
         for c in unresolved[:4]:
             proposed_graph_nodes.append(
                 {
                     "slug": _slugify_component_id(c),
-                    "label": c,
+                    "label": c.strip("[]"),
                     "reason": (
                         "冷启动：referenced_concept 未 resolve 到 known/pending，"
                         "待 adjudication"
@@ -5710,43 +5921,44 @@ def _build_frontmatter(
     slug = _derive_slug(raw_path)
     source_title = str(raw_fm.get("source_title", "")).strip()
     canonical_title = f"{slug} — {source_title}" if source_title else slug
+    # t4: key_findings 长数组不进 frontmatter（正文「关键发现」节已有同内容）。
+    # t6: frontmatter 保留 2-3 条短句 future_questions（A2/HC-06 零改）；完整版在正文节。
+    extract_data["key_findings"] = _extract_key_findings(claims)
+    extract_data["future_questions_full"] = questions
+    extract_data["canonical_title"] = canonical_title
 
+    # t4：身份/状态/来源短引用。省略 directory_scope/confidence/graph_status/
+    # artifact_type/pipeline_version/空 source_* 以压到 ≤25 行。
+    short_fq = _short_future_questions(questions)
+    lane_value = _normalize_content_lane(content_lane)
+    source_url = str(raw_fm.get("source_url", "")).strip()
     frontmatter: dict[str, Any] = {
-        # 身份
         "canonical_title": canonical_title,
         "slug": slug,
         "template_type": "source",
-        "directory_scope": "wiki/sources/",
-        # 来源
-        "source_type": str(raw_fm.get("source_type", "blog")),
-        "source_url": str(raw_fm.get("source_url", "")),
-        "source_author": _first_author(raw_fm.get("source_authors")),
-        "source_published_at": str(raw_fm.get("source_published_at", "")),
-        "evidence_provenance": _page_evidence_provenance(extract_data),
-        "confidence": "medium",
-        # 状态（短）
         "status": "candidate",
-        # 内容车道（step-1 穿线；intake-rebuild p5 起归一：procedural 别名落盘前
-        # 归一为 tutorial canonical 值，候选页不再出现 procedural 终值——与
-        # admission 输出侧同语义。pattern/design 原样透传。）
-        "content_lane": _normalize_content_lane(content_lane),
-        "gate_decision": None,  # 写死 null（已知坑 1）
-        "gate_reason": gate_reason,  # ≤150 字符（已知坑 3）
-        "star_level": 0,  # 0 星基线（STAR-RATING；升星引擎=循环3）
-        "graph_role": "evidence",  # source 默认（PAGE-TEMPLATES §4.0）
-        "graph_status": "healthy",
-        # 内容
-        "key_findings": _extract_key_findings(claims),
-        "future_questions": questions,
+        "source_url": source_url,
+        "source_refs": [raw_path],
+        "gate_decision": None,
+        "gate_reason": gate_reason,
+        "star_level": 0,
+        "graph_role": "evidence",
+        "future_questions": short_fq,
         "related_concepts": related_links,
-        "source_refs": [raw_path],  # 必须含 raw 路径（已知坑 2）
-        # §0.2/D8：冷启动 proposed_graph_nodes + graph_pending（proposal 模式接受）
         "proposed_graph_nodes": proposed_graph_nodes,
         "graph_pending": graph_pending,
-        # 保留
-        "artifact_type": "wiki",
-        "pipeline_version": "v1",
+        "evidence_provenance": _page_evidence_provenance(extract_data),
     }
+    if lane_value:
+        frontmatter["content_lane"] = lane_value
+    source_type = str(raw_fm.get("source_type", "")).strip() or "blog"
+    frontmatter["source_type"] = source_type
+    source_author = _first_author(raw_fm.get("source_authors"))
+    if source_author:
+        frontmatter["source_author"] = source_author
+    source_published = str(raw_fm.get("source_published_at", "")).strip()
+    if source_published:
+        frontmatter["source_published_at"] = source_published
 
     # F53: raw frontmatter 走了降级逐行提取 → 透传私有标记(compose 层 pop 出
     # 落账,不写入候选页 frontmatter)
@@ -5822,6 +6034,27 @@ def _page_evidence_provenance(extract_data: dict[str, Any]) -> str:
     ):
         return "partial_source_grounded"
     return "source_grounded"
+
+
+def _short_future_questions(questions: list[str], max_chars: int = 48) -> list[str]:
+    """t6: frontmatter 短句版 future_questions（2-3 条，A2/HC-06 消费）。
+
+    去掉 [raw §X] / provenance 前缀，截到短句；正文 Future Questions 节仍用完整版。
+    """
+    short: list[str] = []
+    for q in questions:
+        text = str(q or "").strip()
+        text = re.sub(r"^\[raw\s+§[A-Z0-9_]+\]\s*", "", text)
+        text = re.sub(r"^\((?:akb_interpretation|source_grounded)\)\s*", "", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        if not text:
+            continue
+        if len(text) > max_chars:
+            text = text[: max_chars - 1].rstrip() + "?"
+        short.append(text)
+        if len(short) >= FUTURE_QUESTIONS_MAX:
+            break
+    return short[:FUTURE_QUESTIONS_MAX]
 
 
 def _fq_fragment(text: str, limit: int) -> str:
@@ -7020,30 +7253,30 @@ def _build_how_boundary_table(
     return "\n".join(rows)
 
 
+def _params_are_pipeline_defaults(params: dict[str, Any]) -> bool:
+    """空 dict 或键全是 AKB2 管线默认键 → 不输出配置示例（刮掉 maker_model 残渣）。"""
+    if not params:
+        return True
+    return all(k in PIPELINE_DEFAULT_PARAM_KEYS for k in params)
+
+
 def _build_params_example(params: dict[str, Any]) -> str:
-    """把抽取参数渲染成可复制配置，给 How 可执行性一个硬锚。"""
-    defaults = {
-        "max_repair_rounds": _concrete_param_value(
-            params.get("max_repair_rounds", params.get("max_rounds")),
-            3,
-        ),
-        "distill_timeout_seconds": _concrete_param_value(
-            params.get("distill_timeout_seconds"),
-            60,
-        ),
-        "grader_timeout_seconds": _concrete_param_value(
-            params.get("grader_timeout_seconds"),
-            120,
-        ),
-        "max_retries": _concrete_param_value(params.get("max_retries"), 0),
-        "max_parallel_items": _concrete_param_value(params.get("max_parallel_items"), 1),
-        "maker_model": _concrete_param_value(params.get("maker_model"), "deepseek-v4-pro"),
-        "checker_model": _concrete_param_value(params.get("checker_model"), "gpt-5.4"),
-        "ledger_event": _concrete_param_value(params.get("ledger_event"), "distill_extract"),
-        "fallback_allowed": _concrete_param_value(params.get("fallback_allowed"), "false"),
-    }
+    """把抽取参数渲染成可复制配置。空/全默认 params 返回空串（不输出配置示例块）。"""
+    if _params_are_pipeline_defaults(params):
+        return ""
+    rendered_pairs: list[tuple[str, Any]] = []
+    for key, value in params.items():
+        if key in PIPELINE_DEFAULT_PARAM_KEYS:
+            continue
+        if value is None or (isinstance(value, str) and not str(value).strip()):
+            continue
+        if _concrete_param_value(value, None) != value:
+            continue
+        rendered_pairs.append((key, value))
+    if not rendered_pairs:
+        return ""
     lines = ["```yaml"]
-    for key, value in defaults.items():
+    for key, value in rendered_pairs:
         if isinstance(value, bool):
             rendered = "true" if value else "false"
         else:
@@ -8027,39 +8260,24 @@ def _build_body(
         for i, c in enumerate(claims, 1)
     )
 
-    # TLDR：F8-D 去重 + 要素覆盖(核心机制 + 组件全景 + how/边界 claim,≤3-4 句含锚点)。
-    # grader 抱怨:'后两句重复同一论点/大面积重复 §F_EVIDENCE'。先 _dedup_claims_for_tldr
-    # 去掉 ≥80% 相似 claim,再优先覆盖核心机制(首条 eligible 边)+ 组件全景,末尾 how/边界 claim。
-    deduped_claims = _dedup_claims_for_tldr(claims)
-    tldr_claim_sentences = [
-        f"(source_grounded) {_compact_tldr_sentence(c['text'])} [raw {c['anchor']}]."
-        for c in deduped_claims[:3]
-        if _compact_tldr_sentence(c["text"])
-    ]
+    # TLDR：只保留机制句 + 组件句 + must_cover 结论。claim 全文不再复制进 TLDR
+    # （与「关键发现」节零整句重复；宪法 §3 第4条 ≤200 字）。
     tldr_parts: list[str] = []
-    # 要素 1:核心机制(首条 eligible 边)
     mech_sent = _build_tldr_mechanism_sentence(extract_data, raw_content)
     if mech_sent:
         tldr_parts.append(mech_sent)
-    # 要素 2:组件全景(组件数 + 关键名)
     comp_sent = _build_tldr_component_sentence(extract_data, raw_content)
     if comp_sent:
         tldr_parts.append(comp_sent)
-    # 要素 3:how/边界 claim(去重后,补足到 ≤3-4 句)
-    tldr_parts.extend(tldr_claim_sentences[: max(0, 3 - len(tldr_parts))])
     if tldr_parts:
         tldr = " ".join(tldr_parts)
-    elif tldr_claim_sentences:
-        tldr = " ".join(tldr_claim_sentences)
-    # 都空 → 退回 tldr(claims[0] 或占位)
+    # 机制/组件都空 → 保留抽取 tldr（上面已设 claims[0] 兜底），后面再截断
 
     # must_cover source_conclusion: 代码直出进 TLDR，LLM 无最终选择权。
-    # 即使 LLM tldr 漏掉原文显式结论，scanner 账本仍强制渲染进 TLDR 节。
     must_cover_concls = [m for m in must_cover if m.kind == "source_conclusion"]
     mc_tldr_text = _render_must_cover_conclusions(must_cover_concls, raw_content)
     if mc_tldr_text:
         tldr = f"{mc_tldr_text} {tldr}".strip() if tldr else mc_tldr_text
-    # F6-C: must_cover conclusion 字面量注入(tldr 节)
     tldr = _inject_missing_must_cover(tldr, must_cover_concls, inject_prefix="")
     # F11-A: TLDR 注入后消毒——与 how 节对齐(probe-p9a A 臂 sub-agents `--fork` 误报:
     # must_cover literal 含反引号命令,注入 TLDR 后无 strip → SG-command-recheck 误报)。
@@ -8069,6 +8287,8 @@ def _build_body(
         tldr = _strip_ungrounded_backtick_commands(tldr, raw_full_text)
     # F27 bug B:清洗 TLDR 表格碎片噪音(分号数字对,如 "2;0"/"13;7")
     tldr = _clean_tldr_noise(tldr)
+    if len(tldr) > TLDR_MAX_CHARS:
+        tldr = tldr[: TLDR_MAX_CHARS - 1].rstrip() + "…"
 
     # 论证与解释：argumentation 字段逐条展开。
     # source_grounded 条目回到 claim 文本本身，避免把 LLM 的归纳解释伪装成来源事实。
@@ -8153,8 +8373,10 @@ def _build_body(
     if raw_full_text:
         how_text = _strip_ungrounded_backtick_commands(how_text, raw_full_text)
     params = extract_data.get("params") or {}
-    if isinstance(params, dict) and params:
-        how_text = f"{how_text}\n\n配置示例：\n{_build_params_example(params)}"
+    if isinstance(params, dict):
+        params_block = _build_params_example(params)
+        if params_block:
+            how_text = f"{how_text}\n\n配置示例：\n{params_block}"
     how_boundary = _build_how_boundary_table(
         claims,
         how_steps,
@@ -8163,12 +8385,10 @@ def _build_body(
         content_lane=content_lane,
         causal_edges=extract_data.get("causal_edges", []),
     )
-    _fq_lines = "\n".join(
-        f"- {q}"
-        for q in _generate_questions(
-            claims, how_steps, extract_data.get("causal_edges", [])
-        )
+    _fq_full = extract_data.get("future_questions_full") or _generate_questions(
+        claims, how_steps, extract_data.get("causal_edges", [])
     )
+    _fq_lines = "\n".join(f"- {q}" for q in _fq_full)
     if how_boundary:
         how_text = f"{how_text}\n\n{how_boundary}"
     # Finding 6: 持久化三态 provenance_split 摘要到 How 节末尾，供 SG 读取消费。
@@ -8316,8 +8536,14 @@ def _build_body(
     # F8-D: 机制叙述段落——表后追加 eligible 边确定性叙述(每边一句,按锚顺序),
     # 消 '正文重复罗列来源句子,缺少因果解释/机制闭环不足'。无 eligible → 空(不硬凑)。
     mechanism_narrative = _render_mechanism_narrative(extract_data, raw_content)
+    page_title = (
+        str(extract_data.get("canonical_title") or "").strip()
+        or _derive_slug(raw_path)
+    )
 
-    body = f"""## TLDR
+    body = f"""# {page_title}
+
+## TLDR
 
 {tldr}
 

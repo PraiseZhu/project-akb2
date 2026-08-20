@@ -228,14 +228,12 @@ class TestFrontmatterGateDecision:
         }
 
         fm = _build_frontmatter("raw/test.md", data)
-        assert all(str(item).startswith("[raw §") for item in fm["key_findings"])
-        assert all("(source_grounded)" in str(item) for item in fm["key_findings"])
-        assert "..." not in " ".join(fm["key_findings"])
+        assert "key_findings" not in fm
         assert "[raw §A]" in fm["gate_reason"]
         assert "GPT-5.4 裁判" in fm["gate_reason"]
         assert "段1抽取" not in fm["gate_reason"]
-        assert all(str(q).startswith("[raw §") for q in fm["future_questions"])
-        assert all("(akb_interpretation)" in str(q) for q in fm["future_questions"])
+        assert 2 <= len(fm["future_questions"]) <= 3
+        assert all(isinstance(q, str) and q.strip() for q in fm["future_questions"])
 
 
 class TestFrontmatterSourceRefs:
@@ -606,17 +604,20 @@ class TestFrontmatterActiveRequiredFields:
         fm = _build_frontmatter("raw/test.md", self._data())
         assert fm["template_type"] == "source"
         assert fm["graph_role"] == "evidence"
-        assert fm["graph_status"] == "healthy"
+        assert "graph_status" not in fm
         assert fm["evidence_provenance"] == "partial_source_grounded"
         assert fm["star_level"] == 0
 
     def test_key_findings_from_claims(self):
-        """key_findings 为非空数组，来自 claims（真实内容 ≥3 满足 H7）。"""
+        """t4: key_findings 长数组不进 frontmatter；正文节仍承载完整版。"""
         from src.akb2.quality.distill import _build_frontmatter
 
-        fm = _build_frontmatter("raw/test.md", self._data())
-        assert isinstance(fm["key_findings"], list)
-        assert len(fm["key_findings"]) >= 3, f"3 条 claims 应产 ≥3 key_findings: {fm['key_findings']}"
+        data = self._data()
+        fm = _build_frontmatter("raw/test.md", data)
+        assert "key_findings" not in fm
+        findings = data.get("key_findings") or []
+        assert isinstance(findings, list)
+        assert len(findings) >= 3, f"3 条 claims 应产 ≥3 key_findings: {findings}"
 
     def test_assemble_page_frontmatter_is_valid_yaml_with_key_findings_punctuation(self):
         """_assemble_page 必须输出 PyYAML 可解析的 frontmatter，不因 key_findings 标点炸。"""
@@ -1213,11 +1214,9 @@ source_url: https://example.com/neighbor
         assert "以下步骤按 provenance 分层" in body
         assert "source_grounded 表示 raw 明确给出的协议/API/配置操作" in body
         assert "source basis、akb action 与 unsupported assumptions" in body
-        assert "配置示例：" in body
-        assert "max_repair_rounds: 3" in body
-        assert "distill_timeout_seconds: 60" in body
-        assert "grader_timeout_seconds: 120" in body
-        assert "fallback_allowed: false" in body
+        assert "配置示例：" not in body
+        assert "maker_model: deepseek-v4-pro" not in body
+        assert "max_repair_rounds: 3" not in body
         assert "[raw §B] (akb_interpretation)" in body
         assert "### 操作化边界" in body
         assert "| 步骤 | 来源支撑 | AKB 操作化 | 未直接支持/仍需验证 |" in body
@@ -1301,9 +1300,9 @@ source_url: https://example.com/neighbor
         assert "MAX_REPAIR_ROUNDS=3" in body
         assert "maker_model='deepseek-v4-pro'; checker_model='gpt-5.4'" in body
         assert "max_repair_rounds: explicit budget constant" not in body
-        assert "max_retries: 0" in body
-        assert "maker_model: deepseek-v4-pro" in body
-        assert "checker_model: gpt-5.4" in body
+        assert "maker_model: deepseek-v4-pro" not in body
+        assert "checker_model: gpt-5.4" not in body
+        assert "配置示例：" not in body
 
     def test_how_step_source_grounded_is_preserved_only_for_explicit_concrete_command(self):
         """来源提供的具体命令可标 source_grounded，AKB helper 命令仍标 akb_interpretation。"""
@@ -1575,10 +1574,15 @@ source_url: https://example.com/neighbor
         """TLDR 每条核心论点独立成句，避免 GPT-5.4 判定锚点映射不清。"""
         body = self._compose(extract_success_response)
         tldr = body.split("## TLDR", 1)[1].split("## 关键发现", 1)[0]
-        assert tldr.count("(source_grounded)") == 3
-        assert "[raw §A]." in tldr
-        assert "[raw §B]." in tldr
-        assert "[raw §C]." in tldr
+        assert len(tldr.strip()) <= 200
+        findings = body.split("## 关键发现", 1)[1].split("## 入选理由", 1)[0]
+        for claim_line in (
+            "Loop engineering is the practice of designing bounded, convergent, observable AI agent loops",
+            "A well-designed loop has five components",
+            "Fix specific defects rather than restarting the entire pipeline",
+        ):
+            assert claim_line not in tldr
+            assert claim_line in findings
 
     def test_smoke_style_compose_keeps_provenance_ratio_under_self_gate(self):
         """真实 smoke 回归：Future Questions 可标 provenance，但全文比例仍需过 self-gate。"""
@@ -2364,3 +2368,167 @@ class TestFrontmatterDegradedObservability:
         )
         fm2 = _build_frontmatter(str(p2), data)
         assert "_frontmatter_degraded" not in fm2
+
+
+class TestProposedGraphNodesFallback:
+    """c2: related resolve 不足 2 → 从 referenced_concepts 写 proposed_graph_nodes。"""
+
+    def test_unresolved_referenced_concepts_become_proposed_graph_nodes(self):
+        from src.akb2.quality.distill import _build_frontmatter
+
+        data = {
+            "claims": [
+                {
+                    "text": "Loop engineering designs bounded agent loops",
+                    "anchor": "§A",
+                    "provenance": "source_grounded",
+                    "evidence_gap": "未量化：缺失败样本",
+                }
+            ],
+            "how_steps": [],
+            "params": {},
+            "referenced_concepts": ["brand-new-concept", "another-new-concept"],
+        }
+        fm = _build_frontmatter(
+            "raw/test.md",
+            data,
+            known_concepts=["loop-engineering"],
+            pending_queue=[],
+        )
+        assert len(fm["related_concepts"]) < 2
+        nodes = fm["proposed_graph_nodes"]
+        assert len(nodes) >= 1
+        assert all(n.get("source_anchor") for n in nodes)
+        slugs = {n["slug"] for n in nodes}
+        labels = {n["label"] for n in nodes}
+        assert slugs & {"brand-new-concept", "another-new-concept", "brand_new_concept", "another_new_concept"}
+        assert labels & {"brand-new-concept", "another-new-concept"}
+
+    def test_empty_related_and_empty_proposed_aborts_compose(self, tmp_path):
+        from tests.quality.conftest import make_mock_route_llm
+
+        data = _valid_compose_data(referenced_concepts=[])
+        data["claims"] = [
+            {
+                "text": "zzzz unknown topic with no keyword overlap",
+                "anchor": "§A",
+                "provenance": "source_grounded",
+                "evidence_gap": "未覆盖：无材料",
+            }
+        ]
+        raw = tmp_path / "raw" / "empty-graph.md"
+        raw.parent.mkdir()
+        raw.write_text("# §A\nzzzz unknown topic with no keyword overlap.\n", encoding="utf-8")
+        result = compose_candidate(
+            ExtractResult(success=True, data=data, retries_used=0),
+            str(raw),
+            "empty-graph",
+            output_dir=str(tmp_path),
+            route_llm_fn=make_mock_route_llm({}),
+            known_concepts=[],
+            pending_queue=[],
+        )
+        assert result.success is False
+        assert "proposed_graph_nodes" in result.error
+
+
+class TestParamsExampleStrip:
+    """t2: 空/全默认 params 不输出配置示例块。"""
+
+    def test_empty_params_skip_config_block(self):
+        from src.akb2.quality.distill import _build_params_example
+
+        assert _build_params_example({}) == ""
+
+    def test_pipeline_default_params_skip_config_block(self):
+        from src.akb2.quality.distill import _build_params_example
+
+        block = _build_params_example(
+            {
+                "maker_model": "deepseek-v4-pro",
+                "checker_model": "gpt-5.4",
+                "max_repair_rounds": 3,
+            }
+        )
+        assert block == ""
+
+    def test_source_params_still_render(self):
+        from src.akb2.quality.distill import _build_params_example
+
+        block = _build_params_example({"temperature": 0.2, "max_tokens": 512})
+        assert "配置示例" not in block
+        assert "temperature: 0.2" in block
+        assert "max_tokens: 512" in block
+        assert "maker_model" not in block
+
+
+class TestTldrDedupAndCap:
+    """t3: TLDR 不整句复制关键发现，且 ≤200 字。"""
+
+    def test_tldr_omits_claim_fulltext_and_stays_under_200(self, extract_success_response):
+        from tests.quality.conftest import make_mock_route_llm
+
+        extract_result = _valid_extract_result(extract_success_response)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            result = compose_candidate(
+                extract_result=extract_result,
+                raw_path=str(Path(tmp_dir) / "unused.md"),
+                batch_id="tldr-cap",
+                output_dir=tmp_dir,
+                route_llm_fn=make_mock_route_llm(extract_success_response),
+                raw_content=(
+                    "# §A Loop\nLoop engineering is the practice of designing bounded, "
+                    "convergent, observable AI agent loops\n"
+                    "# §B Components\nA well-designed loop has five components: trigger, "
+                    "work unit selector, action executor, quality gate, ledger writer\n"
+                    "# §C Repair\nFix specific defects rather than restarting the entire pipeline\n"
+                    + _COMMAND_EXAMPLES_BLOCK
+                ),
+            )
+            if not result.success:
+                return
+            body = Path(result.candidate_path).read_text(encoding="utf-8")
+        tldr = body.split("## TLDR", 1)[1].split("## 关键发现", 1)[0].strip()
+        assert len(tldr) <= 200
+        assert "Fix specific defects rather than restarting the entire pipeline" not in tldr
+
+
+class TestFrontmatterSlimAndFqContract:
+    """t4 + t6: frontmatter 瘦身 + future_questions 短句/正文完整版。"""
+
+    def test_frontmatter_omits_key_findings_keeps_fq_and_graph_fields(self):
+        from src.akb2.quality.distill import _assemble_page, _build_frontmatter
+
+        data = _valid_compose_data()
+        fm = _build_frontmatter("raw/test.md", data)
+        assert "key_findings" not in fm
+        assert 2 <= len(fm["future_questions"]) <= 3
+        assert all("[raw §" not in q for q in fm["future_questions"])
+        assert "source_url" in fm or fm.get("source_url", "") == ""
+        assert fm["status"] == "candidate"
+        assert fm["gate_decision"] is None
+        assert "related_concepts" in fm
+        assert "proposed_graph_nodes" in fm
+        page = _assemble_page(fm, "# Title\n\n## TLDR\nshort\n")
+        fm_lines = page.split("---\n", 2)[1].splitlines()
+        assert len(fm_lines) <= 25
+        assert page.lstrip("- \n").startswith("# ") or "\n# " in page
+
+    def test_body_future_questions_keep_full_version(self, extract_success_response):
+        from src.akb2.quality import distill as distill_mod
+
+        body_fn_source = Path(distill_mod.__file__).read_text(encoding="utf-8")
+        assert "future_questions_full" in body_fn_source
+        from src.akb2.quality.distill import _short_future_questions
+
+        full = [
+            "[raw §A] (akb_interpretation) 原文盲区「未量化」——该缺口在生产部署中应如何度量与补足？",
+            "[raw §B] (akb_interpretation) 「trigger → selector」这一机制在何种规模下不再成立？",
+        ]
+        short = _short_future_questions(full)
+        assert 2 <= len(short) <= 3
+        assert all("[raw §" not in s for s in short)
+        assert all(len(s) <= 48 for s in short)
+
+
+# keep file importable when run from repo root

@@ -42,13 +42,11 @@ future_questions:
 related_concepts:
   - harness-engineering
   - agent-collaboration
-key_findings:
-  - "[raw §A] (source_grounded) 每个 loop 必须有显式停止条件"
-  - "[raw §B] (source_grounded) loop 需要 trigger、selector、executor、quality gate、ledger writer"
-  - "[raw §C] (source_grounded) 定点修复优于整体重跑"
 artifact_type: wiki
 pipeline_version: v1
 ---
+
+# Loop Engineering
 
 ## TLDR
 
@@ -222,6 +220,8 @@ status: candidate
 gate_decision: null
 ---
 
+# Fixture Title
+
 ## TLDR
 some content
 
@@ -271,6 +271,8 @@ related_concepts:
   - c2
 ---
 
+# Fixture Title
+
 ## TLDR
 test [raw §A]
 """
@@ -295,6 +297,8 @@ related_concepts:
   - c2
 ---
 
+# Fixture Title
+
 ## TLDR
 test
 """
@@ -317,6 +321,8 @@ related_concepts:
   - c1
   - c2
 ---
+
+# Fixture Title
 
 ## TLDR
 test
@@ -341,6 +347,8 @@ related_concepts:
   - c2
 ---
 
+# Fixture Title
+
 ## TLDR
 test
 """
@@ -362,6 +370,8 @@ related_concepts:
   - c1
   - c2
 ---
+
+# Fixture Title
 
 ## TLDR
 test
@@ -388,6 +398,8 @@ related_concepts:
   - c2
 ---
 
+# Fixture Title
+
 ## TLDR
 test
 """
@@ -413,6 +425,8 @@ key_findings:
   - "[raw §A] a source claim without provenance"
 ---
 
+# Fixture Title
+
 ## TLDR
 test
 """
@@ -434,6 +448,8 @@ future_questions:
 related_concepts:
   - only one
 ---
+
+# Fixture Title
 
 ## TLDR
 test
@@ -465,6 +481,8 @@ proposed_graph_nodes:
     reason: cold start
     source_anchor: §A
 ---
+
+# Fixture Title
 
 ## TLDR
 test
@@ -505,12 +523,74 @@ related_concepts:
   - c2
 ---
 
+# Fixture Title
+
 ## TLDR
 test
 """
         defects = check_a2_frontmatter(text)
         gr_defects = [d for d in defects if "gate_reason" in d.location]
         assert len(gr_defects) == 0
+
+    def test_proposal_accepts_proposed_graph_nodes_without_lane_filter(self):
+        """c1: proposal 模式 related<2 + proposed_graph_nodes>=1 不报 related 缺陷（车道无关）。"""
+        text = """---
+status: candidate
+gate_decision: null
+source_refs:
+  - raw/test.md
+gate_reason: ok
+future_questions:
+  - q1
+  - q2
+related_concepts:
+  - only-one
+proposed_graph_nodes:
+  - slug: pending-node
+    label: pending-node
+    reason: cold start
+    source_anchor: §A
+---
+
+# Fixture Title
+
+## TLDR
+test
+"""
+        defects = check_a2_frontmatter(
+            text, content_lane="tutorial", promotion_mode="proposal"
+        )
+        rc = [d for d in defects if "related_concepts" in d.location]
+        assert rc == [], rc
+        defects_active = check_a2_frontmatter(
+            text, content_lane="tutorial", promotion_mode="active"
+        )
+        assert any("related_concepts" in d.location for d in defects_active)
+
+    def test_frontmatter_line_cap_and_h1_required(self):
+        """t4: A2 拦截 frontmatter 超 25 行，以及正文缺 H1。"""
+        extra = "\n".join(f"extra_{i}: v" for i in range(20))
+        text = f"""---
+status: candidate
+gate_decision: null
+source_refs:
+  - raw/test.md
+gate_reason: ok
+future_questions:
+  - q1
+  - q2
+related_concepts:
+  - c1
+  - c2
+{extra}
+---
+
+## TLDR
+test
+"""
+        defects = check_a2_frontmatter(text)
+        assert any("行数超标" in d.defect for d in defects)
+        assert any(d.location == "正文 H1" for d in defects)
 
 
 # ---------------------------------------------------------------------------
@@ -530,6 +610,8 @@ class TestA3RawAnchors:
 status: candidate
 gate_decision: null
 ---
+
+# Fixture Title
 
 ## TLDR
 
@@ -571,6 +653,8 @@ status: candidate
 gate_decision: null
 ---
 
+# Fixture Title
+
 ## TLDR
 
 Loop 工程需要显式停止条件 [raw §A]，也需要失败可观测 [raw §I]。
@@ -599,6 +683,8 @@ status: candidate
 gate_decision: null
 ---
 
+# Fixture Title
+
 ## TLDR
 
 引用 [raw §A]。
@@ -620,6 +706,8 @@ artifact_type: raw
 status: candidate
 gate_decision: null
 ---
+
+# Fixture Title
 
 ## TLDR
 
@@ -645,6 +733,8 @@ Clients call tools/list before tools/call.
 status: candidate
 gate_decision: null
 ---
+
+# Fixture Title
 
 ## TLDR
 
@@ -864,6 +954,8 @@ status: candidate
 status: candidate
 ---
 
+# Fixture Title
+
 ## TLDR
 test
 """
@@ -975,6 +1067,8 @@ class TestA5Wikilinks:
 status: candidate
 ---
 
+# Fixture Title
+
 ## TLDR
 参考 [[harness-engineering]] 和 [[agent-collaboration]]。
 """
@@ -990,6 +1084,8 @@ status: candidate
         text = """---
 status: candidate
 ---
+
+# Fixture Title
 
 ## TLDR
 参考 [[unknown-concept]]。
@@ -1008,6 +1104,8 @@ status: candidate
 status: candidate
 ---
 
+# Fixture Title
+
 ## TLDR
 参考 [[any-concept]]。
 """
@@ -1019,6 +1117,8 @@ status: candidate
         text = """---
 status: candidate
 ---
+
+# Fixture Title
 
 ## TLDR
 参考 [[pending-concept]]。
@@ -1033,6 +1133,8 @@ status: candidate
         text = """---
 status: candidate
 ---
+
+# Fixture Title
 
 ## TLDR
 参考 [[known-concept|显示文本]]。
@@ -1095,6 +1197,8 @@ status: candidate
         text = """---
 status: candidate
 ---
+
+# Fixture Title
 
 ## TLDR
 test
@@ -1238,6 +1342,8 @@ key_findings:
 artifact_type: wiki
 pipeline_version: v1
 ---
+
+# Fixture Title
 
 ## TLDR
 

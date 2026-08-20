@@ -934,9 +934,11 @@ Targeted repair avoids full restart.
         assert "assert run_quality_gate(result,grader='gpt-5.4').defects == []`" in text
         assert "assert evidence_map.contains('[raw §A]')`" not in text
         assert "ledger.append({item_id:work_item.id,status:'running',next_action:'execute'})`" not in text
-        assert "max_repair_rounds: 3" in text
-        assert "distill_timeout_seconds: 60" in text
+        assert "配置示例：" not in text
+        assert "max_repair_rounds: 3" not in text
+        assert "distill_timeout_seconds: 60" not in text
         assert "max_repair_rounds: integer" not in text
+        assert "maker_model: deepseek-v4-pro" not in text
         assert "wiki/concepts/concept-harness-engineering.md: Harness Engineering" in text
         assert "agent runtime infrastructure" in text
 
