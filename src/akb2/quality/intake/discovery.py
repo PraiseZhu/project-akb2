@@ -62,6 +62,9 @@ class DiscoveredArticle:
     published_at: str | None  # ISO-8601 or None
     feed_title: str | None  # 来源 feed 标题
     author: str = ""  # 来自 RSS <dc:creator>/<author> 或 Atom <author><name>
+    # x_account Article 路径：twitter article -m 预取正文；RSS 路径保持空串
+    prefetched_content: str = ""
+    prefetched_via: str = ""
 
 
 @dataclass
@@ -71,10 +74,12 @@ class DiscoverResult:
     source_slug: str
     articles: list[DiscoveredArticle] = field(default_factory=list)
     skipped_duplicates: int = 0
+    skipped_short_tweets: int = 0  # x_account：纯短推无外链非 Article，不归档
+    skipped_empty_accounts: int = 0  # x_account：0 条原创账号跳过
     quarantine_triggered: bool = False
     error: str | None = None
     feed_url_used: str | None = None
-    method: str = "feed"  # "feed" | "listing" | "none"
+    method: str = "feed"  # "feed" | "listing" | "x_account" | "none"
 
 
 # ---------------------------------------------------------------------------
@@ -432,12 +437,26 @@ def discover_articles(
     slug = source.get("slug", "unknown")
     feed_url = source.get("feed_url", "")
     listing_url = source.get("listing_url", "")
+    source_type = str(source.get("type") or "").strip().lower()
 
     result = DiscoverResult(source_slug=slug)
     status = str(source.get("status", "trial") or "trial").strip().lower()
     if status in {"down", "disabled"}:
         result.method = "none"
         return result
+
+    # 路径 0: X 账号时间线（type=x_account）。产出 DiscoveredArticle，
+    # orchestrator 的 cap/quarantine/ledger 零改动透明生效。
+    if source_type == "x_account":
+        from src.akb2.quality.intake.x_account_discovery import (
+            discover_x_account_articles,
+        )
+
+        return discover_x_account_articles(
+            source,
+            ledger_path,
+            dry_run=dry_run,
+        )
 
     # 路径 1: RSS/Atom feed
     if feed_url:

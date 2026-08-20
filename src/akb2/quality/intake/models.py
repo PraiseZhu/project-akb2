@@ -38,6 +38,9 @@ class ExtractionContext:
     url: str
     content_type: str = ""
     content_hash: str = field(default="")
+    # x_account Article 路径：twitter article -m 预取的 markdown，extract 跳过网页抓取
+    prefetched_content: str = field(default="")
+    prefetched_via: str = field(default="")
 
 
 # ---------------------------------------------------------------------------
