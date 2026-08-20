@@ -95,26 +95,30 @@ DISTILL_MAX_RETRIES: int = 0
 # F10-D: A/B 双臂基建——env 覆盖模型族(与 distill.DISTILL_MODEL_FAMILY 同源,
 # ledger 记录实际使用的族,A/B 可追溯)。默认 deepseek-v4-pro 不变。
 DISTILL_MODEL_FAMILY: str = os.environ.get("AKB2_DISTILL_FAMILY", "deepseek-v4-pro")
-# F60 预算算术自洽化(与 distill.EXTRACT_SEGMENT_TIMEOUT_S=110 /
-# DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S=240 联动,守卫断言见
+# F60 预算算术自洽化(与 distill.EXTRACT_SEGMENT_TIMEOUT_S=180 /
+# DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S=380 联动,守卫断言见
 # tests/quality/test_f60_grounding_gate.py):
 #   旧三层 60/180/210 在算术上不自洽——210s worker cap 只容 1.16 个 attempt,
 #   MAX_EXTRACT_RETRIES=3 从未真正可用;实测(2026-07-31,生产逼真形态)正经
 #   how_params 产出 ~90s,60s per-call 必掐 → 整 attempt 重试 → 210s 引爆,
 #   账本实证 infra 超时占 extract abort 83%。
-#   normal  = 2 × attempt(240) + 30 slack = 510
-#   long    = 510 + 120(长文两段各多 ~60s 生成) = 630
+#   2026-08-16 网关慢时段再校准:per-call 110→180(llm-proxy 高延迟窗口内正经
+#   产出落在 110-180s;p0 重排队 6 篇 infra abort 全为 110s 掐死模式,切 flash
+#   不缓解 → 瓶颈在网关延迟不在模型),attempt/worker 按同一公式顺推。
+#   normal  = 2 × attempt(380) + 30 slack = 790
+#   long    = 790 + 120(长文两段各多 ~60s 生成) = 910
 # Sol 审 P1-4 修正:重试是**整 attempt 从 claims 重启**(外层 for 循环),不存在
 # "只重试单 segment"的路径;初版 380 连一次完整 retry 都盖不住,守卫测的是不存在
 # 的路径。契约取"至少一次完整重试可用":worker ≥ 2×attempt + slack。
 # MAX_EXTRACT_RETRIES=3 在 wall-clock 下仍非全额可用(3 次满额 attempt=720s),
 # 属显式取舍:第 2 attempt 起多为快速校验失败(实测 351s 内跑完 3 attempt),
 # 若后续实证需要更多,另案做"仅重试失败 segment"的细分调用(Sol 同向建议)。
-# 代价显式(宪法 P4):病理文章最坏占串行队列 510s(旧 210s);换 83% 杀伤面归零。
-DISTILL_EXTRACT_WORKER_TIMEOUT_S: float = 510.0
+# 代价显式(宪法 P4):病理文章最坏占串行队列 790s(旧 510s);换网关慢时段
+# infra abort 归零。
+DISTILL_EXTRACT_WORKER_TIMEOUT_S: float = 790.0
 DISTILL_EXTRACT_WORKER_LONG_DOC_WORDS: int = 3_000
-DISTILL_EXTRACT_WORKER_LONG_DOC_TIMEOUT_S: float = 630.0
-DISTILL_EXTRACT_WORKER_HARD_TIMEOUT_CAP_S: float = 630.0
+DISTILL_EXTRACT_WORKER_LONG_DOC_TIMEOUT_S: float = 910.0
+DISTILL_EXTRACT_WORKER_HARD_TIMEOUT_CAP_S: float = 910.0
 DISTILL_EXTRACT_WORKER_KILL_GRACE_S: float = 2.0
 # F2-B: traceability retake 子进程超时(distill 内部 60s + 子进程外层缓冲)
 TRACEABILITY_RETAKE_WORKER_TIMEOUT_S: float = 90.0

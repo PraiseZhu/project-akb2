@@ -1,10 +1,10 @@
-"""R2/wA#2: grader concept prompt 修复 —— 解锁满仓 7 篇"grader 不可用"。
+"""R2/wA#2: grader concept prompt 修复 —— 解锁满仓 concept 条目"grader 不可用"。
 
 满仓 #1/3/4/5/9/11/14 (全 concept lane) 报 grader_fallback_not_allowed, 误判成
 环境问题。实测探针证明: gpt-5.4 在线能调通, 但 prompt 有两个 bug 让它输出过不了
 parser → 退 gemini → runner 守卫拒收:
   ① concept prompt 灌的是 procedural 10 维 rubric+权重表 (concept 维度根本不在
-     10-dimensions.md), 模型按 procedural 维度名输出 → 不在 concept 7 维 enum;
+     10-dimensions.md), 模型按 procedural 维度名输出 → 不在 concept 维度 enum;
   ② 网关 (codex/gpt-5.4) 不强制 strict json_schema, 而 prompt 从没写死字段名,
      模型自由发挥用 {verdict, defect} 而非 parser 要的 {pass(布尔), defects(数组)}。
 
@@ -79,7 +79,7 @@ def test_parser_accepts_nullable_strict_schema_optionals():
     assert ok is True
 
 def test_concept_prompt_lists_all_concept_dims():
-    """concept prompt 必须逐字列出全部 7 个 concept 维度名 (含 (H3)/(H2) 后缀)。"""
+    """concept prompt 必须逐字列出当前 5 个 concept 维度名 (含 (H3)/(H2) 后缀)。"""
     sp = _concept_system_prompt()
     for dim in _dimensions_for_lane("concept"):
         assert dim in sp, f"concept prompt 缺维度 {dim}"
@@ -114,14 +114,14 @@ def test_canonical_dimension_name_tolerates_suffix_and_fullwidth():
     assert _canonical_dimension_name("概念机制清晰度", "concept") == "概念机制清晰度(H3)"
     # 全角括号
     assert _canonical_dimension_name("实现机制说明（H2）", "concept") == "实现机制说明(H2)"
-    # 逐字一致
-    assert _canonical_dimension_name("图谱可调用性", "concept") == "图谱可调用性"
+    # 旧 advisory 维度已从当前 concept 集退役，必须拒绝。
+    assert _canonical_dimension_name("图谱可调用性", "concept") is None
     # 真未知维度仍拒 (不放松到误配)
     assert _canonical_dimension_name("How 密度", "concept") is None
 
 
 def test_parser_accepts_correct_concept_shape():
-    """全 7 维 + 正确字段形状 → parse 成功。"""
+    """全 5 维 + 正确字段形状 → parse 成功。"""
     dims = _dimensions_for_lane("concept")
     data = {
         "dimensions": [

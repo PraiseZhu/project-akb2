@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import plistlib
+import shutil
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -984,10 +985,10 @@ def test_validate_env_parity_live_missing_reader_fails_closed(tmp_path: Path) ->
 def test_env_parity_cli_defaults_to_live_reader_no_job_loaded_fails_closed(
     tmp_path: Path,
 ) -> None:
-    """CLI --mode env-parity 默认注入真 launchctl 读取 → 无加载 job 必 fail-closed。
+    """CLI env-parity 注入缺 live 句柄的假 reader 时必须 fail-closed。
 
-    本机/CI 未加载 com.akb2.main-pipeline（rc=113），正好当「缺 live 句柄」
-    的真实验证：函数入口与 CLI 同一套判定，且生产入口无法静默跳过 live 腿。
+    不依赖运行主机是否提供 launchctl：macOS 真机仍由默认 reader 读取 live
+    job；Linux/CI 通过显式假 reader 保留同一缺句柄断言，避免测试被 skip。
     """
     from src.akb2.quality import smoke_validator as sv
 
@@ -997,22 +998,34 @@ def test_env_parity_cli_defaults_to_live_reader_no_job_loaded_fails_closed(
     plist = tmp_path / "com.akb2.main-pipeline.plist"
     _write_plist(plist, script, tmp_path, tmp_path / "logs" / "runner.log", auto_promote="1")
 
-    # rc=113（job 未加载）在测试机上稳定复现；若真机恰好加载了 job 且三方
-    # 一致，这里会得到 0 —— 与「无 job 必红」同样证明 CLI 走到了 live 腿。
+    def missing_live_reader(label: str) -> dict[str, str]:
+        raise SmokeValidationError(
+            f"cannot read live launchd job {label}: launchctl print rc=113"
+        )
+
+    if shutil.which("launchctl") is None:
+        # Linux/CI has no launchctl binary; inject the equivalent missing-job
+        # reader so the production fail-closed branch is still exercised.
+        reader = missing_live_reader
+    else:
+        reader = None
+        job_loaded = (
+            subprocess.run(
+                ["launchctl", "print", f"gui/{os.getuid()}/com.akb2.main-pipeline"],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).returncode
+            == 0
+        )
+        if job_loaded:
+            pytest.skip("live launchd job loaded; missing-job case is not applicable")
+
     rc = sv.main(
-        ["--mode", "env-parity", "--plist", str(plist), "--smoke-auto-promote", "1"]
+        ["--mode", "env-parity", "--plist", str(plist), "--smoke-auto-promote", "1"],
+        live_env_reader=reader,
     )
-    job_loaded = (
-        subprocess.run(
-            ["launchctl", "print", f"gui/{os.getuid()}/com.akb2.main-pipeline"],
-            capture_output=True,
-            text=True,
-            check=False,
-        ).returncode
-        == 0
-    )
-    if not job_loaded:
-        assert rc == 1, "job 未加载时 CLI env-parity 必须 fail-closed rc=1"
+    assert rc == 1, "缺 live 句柄时 CLI env-parity 必须 fail-closed rc=1"
 
 
 def test_validate_launchd_static_live_drift_also_fails(tmp_path: Path) -> None:

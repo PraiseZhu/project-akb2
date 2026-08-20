@@ -149,12 +149,17 @@ DISTILL_MAX_RETRIES: int = 0
 #   被掐死 → 外层整 attempt 重试 → 210s worker cap 引爆,账本实证 infra 超时占
 #   extract abort 从历史 42% 涨到 83%。
 # 三层预算算术(必须自洽,tests/quality/test_f60_grounding_gate.py 有守卫断言):
-#   per-call  EXTRACT_SEGMENT_TIMEOUT_S = 110  (实测 p95≈90 + 余量)
-#   attempt   = 2 segment × 110 + 20 归一化/校验 = 240
-#   worker    = 2 × attempt + 30 = 510 (runner.py;Sol 审 P1-4:重试是整
+#   per-call  EXTRACT_SEGMENT_TIMEOUT_S = 180  (2026-08-16 网关慢时段再校准:
+#             llm-proxy 高延迟窗口内正经产出落在 110-180s 区间,110s 掐死的是
+#             本可成功的慢调用,且掐死代价是整 attempt 从 claims 重启 ×3 全部
+#             撞同一慢网关 → infra abort。p0 重排队实证 6 篇全为此模式,切
+#             flash(模型侧)不缓解 → 瓶颈在网关延迟,放宽 per-call 是唯一
+#             不新增机制的止血点)
+#   attempt   = 2 segment × 180 + 20 归一化/校验 = 380
+#   worker    = 2 × attempt + 30 = 790 (runner.py;Sol 审 P1-4:重试是整
 #               attempt 重启,契约取"至少一次完整重试可用")
-EXTRACT_SEGMENT_TIMEOUT_S: float = 110.0
-DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S: float = 240.0
+EXTRACT_SEGMENT_TIMEOUT_S: float = 180.0
+DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S: float = 380.0
 DISTILL_DISABLE_THINKING: bool = True
 # Step-7: 语义型 How 抖动兜底。how_params segment（LLM 自由文本 how_steps，
 # 非 must_cover 代码直出）多取取交集，抵抗单次 LLM 抖动。有界：SEMANTIC_RETAKE_MAX 次。

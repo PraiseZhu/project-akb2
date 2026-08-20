@@ -41,8 +41,7 @@ def test_numbered_real_shell_commands_is_strong_procedural():
 def test_reject_lane_rejects_admission_without_relying_on_how(tmp_path):
     """单次判定判 reject → admission 一票拒；reason 含 non_knowledge；lane 不下传。
 
-    用 conftest make_mock_route_llm 验证与共享 mock 的兼容（其按 system prompt
-    含「主要意图」识别 lane 调用——单次判定 prompt 契约保留该措辞）。
+    用 conftest make_mock_route_llm 验证与共享 unified-schema mock 的兼容。
     """
     from src.akb2.quality.admission import run_admission
     from src.akb2.quality.llm_router import LLMResponse
@@ -57,9 +56,17 @@ def test_reject_lane_rejects_admission_without_relying_on_how(tmp_path):
         "and release dates without explaining mechanisms or teaching steps.\n"
     )
     mock_llm = make_mock_route_llm({
-        "lane": LLMResponse(
-            content={"content_lane": "reject", "reason": "纯新闻播报"},
-            model_used="m", calls_used=1,
+        "deepseek-v4-pro": LLMResponse(
+            content={
+                "topic_pass": True,
+                "lane": "reject",
+                "non_knowledge": True,
+                "mechanism_pass": False,
+                "how_pass": False,
+                "reason": "纯新闻播报",
+            },
+            model_used="m",
+            calls_used=1,
         ),
     })
     result = run_admission(

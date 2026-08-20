@@ -1,0 +1,1 @@
+p0-source-checks.txt records REQUEUE_T1_ONLY=True on Mini #80 at 4a62c487: requeue.py still describes the path as 手动 + 有界; file text contains no T2 or 防恶意 claims. No PR flow started, no repo PR artifacts written.

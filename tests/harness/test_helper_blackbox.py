@@ -315,10 +315,16 @@ def test_full_cycle_green_with_external_report_write(mini_repo) -> None:
 def intent_check_env(mini_repo):
     """fixture 仓 + 仓外复制的 intent-check.mjs + node 可用性检查。
 
-    intent-check 真实源在仓外（host-local 真相源）；缺 node 或缺该文件
-    的环境无法跑本格——但 verify 命令要求零 skip，故此处 fail 而非 skip：
-    本机（验收机）两者必须齐备。
+    intent-check 真实源在仓外（host-local 真相源），CI runner 上不存在也
+    装不到——缺源时 skip（同 defuddle 的本地 skip 模式）；验收机跑 verify
+    时设 AKB2_REQUIRE_INTENT_CHECK=1 恢复零 skip 硬闸（fail 而非 skip）。
     """
+    require = os.environ.get("AKB2_REQUIRE_INTENT_CHECK") == "1"
+    if not (shutil.which("node") and INTENT_CHECK_SRC.is_file()) and not require:
+        pytest.skip(
+            f"intent-check 宿主源不可用（node 或 {INTENT_CHECK_SRC} 缺失）；"
+            "验收机用 AKB2_REQUIRE_INTENT_CHECK=1 强制"
+        )
     assert shutil.which("node"), "node 不可用：intent-check 三态格无法执行"
     assert INTENT_CHECK_SRC.is_file(), f"intent-check.mjs 缺失: {INTENT_CHECK_SRC}"
     work = mini_repo["tmp_path"] / "intent"

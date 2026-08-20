@@ -93,12 +93,10 @@ AI 技术发展迅速，在各个领域都有应用。
 def anti_fill_grader_response() -> dict:
     """反填表打回 fixture 响应: B 层必须产出缺陷。
 
-    空洞内容的典型缺陷:
-    - 论断锚定率: 无 [raw §X] 锚点
+    空洞内容的典型缺陷（现行 procedural 5 维）：
     - How 密度: 无可执行步骤
+    - How 可执行性: 无可复制执行的指令
     - TLDR 密度: 泛泛而谈
-    - 证据诚实: 证据地图为空
-    - 解读分离: 无 provenance 标注
     - Future Questions 质量: 问题泛泛
     - 适用边界: "适用于所有场景"无边界意识
     """
@@ -106,22 +104,6 @@ def anti_fill_grader_response() -> dict:
         "gpt-5.4": LLMResponse(
             content={
                 "dimensions": [
-                    {
-                        "dimension": "论断锚定率",
-                        "pass": False,
-                        "defects": [
-                            {
-                                "location": "核心论点",
-                                "defect": "所有论点均无 [raw §X] 锚点引用",
-                                "suggestion": "为每个论点和 TLDR 句添加 raw 锚点引用",
-                            },
-                            {
-                                "location": "TLDR",
-                                "defect": "TLDR 无锚点引用",
-                                "suggestion": "每句 TLDR 对应一个核心论点并带锚点",
-                            },
-                        ],
-                    },
                     {
                         "dimension": "How 密度",
                         "pass": False,
@@ -145,28 +127,6 @@ def anti_fill_grader_response() -> dict:
                         ],
                     },
                     {
-                        "dimension": "证据诚实",
-                        "pass": False,
-                        "defects": [
-                            {
-                                "location": "证据地图",
-                                "defect": "证据地图完全为空，无任何证据记录",
-                                "suggestion": "填写证据地图，每行含未覆盖列",
-                            },
-                        ],
-                    },
-                    {
-                        "dimension": "解读分离",
-                        "pass": False,
-                        "defects": [
-                            {
-                                "location": "核心论点",
-                                "defect": "所有论点未标注 provenance（source_grounded/akb_interpretation）",
-                                "suggestion": "为每个论点标注 provenance",
-                            },
-                        ],
-                    },
-                    {
                         "dimension": "TLDR 密度",
                         "pass": False,
                         "defects": [
@@ -177,8 +137,6 @@ def anti_fill_grader_response() -> dict:
                             },
                         ],
                     },
-                    {"dimension": "新颖增量", "pass": True, "defects": []},
-                    {"dimension": "边强度匹配", "pass": True, "defects": []},
                     {
                         "dimension": "Future Questions 质量",
                         "pass": False,
@@ -239,7 +197,7 @@ class TestAntiFill:
 
         # 关键验证: 至少覆盖以下维度
         failed_dimensions = {d.dimension for d in defects}
-        required_fails = {"论断锚定率", "TLDR 密度", "证据诚实", "Future Questions 质量"}
+        required_fails = {"How 密度", "TLDR 密度", "Future Questions 质量"}
         missing = required_fails - failed_dimensions
         assert not missing, (
             f"Anti-fill grader should fail on: {missing}. "

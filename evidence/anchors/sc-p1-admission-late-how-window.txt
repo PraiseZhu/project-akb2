@@ -1,0 +1,1 @@
+g1-verify-b.json: CANDIDATE_HEAD=15da65f20956aebc05f09428a5e00c502f6a10dd; pytest tests/quality/test_admission_boilerplate.py => 8 passed in 0.14s; TESTS_STRICT_OK. Integrated via wave1 squash 59f1a63 into the wave integration tip e3de4f9 (historical); final-HEAD re-verification of this cluster: see goal-dir final-e2e-report.json.

@@ -158,28 +158,22 @@ def make_mock_route_llm(responses: dict[str, Any] | None = None):
         _call_counts[key] = idx + 1
         lookup = f"{key}:{idx}"
 
-        # SC-1：lane 分类调用按 prompt 关键词识别（index 脆弱——novelty 调不调取决于
-        # wiki_references，lane 的 :idx 会漂移）。lane 调用走 "lane" key 或默认 concept，
-        # 不走 :idx，避免与 novelty 的 :idx 冲突。只用 "主要意图"（lane prompt 专属词），
-        # 不用 "概念型/操作型"（distill 的 prompt 也有，会误命中）。
-        sys_prompt = messages[0]["content"] if messages else ""
-        is_lane_call = "主要意图" in sys_prompt
-        if is_lane_call:
-            if "lane" in _responses:
-                return _responses["lane"]
-            return LLMResponse(
-                content={"content_lane": "concept", "reason": "mock lane default"},
-                model_used=key,
-                calls_used=1,
-            )
-
+        # admission 现在是单次 unified 判定；按 model_family 取一次响应，
+        # 不再按三次 {pass, reason} 形状或 lane 单独调用分支匹配。
         if lookup in _responses:
             return _responses[lookup]
         if key in _responses:
             return _responses[key]
-        # 默认空响应
+        # 未配置时也返回合法 unified schema，避免测试因 mock 形状非法而误报。
         return LLMResponse(
-            content={"pass": True, "reason": "mock default"},
+            content={
+                "topic_pass": True,
+                "lane": "concept",
+                "non_knowledge": False,
+                "mechanism_pass": True,
+                "how_pass": True,
+                "reason": "mock default",
+            },
             model_used=key,
             calls_used=1,
         )
@@ -388,22 +382,18 @@ def admission_pass_responses() -> dict[str, Any]:
     from src.akb2.quality.llm_router import LLMResponse
 
     return {
-        "deepseek-v4-pro:0": LLMResponse(
-            content={"pass": True, "reason": "命中 Loop Engineering / AI Agent 领域"},
+        "deepseek-v4-pro": LLMResponse(
+            content={
+                "topic_pass": True,
+                "lane": "concept",
+                "non_knowledge": False,
+                "mechanism_pass": True,
+                "how_pass": True,
+                "reason": "命中 Loop Engineering / AI Agent 领域，含可执行 loop 组件模板和代码示例",
+            },
             model_used="gemini-2.5-flash",
             calls_used=1,
         ),
-        "deepseek-v4-pro:1": LLMResponse(
-            content={"pass": True, "reason": "含可执行 loop 组件模板和代码示例"},
-            model_used="gemini-2.5-flash",
-            calls_used=1,
-        ),
-        "deepseek-v4-pro:2": LLMResponse(
-            content={"pass": True, "reason": "无既有 wiki 引用，默认通过"},
-            model_used="gemini-2.5-flash",
-            calls_used=1,
-        ),
-        # SC-1：lane 走 lane-aware mock 默认 concept（黄金样张是 Loop Engineering 概念文章）。
     }
 
 
@@ -413,24 +403,15 @@ def admission_fail_news_response() -> dict[str, Any]:
     from src.akb2.quality.llm_router import LLMResponse
 
     return {
-        "deepseek-v4-pro:0": LLMResponse(
-            content={"pass": True, "reason": "命中 AI Agent 领域"},
-            model_used="gemini-2.5-flash",
-            calls_used=1,
-        ),
-        "deepseek-v4-pro:1": LLMResponse(
-            content={"pass": False, "reason": "纯新闻播报，无可执行步骤或代码"},
-            model_used="gemini-2.5-flash",
-            calls_used=1,
-        ),
-        "deepseek-v4-pro:2": LLMResponse(
-            content={"pass": True, "reason": "无既有 wiki 引用，默认通过"},
-            model_used="gemini-2.5-flash",
-            calls_used=1,
-        ),
-        # P0-c：news → reject（非知识），admission reject 门拒。不再 mock procedural 造假绿（W7/w9）。
-        "lane": LLMResponse(
-            content={"content_lane": "reject", "reason": "mock: 纯新闻播报，非知识"},
+        "deepseek-v4-pro": LLMResponse(
+            content={
+                "topic_pass": True,
+                "lane": "reject",
+                "non_knowledge": True,
+                "mechanism_pass": False,
+                "how_pass": False,
+                "reason": "mock: 纯新闻播报，非知识",
+            },
             model_used="gemini-2.5-flash",
             calls_used=1,
         ),
@@ -443,18 +424,15 @@ def admission_fail_plagiarism_response() -> dict[str, Any]:
     from src.akb2.quality.llm_router import LLMResponse
 
     return {
-        "deepseek-v4-pro:0": LLMResponse(
-            content={"pass": True, "reason": "命中 AI Agent 领域"},
-            model_used="gemini-2.5-flash",
-            calls_used=1,
-        ),
-        "deepseek-v4-pro:1": LLMResponse(
-            content={"pass": True, "reason": "含 loop 设计模式"},
-            model_used="gemini-2.5-flash",
-            calls_used=1,
-        ),
-        "deepseek-v4-pro:2": LLMResponse(
-            content={"pass": False, "reason": "与既有 wiki 高度重叠，零增量"},
+        "deepseek-v4-pro": LLMResponse(
+            content={
+                "topic_pass": True,
+                "lane": "concept",
+                "non_knowledge": False,
+                "mechanism_pass": True,
+                "how_pass": True,
+                "reason": "mock: 机制内容，确定性 novelty 预筛负责重复判定",
+            },
             model_used="gemini-2.5-flash",
             calls_used=1,
         ),

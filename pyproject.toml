@@ -32,6 +32,9 @@ dev = [
     # 仅测试用:tests/quality/test_intake_orchestrator.py 用 feedparser 校验 feed 解析
     # 正常路径(生产代码用 xml.etree 自解析,不依赖 feedparser)。
     "feedparser>=6.0.12,<7",
+    # 仅测试用:tests/e2e 双通道一致性与 tests/register 真握手要 import mcp SDK
+    # (toolbox MCP server 子进程);生产管线不依赖它。
+    "mcp>=1.26.0,<2",
 ]
 
 [build-system]

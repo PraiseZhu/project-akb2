@@ -39,15 +39,11 @@ class TestNewsNegativeSample:
         assert topic_check.name == "topic_relevance"
         assert topic_check.passed is True
 
-        # How 倾向应 fail
-        how_check = result.checks[1]
-        assert how_check.name == "how_tendency"
-        assert how_check.passed is False
-        assert "新闻" in how_check.reason or "无可执行" in how_check.reason or "步骤" in how_check.reason
-
-        # 拒收原因正确
+        # 新闻由 unified 判定的新字段 non_knowledge / reject 门拒收，
+        # 不再依赖旧三次判定的 how_tendency 拒因。
+        assert result.content_lane == ""
         assert "准入未通过" in result.reason
-        assert "how_tendency" in result.reason
+        assert "non_knowledge" in result.reason
 
     def test_news_rejection_logs_to_ledger(self, news_content, tmp_ledger_path, admission_fail_news_response):
         """拒收后账本有 rejection event，零提炼调用。"""
@@ -91,8 +87,17 @@ class TestPlagiarismNegativeSample:
         mock_fn = make_mock_route_llm(admission_fail_plagiarism_response)
 
         wiki_refs = [
-            "Loop Engineering: bounded agent loops with convergence and observability",
-            "Harness Engineering: agent runtime and tool definitions",
+            {
+                "slug": "addy-osmani-loop-engineering",
+                "source_url": "https://example.com/loop-engineering",
+                "title": "Loop Engineering",
+                "tldr": "bounded agent loops with convergence and observability",
+            },
+            {
+                "slug": "harness-engineering",
+                "title": "Harness Engineering",
+                "tldr": "agent runtime and tool definitions",
+            },
         ]
 
         result = run_admission(
@@ -104,21 +109,14 @@ class TestPlagiarismNegativeSample:
         )
 
         assert result.passed is False, "洗稿型内容应被拒收"
-        # WP-2: concept 候选追加 mechanism_signal 门（黄金样张有机制 → mech pass，
-        # 洗稿仍由 novelty 拒）。concept 候选共 4 条判定。
-        assert len(result.checks) == 4
+        # novelty exact slug/url 预筛在统一判定前短路，洗稿只留下 novelty 拒收证据。
+        assert len(result.checks) == 1
 
-        # 主题相关性应 pass
-        assert result.checks[0].passed is True
-
-        # How 倾向应 pass
-        assert result.checks[1].passed is True
-
-        # 新颖度应 fail
-        novelty_check = result.checks[2]
+        # exact slug/url 命中后仅保留确定性 novelty 拒收检查。
+        novelty_check = result.checks[0]
         assert novelty_check.name == "novelty"
         assert novelty_check.passed is False
-        assert "重叠" in novelty_check.reason or "增量" in novelty_check.reason or "重复" in novelty_check.reason
+        assert "确定性拒收" in novelty_check.reason or "同源" in novelty_check.reason
 
     def test_plagiarism_rejection_logs_to_ledger(
         self, sample_raw_content, tmp_ledger_path, admission_fail_plagiarism_response
@@ -128,7 +126,12 @@ class TestPlagiarismNegativeSample:
 
         mock_fn = make_mock_route_llm(admission_fail_plagiarism_response)
 
-        wiki_refs = ["Loop Engineering: bounded agent loops"]
+        wiki_refs = [{
+            "slug": "addy-osmani-loop-engineering",
+            "source_url": "https://example.com/loop-engineering",
+            "title": "Loop Engineering",
+            "tldr": "bounded agent loops",
+        }]
 
         run_admission(
             raw_path="raw/zynd-ai-rewrite--raw--2026-06-10.md",
