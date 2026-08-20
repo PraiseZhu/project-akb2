@@ -15,8 +15,10 @@ Intake Orchestrator 单元测试 — 全部 mock，不打真网。
 from __future__ import annotations
 
 import json
+import sys
 import textwrap
 from pathlib import Path
+from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 from src.akb2.quality.intake.models import compute_article_id
@@ -889,3 +891,186 @@ def test_down_source_skips_discovery_without_error(tmp_path):
         "archived": 0,
         "discovery_errors": 0,
     }
+
+
+# ---------------------------------------------------------------------------
+# x3: type=x_account 分支（g6 的 x_account_discovery.py 未落地，测试注入 fake module）
+# ---------------------------------------------------------------------------
+
+
+def _write_x_account_sources_yaml(tmp_path: Path, slug: str = "x-curators") -> Path:
+    yaml_content = textwrap.dedent(
+        f"""\
+        sources:
+          - slug: {slug}
+            type: x_account
+            domain: x.com
+            x_handles:
+              - karpathy
+            status: trial
+            category: core
+        """
+    )
+    p = tmp_path / "sources.yaml"
+    p.write_text(yaml_content, encoding="utf-8")
+    return p
+
+
+def _fake_x_account_discovery_module(return_value=None, side_effect=None):
+    """注入尚未落地的 x_account_discovery 模块，供 orchestrator 延迟 import。"""
+    mod = ModuleType("src.akb2.quality.intake.x_account_discovery")
+    mock_fn = MagicMock(return_value=return_value, side_effect=side_effect)
+    mod.x_account_discovery = mock_fn
+    return mod, mock_fn
+
+
+def test_x_account_type_calls_x_account_discovery_not_rss(tmp_path):
+    """type=x_account 走 x_account_discovery，不调 discover_articles。"""
+    sources_config = _write_x_account_sources_yaml(tmp_path)
+    mock_result = _make_discover_mock(
+        [("https://x.com/karpathy/status/1", "Post 1")],
+        slug="x-curators",
+    )
+    fake_mod, x_mock = _fake_x_account_discovery_module(return_value=mock_result)
+
+    with (
+        patch.dict(sys.modules, {"src.akb2.quality.intake.x_account_discovery": fake_mod}),
+        patch("src.akb2.quality.intake.orchestrator.discover_articles") as rss_mock,
+    ):
+        stats = run_intake(
+            sources_config=sources_config,
+            state_file=tmp_path / "s.jsonl",
+            output_dir=tmp_path / "raw",
+            dry_run=True,
+            source_offset=0,
+        )
+
+    rss_mock.assert_not_called()
+    x_mock.assert_called_once()
+    called_source = x_mock.call_args.args[0]
+    assert called_source["type"] == "x_account"
+    assert called_source["slug"] == "x-curators"
+    assert x_mock.call_args.kwargs["ledger_path"] == tmp_path / "s.jsonl"
+    assert x_mock.call_args.kwargs["dry_run"] is True
+    assert stats["discovered"] == 1
+    assert stats["archived"] == 0
+    assert stats["discovery_errors"] == 0
+
+
+def test_x_account_and_rss_sources_use_matching_discoverers(tmp_path):
+    """混合源：无 type 走 RSS，type=x_account 走 x_account_discovery。"""
+    yaml_content = textwrap.dedent(
+        """\
+        sources:
+          - slug: test-source
+            domain: example.com
+            feed_url: https://example.com/feed.xml
+            listing_url: https://example.com
+            rate_limit: 60
+            status: trial
+            category: core
+          - slug: x-curators
+            type: x_account
+            domain: x.com
+            x_handles:
+              - karpathy
+            status: trial
+            category: core
+        """
+    )
+    sources_config = tmp_path / "sources.yaml"
+    sources_config.write_text(yaml_content, encoding="utf-8")
+
+    rss_result = _make_discover_mock(
+        [("https://example.com/article-1", "Article One")],
+        slug="test-source",
+    )
+    x_result = _make_discover_mock(
+        [("https://x.com/karpathy/status/1", "Post 1")],
+        slug="x-curators",
+    )
+    fake_mod, x_mock = _fake_x_account_discovery_module(return_value=x_result)
+
+    with (
+        patch.dict(sys.modules, {"src.akb2.quality.intake.x_account_discovery": fake_mod}),
+        patch(
+            "src.akb2.quality.intake.orchestrator.discover_articles",
+            return_value=rss_result,
+        ) as rss_mock,
+    ):
+        stats = run_intake(
+            sources_config=sources_config,
+            state_file=tmp_path / "s.jsonl",
+            output_dir=tmp_path / "raw",
+            dry_run=True,
+            source_offset=0,
+        )
+
+    rss_mock.assert_called_once()
+    assert rss_mock.call_args.args[0]["slug"] == "test-source"
+    assert rss_mock.call_args.args[0].get("type") is None
+    x_mock.assert_called_once()
+    assert x_mock.call_args.args[0]["type"] == "x_account"
+    assert stats["discovered"] == 2
+    assert stats["discovery_errors"] == 0
+
+
+def test_x_account_discovery_exception_counted(tmp_path):
+    """x_account_discovery 抛异常同样计入 discovery_errors（与 RSS 路径对称）。"""
+    sources_config = _write_x_account_sources_yaml(tmp_path)
+    fake_mod, x_mock = _fake_x_account_discovery_module(
+        side_effect=RuntimeError("twitter CLI unavailable"),
+    )
+
+    with (
+        patch.dict(sys.modules, {"src.akb2.quality.intake.x_account_discovery": fake_mod}),
+        patch("src.akb2.quality.intake.orchestrator.discover_articles") as rss_mock,
+    ):
+        stats = run_intake(
+            sources_config=sources_config,
+            state_file=tmp_path / "s.jsonl",
+            output_dir=tmp_path / "raw",
+            dry_run=True,
+            source_offset=0,
+        )
+
+    rss_mock.assert_not_called()
+    x_mock.assert_called_once()
+    assert stats["discovery_errors"] == 1
+    assert stats["discovered"] == 0
+    assert stats["archived"] == 0
+
+
+def test_x_account_articles_enter_same_ledger_path(tmp_path):
+    """x_account 发现结果走同一 ledger/去重路径（已 archived 则 skipped_seen）。"""
+    sources_config = _write_x_account_sources_yaml(tmp_path)
+    state_file = tmp_path / "intake-state.jsonl"
+    url = "https://x.com/karpathy/status/42"
+    article_id = compute_article_id(url)
+    write_ledger_entry(
+        state_file,
+        run_id="pre-existing-run",
+        source_slug="x-curators",
+        article_id=article_id,
+        status="archived",
+        daily_count=1,
+        quarantine_status=False,
+    )
+    mock_result = _make_discover_mock([(url, "Existing Post")], slug="x-curators")
+    fake_mod, x_mock = _fake_x_account_discovery_module(return_value=mock_result)
+
+    with patch.dict(sys.modules, {"src.akb2.quality.intake.x_account_discovery": fake_mod}):
+        stats = run_intake(
+            sources_config=sources_config,
+            state_file=state_file,
+            output_dir=tmp_path / "raw",
+            dry_run=False,
+            source_offset=0,
+        )
+
+    x_mock.assert_called_once()
+    assert stats["discovered"] == 1
+    assert stats["archived"] == 0
+    assert stats["skipped"] >= 1
+    final_lines = state_file.read_text().strip().splitlines()
+    assert len(final_lines) == 1, f"skipped_seen 不写 ledger，实得 {len(final_lines)} 行"

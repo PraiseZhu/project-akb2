@@ -394,9 +394,20 @@ def run_intake(
             logger.info("Skipping source=%s status=%s", slug, status)
             continue
 
-        # 发现文章（RSS feed；feed_content=None 表示真实抓取）
+        # 发现文章：x_account 走 twitter CLI collector（g6），其余走 RSS/listing
         try:
-            discover_result = discover_articles(source, ledger_path=state_file, dry_run=dry_run)
+            if source.get("type") == "x_account":
+                from src.akb2.quality.intake.x_account_discovery import (
+                    x_account_discovery,
+                )
+
+                discover_result = x_account_discovery(
+                    source, ledger_path=state_file, dry_run=dry_run
+                )
+            else:
+                discover_result = discover_articles(
+                    source, ledger_path=state_file, dry_run=dry_run
+                )
         except Exception as exc:
             # 发现层抛异常（网络层故障等）同样是死链/失败的一种形态，
             # 必须计入 discovery_errors，否则保留一条静默失败路径（codex HIGH-1）。
