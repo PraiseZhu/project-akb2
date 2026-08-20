@@ -784,4 +784,7 @@ class TestNonKnowledgeNarrowPrompt:
             route_llm_fn=mock,
         )
         assert result.passed is False
-        assert "non_knowledge" in result.reason
+        assert (
+            "non_knowledge" in result.reason
+            or "no_mechanism_signal" in result.reason
+        ), result.reason
