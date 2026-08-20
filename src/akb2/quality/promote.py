@@ -487,12 +487,24 @@ def rollback_snapshot(snapshot_id: str) -> bool:
 MACHINE_REVIEWER = "akb2-quality-loop-v1"
 
 
-def _flip_frontmatter(text: str, slug: str) -> str:
+def _promoted_gate_reason(snapshot_id: str = "") -> str:
+    """升格后的实际决议文案：五闸全过 + 可选快照 id。
+
+    覆盖 distill 候选占位「待 GPT-5.4 裁判与五闸确认」。值不含 YAML
+    mapping colon，保持与本函数其它 unquoted 标量同一口径。
+    """
+    if snapshot_id:
+        return f"五闸全过，自动升格 active（snapshot {snapshot_id}）。"
+    return "五闸全过，自动升格 active。"
+
+
+def _flip_frontmatter(text: str, slug: str, snapshot_id: str = "") -> str:
     """翻转 frontmatter: status: active + gate_decision: active + 机器 reviewer 签名。
 
     同时去掉候选自评前缀（如 "候选自评: " 等 pattern）。
     机器 reviewer 签名（2026-06-17 修宪）：五闸全过经本函数升 active 时，
-    必须写全 reviewer/reviewed_at（gate_reason 由 distill 候选阶段已写入），
+    必须写全 reviewer/reviewed_at，并把 distill 候选阶段的 gate_reason
+    占位改写成实际决议文案（五闸全过 + 快照 id），
     满足 CONTENT-LIFECYCLE §1.3 不变量 2 + §7 第 8 条。
     """
     fm_match = re.match(r"^---\n(.*?)\n---\n", text, re.DOTALL)
@@ -526,6 +538,15 @@ def _flip_frontmatter(text: str, slug: str) -> str:
         fm_text = re.sub(r"^reviewed_at:\s*.*$", f"reviewed_at: {reviewed_at}", fm_text, flags=re.M)
     else:
         fm_text += f"\nreviewed_at: {reviewed_at}"
+
+    # 升格决议：覆盖 distill 候选占位，写实际五闸通过文案
+    gate_reason = _promoted_gate_reason(snapshot_id)
+    if re.search(r"^gate_reason:", fm_text, re.M):
+        fm_text = re.sub(
+            r"^gate_reason:\s*.*$", f"gate_reason: {gate_reason}", fm_text, flags=re.M
+        )
+    else:
+        fm_text += f"\ngate_reason: {gate_reason}"
 
     return f"---\n{fm_text}\n---\n{body}"
 
@@ -927,7 +948,7 @@ def finalize_promotion(
     gate_result = "gate: active (five-gate auto-promote)"
 
     # Step 1: frontmatter 翻转 → active 页(+ F33 Bug-B related 回填)
-    active_text = _flip_frontmatter(candidate_text, slug)
+    active_text = _flip_frontmatter(candidate_text, slug, snapshot_id)
     active_text = _inject_related_concepts(active_text, related_concepts)
     active_path = vault_root / "wiki" / "sources" / f"{slug}.md"
     active_path.parent.mkdir(parents=True, exist_ok=True)

@@ -40,6 +40,7 @@ related_concepts:
   - concept-harness-finalize
   - concept-nonexistent-missing
 gate_decision: null
+gate_reason: 候选来源锚点 [raw §A]；待 GPT-5.4 裁判与五闸确认。
 slug: test-finalize
 title: Test Finalize Article
 source_url: https://example.com/finalize-test
@@ -408,6 +409,12 @@ Test page.
         assert "page_status: active" in active_text
         assert "gate_decision: active" in active_text
         assert "## TLDR" in active_text
+        assert re.search(
+            r"^gate_reason: 五闸全过，自动升格 active（snapshot test-snapshot-id）。$",
+            active_text,
+            re.M,
+        )
+        assert "待 GPT-5.4 裁判与五闸确认" not in active_text
 
     def test_lint_reverify_failure_triggers_rollback(self, finalize_vault_root: Path, monkeypatch):
         """lint 复验非 0 即整体失败。"""
@@ -434,7 +441,7 @@ class TestMachineReviewerSignature:
     """机器 reviewer 升格签名（2026-06-17 修宪，CONTENT-LIFECYCLE §6.1 + §7 第 8 条）。"""
 
     def test_flip_writes_machine_reviewer(self):
-        """五闸升 active 时写全 reviewer + reviewed_at；gate_reason（distill 已写）保留。"""
+        """五闸升 active 时写全 reviewer + reviewed_at，并改写 gate_reason 为决议文案。"""
         from src.akb2.quality.promote import MACHINE_REVIEWER, _flip_frontmatter
 
         candidate = (
@@ -450,7 +457,8 @@ class TestMachineReviewerSignature:
         assert "gate_decision: active" in out
         assert f"reviewer: {MACHINE_REVIEWER}" in out
         assert re.search(r"^reviewed_at: \d{4}-\d{2}-\d{2}$", out, re.M)
-        assert "gate_reason: ok" in out
+        assert "gate_reason: 五闸全过，自动升格 active。" in out
+        assert "gate_reason: ok" not in out
 
     def test_flip_replaces_stale_reviewer_no_dup(self):
         """已有 reviewer/reviewed_at 时替换为机器 reviewer，不重复。"""
@@ -467,3 +475,40 @@ class TestMachineReviewerSignature:
         assert out.count("reviewer:") == 1
         assert f"reviewer: {MACHINE_REVIEWER}" in out
         assert "2020-01-01" not in out
+
+
+    def test_flip_rewrites_gate_reason_with_snapshot(self):
+        """升格改写 gate_reason：五闸全过 + 快照 id，删 distill 候选占位。"""
+        from src.akb2.quality.promote import _flip_frontmatter
+
+        placeholder = "候选来源锚点 [raw §A]；待 GPT-5.4 裁判与五闸确认。"
+        candidate = (
+            "---\n"
+            "slug: test-x\n"
+            "status: candidate\n"
+            "gate_decision: null\n"
+            f"gate_reason: {placeholder}\n"
+            "---\n\n# body\n"
+        )
+        snapshot_id = "promote-20260820T010203-abcd1234"
+        out = _flip_frontmatter(candidate, "test-x", snapshot_id)
+        expected = f"gate_reason: 五闸全过，自动升格 active（snapshot {snapshot_id}）。"
+        assert expected in out
+        assert out.count("gate_reason:") == 1
+        assert "待 GPT-5.4 裁判与五闸确认" not in out
+        assert "gate_reason: ok" not in out
+
+    def test_flip_inserts_gate_reason_when_missing(self):
+        """候选缺 gate_reason 时补写决议文案，不留占位。"""
+        from src.akb2.quality.promote import _flip_frontmatter
+
+        candidate = (
+            "---\n"
+            "slug: test-x\n"
+            "status: candidate\n"
+            "gate_decision: null\n"
+            "---\n\n# body\n"
+        )
+        out = _flip_frontmatter(candidate, "test-x")
+        assert "gate_reason: 五闸全过，自动升格 active。" in out
+        assert "待 GPT-5.4 裁判与五闸确认" not in out
