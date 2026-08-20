@@ -39,7 +39,13 @@ from src.akb2.quality.intake.discovery import (
 )
 from src.akb2.quality.intake.extract import ExtractMethod, extract_content
 from src.akb2.quality.intake.models import ExtractionContext
-from src.akb2.quality.intake.orchestrator import run_intake
+from src.akb2.quality.intake.orchestrator import (
+    RSS_SOURCE_TYPE,
+    X_ACCOUNT_SOURCE_TYPE,
+    resolve_source_type,
+    run_intake,
+    source_matches_run_type,
+)
 from src.akb2.quality.intake.raw_archiver import REQUIRED_ANCHORS, archive_from_extract_result
 from src.akb2.quality.intake.x_account_discovery import (
     DEFAULT_PACING_SEC,
@@ -609,6 +615,37 @@ def test_shared_constants_reexport_quality_import_skips_briefing() -> None:
         cwd=str(repo),
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+REPO = Path(__file__).resolve().parents[2]
+SOURCES_PATH = REPO / "config" / "main_sources.yaml"
+SMOKE_PATH = REPO / "reports" / "x-account-smoke.json"
+TWITTER_PLIST = REPO / "launchd" / "com.akb2.intake-twitter.plist"
+RSS_PLIST = REPO / "launchd" / "com.akb2.intake.plist"
+BLOCKED_HANDLES = ("MengTo", "rileybrown", "nickfloats")
+
+
+def _load_sources() -> list[dict]:
+    data = yaml.safe_load(SOURCES_PATH.read_text(encoding="utf-8"))
+    assert isinstance(data, dict)
+    return list(data["sources"])
+
+
+def _x_account_trial(sources: list[dict]) -> list[dict]:
+    return [
+        s
+        for s in sources
+        if str(s.get("type") or "").strip() == "x_account"
+        and str(s.get("status") or "").strip() == "trial"
+    ]
+
+
+def _load_plist(path: Path) -> dict:
+    with path.open("rb") as fh:
+        data = plistlib.load(fh)
+    assert isinstance(data, dict)
+    return data
+
 
 def test_config_sources_and_plist_yaml_parses_and_first_batch_is_truth():
     smoke = json.loads(SMOKE_PATH.read_text(encoding="utf-8"))
