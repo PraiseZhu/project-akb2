@@ -12,15 +12,11 @@
 
 from __future__ import annotations
 
-import plistlib
-
+import json
 import os
+import plistlib
 import subprocess
 import sys
-from akb2.briefing.intake import l0_collector as l0
-from akb2.shared import twitter_cli_constants as shared
-
-import json
 import textwrap
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,6 +25,8 @@ from unittest.mock import patch
 import pytest
 import yaml
 
+from akb2.briefing.intake import l0_collector as l0
+from akb2.shared import twitter_cli_constants as shared
 from src.akb2.briefing.intake.l0_collector import (
     TWITTER_BIN,
     UpstreamCollectorBroken,
