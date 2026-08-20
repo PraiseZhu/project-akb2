@@ -61,6 +61,8 @@
         <string>__AKB2_REPO_ROOT__/logs/intake-failures.jsonl</string>
         <string>--limit</string>
         <string>30</string>
+        <string>--source-type</string>
+        <string>rss</string>
     </array>
 
     <key>WorkingDirectory</key>

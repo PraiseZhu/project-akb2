@@ -75,19 +75,25 @@ DEFAULT_STATE_FILE = "reports/intake/intake-state.jsonl"
 DEFAULT_OUTPUT_DIR = "reports/intake/raw/"
 RSS_SOURCE_TYPE = "rss"
 X_ACCOUNT_SOURCE_TYPE = "x_account"
+ALL_SOURCE_TYPE = "all"
 SOURCE_TYPE_ENV = "AKB2_INTAKE_SOURCE_TYPE"
 
 
 def resolve_source_type(explicit: str | None = None) -> str:
     """解析本轮 intake 消费的源类型。
 
-    RSS 默认路径（com.akb2.intake --limit 30）只跑 rss/缺省 type；
-    X 账号由独立 com.akb2.intake-twitter.plist 设 --source-type x_account
-    （或环境变量 AKB2_INTAKE_SOURCE_TYPE）消费，避免挤占 RSS 配额。
+    显式 rss：只跑 RSS/listing（com.akb2.intake --limit 30，不挤占给 X）。
+    显式 x_account：只跑 X 账号（com.akb2.intake-twitter.plist）。
+    未传且环境变量也空：混跑（测试与一次性 CLI 默认），由源 type 分流发现层。
     """
-    raw = explicit if explicit is not None else os.environ.get(SOURCE_TYPE_ENV, RSS_SOURCE_TYPE)
-    value = str(raw or RSS_SOURCE_TYPE).strip().lower() or RSS_SOURCE_TYPE
-    if value not in {RSS_SOURCE_TYPE, X_ACCOUNT_SOURCE_TYPE}:
+    if explicit is None:
+        raw = os.environ.get(SOURCE_TYPE_ENV)
+        if raw is None or str(raw).strip() == "":
+            return ALL_SOURCE_TYPE
+        value = str(raw).strip().lower()
+    else:
+        value = str(explicit).strip().lower() or ALL_SOURCE_TYPE
+    if value not in {RSS_SOURCE_TYPE, X_ACCOUNT_SOURCE_TYPE, ALL_SOURCE_TYPE}:
         raise ValueError(f"unsupported source type: {value}")
     return value
 
@@ -97,7 +103,9 @@ def _source_type_of(source: dict[str, Any]) -> str:
 
 
 def source_matches_run_type(source: dict[str, Any], run_type: str) -> bool:
-    """RSS 轮次跳过 x_account；X 轮次只收 x_account。"""
+    """rss 轮次跳过 x_account；x_account 轮次只收 x_account；all 全收。"""
+    if run_type == ALL_SOURCE_TYPE:
+        return True
     source_type = _source_type_of(source)
     if run_type == X_ACCOUNT_SOURCE_TYPE:
         return source_type == X_ACCOUNT_SOURCE_TYPE
@@ -378,8 +386,9 @@ def run_intake(
         limit: 最多处理文章总数（0=不限）
         source_offset: 源遍历起点轮转(F22 轮转公平,None=按时间自动算,0=不轮转)。
             防 sources 顺序固定时前 cap 源垄断每轮名额,后排源饿死。
-        source_type: rss（默认）只跑 RSS/listing；x_account 只跑 X 账号源。
-            未传时读 AKB2_INTAKE_SOURCE_TYPE，缺省 rss，保证 RSS --limit 30 不被挤占。
+        source_type: rss 只跑 RSS/listing；x_account 只跑 X 账号源。
+            未传且环境变量空则混跑（all），由源 type 分流发现层。
+            生产 RSS plist 必须显式 --source-type rss，避免挤占 --limit 30。
 
     Returns:
         {"discovered": N, "skipped": M, "archived": K, "discovery_errors": E} 统计字典。
@@ -591,8 +600,9 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         choices=[RSS_SOURCE_TYPE, X_ACCOUNT_SOURCE_TYPE],
         help=(
-            "本轮消费的源类型: rss（默认,RSS --limit 30）或 x_account"
-            "（独立 twitter plist）。不传则读 AKB2_INTAKE_SOURCE_TYPE。"
+            "本轮消费的源类型: rss（RSS --limit 30）或 x_account"
+            "（独立 twitter plist）。不传则读 AKB2_INTAKE_SOURCE_TYPE；"
+            "都空则混跑。"
         ),
     )
     parser.add_argument(

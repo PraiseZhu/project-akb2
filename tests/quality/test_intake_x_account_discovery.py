@@ -685,6 +685,7 @@ def test_config_sources_and_plist_twitter_plist_independent_of_rss_limit():
     assert r_args[r_args.index("--state-file") + 1].endswith(
         "reports/intake/intake-state.jsonl"
     )
+    assert r_args[r_args.index("--source-type") + 1] == "rss"
     assert rss["StartInterval"] == 900
 
 
@@ -692,7 +693,9 @@ def test_config_sources_and_plist_rss_run_skips_x_account(tmp_path, monkeypatch)
     x_src = {"slug": "x-karpathy", "type": "x_account", "status": "trial"}
     rss_src = {"slug": "openai-blog", "status": "trial"}
     monkeypatch.delenv("AKB2_INTAKE_SOURCE_TYPE", raising=False)
-    assert resolve_source_type(None) == RSS_SOURCE_TYPE
+    assert resolve_source_type(None) == "all"
+    assert source_matches_run_type(x_src, "all")
+    assert source_matches_run_type(rss_src, "all")
     assert not source_matches_run_type(x_src, RSS_SOURCE_TYPE)
     assert source_matches_run_type(rss_src, RSS_SOURCE_TYPE)
     assert source_matches_run_type(x_src, X_ACCOUNT_SOURCE_TYPE)

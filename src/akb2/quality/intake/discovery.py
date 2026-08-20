@@ -444,11 +444,6 @@ def discover_articles(
     if status in {"down", "disabled"}:
         result.method = "none"
         return result
-    source_type = str(source.get("type") or "rss").strip().lower()
-    if source_type == "x_account":
-        # RSS/listing 发现层不消费 X 账号源；避免 listing_url 被 scrapling 误抓。
-        result.method = "none"
-        return result
 
     # 路径 0: X 账号时间线（type=x_account）。产出 DiscoveredArticle，
     # orchestrator 的 cap/quarantine/ledger 零改动透明生效。
