@@ -1909,6 +1909,7 @@ def _run_quality_segments(
         pending_queue=pending_queue,
         known_concepts=known_concepts,
         content_lane=content_lane,
+        promotion_mode="proposal",
     )
 
     if not a_defects:

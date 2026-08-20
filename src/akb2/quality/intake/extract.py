@@ -72,6 +72,7 @@ class ExtractMethod(str, Enum):  # noqa: UP042
     SCRAPLING = "scrapling"
     SCRAPLING_BROWSER = "scrapling_browser"
     DOCLING = "docling"
+    TWITTER_ARTICLE = "twitter_article"
     FAILED = "failed"
 
 
@@ -407,6 +408,36 @@ def extract_content(
         ExtractResult 含抽取结果与成功判定。
     """
     result = ExtractResult(url=url)
+
+    # X Article 路径：正文已由 twitter article -m 取回，禁止再走网页抓取。
+    prefetched = None
+    if extraction_config is not None:
+        prefetched = getattr(extraction_config, "prefetched_content", None)
+        prefetched_via = getattr(extraction_config, "prefetched_via", "") or ""
+        if prefetched:
+            result.method = (
+                ExtractMethod.TWITTER_ARTICLE
+                if prefetched_via == "twitter_article"
+                else ExtractMethod.DEFUDDLE
+            )
+            result.title = extraction_config.feed_title or ""
+            result.author = extraction_config.feed_author or ""
+            result.published = extraction_config.feed_published or ""
+            result.content = str(prefetched)
+            result.word_count = _count_words(result.content)
+            _apply_feed_fallback(result, extraction_config)
+            result.metadata_complete = _validate_metadata(result)
+            result.extraction_success = (
+                result.word_count >= MIN_CONTENT_LENGTH and result.metadata_complete
+            )
+            if result.extraction_success:
+                return result
+            result.error = (
+                "prefetched content too short or metadata incomplete after feed fallback"
+            )
+            result.method = ExtractMethod.FAILED
+            result.extraction_success = False
+            return result
 
     # HTTP fetcher 入口：html 为 None 且非 PDF 时自动抓取 HTML
     if html is None and file_bytes is None and not _detect_pdf(url, content_type):

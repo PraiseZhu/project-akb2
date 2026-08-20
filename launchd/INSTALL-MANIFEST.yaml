@@ -141,6 +141,21 @@ jobs:
       - AKB2_VAULT_ROOT
       - PATH
       - PYTHONPATH
+  - label: com.akb2.intake-twitter
+    template: launchd/com.akb2.intake-twitter.plist
+    installed: ~/Library/LaunchAgents/com.akb2.intake-twitter.plist
+    installer: scripts/bootstrap_intake_launchd.sh
+    should_load: false
+    pending_human_install: true
+    pending_since: 2026-08-20
+    expected_schedule:
+      kind: interval
+      seconds: 900
+    expected_env_keys:
+      - AKB2_INTAKE_SOURCE_TYPE
+      - AKB2_VAULT_ROOT
+      - PATH
+      - PYTHONPATH
   - label: com.akb2.video
     template: launchd/com.akb2.video.plist
     installed: ~/Library/LaunchAgents/com.akb2.video.plist

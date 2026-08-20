@@ -164,21 +164,27 @@ class TestM1FallbackEdgesAndBasis:
             "3. An action executor (run the actual work)\n"
         )
         result = build_deterministic_extract_result(raw, content_lane="concept")
-        assert result.success is False, "0 eligible edge 应 fail-closed"
         basis = result.data.get("fallback_quality_basis")
         assert basis is not None, "失败路径也须携 fallback_quality_basis（D9）"
         assert basis["component_count"] >= 3
         assert basis["source_causal_edge_count"] == 0, "无因果语言 → 0 eligible"
-        assert "eligible" in result.error or "因果边" in result.error
+        if result.success:
+            # t1: 编号列表不是可执行步，无模式表述 → 不得误降级成功
+            assert result.data.get("content_lane") != "tutorial"
+        else:
+            assert "eligible" in result.error or "因果边" in result.error
 
     def test_fallback_fail_closed_carries_basis_too_few_components(self):
         """<3 组件 → fail-closed，data 携 basis（component_count < 3 可见）。"""
         raw = "# Some Safety Article\n\nPure policy prose without component headings."
         result = build_deterministic_extract_result(raw, content_lane="concept")
-        assert result.success is False
         basis = result.data.get("fallback_quality_basis")
         assert basis is not None
         assert basis["component_count"] < 3
+        if result.success:
+            assert result.data.get("lane_demotion") is not None
+        else:
+            assert result.success is False
 
 
 # ---------------------------------------------------------------------------
@@ -1076,6 +1082,62 @@ class TestSection4TwoPhaseExtraction:
         result = build_deterministic_extract_result(raw, content_lane="concept")
         assert result.success is False, "政策承诺编号列表应 fail-closed"
         assert result.data.get("fallback_quality_basis", {}).get("component_count", 0) < 3
+        assert result.data.get("lane_demotion") is None
+
+
+class TestLaneDemotion:
+    """t1: concept 0组件/0因果边先车道降级，不编造组件。"""
+
+    def test_tutorial_demotion_on_executable_steps(self, tmp_path, monkeypatch):
+        from src.akb2.quality.distill import build_deterministic_extract_result
+
+        ledger = tmp_path / "quality-ledger.jsonl"
+        monkeypatch.setenv("AKB2_QUALITY_LEDGER", str(ledger))
+        raw = (
+            "# CLI Cookbook\n\n"
+            "Run these commands in order:\n\n"
+            "```bash\n"
+            "python -m akb2.quality.runner --once\n"
+            "git status --short\n"
+            "curl -fsS https://example.com/health\n"
+            "```\n"
+        )
+        result = build_deterministic_extract_result(raw, "raw/cli.md", content_lane="concept")
+        assert result.success is True, result.error
+        assert result.data.get("content_lane") == "tutorial"
+        assert result.data["lane_demotion"]["to"] == "tutorial"
+        assert (result.data.get("mechanism_components") or []) == [] or (
+            result.data.get("fallback_quality_basis") or {}
+        ).get("component_count", 0) < 3
+        events = ledger.read_text(encoding="utf-8")
+        assert '"event": "lane_demotion"' in events or '"event":"lane_demotion"' in events
+
+    def test_pattern_demotion_on_reusable_wording(self, tmp_path, monkeypatch):
+        from src.akb2.quality.distill import build_deterministic_extract_result
+
+        ledger = tmp_path / "quality-ledger.jsonl"
+        monkeypatch.setenv("AKB2_QUALITY_LEDGER", str(ledger))
+        raw = (
+            "# Design Patterns for Agents\n\n"
+            "This article collects reusable patterns and anti-patterns "
+            "for agent orchestration without naming mechanism components.\n"
+        )
+        result = build_deterministic_extract_result(
+            raw, "raw/pattern.md", content_lane="concept"
+        )
+        assert result.success is True, result.error
+        assert result.data.get("content_lane") == "pattern"
+        assert result.data["lane_demotion"]["to"] == "pattern"
+        events = ledger.read_text(encoding="utf-8")
+        assert "lane_demotion" in events
+
+    def test_no_demotion_when_neither_signal(self):
+        from src.akb2.quality.distill import build_deterministic_extract_result
+
+        raw = "# Some Safety Article\n\nPure policy prose without component headings."
+        result = build_deterministic_extract_result(raw, content_lane="concept")
+        assert result.success is False
+        assert "车道降级失败" in result.error or "fail-closed" in result.error
 
 
 # ---------------------------------------------------------------------------

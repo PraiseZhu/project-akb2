@@ -1,0 +1,343 @@
+{
+  "generated_at": "2026-08-20T13:41:00Z",
+  "max_idle_days": 30,
+  "candidates": [
+    {
+      "handle": "OpenAI",
+      "ok": true,
+      "reason": "ok",
+      "raw_count": 2,
+      "original_count": 2,
+      "latest_original_age_days": 1
+    },
+    {
+      "handle": "AnthropicAI",
+      "ok": true,
+      "reason": "ok",
+      "raw_count": 2,
+      "original_count": 2,
+      "latest_original_age_days": 2
+    },
+    {
+      "handle": "GoogleDeepMind",
+      "ok": true,
+      "reason": "empty_history",
+      "raw_count": 2,
+      "original_count": 0,
+      "latest_original_age_days": null
+    },
+    {
+      "handle": "lmsysorg",
+      "ok": true,
+      "reason": "ok",
+      "raw_count": 2,
+      "original_count": 2,
+      "latest_original_age_days": 1
+    },
+    {
+      "handle": "vllm_project",
+      "ok": true,
+      "reason": "ok",
+      "raw_count": 2,
+      "original_count": 2,
+      "latest_original_age_days": 0
+    },
+    {
+      "handle": "karpathy",
+      "ok": true,
+      "reason": "ok",
+      "raw_count": 2,
+      "original_count": 2,
+      "latest_original_age_days": 18
+    },
+    {
+      "handle": "ylecun",
+      "ok": true,
+      "reason": "empty_history",
+      "raw_count": 2,
+      "original_count": 0,
+      "latest_original_age_days": null
+    },
+    {
+      "handle": "sama",
+      "ok": true,
+      "reason": "ok",
+      "raw_count": 2,
+      "original_count": 1,
+      "latest_original_age_days": 1
+    },
+    {
+      "handle": "gdb",
+      "ok": true,
+      "reason": "ok",
+      "raw_count": 2,
+      "original_count": 2,
+      "latest_original_age_days": 0
+    },
+    {
+      "handle": "JeffDean",
+      "ok": true,
+      "reason": "empty_history",
+      "raw_count": 2,
+      "original_count": 0,
+      "latest_original_age_days": null
+    },
+    {
+      "handle": "demishassabis",
+      "ok": true,
+      "reason": "ok",
+      "raw_count": 2,
+      "original_count": 1,
+      "latest_original_age_days": 7
+    },
+    {
+      "handle": "AndrewYNg",
+      "ok": true,
+      "reason": "ok",
+      "raw_count": 2,
+      "original_count": 2,
+      "latest_original_age_days": 6
+    },
+    {
+      "handle": "swyx",
+      "ok": true,
+      "reason": "ok",
+      "raw_count": 2,
+      "original_count": 2,
+      "latest_original_age_days": 0
+    },
+    {
+      "handle": "simonw",
+      "ok": true,
+      "reason": "ok",
+      "raw_count": 2,
+      "original_count": 2,
+      "latest_original_age_days": 0
+    },
+    {
+      "handle": "ggerganov",
+      "ok": true,
+      "reason": "ok",
+      "raw_count": 2,
+      "original_count": 2,
+      "latest_original_age_days": 3
+    },
+    {
+      "handle": "rasbt",
+      "ok": true,
+      "reason": "ok",
+      "raw_count": 2,
+      "original_count": 2,
+      "latest_original_age_days": 0
+    },
+    {
+      "handle": "omarsar0",
+      "ok": true,
+      "reason": "ok",
+      "raw_count": 2,
+      "original_count": 1,
+      "latest_original_age_days": 1
+    },
+    {
+      "handle": "_akhaliq",
+      "ok": true,
+      "reason": "empty_history",
+      "raw_count": 2,
+      "original_count": 0,
+      "latest_original_age_days": null
+    },
+    {
+      "handle": "AravSrinivas",
+      "ok": true,
+      "reason": "ok",
+      "raw_count": 2,
+      "original_count": 2,
+      "latest_original_age_days": 1
+    },
+    {
+      "handle": "dotey",
+      "ok": true,
+      "reason": "ok",
+      "raw_count": 2,
+      "original_count": 1,
+      "latest_original_age_days": 0
+    },
+    {
+      "handle": "oran_ge",
+      "ok": true,
+      "reason": "ok",
+      "raw_count": 2,
+      "original_count": 2,
+      "latest_original_age_days": 0
+    },
+    {
+      "handle": "op7418",
+      "ok": true,
+      "reason": "ok",
+      "raw_count": 2,
+      "original_count": 2,
+      "latest_original_age_days": 0
+    },
+    {
+      "handle": "DashHuang",
+      "ok": true,
+      "reason": "ok",
+      "raw_count": 2,
+      "original_count": 2,
+      "latest_original_age_days": 0
+    },
+    {
+      "handle": "tuturetom",
+      "ok": false,
+      "reason": "rate_limited",
+      "raw_count": 0,
+      "original_count": 0,
+      "latest_original_age_days": null
+    },
+    {
+      "handle": "fankaishuoai",
+      "ok": false,
+      "reason": "rate_limited",
+      "raw_count": 0,
+      "original_count": 0,
+      "latest_original_age_days": null
+    },
+    {
+      "handle": "abskoop",
+      "ok": false,
+      "reason": "rate_limited",
+      "raw_count": 0,
+      "original_count": 0,
+      "latest_original_age_days": null
+    },
+    {
+      "handle": "ring_hyacinth",
+      "ok": false,
+      "reason": "rate_limited",
+      "raw_count": 0,
+      "original_count": 0,
+      "latest_original_age_days": null
+    },
+    {
+      "handle": "yangyi_io",
+      "ok": false,
+      "reason": "not_found",
+      "raw_count": 0,
+      "original_count": 0,
+      "latest_original_age_days": null
+    },
+    {
+      "handle": "SaitoWu",
+      "ok": false,
+      "reason": "rate_limited",
+      "raw_count": 0,
+      "original_count": 0,
+      "latest_original_age_days": null
+    },
+    {
+      "handle": "alin_zone",
+      "ok": false,
+      "reason": "rate_limited",
+      "raw_count": 0,
+      "original_count": 0,
+      "latest_original_age_days": null
+    },
+    {
+      "handle": "MengTo",
+      "ok": false,
+      "reason": "rate_limited",
+      "raw_count": 0,
+      "original_count": 0,
+      "latest_original_age_days": null
+    },
+    {
+      "handle": "rileybrown",
+      "ok": false,
+      "reason": "rate_limited",
+      "raw_count": 0,
+      "original_count": 0,
+      "latest_original_age_days": null
+    },
+    {
+      "handle": "nickfloats",
+      "ok": false,
+      "reason": "rate_limited",
+      "raw_count": 0,
+      "original_count": 0,
+      "latest_original_age_days": null
+    }
+  ],
+  "first_batch": [
+    "OpenAI",
+    "AnthropicAI",
+    "lmsysorg",
+    "vllm_project",
+    "karpathy",
+    "sama",
+    "gdb",
+    "demishassabis",
+    "AndrewYNg",
+    "swyx",
+    "simonw",
+    "ggerganov",
+    "rasbt",
+    "omarsar0",
+    "AravSrinivas",
+    "dotey",
+    "oran_ge",
+    "op7418",
+    "DashHuang"
+  ],
+  "errors": [
+    {
+      "handle": "tuturetom",
+      "reason": "rate_limited",
+      "message": "rate_limited"
+    },
+    {
+      "handle": "fankaishuoai",
+      "reason": "rate_limited",
+      "message": "rate_limited"
+    },
+    {
+      "handle": "abskoop",
+      "reason": "rate_limited",
+      "message": "rate_limited"
+    },
+    {
+      "handle": "ring_hyacinth",
+      "reason": "rate_limited",
+      "message": "rate_limited"
+    },
+    {
+      "handle": "yangyi_io",
+      "reason": "not_found",
+      "message": "not_found"
+    },
+    {
+      "handle": "SaitoWu",
+      "reason": "rate_limited",
+      "message": "rate_limited"
+    },
+    {
+      "handle": "alin_zone",
+      "reason": "rate_limited",
+      "message": "rate_limited"
+    },
+    {
+      "handle": "MengTo",
+      "reason": "rate_limited",
+      "message": "rate_limited"
+    },
+    {
+      "handle": "rileybrown",
+      "reason": "rate_limited",
+      "message": "rate_limited"
+    },
+    {
+      "handle": "nickfloats",
+      "reason": "rate_limited",
+      "message": "rate_limited"
+    }
+  ]
+}

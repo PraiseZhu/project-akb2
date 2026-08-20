@@ -84,6 +84,8 @@ MIN_SOURCE_REFS: int = 1
 MIN_FUTURE_QUESTIONS: int = 2
 MAX_FUTURE_QUESTIONS: int = 3
 MIN_RELATED_CONCEPTS: int = 2
+# 宪法 §3.1.3：候选页 frontmatter 身份/状态/来源短引用 ≤25 行
+MAX_FRONTMATTER_LINES: int = 25
 
 # A6 约束
 MAX_MAINTENANCE_RECORDS: int = 5
@@ -292,7 +294,7 @@ def check_a2_frontmatter(
     A2: source_refs≥1, future_questions 2-3, related_concepts≥2,
         gate_decision 必须 null, gate_reason≤150 字符
 
-    §0.2/D8：proposal 模式（concept 与 procedural,F40 车道对齐）接受
+    §0.2/D8：proposal 模式（候选阶段，车道无关）接受
     ``related_concepts>=2 OR proposed_graph_nodes>=1``
     （冷启动：resolver 未 resolve 足够 related 时，写 proposed_graph_nodes 待 adjudication）。
     active/lint（promotion_mode != proposal）仍要求真实 related_concepts>=2（proposed
@@ -390,18 +392,12 @@ def check_a2_frontmatter(
                 )
 
     # related_concepts >= 2  （§0.2/D8：proposal 模式接受 proposed_graph_nodes>=1 替代）
-    # [F40 2026-07-11] D8 冷启动豁免扩到 procedural 车道:冷启动 vault 无概念可
-    # resolve 与车道无关,compose 侧 D8 块本就 lane-agnostic 写 proposed_graph_nodes,
-    # 但本检查旧版只认 concept → procedural 候选确定性团灭(全修复时代 2.2 天内
-    # 22 篇 compose 自审门死亡全是 procedural,其中 11 篇唯一死因即本条)。
-    # 语义对齐非放宽:替代仍要求 proposed_graph_nodes>=1(真实引用概念);
-    # 非 proposal 模式(active 写入)仍要求真实 related>=2(D8 底线不动)。
+    # 候选阶段 promotion_mode=proposal 与车道无关：compose 侧 D8 块本就 lane-agnostic
+    # 写 proposed_graph_nodes。替代仍要求 proposed_graph_nodes>=1(真实引用概念);
+    # 非 proposal 模式(active/lint)仍要求真实 related>=2(D8 底线不动)。
     rc = fm.get("related_concepts", [])
     proposed_nodes = fm.get("proposed_graph_nodes", [])
-    is_coldstart_proposal = (
-        str(content_lane).lower() in ("concept", "procedural")
-        and str(promotion_mode).lower() == "proposal"
-    )
+    is_coldstart_proposal = str(promotion_mode).lower() == "proposal"
     if isinstance(rc, list):
         rc_ok = len(rc) >= MIN_RELATED_CONCEPTS
         proposed_ok = (
@@ -460,6 +456,34 @@ def check_a2_frontmatter(
                 location="frontmatter.gate_reason",
                 defect=f"gate_reason 超长: {len(gr)} > {MAX_GATE_REASON_CHARS} 字符",
                 suggestion=f"精简 gate_reason 到 ≤{MAX_GATE_REASON_CHARS} 字符",
+            )
+        )
+
+    fm_match = re.match(r"^---\s*\n(.*?)\n---", text, re.DOTALL)
+    if fm_match:
+        fm_line_count = len(fm_match.group(1).splitlines())
+        if fm_line_count > MAX_FRONTMATTER_LINES:
+            defects.append(
+                Defect(
+                    dimension="A2-frontmatter",
+                    location="frontmatter",
+                    defect=(
+                        f"frontmatter 行数超标: {fm_line_count} > {MAX_FRONTMATTER_LINES}"
+                    ),
+                    suggestion=(
+                        "瘦身身份/状态/来源短引用；key_findings 长数组只放正文"
+                    ),
+                )
+            )
+
+    body = _extract_body_text(text)
+    if not re.search(r"(?m)^# [^#\n]", body.lstrip()):
+        defects.append(
+            Defect(
+                dimension="A2-frontmatter",
+                location="正文 H1",
+                defect="正文缺少 H1 标题（首屏需 # 标题 + TLDR）",
+                suggestion="在 frontmatter 之后、## TLDR 之前添加一行 # 标题",
             )
         )
 
@@ -1128,6 +1152,7 @@ def run_structural_checks(
     pending_queue: list[str] | None = None,
     known_concepts: list[str] | None = None,
     content_lane: str = "",
+    promotion_mode: str = "proposal",
 ) -> list[Defect]:
     """运行全部 A 层 6 项检查，返回缺陷清单。
 
@@ -1137,6 +1162,8 @@ def run_structural_checks(
         pending_queue: pending 队列概念列表（A5 + A4 图谱 resolve 需要，可选）
         known_concepts: 已知概念列表（A5 + A4 图谱 resolve 需要，可选）
         content_lane: 内容车道（step-3：A4 图谱 resolve 仅 concept 启用确定性 resolve）
+        promotion_mode: proposal（候选自审，默认）或 active/lint。
+            候选阶段必须传 proposal，使 related<2 可用 proposed_graph_nodes>=1 替代。
 
     Returns:
         list[Defect]: 缺陷清单，空列表表示全部通过。
@@ -1144,9 +1171,12 @@ def run_structural_checks(
     defects: list[Defect] = []
 
     defects.extend(check_a1_sections(text))
-    # §0.2/D8：传 content_lane + promotion_mode=proposal（concept 冷启动接受 proposed_graph_nodes）
+    # distill.run_candidate_self_gate → 本函数 → check_a2_frontmatter
+    # 候选阶段 promotion_mode=proposal（冷启动接受 proposed_graph_nodes）
     defects.extend(
-        check_a2_frontmatter(text, content_lane=content_lane, promotion_mode="proposal")
+        check_a2_frontmatter(
+            text, content_lane=content_lane, promotion_mode=promotion_mode
+        )
     )
     defects.extend(check_a3_raw_anchors(text, raw_content))
     # step-3 SC-3e/A3-8：check_a4 增 known_concepts/pending_queue 形参——concept 图谱边
@@ -1440,6 +1470,7 @@ def run_candidate_self_gate(
     pending_queue: list[str] | None = None,
     known_concepts: list[str] | None = None,
     content_lane: str = "",
+    promotion_mode: str = "proposal",
 ) -> list[Defect]:
     """Run maker-side candidate gate before grader/promote.
 
@@ -1454,7 +1485,12 @@ def run_candidate_self_gate(
     SG-provenance-ratio 在 concept 改为逐条 traces_to 溯源（见 Step.3 verify_interpretation_*）。
     """
     defects = run_structural_checks(
-        text, raw_content, pending_queue, known_concepts, content_lane
+        text,
+        raw_content,
+        pending_queue,
+        known_concepts,
+        content_lane,
+        promotion_mode=promotion_mode,
     )
     body = _body_without_frontmatter(text)
 

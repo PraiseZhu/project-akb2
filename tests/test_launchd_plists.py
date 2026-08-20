@@ -30,6 +30,7 @@ PLIST_NAMES = [
     "com.akb2.github_briefing.backstop.plist",
     "com.akb2.inflow-sentinel.plist",
     "com.akb2.intake.plist",
+    "com.akb2.intake-twitter.plist",
     "com.akb2.video.plist",
 ]
 XFAIL_REASONS: dict[tuple[str, str], str] = {}

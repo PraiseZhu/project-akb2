@@ -42,7 +42,7 @@ dimensions:
     note: "≥2 适用 + ≥1 不适用场景"
   - name: "Future Questions 质量"
     weight: 1.5
-    note: "2-3 条具体可研究问题，非泛泛而谈"
+    note: "正文 Future Questions 节 2-3 条具体可研究问题（完整版）；frontmatter 仅短句 2-3 条供 A2/HC-06，评分看正文节"
 
 # 全局默认完整性地板（hard=true：不进加权、不可被高分补偿）。
 # 四成员对全车道生效：①②③车道无关；④按车道分支
@@ -89,7 +89,7 @@ lanes:
         note: "≥2 适用 + ≥1 不适用场景"
       - name: "Future Questions 质量"
         weight: 1.5
-        note: "2-3 条具体可研究问题，非泛泛而谈"
+        note: "正文 Future Questions 节 2-3 条具体可研究问题（完整版）；frontmatter 仅短句 2-3 条供 A2/HC-06，评分看正文节"
     integrity_floor:
       - name: "论断锚定率(raw-anchor)"
         hard: true
@@ -127,7 +127,7 @@ lanes:
         note: "≤3 句覆盖核心机制"
       - name: "Future Questions质量"
         weight: 1.5
-        note: "2-3 条具体可研究问题"
+        note: "正文 Future Questions 节 2-3 条具体可研究问题（完整版）；frontmatter 短句版不参与本维评分"
     integrity_floor:
       - name: "论断锚定率(raw-anchor)"
         hard: true

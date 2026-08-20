@@ -698,3 +698,93 @@ class TestMultiRejectCalibration:
         )
         assert result.passed is False
         assert "non_knowledge" in result.reason
+
+
+# ---------------------------------------------------------------------------
+# f1-nonknowledge-narrow：发布稿含机制可放行；纯新闻/融资/recap/无机制营销仍拒
+# ---------------------------------------------------------------------------
+
+
+def _capture_unified_system_prompt(body: str = "# Loop\n\nNamed component A interacts with B.") -> str:
+    """跑一次 unified 判定并返回 system prompt（不打真 API）。"""
+    from src.akb2.quality.admission import _run_unified_admission
+
+    captured: list[str] = []
+
+    def _mock(model_family, messages, response_schema=None, **kwargs):
+        captured.append(messages[0]["content"] if messages else "")
+        return LLMResponse(
+            content={
+                "topic_pass": True,
+                "lane": LANE_CONCEPT,
+                "non_knowledge": False,
+                "mechanism_pass": True,
+                "how_pass": True,
+                "reason": "mock capture",
+            },
+            model_used="deepseek-v4-pro",
+        )
+
+    _run_unified_admission(body, _mock)
+    assert captured, "unified 判定应发出一次 LLM 调用"
+    return captured[0]
+
+
+class TestNonKnowledgeNarrowPrompt:
+    """锁 unified system prompt：收窄 non_knowledge，且不破坏 conftest/f13 mock 识别词。"""
+
+    def test_unified_prompt_keeps_conftest_mock_markers_for_non_knowledge(self):
+        """改 prompt 后仍含 conftest lane 识别词「主要意图」与 f13 识别词「机制」。"""
+        sp = _capture_unified_system_prompt()
+        assert "主要意图" in sp, "conftest make_mock_route_llm 靠「主要意图」走 lane 分支"
+        assert "机制" in sp, "test_f13_lead_fixes mock 靠「机制」走 mechanism 分支"
+
+    def test_unified_prompt_release_with_mechanism_is_not_non_knowledge(self):
+        """产品/模型发布稿若含 ≥3 可命名机制组件或可执行配置/代码 → concept/tutorial 放行。"""
+        sp = _capture_unified_system_prompt()
+        assert "产品/模型发布稿" in sp
+        assert "≥3" in sp
+        assert "可命名机制组件" in sp
+        assert "可执行配置" in sp
+        assert "concept" in sp and "tutorial" in sp
+        # 旧口径把「产品发布公告」一律 reject / how_pass 不算；收窄后不得再无例外一票拒。
+        assert "产品发布公告" not in sp
+
+    def test_unified_prompt_pure_news_funding_recap_marketing_still_non_knowledge(self):
+        """纯新闻/融资/会议 recap/无机制营销仍一票拒。"""
+        sp = _capture_unified_system_prompt()
+        assert "纯新闻" in sp
+        assert "融资" in sp
+        assert "会议 recap" in sp
+        assert "无机制营销" in sp
+        assert "true 仅当是纯新闻/融资/会议 recap/无机制营销/纯观点" in sp
+
+    def test_conftest_lane_mock_still_rejects_pure_news_as_non_knowledge(
+        self, tmp_path: Path
+    ):
+        """conftest mock 仍因「主要意图」命中 lane 分支，纯新闻走 reject 一票拒。"""
+        from tests.quality.conftest import make_mock_route_llm
+
+        mock = make_mock_route_llm(
+            {
+                "lane": LLMResponse(
+                    content={
+                        "content_lane": "reject",
+                        "reason": "mock: 纯新闻播报，非知识",
+                    },
+                    model_used="gemini-2.5-flash",
+                    calls_used=1,
+                ),
+            }
+        )
+        result = run_admission(
+            raw_path="raw/google-io-recap--raw--2026-08-20.md",
+            raw_content="# Conference Recap\n\nFunding news and a product launch recap.",
+            ledger_path=str(tmp_path / "ledger.jsonl"),
+            route_llm_fn=mock,
+        )
+        assert result.passed is False
+        assert (
+            "non_knowledge" in result.reason
+            or "no_mechanism_signal" in result.reason
+        ), result.reason
