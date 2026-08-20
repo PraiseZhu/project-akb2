@@ -52,8 +52,10 @@ LANE_PATTERN: str = "pattern"
 LANE_DESIGN: str = "design"
 # 兼容别名：旧契约的 procedural 车道值。仅作输入归一化，不作为输出终值。
 LANE_PROCEDURAL: str = "procedural"
-# P0-c：非知识出口。新闻播报/产品发布/营销/纯观点既不讲机制也不教操作，
-# LLM 判 reject → 直接拒收（不混进通过态 content_lane，下游不下传 reject）。
+# P0-c：非知识出口。纯新闻播报/融资/会议 recap/无机制营销/纯观点既不讲机制
+# 也不教操作，LLM 判 reject → 直接拒收（不混进通过态 content_lane，下游不下传
+# reject）。产品/模型发布稿若含 ≥3 可命名机制组件或可执行配置/代码，按
+# concept/tutorial 放行，不因体裁一律 reject。
 # 堵 lane 放松后"新闻被判 concept → how_tendency 豁免 → 溜过准入"的后门。
 # P3 重构：reject 直接拒收（holds「LANE_REJECT 仍直接拒收」），D11 降级机制删除。
 LANE_REJECT: str = "reject"
@@ -611,6 +613,9 @@ def _run_unified_admission(body: str, route_llm_fn: Any) -> dict[str, Any]:
     make_mock_route_llm 与 test_f13_lead_fixes）：
         - 含「主要意图」：conftest mock 的 lane 分支识别词
         - 含「机制」：f13 mock 的 mechanism 分支识别词
+    non_knowledge 收窄（f1-nonknowledge-narrow）：产品/模型发布稿若含 ≥3 可命名
+    机制组件或可执行配置/代码 → non_knowledge=false，按 concept/tutorial 放行；
+    纯新闻/融资/会议 recap/无机制营销仍一票拒。
     """
     from src.akb2.quality.llm_router import RouterConfigError
 
@@ -653,16 +658,21 @@ def _run_unified_admission(body: str, route_llm_fn: Any) -> dict[str, Any]:
                 "即便夹叙夹议也算）；"
                 "pattern（提炼可复用模式/最佳实践/反模式集合）；"
                 "design（设计呈现/设计决策/视觉与交互方案）；"
-                "reject（新闻播报/产品发布公告/会议 recap/融资动态/营销软文/纯观点，"
-                "既不讲机制也不教操作）。不得为二选一硬塞 concept。\n"
-                "- non_knowledge: 是否属于非知识内容（新闻/营销/recap/纯观点），"
-                "true 则一票拒收。\n"
+                "reject（纯新闻播报/融资动态/会议 recap/无机制营销软文/纯观点，"
+                "既不讲机制也不教操作）。产品/模型发布稿若含 ≥3 个可命名机制组件"
+                "或可执行配置/代码，按 concept 或 tutorial 放行，不得因「发布稿」体裁"
+                "一律 reject。不得为二选一硬塞 concept。\n"
+                "- non_knowledge: 是否属于非知识内容；true 则一票拒收。"
+                "true 仅当是纯新闻/融资/会议 recap/无机制营销/纯观点。"
+                "产品/模型发布稿若含 ≥3 个可命名机制组件或可执行配置/代码 → false，"
+                "并按 concept/tutorial 车道放行；不得因体裁是发布稿一律 true。\n"
                 "- mechanism_pass: 正文中是否存在可提炼的机制信号——即能否抽出 ≥3 个"
                 "原文命名的机制组件（架构部件/流程阶段/算法步骤/协议层）及因果/交互证据。"
                 "组件散布正文任意处即算；营销收益清单（faster/better 式因果词堆叠）不构成"
                 "机制。纯政策/新闻/观点判 false。\n"
                 "- how_pass: 是否包含可执行 how-to 知识（具体步骤/代码示例/命令/配置模板/"
-                "工作流）。纯新闻、观点评论、产品发布公告不算。\n"
+                "工作流）。纯新闻、观点评论、无机制营销不算；发布稿若含可执行配置/代码"
+                "可判 true。\n"
                 "- reason: 判定理由，最多 150 字符。\n"
                 "输出 JSON: {\"topic_pass\": ..., \"lane\": \"concept|tutorial|pattern|"
                 "design|reject\", \"non_knowledge\": ..., \"mechanism_pass\": ..., "
