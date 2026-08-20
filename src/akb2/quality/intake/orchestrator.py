@@ -248,6 +248,8 @@ def _process_article(
         feed_published=article.published_at or "",
         url=article.url,
         content_hash=article.content_hash,
+        prefetched_content=getattr(article, "prefetched_content", "") or "",
+        prefetched_via=getattr(article, "prefetched_via", "") or "",
     )
 
     extract_result = extract_content(
