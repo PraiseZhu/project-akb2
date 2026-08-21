@@ -54,6 +54,7 @@ from src.akb2.quality.intake.x_account_discovery import (
     discover_x_account_articles,
     first_external_url,
     resolve_x_handles,
+    x_account_discovery,
 )
 
 # ---------------------------------------------------------------------------
@@ -579,6 +580,11 @@ _REEXPORT_NAMES = (
     "HARD_FAILURE_BAD_OUTPUT",
     "_twitter_cli_to_akb2",
 )
+
+
+def test_orchestrator_import_name_is_discover_alias() -> None:
+    """orchestrator 延迟 import x_account_discovery，必须接到真正的发现函数。"""
+    assert x_account_discovery is discover_x_account_articles
 
 
 def test_shared_constants_reexport_identity() -> None:

@@ -144,10 +144,9 @@ jobs:
   - label: com.akb2.intake-twitter
     template: launchd/com.akb2.intake-twitter.plist
     installed: ~/Library/LaunchAgents/com.akb2.intake-twitter.plist
-    installer: scripts/bootstrap_intake_launchd.sh
-    should_load: false
-    pending_human_install: true
-    pending_since: 2026-08-20
+    installer: scripts/bootstrap_launchd.sh
+    should_load: true
+    pending_human_install: false
     expected_schedule:
       kind: interval
       seconds: 900
