@@ -98,7 +98,7 @@ gmssl==3.2.2
 google-api-core==2.30.0
 google-api-python-client==2.192.0
 google-auth==2.49.1
-google-auth-httplib2==0.3.0
+google-auth-httplib2==0.4.1
 googleapis-common-protos==1.73.0
 greenlet==3.5.1
 h11==0.16.0
