@@ -49,6 +49,8 @@ related_concepts:
   - c2
 ---
 
+# Test Article
+
 ## TLDR
 test [raw §A]
 

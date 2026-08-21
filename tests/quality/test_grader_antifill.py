@@ -237,6 +237,8 @@ related_concepts:
   - agent-collaboration
 ---
 
+# Loop Engineering
+
 ## TLDR
 Loop Engineering: bounded, convergent, observable agent loops [raw §A].
 Five-component template for loop design [raw §B].

@@ -315,9 +315,10 @@ def test_unauthenticated_is_global():
     assert exc.value.kind == "not_authenticated"
 
 
-def test_run_probe_global_fail_does_not_mark_remaining_suspended():
+def test_run_probe_global_fail_does_not_mark_remaining_suspended(monkeypatch):
     handles = ["a", "b", "c"]
     calls: list[str] = []
+    monkeypatch.setattr(smoke.shutil, "which", lambda name: "/usr/local/bin/twitter")
 
     def _run(cmd, **kwargs):
         if cmd[1] == "status":
@@ -345,8 +346,9 @@ def test_run_probe_global_fail_does_not_mark_remaining_suspended():
     assert calls == ["a"]
 
 
-def test_pacing_sleeps_at_least_default_between_accounts():
+def test_pacing_sleeps_at_least_default_between_accounts(monkeypatch):
     slept: list[float] = []
+    monkeypatch.setattr(smoke.shutil, "which", lambda name: "/usr/local/bin/twitter")
 
     def _run(cmd, **kwargs):
         if cmd[1] == "status":

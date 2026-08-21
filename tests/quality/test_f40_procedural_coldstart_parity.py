@@ -83,8 +83,8 @@ class TestProceduralColdstartParity:
             assert _related_defects(defects) == [], lane
 
     def test_empty_lane_not_exempted(self) -> None:
-        """未知车道不吃豁免(fail-closed:豁免只给两条已知车道)。"""
+        """空车道在 proposal 下仍走冷启动替代（车道无关），不得因 related=[] 拒。"""
         text = _candidate("[]", _PROPOSED)
         defects = check_a2_frontmatter(
             text, content_lane="", promotion_mode="proposal")
-        assert len(_related_defects(defects)) == 1
+        assert _related_defects(defects) == []
