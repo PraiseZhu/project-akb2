@@ -137,6 +137,7 @@ def test_admission_pass_path_exposes_lane_reason(tmp_path: Path) -> None:
     assert result.passed is True, f"pass 场景应通过准入: {result.reason}"
     assert result.lane_reason, "pass 路径 lane_reason 应非空（不止 reject 可见）"
     assert "mock concept 车道" in result.lane_reason
+    assert result.topic_borderline is False
 
 
 def test_admission_abort_path_exposes_lane_reason(tmp_path: Path) -> None:
@@ -153,6 +154,14 @@ def test_admission_abort_path_exposes_lane_reason(tmp_path: Path) -> None:
     )
     assert result.passed is False, "reject 场景应拒收"
     assert result.lane_reason, "abort 路径 lane_reason 应非空（每篇可读）"
+
+
+def test_admission_result_exposes_topic_borderline_bool() -> None:
+    """AdmissionResult.topic_borderline 是二值观测字段。"""
+    from src.akb2.quality.admission import AdmissionResult
+
+    assert _has_field(AdmissionResult, "topic_borderline")
+    assert AdmissionResult(passed=True).topic_borderline is False
 
 
 # ---------------------------------------------------------------------------

@@ -157,7 +157,12 @@ class TestExtractRetry:
         """MAX_EXTRACT_RETRIES 是具名常量（宪法 P1/P4）。"""
         assert isinstance(MAX_EXTRACT_RETRIES, int)
         assert MAX_EXTRACT_RETRIES > 0
-        assert MAX_EXTRACT_RETRIES == 3
+        assert MAX_EXTRACT_RETRIES == 1
+        from src.akb2.quality import distill as distill_mod
+
+        assert distill_mod.EXTRACT_QUALITY_RETRY_CONCEPT == 0
+        src = Path(distill_mod.__file__).read_text(encoding="utf-8")
+        assert "MAX_EXTRACT_RETRIES=3" not in src
 
     def test_extract_uses_deepseek_model(
         self, sample_raw_content, extract_success_response

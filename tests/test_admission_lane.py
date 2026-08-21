@@ -478,8 +478,8 @@ class TestClassifierCases:
         assert "non_knowledge" in result.reason
         assert result.content_lane == ""
 
-    def test_topic_fail_rejects_all_lanes(self, tmp_path: Path) -> None:
-        """topic_pass=false 全车道拒收（领域硬门，车道不豁免）。"""
+    def test_topic_fail_observes_all_lanes(self, tmp_path: Path) -> None:
+        """topic_pass=false 单独不拒；机制/车道仍过则观察放行。"""
         ledger = str(tmp_path / "ledger.jsonl")
         for body, lane in (
             (_CONCEPT_BODY, LANE_CONCEPT),
@@ -491,8 +491,9 @@ class TestClassifierCases:
                 ledger_path=ledger,
                 route_llm_fn=_unified_llm(lane, topic_pass=False),
             )
-            assert result.passed is False, f"{lane} topic fail 应拒收"
-            assert "topic_relevance" in result.reason
+            assert result.passed is True, f"{lane} 单独 topic fail 应观察放行: {result.reason}"
+            assert "topic_relevance" not in result.reason
+            assert result.topic_borderline is True
 
 
 # ---------------------------------------------------------------------------

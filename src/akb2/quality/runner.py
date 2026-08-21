@@ -429,8 +429,20 @@ _INFRA_ERROR_MARKERS: tuple[str, ...] = (
 )
 
 
+_CONTENT_ERROR_PREFIXES: tuple[str, ...] = (
+    "compose_self_gate_failed",
+    "compose_self_gate_error",
+    "SG-how-density",
+    "SG-command-recheck",
+)
+
+
 def _is_infra_error(error_text: str) -> bool:
     t = str(error_text or "")
+    # compose / self-gate 内容失败前缀优先：即使包装串含「调用超时」等 infra
+    # 子串，也按 content 终态，不得整段 any(m in t) 误判进 F39 重掷。
+    if any(t.startswith(p) or f"{p}:" in t or f"{p} " in t for p in _CONTENT_ERROR_PREFIXES):
+        return False
     return any(m in t for m in _INFRA_ERROR_MARKERS)
 
 
@@ -875,9 +887,8 @@ def _classify_distill_error(error_detail: str) -> str:
 
 
 def _extract_max_attempts(content_lane: str) -> int:
-    """F60 r3(Sol 终审):attempt 上限按车道求真——concept 有 F32 质量重试 +1
-    (校验重试 3 + 质量重试 1 = 4),procedural/未知车道 3。旧版恒写 3 会出现
-    retries_used=4 > extract_max_attempts=3 的账本自相矛盾。"""
+    """attempt 上限 = MAX_EXTRACT_RETRIES +（concept 时的质量重试）。
+    漏斗三刀后 MAX=1、QUALITY=0，全车道都是 1 次即弃。"""
     extra = (
         _dst.EXTRACT_QUALITY_RETRY_CONCEPT
         if str(content_lane or "").strip().lower() == "concept"
@@ -895,9 +906,8 @@ def _distill_abort_details(
     """distill abort 的统一 details。
 
     Sol 审 r2/r3 P1-3:两层重试语义必须分列——provider_max_retries 是 SDK 层
-    (恒 0),extract_max_attempts 是外层 attempt 预算(lane 感知:concept=4 含
-    F32 质量重试,其余=3,见 _extract_max_attempts);旧字段名 max_retries=0
-    会让人误读成"无重试"。worker_timeout_s 是按文长解析后的实际子进程上限。
+    (恒 0),extract_max_attempts 是外层 attempt 预算（见 _extract_max_attempts）；
+    旧字段名 max_retries=0 会让人误读成"无重试"。worker_timeout_s 是按文长解析后的实际子进程上限。
     """
     details = {
         "error": error_detail,
@@ -1155,7 +1165,7 @@ def _run_admission_segment(
     wiki_references: list[str] | None = None,
     index_status: str = LANE_INDEX_STATUS_OK,
     content_hash: str = "",
-) -> tuple[bool, str, list, str, str]:
+) -> tuple[bool, str, list, str, str, bool]:
     """段 2: 准入判定（Decision-2：装载 vault wiki_references 喂 novelty）。
 
     wiki_references 由 pipeline 经 _load_vault_concept_index 装载传入；novelty 在生产
@@ -1194,6 +1204,7 @@ def _run_admission_segment(
             [],
             "",
             "",
+            False,
         )
 
     result = run_admission(
@@ -1202,7 +1213,14 @@ def _run_admission_segment(
         ledger_path=config.ledger_path,
         wiki_references=wiki_references,
     )
-    return result.passed, result.reason, result.checks, result.content_lane, result.lane_reason
+    return (
+        result.passed,
+        result.reason,
+        result.checks,
+        result.content_lane,
+        result.lane_reason,
+        bool(getattr(result, "topic_borderline", False)),
+    )
 
 
 def _raw_anchor_set(raw_content: str) -> set[str]:
@@ -2125,6 +2143,7 @@ def _run_pipeline_segments(
     admission_checks = admission_ret[2] if len(admission_ret) > 2 else []
     content_lane = admission_ret[3] if len(admission_ret) > 3 else ""
     lane_reason = admission_ret[4] if len(admission_ret) > 4 else ""
+    topic_borderline = admission_ret[5] if len(admission_ret) > 5 else False
     if not passed:
         # F54: 归因 + 重审。探测串并入逐项 check.reason（底层 400/超时原文只在那里），
         # 否则上游故障永远被写成内容拒绝、且 F39 不重审（连续 6 天零入库根因）。
@@ -2150,8 +2169,18 @@ def _run_pipeline_segments(
             "error_class": error.split(":", 1)[1].strip() if ":" in error else "admission",
         }
 
-    _log_event(config, "admission", "admission", content_hash,
-               {"passed": True, "content_lane": content_lane, "lane_reason": lane_reason})
+    _log_event(
+        config,
+        "admission",
+        "admission",
+        content_hash,
+        {
+            "passed": True,
+            "content_lane": content_lane,
+            "lane_reason": lane_reason,
+            "topic_borderline": bool(topic_borderline),
+        },
+    )
 
     # Segment 3-4: 提炼
     _log_event(

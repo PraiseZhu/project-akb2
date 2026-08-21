@@ -331,7 +331,7 @@ class TestRunnerLifelineSegments:
                     None,
                     {
                         "failed_node": "distill_extract",
-                        "retries_used": 3,
+                        "retries_used": 1,
                         "maker_fallback_used": False,
                     },
                 )
@@ -358,10 +358,12 @@ class TestRunnerLifelineSegments:
         ]
         assert distill_starts
         assert aborts
-        # F60 r2(Sol 审 P1-3):两层重试分列——provider(SDK)=0 / outer attempts=3
+        # 两层重试分列：provider(SDK)=0 / outer attempts=MAX_EXTRACT_RETRIES（一次即弃=1）
+        from src.akb2.quality.distill import MAX_EXTRACT_RETRIES as _MAX
+
         assert aborts[-1]["details"]["provider_max_retries"] == 0
-        assert aborts[-1]["details"]["extract_max_attempts"] == 3
-        assert aborts[-1]["details"]["retries_used"] == 3
+        assert aborts[-1]["details"]["extract_max_attempts"] == _MAX
+        assert aborts[-1]["details"]["retries_used"] == 1
         assert not any(r.get("event") in {"grade_llm", "promote", "finalize"} for r in rows)
 
     def test_distill_worker_timeout_stops_chain(
@@ -1263,3 +1265,33 @@ class TestRegradeSampleRejectsDegradedGrader:
             f"promote failure 应 final_status=promotion_blocked, got {result['final_status']}"
         )
         assert result["promotion_outcome"] == "promotion_blocked"
+
+
+def test_compose_self_gate_prefix_is_not_infra() -> None:
+    """compose_self_gate_* / SG-how-density / SG-command-recheck 前缀优先，不进 F39。"""
+    from src.akb2.quality.runner import (
+        _INFRA_ERROR_MARKERS,
+        FAILURE_KIND_CONTENT,
+        _classify_failure_kind,
+        _is_infra_error,
+    )
+
+    content_cases = [
+        "compose_self_gate_failed",
+        "compose_self_gate_failed: dummy",
+        "compose_self_gate_error: x",
+        "compose_self_gate_failed: 调用超时",
+        "SG-how-density@操作步骤: 2<3",
+        "SG-command-recheck@正文: fabricated",
+    ]
+    for case in content_cases:
+        assert _is_infra_error(case) is False, case
+        assert _classify_failure_kind(case) == FAILURE_KIND_CONTENT, case
+    for marker in _INFRA_ERROR_MARKERS:
+        assert marker not in {
+            "compose_self_gate_failed",
+            "compose_self_gate_error",
+            "SG-how-density",
+            "SG-command-recheck",
+        }
+    assert _is_infra_error("extract_worker_timeout") is True

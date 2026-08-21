@@ -7,7 +7,8 @@ LLM 调用收成**一次**结构化判定（topic+lane+non_knowledge 一票出�
 预算强制是 llm_router 侧 sc-p3-max-calls-enforced 的独立不变式）。
 
 判定结构（每项二值，无连续分数）：
-    1. 主题相关性（topic_pass）— 领域 taxonomy 锚点命中，全车道硬门
+    1. 主题相关性（topic_pass）— 领域 taxonomy 锚点命中，checks 观测；
+       单独 fail 不拒（topic_borderline=True 放行），由 grader 适用边界压分
     2. How 倾向（how_pass）— 仅 tutorial 车道拒收门（sc-p3-lane-scoped-gates）
     3. 新颖度 — 纯确定性：exact slug/url 匹配拒（洗稿），lexical top-k 近邻
        仅作 reason 记录（不再打 LLM）
@@ -230,6 +231,9 @@ class AdmissionResult:
     # P1 语义审计的逐篇可读 trace（spec FR-008 / 宪法 P4 失败可见）。仅观测字段，
     # 不参与判定（lane 判定仍由 content_lane/lane_failed/lane_rejected 驱动）。
     lane_reason: str = ""
+    # topic_borderline：passed=True 且 topic_relevance check 未过时为 True。
+    # 二值观测，不参与拒收合取，不引入连续分。拒收路径恒 False。
+    topic_borderline: bool = False
     # P3 重构：D11 lane reject 二次确认已删除（holds「LANE_REJECT 仍直接拒收」）。
     # 字段保留恒默认 False/空——dataclass 消费方（runner/ledger/calibration）
     # 契约不破，后续波次统一清理。
@@ -298,6 +302,7 @@ def run_admission(
         return AdmissionResult(
             passed=False, checks=checks, reason=reason,
             content_lane="", lane_reason=lane_reason,
+            topic_borderline=False,
         )
 
     # 3. 单次结构化判定（topic + lane + non_knowledge + mechanism + how 一票出）。
@@ -342,6 +347,8 @@ def run_admission(
     def _check_counts_for_admission(c: AdmissionCheck) -> bool:
         if c.name == "how_tendency" and content_lane != LANE_TUTORIAL and not lane_failed:
             return True  # 非 tutorial 车道：how_tendency 不作拒收门
+        if c.name == "topic_relevance" and not lane_failed:
+            return True  # topic 单独 fail 不拒；lane_failed 时不豁免
         return c.passed
 
     all_checks_pass = all(_check_counts_for_admission(c) for c in checks)
@@ -372,6 +379,10 @@ def run_admission(
             lane_reason=lane_reason,
         )
 
+    topic_borderline = bool(
+        all_passed
+        and any(c.name == "topic_relevance" and not c.passed for c in checks)
+    )
     return AdmissionResult(
         passed=all_passed,
         checks=checks,
@@ -381,6 +392,7 @@ def run_admission(
         # lane_reason 全路径透出（pass/reject/fail 均可见，不止 reject），
         # 供 runner 落 ledger 做 P1 语义审计逐篇可读 trace。仅观测，不参与判定。
         lane_reason=lane_reason,
+        topic_borderline=topic_borderline,
     )
 
 
@@ -598,7 +610,7 @@ def _run_unified_admission(body: str, route_llm_fn: Any) -> dict[str, Any]:
     """单次结构化判定（sc-p3-single-llm-call）：topic+lane+non_knowledge 一票出。
 
     一次 route_llm 调用同时裁决：
-        - topic_pass：领域 taxonomy 锚点命中（全车道硬门）
+        - topic_pass：领域 taxonomy 锚点命中（checks 观测，单独 fail 不拒）
         - lane：concept / tutorial（procedural 别名归一） / pattern / design / reject
         - non_knowledge：非知识一票拒
         - mechanism_pass：机制信号存在性（仅 concept 车道消费）

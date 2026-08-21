@@ -58,27 +58,35 @@ def _mk_llm(comp_seq: list[int], calls: list) -> object:
 
 
 def test_budget_named_and_bounded() -> None:
-    assert EXTRACT_QUALITY_RETRY_CONCEPT == 1
+    assert EXTRACT_QUALITY_RETRY_CONCEPT == 0
 
 
 def test_concept_low_components_retries_once(sample_raw_content) -> None:
-    """首轮 2 组件 → 重抽 → 次轮 4 组件被接受(how_steps 调 2 次)。"""
+    """质量重试已关：2 组件不再重抽，走 lane_demotion（不编造到 4）。"""
     calls: list = []
     r = extract_claims(sample_raw_content, route_llm_fn=_mk_llm([2, 4], calls),
                        content_lane="concept")
-    assert r.success is True
-    assert len(r.data["mechanism_components"]) == 4
-    assert calls.count("how_steps") == 2
+    assert calls.count("how_steps") == 1
+    if r.success:
+        assert r.data.get("content_lane") != "concept" or len(r.data["mechanism_components"]) >= 3
+        if r.data.get("lane_demotion"):
+            assert r.data["lane_demotion"]["to"] in ("pattern", "tutorial")
+            assert len(r.data["mechanism_components"]) == 2
+    else:
+        assert r.data.get("fallback_quality_basis", {}).get("component_count", 2) < 3
 
 
 def test_budget_exhausted_returns_as_is_failclosed_downstream(sample_raw_content) -> None:
-    """预算尽仍 2 组件 → 原样返回(不无限重试;F4 在下游照拦,阈值不动)。"""
+    """QUALITY=0：2 组件只抽 1 次，降级或 abort，不再第二次 how_steps。"""
     calls: list = []
     r = extract_claims(sample_raw_content, route_llm_fn=_mk_llm([2, 2], calls),
                        content_lane="concept")
-    assert r.success is True
-    assert len(r.data["mechanism_components"]) == 2
-    assert calls.count("how_steps") == 2  # 1 首轮 + 1 质量重试,不再多
+    assert calls.count("how_steps") == 1
+    if r.success:
+        assert len(r.data["mechanism_components"]) == 2
+        assert r.data.get("lane_demotion", {}).get("to") in ("pattern", "tutorial")
+    else:
+        assert r.data.get("fallback_quality_basis", {}).get("component_count", 2) < 3
 
 
 def test_procedural_lane_not_triggered(sample_raw_content) -> None:

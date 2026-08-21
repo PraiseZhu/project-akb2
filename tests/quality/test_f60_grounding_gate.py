@@ -497,23 +497,27 @@ GHES requires a dedicated runner group for policy enforcement decisions.
 
     def test_abort_details_budget_fields_truthful(self):
         # r2 P1-3: 两层重试分列 + worker cap 真值入账本
+        from src.akb2.quality.distill import MAX_EXTRACT_RETRIES
         from src.akb2.quality.runner import _distill_abort_details
 
         d = _distill_abort_details("x", "distill_extract", worker_timeout_s=510.0)
         assert d["provider_max_retries"] == 0
-        assert d["extract_max_attempts"] == 3
+        assert d["extract_max_attempts"] == MAX_EXTRACT_RETRIES
         assert d["worker_timeout_s"] == 510.0
         assert "max_retries" not in d
 
     def test_extract_max_attempts_lane_aware(self):
-        # r3 P1-3: concept 有 F32 质量重试 +1 → 4;恒写 3 会出现 used>max 矛盾
+        from src.akb2.quality.distill import (
+            EXTRACT_QUALITY_RETRY_CONCEPT,
+            MAX_EXTRACT_RETRIES,
+        )
         from src.akb2.quality.runner import _distill_abort_details, _extract_max_attempts
 
-        assert _extract_max_attempts("concept") == 4
-        assert _extract_max_attempts("procedural") == 3
-        assert _extract_max_attempts("") == 3
+        assert _extract_max_attempts("concept") == MAX_EXTRACT_RETRIES + EXTRACT_QUALITY_RETRY_CONCEPT
+        assert _extract_max_attempts("procedural") == MAX_EXTRACT_RETRIES
+        assert _extract_max_attempts("") == MAX_EXTRACT_RETRIES
         d = _distill_abort_details("x", "distill_extract", content_lane="concept")
-        assert d["extract_max_attempts"] == 4
+        assert d["extract_max_attempts"] == MAX_EXTRACT_RETRIES + EXTRACT_QUALITY_RETRY_CONCEPT
 
 
 class TestSolReviewRound3:

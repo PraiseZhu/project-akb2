@@ -2,7 +2,7 @@
 
 段 1（结构化抽取）:
     raw → {claims[带 raw §X 锚点], how_steps, params, referenced_concepts} JSON
-    jsonschema 校验失败 → 有界重试（MAX_EXTRACT_RETRIES=3）
+    jsonschema 校验失败 → 有界重试（MAX_EXTRACT_RETRIES=1，一次即弃）
     耗尽 → 显式失败不出候选
 
 段 2（成稿）:
@@ -58,11 +58,11 @@ from src.akb2.quality.source_ops_scanners.raw_verify import (
 # 具名常量（宪法 P1/P4）
 # ---------------------------------------------------------------------------
 
-MAX_EXTRACT_RETRIES: int = 3
+MAX_EXTRACT_RETRIES: int = 1
 # F32: concept 车道抽取质量重试(+1,具名有界)。第八轮实锤:同一篇 SW 提炼
 # 产出在 2 与 9 组件间掷骰子;<3 组件下游 F4 必死,当场重抽一次把废轮救回。
 # 不碰 F4 阈值(仍 CONCEPT_MIN=3 由 floor 硬判);预算独立于 MAX_EXTRACT_RETRIES。
-EXTRACT_QUALITY_RETRY_CONCEPT: int = 1
+EXTRACT_QUALITY_RETRY_CONCEPT: int = 0
 _CONCEPT_MIN_COMPONENTS_FOR_RETRY: int = 3  # 与 integrity_floor.CONCEPT_MIN 同语义
 # 截断保护：raw 喂给抽取的字符上限（旧截断阈值过小，截掉 §D-§J 约 53% 正文；
 # 提到具名常量并放大到 50k，避免裸魔数 + 减少截断失真）
@@ -702,14 +702,15 @@ def extract_claims(
 ) -> ExtractResult:
     """段 1: raw → 结构化 JSON 抽取。
 
-    有界重试（MAX_EXTRACT_RETRIES=3），jsonschema 校验。
+    有界重试（MAX_EXTRACT_RETRIES=1，一次即弃），jsonschema 校验。
     耗尽 → 显式失败，不出候选。
 
     Args:
         raw_content: raw 文件全文内容。
         route_llm_fn: LLM 路由函数注入（fixture 测试用）。
-        content_lane: 内容车道（concept/procedural，step-1 透传字段）。本 step 仅
-            透传给 _validate_extract_output、行为不变；lane-aware 改判属 step-3。
+        content_lane: 内容车道（concept / tutorial / pattern / design；procedural
+            别名归一为 tutorial）。抽取成功返回前，concept 且组件不足走
+            _maybe_demote_concept_lane（禁无 demotion 的 <3 组件 concept 放行）。
 
     Returns:
         ExtractResult: 含 success / data / retries_used / error。
@@ -805,7 +806,8 @@ def extract_claims(
                 )
             continue
 
-        # F32: concept 车道组件 <3 → 下游 F4 必死;预算内当场重抽一次(方差减震)。
+        # F32: concept 车道组件 <3 不再质量重抽（EXTRACT_QUALITY_RETRY_CONCEPT=0）。
+        # 1-2 组件走主路径 lane_demotion；0 组件无 how/pattern 信号则 abort。
         _comp_n = len(merged.get("mechanism_components") or [])
         if (
             str(content_lane or "").strip().lower() == "concept"
@@ -814,6 +816,38 @@ def extract_claims(
         ):
             _quality_retries_used += 1
             continue
+
+        if _is_concept_lane(content_lane):
+            basis = _build_fallback_quality_basis(merged)
+            # 仅组件不足走降级；≥3 组件但 0 eligible edge 交给下游 F4，不在 extract 提前毙。
+            if basis["component_count"] < CONCEPT_MIN_MECHANISM_COMPONENTS:
+                demoted = _maybe_demote_concept_lane(
+                    merged, raw_content, basis, raw_path=""
+                )
+                if demoted is not None:
+                    demoted.retries_used = attempt
+                    demoted.diagnostics = {
+                        "components_evidence_backfilled": _norm_diag.get(
+                            "components_evidence_backfilled", 0
+                        ),
+                        "components_evidence_unlocated": _norm_diag.get(
+                            "components_evidence_unlocated", 0
+                        ),
+                        "components_filtered": _norm_diag.get("components_filtered", 0),
+                    }
+                    return demoted
+                return ExtractResult(
+                    success=False,
+                    data={"fallback_quality_basis": basis},
+                    retries_used=attempt,
+                    error=(
+                        f"concept extract fail-closed: "
+                        f"{basis['component_count']} 组件 / "
+                        f"{basis['source_causal_edge_count']} eligible 因果边 "
+                        f"（需 ≥{CONCEPT_MIN_MECHANISM_COMPONENTS} 组件；"
+                        "无可执行步/可复用模式，车道降级失败）"
+                    ),
+                )
 
         return ExtractResult(
             success=True,
@@ -5108,9 +5142,10 @@ def _maybe_demote_concept_lane(
     *,
     raw_path: str = "",
 ) -> ExtractResult | None:
-    """concept 0组件/0因果边：先 tutorial（≥3 可执行步），再 pattern（可复用模式）。
+    """concept 组件不足：先 tutorial（≥3 可执行步），再 pattern。
 
-    不为凑数编造组件。降级成功返回 ExtractResult；两边都不满足返回 None 由调用方 abort。
+    1≤component_count<CONCEPT_MIN 即使无 pattern wording 也降 pattern（不编造组件）。
+    0 组件且无 how/pattern 信号返回 None，由调用方 abort。禁降回 concept。
     """
     executable = _count_executable_how_steps(data, raw_content)
     if executable >= HOW_STEPS_MIN_EXECUTABLE:
@@ -5128,12 +5163,20 @@ def _maybe_demote_concept_lane(
             basis=basis,
         )
         return ExtractResult(success=True, data=data, retries_used=0)
-    if _has_reusable_pattern_signal(raw_content, data):
+    component_count = int(basis.get("component_count") or 0)
+    if _has_reusable_pattern_signal(raw_content, data) or (
+        1 <= component_count < CONCEPT_MIN_MECHANISM_COMPONENTS
+    ):
+        reason = (
+            f"{component_count} named components < {CONCEPT_MIN_MECHANISM_COMPONENTS}"
+            if 1 <= component_count < CONCEPT_MIN_MECHANISM_COMPONENTS
+            else "reusable pattern wording in source"
+        )
         data["content_lane"] = CONTENT_LANE_PATTERN
         data["lane_demotion"] = {
             "from": CONTENT_LANE_CONCEPT,
             "to": CONTENT_LANE_PATTERN,
-            "reason": "reusable pattern wording in source",
+            "reason": reason,
         }
         _record_lane_demotion(
             from_lane=CONTENT_LANE_CONCEPT,
@@ -5563,11 +5606,40 @@ def compose_candidate(
     candidate_filename = f"{slug}.md"
     candidate_path = os.path.join(output_dir, candidate_filename)
 
-    # 车道降级（t1）可能把 extract_data.content_lane 改成 tutorial/pattern；
+    # 车道降级可能把 extract_data.content_lane 改成 tutorial/pattern；
     # compose 必须跟抽取终值走，否则 frontmatter/self-gate 仍按 concept 卡组件。
     content_lane = str(
         extract_result.data.get("content_lane") or content_lane or ""
     )
+
+    # raw_content 同源读取：must_cover 扫描与 self-gate A3 锚点校验共用同一份原文。
+    if raw_content is None:
+        try:
+            raw_content = Path(raw_path).read_text(encoding="utf-8")
+        except OSError:
+            raw_content = None
+
+    # tutorial 命令不足：只降 pattern（禁降 concept，防 F4 地板致死环）。
+    if _normalize_content_lane(content_lane) == CONTENT_LANE_TUTORIAL:
+        how_n = _count_executable_how_steps(extract_result.data, raw_content or "")
+        if 1 <= how_n < HOW_STEPS_MIN_EXECUTABLE:
+            extract_result.data["content_lane"] = CONTENT_LANE_PATTERN
+            extract_result.data["lane_demotion"] = {
+                "from": CONTENT_LANE_TUTORIAL,
+                "to": CONTENT_LANE_PATTERN,
+                "reason": (
+                    f"{how_n} executable how_steps < {HOW_STEPS_MIN_EXECUTABLE}; "
+                    "demote to pattern (never concept)"
+                ),
+            }
+            _record_lane_demotion(
+                from_lane=CONTENT_LANE_TUTORIAL,
+                to_lane=CONTENT_LANE_PATTERN,
+                reason=extract_result.data["lane_demotion"]["reason"],
+                raw_path=raw_path,
+                basis={"component_count": how_n, "source_causal_edge_count": 0},
+            )
+            content_lane = CONTENT_LANE_PATTERN
 
     # 构建 frontmatter（确定性代码写死，防范已知坑 1-3）
     # WP-3.4: 透传 known_concepts/pending_queue 给 _build_frontmatter，使 frontmatter
@@ -5592,17 +5664,6 @@ def compose_candidate(
                 "（冷启动必须从 referenced_concepts 兜底写 proposed_graph_nodes）"
             ),
         )
-
-    # raw_content 同源读取：must_cover 扫描与 self-gate A3 锚点校验共用同一份原文，
-    # 避免截断/不一致导致 must_cover 账本与锚点校验脱节。
-    # 优先用调用方传入的 raw_content（权威源）；未传才回退读磁盘 raw_path。
-    # calibration 等链路只构造 raw_path 不落地文件，必须靠传入值，否则 read_text
-    # 失败 → raw_content=None → must_cover 跳过 / 命令接地剥离，静默失真。
-    if raw_content is None:
-        try:
-            raw_content = Path(raw_path).read_text(encoding="utf-8")
-        except OSError:
-            raw_content = None
 
     # must_cover 代码直出账本（step-2）：scan_all 扫 raw 建 evidence inventory，
     # 不依赖 LLM 抽取。_build_body 据此把 source_operation/boundary/conclusion 三类

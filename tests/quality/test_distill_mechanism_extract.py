@@ -1139,6 +1139,68 @@ class TestLaneDemotion:
         assert result.success is False
         assert "车道降级失败" in result.error or "fail-closed" in result.error
 
+    def test_partial_component_demotes_to_pattern(self, tmp_path, monkeypatch):
+        """1-2 命名组件无 how 信号 → 降 pattern，不编造第 3 个组件。"""
+        from src.akb2.quality.distill import (
+            _build_fallback_quality_basis,
+            _maybe_demote_concept_lane,
+        )
+
+        ledger = tmp_path / "quality-ledger.jsonl"
+        monkeypatch.setenv("AKB2_QUALITY_LEDGER", str(ledger))
+        data = {
+            "mechanism_components": [
+                {"name": "Captain", "role": "routes work"},
+                {"name": "Worker", "role": "executes"},
+            ],
+            "causal_edges": [],
+            "how_steps": [],
+            "claims": [],
+        }
+        basis = _build_fallback_quality_basis(data)
+        assert basis["component_count"] == 2
+        result = _maybe_demote_concept_lane(
+            data, "Two named parts without reusable pattern wording.", basis,
+            raw_path="raw/two.md",
+        )
+        assert result is not None
+        assert result.success is True
+        assert result.data["lane_demotion"]["to"] == "pattern"
+        assert result.data["content_lane"] == "pattern"
+        assert len(result.data["mechanism_components"]) == 2
+        events = ledger.read_text(encoding="utf-8")
+        assert "lane_demotion" in events
+
+    def test_extract_claims_partial_components_not_concept_success(self):
+        """主路径：concept 且 1 组件 0 eligible edge → 不得 success+lane=concept。"""
+        from src.akb2.quality.distill import ExtractResult, extract_claims
+        from src.akb2.quality.llm_router import LLMResponse
+
+        one_comp = {
+            "claims": [{"text": "Captain routes work", "anchor": "§A", "kind": "mechanism"}],
+            "how_steps": [],
+            "params": {},
+            "referenced_concepts": [],
+            "mechanism_components": [{"name": "Captain", "role": "routes"}],
+            "causal_edges": [],
+            "param_entries": [],
+        }
+
+        def _mock(model_family, messages, response_schema=None, **kwargs):
+            return LLMResponse(content=one_comp, model_used="deepseek-v4-pro")
+
+        result = extract_claims(
+            "# One Component\n\n### 1. Captain\nRoutes work.\n",
+            route_llm_fn=_mock,
+            content_lane="concept",
+        )
+        assert isinstance(result, ExtractResult)
+        if result.success:
+            assert result.data.get("content_lane") != "concept"
+            assert result.data.get("lane_demotion", {}).get("to") in ("pattern", "tutorial")
+        else:
+            assert result.data.get("fallback_quality_basis", {}).get("component_count", 1) < 3
+
 
 # ---------------------------------------------------------------------------
 # §0.2/F1-regex：多 # raw（## §A / ### §B）anchor 解析 + eligible edge

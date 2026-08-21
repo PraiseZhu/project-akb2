@@ -134,11 +134,16 @@ class TestPositiveAdmission:
             route_llm_fn=mock_fn,
         )
 
-        # AdmissionResult 只有 passed/checks/reason，无 score/quality 等连续字段
+        # AdmissionResult 只有 passed/checks/reason/topic_borderline，无 score/quality 等连续字段
+        from src.akb2.quality.admission import AdmissionResult
+
+        assert "topic_borderline" in AdmissionResult.__dataclass_fields__
+        assert result.topic_borderline is False
         result_dict = {
             "passed": result.passed,
             "checks": [{"name": c.name, "passed": c.passed, "reason": c.reason} for c in result.checks],
             "reason": result.reason,
+            "topic_borderline": result.topic_borderline,
         }
 
         # 确保没有 score/rating/quality 等连续值字段
