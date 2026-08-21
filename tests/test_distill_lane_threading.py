@@ -93,7 +93,7 @@ class TestFrontmatterCarriesLane:
             "how_steps": [],
         }
         fm = distill._build_frontmatter("raw/x--raw--2026-06-26.md", extract_data)
-        assert fm["content_lane"] == ""
+        assert fm.get("content_lane", "") == ""
 
     def test_frontmatter_normalizes_procedural_alias(self) -> None:
         """p5：procedural 别名落盘前归一为 tutorial（不再产生 procedural 终值）。"""

@@ -60,6 +60,8 @@ artifact_type: wiki
 pipeline_version: v1
 ---
 
+# Loop Engineering
+
 ## TLDR
 
 Loop Engineering 是一种设计有界、收敛、可观测 AI Agent 循环的工程实践 [raw §A]。
