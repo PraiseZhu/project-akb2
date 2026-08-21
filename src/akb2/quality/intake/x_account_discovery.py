@@ -2,6 +2,7 @@
 
 公开函数:
     discover_x_account_articles(source, ledger_path, ...) -> DiscoverResult
+    x_account_discovery — 同上（orchestrator 延迟 import 用这个名字）
     resolve_x_handles(source, curator_path=None) -> list[str]
     classify_tweet_content_path(tweet) -> ContentPath
     first_external_url(tweet) -> str | None
@@ -537,3 +538,7 @@ def discover_x_account_articles(
             len(result.articles),
         )
     return result
+
+
+# orchestrator 延迟 import 用这个名字；实现函数是 discover_x_account_articles。
+x_account_discovery = discover_x_account_articles
