@@ -129,15 +129,22 @@ class TestLaneVisibleInLedger:
         assert admission_events[0]["details"].get("content_lane") == lane
 
     def test_pipeline_extract_max_attempts_per_lane(self) -> None:
-        """p5：attempt 预算按车道——concept=4（F32 质量重试 +1），tutorial/pattern/design=3。
+        """漏斗三刀：MAX=1、QUALITY=0，全车道一次即弃。
 
-        admission 输出侧 procedural 已归一 tutorial；runner._extract_max_attempts
-        对三新车道与旧操作型同预算（无 F32），账本 retries_used ≤ max 自洽。
+        预算跟 distill 常量走，不写死 4/3。
         """
-        assert runner._extract_max_attempts(LANE_CONCEPT) == 4
-        assert runner._extract_max_attempts(LANE_TUTORIAL) == 3
-        assert runner._extract_max_attempts(LANE_PATTERN) == 3
-        assert runner._extract_max_attempts(LANE_DESIGN) == 3
+        from src.akb2.quality.distill import (
+            EXTRACT_QUALITY_RETRY_CONCEPT,
+            MAX_EXTRACT_RETRIES,
+        )
+
+        expected_concept = MAX_EXTRACT_RETRIES + EXTRACT_QUALITY_RETRY_CONCEPT
+        assert runner._extract_max_attempts(LANE_CONCEPT) == expected_concept
+        assert runner._extract_max_attempts(LANE_TUTORIAL) == MAX_EXTRACT_RETRIES
+        assert runner._extract_max_attempts(LANE_PATTERN) == MAX_EXTRACT_RETRIES
+        assert runner._extract_max_attempts(LANE_DESIGN) == MAX_EXTRACT_RETRIES
+        assert expected_concept == 1
+        assert MAX_EXTRACT_RETRIES == 1
 
     def test_worker_payload_carries_tutorial_canonical(
         self, monkeypatch: pytest.MonkeyPatch

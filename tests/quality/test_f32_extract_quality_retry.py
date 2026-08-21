@@ -70,7 +70,7 @@ def test_concept_low_components_retries_once(sample_raw_content) -> None:
     if r.success:
         assert r.data.get("content_lane") != "concept" or len(r.data["mechanism_components"]) >= 3
         if r.data.get("lane_demotion"):
-            assert r.data["lane_demotion"]["to"] in ("pattern", "tutorial")
+            assert r.data["lane_demotion"]["to"] == "pattern"
             assert len(r.data["mechanism_components"]) == 2
     else:
         assert r.data.get("fallback_quality_basis", {}).get("component_count", 2) < 3
