@@ -225,7 +225,7 @@ portalocker==3.2.0
 praw==7.8.1
 prawcore==2.4.0
 propcache==0.4.1
-Protego==0.6.0
+Protego==0.6.2
 proto-plus==1.27.1
 protobuf==5.28.3
 psutil==7.2.2
