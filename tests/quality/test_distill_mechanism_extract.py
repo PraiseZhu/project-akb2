@@ -1171,6 +1171,57 @@ class TestLaneDemotion:
         events = ledger.read_text(encoding="utf-8")
         assert "lane_demotion" in events
 
+    def test_partial_component_with_executable_how_still_pattern(self, tmp_path, monkeypatch):
+        """1-2 组件 + ≥3 可执行 how 仍降 pattern，不得抢先降 tutorial。"""
+        from src.akb2.quality.distill import (
+            _build_fallback_quality_basis,
+            _maybe_demote_concept_lane,
+        )
+
+        ledger = tmp_path / "quality-ledger.jsonl"
+        monkeypatch.setenv("AKB2_QUALITY_LEDGER", str(ledger))
+        data = {
+            "mechanism_components": [
+                {"name": "Captain", "role": "routes work"},
+                {"name": "Worker", "role": "executes"},
+            ],
+            "causal_edges": [],
+            "how_steps": [
+                {
+                    "action": "run once",
+                    "command": "python -m akb2.quality.runner --once",
+                    "executable": True,
+                    "how_level": "H1",
+                },
+                {
+                    "action": "check git",
+                    "command": "git status --short",
+                    "executable": True,
+                    "how_level": "H1",
+                },
+                {
+                    "action": "health",
+                    "command": "curl -fsS https://example.com/health",
+                    "executable": True,
+                    "how_level": "H1",
+                },
+            ],
+            "claims": [],
+        }
+        basis = _build_fallback_quality_basis(data)
+        assert basis["component_count"] == 2
+        result = _maybe_demote_concept_lane(
+            data,
+            "Two named parts plus three executable commands.",
+            basis,
+            raw_path="raw/two-plus-how.md",
+        )
+        assert result is not None
+        assert result.success is True
+        assert result.data["content_lane"] == "pattern"
+        assert result.data["lane_demotion"]["to"] == "pattern"
+        assert result.data["lane_demotion"]["to"] != "tutorial"
+
     def test_extract_claims_partial_components_not_concept_success(self):
         """主路径：concept 且 1 组件 0 eligible edge → 不得 success+lane=concept。"""
         from src.akb2.quality.distill import ExtractResult, extract_claims
@@ -1196,8 +1247,8 @@ class TestLaneDemotion:
         )
         assert isinstance(result, ExtractResult)
         if result.success:
-            assert result.data.get("content_lane") != "concept"
-            assert result.data.get("lane_demotion", {}).get("to") in ("pattern", "tutorial")
+            assert result.data.get("content_lane") == "pattern"
+            assert result.data.get("lane_demotion", {}).get("to") == "pattern"
         else:
             assert result.data.get("fallback_quality_basis", {}).get("component_count", 1) < 3
 

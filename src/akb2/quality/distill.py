@@ -5142,11 +5142,32 @@ def _maybe_demote_concept_lane(
     *,
     raw_path: str = "",
 ) -> ExtractResult | None:
-    """concept 组件不足：先 tutorial（≥3 可执行步），再 pattern。
+    """concept 组件不足：1-2 组件恒降 pattern；0 组件才试 tutorial。
 
-    1≤component_count<CONCEPT_MIN 即使无 pattern wording 也降 pattern（不编造组件）。
-    0 组件且无 how/pattern 信号返回 None，由调用方 abort。禁降回 concept。
+    1≤component_count<CONCEPT_MIN 即使有 ≥3 可执行 how 也降 pattern（不编造组件，
+    也不改降 tutorial——1-2 组件走 tutorial 仍可能被 F4/密度门来回打）。
+    0 组件：≥3 how → tutorial；pattern wording → pattern；否则 None abort。
+    禁降回 concept。
     """
+    component_count = int(basis.get("component_count") or 0)
+    if 1 <= component_count < CONCEPT_MIN_MECHANISM_COMPONENTS:
+        reason = (
+            f"{component_count} named components < {CONCEPT_MIN_MECHANISM_COMPONENTS}"
+        )
+        data["content_lane"] = CONTENT_LANE_PATTERN
+        data["lane_demotion"] = {
+            "from": CONTENT_LANE_CONCEPT,
+            "to": CONTENT_LANE_PATTERN,
+            "reason": reason,
+        }
+        _record_lane_demotion(
+            from_lane=CONTENT_LANE_CONCEPT,
+            to_lane=CONTENT_LANE_PATTERN,
+            reason=data["lane_demotion"]["reason"],
+            raw_path=raw_path,
+            basis=basis,
+        )
+        return ExtractResult(success=True, data=data, retries_used=0)
     executable = _count_executable_how_steps(data, raw_content)
     if executable >= HOW_STEPS_MIN_EXECUTABLE:
         data["content_lane"] = CONTENT_LANE_TUTORIAL
@@ -5163,20 +5184,12 @@ def _maybe_demote_concept_lane(
             basis=basis,
         )
         return ExtractResult(success=True, data=data, retries_used=0)
-    component_count = int(basis.get("component_count") or 0)
-    if _has_reusable_pattern_signal(raw_content, data) or (
-        1 <= component_count < CONCEPT_MIN_MECHANISM_COMPONENTS
-    ):
-        reason = (
-            f"{component_count} named components < {CONCEPT_MIN_MECHANISM_COMPONENTS}"
-            if 1 <= component_count < CONCEPT_MIN_MECHANISM_COMPONENTS
-            else "reusable pattern wording in source"
-        )
+    if _has_reusable_pattern_signal(raw_content, data):
         data["content_lane"] = CONTENT_LANE_PATTERN
         data["lane_demotion"] = {
             "from": CONTENT_LANE_CONCEPT,
             "to": CONTENT_LANE_PATTERN,
-            "reason": reason,
+            "reason": "reusable pattern wording in source",
         }
         _record_lane_demotion(
             from_lane=CONTENT_LANE_CONCEPT,

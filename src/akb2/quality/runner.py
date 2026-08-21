@@ -1328,6 +1328,12 @@ def _run_distill_segment(
             },
         )
 
+    # 抽取可能已 lane_demotion（concept→pattern/tutorial）。地板、增援、compose、
+    # 评分段必须跟抽取终值，否则 1-2 组件仍按 admission 的 concept F4 毙稿。
+    content_lane = str(
+        (extract_result.data or {}).get("content_lane") or content_lane or ""
+    )
+
     # step-3 SC-3b/SC-3h：完整性地板在 distill 段评估（持有结构化 extract，A-R4 保留）。
     # FloorResult 是小对象，随 distill_meta 携出（保持 5 元组契约，不扩 tuple arity 避免
     # 破坏既有 5 元组解包的存量调用方/测试）；评分段先看本结果 early-return（加权分不算）。
@@ -1506,6 +1512,11 @@ def _run_distill_segment(
             },
         )
 
+    # compose 也可能再降（tutorial 命令不足 → pattern）；评分段跟终值。
+    content_lane = str(
+        (extract_result.data or {}).get("content_lane") or content_lane or ""
+    )
+
     return (
         True,
         compose_result.candidate_path,
@@ -1515,6 +1526,7 @@ def _run_distill_segment(
             "retries_used": extract_result.retries_used,
             "maker_fallback_used": maker_fallback_used,
             "maker_primary_error": maker_primary_error,
+            "content_lane": content_lane,
             # step-3 SC-3b/SC-3h：完整性地板结果随 distill_meta 携出，供评分段 early-return。
             "floor_result": floor_result,
             # §0.2/D9：fallback 成功路径也携 fallback_quality_basis（机读质量基线）。
@@ -2287,6 +2299,9 @@ def _run_pipeline_segments(
                 # F53 fail-visible: raw frontmatter 降级提取标记(降级率可统计)
                 **({"frontmatter_degraded": True}
                    if distill_meta.get("frontmatter_degraded") else {})})
+
+    # 抽取/成稿降级后的终值覆盖准入车道，避免评分段仍按 concept F4 早退。
+    content_lane = str(distill_meta.get("content_lane") or content_lane or "")
 
     # Segment 5-6: 质量评估 + 修复
     # grader 结果落盘路径（按 candidate 命名），收敛时写入供段 7 Gate-5 复核
