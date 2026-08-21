@@ -331,7 +331,7 @@ class TestRunnerLifelineSegments:
                     None,
                     {
                         "failed_node": "distill_extract",
-                        "retries_used": 3,
+                        "retries_used": 1,
                         "maker_fallback_used": False,
                     },
                 )
@@ -358,10 +358,12 @@ class TestRunnerLifelineSegments:
         ]
         assert distill_starts
         assert aborts
-        # F60 r2(Sol 审 P1-3):两层重试分列——provider(SDK)=0 / outer attempts=3
+        # 两层重试分列：provider(SDK)=0 / outer attempts=MAX_EXTRACT_RETRIES（一次即弃=1）
+        from src.akb2.quality.distill import MAX_EXTRACT_RETRIES as _MAX
+
         assert aborts[-1]["details"]["provider_max_retries"] == 0
-        assert aborts[-1]["details"]["extract_max_attempts"] == 3
-        assert aborts[-1]["details"]["retries_used"] == 3
+        assert aborts[-1]["details"]["extract_max_attempts"] == _MAX
+        assert aborts[-1]["details"]["retries_used"] == 1
         assert not any(r.get("event") in {"grade_llm", "promote", "finalize"} for r in rows)
 
     def test_distill_worker_timeout_stops_chain(
@@ -1263,3 +1265,153 @@ class TestRegradeSampleRejectsDegradedGrader:
             f"promote failure 应 final_status=promotion_blocked, got {result['final_status']}"
         )
         assert result["promotion_outcome"] == "promotion_blocked"
+
+
+def test_demoted_pattern_does_not_enter_concept_f4(tmp_path: Path) -> None:
+    """admission concept + extract 1-2 组件降 pattern → 地板/质量段不得再走 concept F4。"""
+    from src.akb2.quality.distill import ComposeResult, ExtractResult
+    from src.akb2.quality.integrity_floor import FLOOR_CORE_VALUE_F4
+    from src.akb2.quality.runner import _run_pipeline_segments
+
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    f = _make_raw_file(raw_dir, "test-demote-pattern", "2026-06-13")
+    config = _make_runner_config(tmp_path, auto_promote=False)
+    candidate_path = tmp_path / "staging" / "demoted.md"
+    candidate_path.parent.mkdir(parents=True, exist_ok=True)
+    candidate_path.write_text("# demoted pattern candidate\n", encoding="utf-8")
+
+    extract = ExtractResult(
+        success=True,
+        data={
+            "content_lane": "pattern",
+            "lane_demotion": {"from": "concept", "to": "pattern", "reason": "2 named components < 3"},
+            "claims": [
+                {
+                    "text": "Captain routes work",
+                    "anchor": "§A",
+                    "kind": "mechanism",
+                    "provenance": "source_grounded",
+                    "evidence_gap": "原文未量化吞吐上限",
+                }
+            ],
+            "how_steps": [
+                {
+                    "action": "reuse the captain/worker split",
+                    "command": "",
+                    "executable": False,
+                    "how_level": "H3",
+                    "anchor": "§A",
+                }
+            ],
+            "params": {},
+            "referenced_concepts": ["loop-engineering", "quality-gate"],
+            "mechanism_components": [
+                {"name": "Captain", "role": "routes work"},
+                {"name": "Worker", "role": "executes"},
+            ],
+            "causal_edges": [],
+            "param_entries": [],
+            "argumentation": {
+                "uncovered": ["原文未量化吞吐上限"],
+            },
+        },
+        retries_used=1,
+    )
+    captured: dict = {}
+
+    def _capture_quality(*args, **kwargs):
+        captured["kwargs"] = kwargs
+        floor = kwargs.get("floor_result")
+        captured["floor_lane"] = getattr(floor, "content_lane", None)
+        captured["floor_reason"] = getattr(floor, "reason", "")
+        captured["failed_floors"] = list(getattr(floor, "failed_floors", []) or [])
+        return (
+            True,
+            "",
+            "",
+            {
+                "repair_rounds": 0,
+                "a_defect_count": 0,
+                "a_defect_summary": [],
+                "b_defect_count": 0,
+                "b_defect_summary": [],
+                "final_defects_summary": [],
+                "grader_model_used": "gpt-5.4",
+                "grader_primary_model": "gpt-5.4",
+                "grader_fallback_used": False,
+                "grader_suspended": False,
+            },
+        )
+
+    with mock.patch(
+        "src.akb2.quality.runner._run_admission_segment",
+        return_value=(True, "", [], "concept", "", False),
+    ), mock.patch(
+        "src.akb2.quality.runner._load_vault_concept_index",
+        return_value={
+            "status": "ok",
+            "known_concepts": ["loop-engineering", "quality-gate"],
+            "pending_queue": [],
+            "wiki_references": [],
+            "source_paths": [],
+            "counts": {"known_concepts": 2, "pending_queue": 0, "wiki_references": 0},
+        },
+    ), mock.patch(
+        "src.akb2.quality.runner._run_extract_claims_worker",
+        return_value=extract,
+    ), mock.patch(
+        "src.akb2.quality.distill.compose_candidate",
+        return_value=ComposeResult(
+            success=True,
+            candidate_path=str(candidate_path),
+            frontmatter={"content_lane": "pattern"},
+        ),
+    ), mock.patch(
+        "src.akb2.quality.runner._run_quality_segments",
+        side_effect=_capture_quality,
+    ), mock.patch(
+        "src.akb2.quality.runner._run_promote_segment",
+        return_value=(True, "proposal", "Proposal mode"),
+    ):
+        result = _run_pipeline_segments(
+            str(f), f.read_text(encoding="utf-8"), config
+        )
+
+    assert captured.get("kwargs", {}).get("content_lane") == "pattern"
+    assert captured.get("floor_lane") == "pattern"
+    assert "concept F4" not in str(captured.get("floor_reason") or "")
+    failed = captured.get("failed_floors") or []
+    if FLOOR_CORE_VALUE_F4 in failed:
+        assert "concept F4" not in str(captured.get("floor_reason") or "")
+    assert result.get("content_lane", "pattern") != "concept" or captured["kwargs"]["content_lane"] == "pattern"
+
+
+def test_compose_self_gate_prefix_is_not_infra() -> None:
+    """compose_self_gate_* / SG-how-density / SG-command-recheck 前缀优先，不进 F39。"""
+    from src.akb2.quality.runner import (
+        _INFRA_ERROR_MARKERS,
+        FAILURE_KIND_CONTENT,
+        _classify_failure_kind,
+        _is_infra_error,
+    )
+
+    content_cases = [
+        "compose_self_gate_failed",
+        "compose_self_gate_failed: dummy",
+        "compose_self_gate_error: x",
+        "compose_self_gate_failed: 调用超时",
+        "SG-how-density@操作步骤: 2<3",
+        "SG-command-recheck@正文: fabricated",
+    ]
+    for case in content_cases:
+        assert _is_infra_error(case) is False, case
+        assert _classify_failure_kind(case) == FAILURE_KIND_CONTENT, case
+    for marker in _INFRA_ERROR_MARKERS:
+        assert marker not in {
+            "compose_self_gate_failed",
+            "compose_self_gate_error",
+            "SG-how-density",
+            "SG-command-recheck",
+        }
+    assert _is_infra_error("extract_worker_timeout") is True

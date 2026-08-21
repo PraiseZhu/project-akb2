@@ -905,6 +905,28 @@ class TestCandidateSelfGate:
             "procedural 车道 0 命令应判 SG-how-density（零回归）"
         )
 
+    def test_pattern_and_design_lane_zero_commands_no_how_density_defect(
+        self, valid_candidate_page, valid_raw_content
+    ):
+        """pattern/design 与 concept 一样：有操作步骤小节 + 0 命令不因 density 失败。"""
+        text = valid_candidate_page.replace(
+            "崩溃恢复只需读最后一条账本记录 [raw §B]。\n",
+            "崩溃恢复只需读最后一条账本记录 [raw §B]。\n\n"
+            "### 操作步骤\n\n"
+            "模式阐述无可执行命令。\n",
+        )
+        for lane in ("pattern", "design"):
+            defects = run_candidate_self_gate(
+                text, valid_raw_content, content_lane=lane
+            )
+            assert not any(d.dimension == "SG-how-density" for d in defects), (
+                f"{lane} 车道 0 命令不应判 SG-how-density"
+            )
+        defects_tut = run_candidate_self_gate(
+            text, valid_raw_content, content_lane="tutorial"
+        )
+        assert any(d.dimension == "SG-how-density" for d in defects_tut)
+
 
 # ---------------------------------------------------------------------------
 # A4: 图谱边四列齐 — 正负用例

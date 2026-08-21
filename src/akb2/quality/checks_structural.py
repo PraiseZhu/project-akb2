@@ -1479,10 +1479,9 @@ def run_candidate_self_gate(
     anchors, excessive AKB interpretation, generic AKB commands, hardcoded
     novelty baselines, and template residue.
 
-    step-3 SC-3a：content_lane（concept/procedural）让 SG-how-density 按车道选 gate_min——
-    concept 车道核心价值是命名机制组件+因果边（F4 由 integrity_floor 二值硬卡），不是命令
-    密度，故 concept gate_min=0（不卡可执行 How 步数）；procedural 保留 ≥3（零回归）。
-    SG-provenance-ratio 在 concept 改为逐条 traces_to 溯源（见 Step.3 verify_interpretation_*）。
+    SG-how-density 仅 tutorial 车道 gate_min=MIN_HOW_EXECUTABLE_STEPS；
+    concept / pattern / design 为 0（仍要求有「操作步骤」小节）。禁把
+    tutorial 命令不足的稿降到 concept（F4 地板 ≥3 组件，构成致死降级环）。
     """
     defects = run_structural_checks(
         text,
@@ -1569,10 +1568,14 @@ def run_candidate_self_gate(
 
     how_section = _how_section_text(text)
     commands = _how_executable_commands(text)
-    # step-3 SC-3a：SG-how-density 按车道选 gate_min。concept 核心价值是命名机制组件+
-    # 因果边（F4 由 integrity_floor 二值硬卡），不卡可执行命令密度 → gate_min=0；
-    # procedural 保留 ≥3（零回归）。concept 仍要求有「操作步骤」小节（A1 结构完整性）。
-    how_density_min = 0 if _is_concept_lane(content_lane) else MIN_HOW_EXECUTABLE_STEPS
+    # SG-how-density 仅 tutorial 卡 ≥3 可执行命令；concept/pattern/design 为 0。
+    # 空串按 tutorial 兼容（旧 procedural 默认）。仍要求有「操作步骤」小节。
+    _lane = str(content_lane or "").strip().lower()
+    how_density_min = (
+        MIN_HOW_EXECUTABLE_STEPS
+        if _lane in ("", "tutorial", "procedural")
+        else 0
+    )
     if not how_section:
         defects.append(
             Defect(

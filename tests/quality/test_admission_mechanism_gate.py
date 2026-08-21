@@ -677,16 +677,39 @@ class TestMultiRejectCalibration:
         assert result.passed is False
         assert "no_mechanism_signal" in result.reason
 
-    def test_negative_topic_rejected_by_topic(self, tmp_path: Path):
-        """负样本（领域外）→ topic_relevance 拒（机制过，全车道硬门）。"""
+    def test_negative_topic_observe_not_hard_reject(self, tmp_path: Path):
+        """单独 topic fail（机制过）→ 观察放行，不进合谋拒。"""
+        mock = _make_mock(lane=LANE_CONCEPT, pass_response=True)
+
+        def _topic_fail(model_family, messages, response_schema=None, **kwargs):
+            resp = mock(model_family, messages, response_schema=response_schema, **kwargs)
+            resp.content["topic_pass"] = False
+            resp.content["reason"] = "mock topic fail"
+            return resp
+
         result = run_admission(
             raw_path="raw/ag2-captain--raw--2026-08-15.md",
             raw_content=_MECHANISM_SOURCE,
             ledger_path=str(tmp_path / "ledger.jsonl"),
-            route_llm_fn=_make_mock(lane=LANE_CONCEPT, pass_response=False),
+            route_llm_fn=_topic_fail,
+        )
+        assert result.passed is True, f"单独 topic fail 应观察放行: {result.reason}"
+        assert "topic_relevance" not in result.reason
+        assert result.topic_borderline is True
+        topic = next(c for c in result.checks if c.name == "topic_relevance")
+        assert topic.passed is False
+
+    def test_combo_topic_and_non_knowledge_still_rejected(self, tmp_path: Path):
+        """topic fail + non_knowledge → 仍拒。"""
+        result = run_admission(
+            raw_path="raw/news--raw--2026-08-15.md",
+            raw_content="# Product Launch\n\nExciting announcement today.",
+            ledger_path=str(tmp_path / "ledger.jsonl"),
+            route_llm_fn=_make_mock(lane=LANE_REJECT, pass_response=False),
         )
         assert result.passed is False
-        assert "topic_relevance" in result.reason
+        assert "non_knowledge" in result.reason
+        assert result.topic_borderline is False
 
     def test_negative_news_rejected_by_non_knowledge(self, tmp_path: Path):
         """负样本（新闻）→ non_knowledge 一票拒（不依赖 how_tendency 造假绿）。"""
