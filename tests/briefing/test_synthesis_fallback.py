@@ -70,6 +70,7 @@ def _status_error(code: int, body: str = "") -> Exception:
 def _isolated_env(monkeypatch):
     """每个用例都从干净的模型/降级 env + 干净的族可用性闩开始，避免相互污染。"""
     monkeypatch.delenv("AKB2_SYNTHESIS_MODEL", raising=False)
+    monkeypatch.delenv(syn._SYNTHESIS_REASONING_EFFORT_ENV, raising=False)
     monkeypatch.delenv(syn._FAMILY_FALLBACK_ENV, raising=False)
     monkeypatch.setenv("AI_GATEWAY_API_KEY", "test-key")
     syn._unavailable_families.clear()
@@ -89,10 +90,13 @@ class TestPreviewModelForbidden:
         assert "-preview" not in syn._FALLBACK_SYNTHESIS_MODEL
 
     def test_default_matches_sibling_stage_convention(self):
-        """与同管线 translate.py 的主力模型同族同形态（约定优于新奇）。"""
+        """与同管线 translate.py 的主力模型同族（都是 deepseek/），合成走 flash。"""
         from akb2.briefing.translate import _TRANSLATE_MODEL
 
-        assert syn._DEFAULT_SYNTHESIS_MODEL == _TRANSLATE_MODEL
+        assert syn._DEFAULT_SYNTHESIS_MODEL.startswith("deepseek/")
+        assert _TRANSLATE_MODEL.startswith("deepseek/")
+        assert syn._DEFAULT_SYNTHESIS_MODEL == "deepseek/deepseek-v4-flash"
+        assert syn._DEFAULT_SYNTHESIS_REASONING_EFFORT == "max"
 
     def test_explicit_preview_env_raises_on_call(self, monkeypatch):
         """SC-8：显式设 preview 模型 → 调用即抛，不靠 env 自觉。"""
@@ -129,8 +133,8 @@ class TestPreviewModelForbidden:
         """校验看的是 `-preview` 子串，不是某个厂商前缀白名单。"""
         with pytest.raises(syn.SynthesisUnavailableError):
             syn._reject_preview_model("some-vendor/model-preview", "unit")
-        assert syn._reject_preview_model("deepseek/deepseek-v4-pro", "unit") == (
-            "deepseek/deepseek-v4-pro"
+        assert syn._reject_preview_model("deepseek/deepseek-v4-flash", "unit") == (
+            "deepseek/deepseek-v4-flash"
         )
 
 
@@ -440,3 +444,49 @@ class TestSharedBudgetGateProducer:
         assert budget_gate.load_state_snapshot()["active_block"] is None, (
             "瞬时限流被误当成预算耗尽布闸了 —— 那会让整机所有链路一起被拦"
         )
+
+
+class TestSynthesisReasoningEffort:
+    def test_primary_request_sends_max_reasoning_effort(self, monkeypatch):
+        """主族默认 flash + max；只改模型名却不传档位，等于没换成 max。"""
+        scored = _load_scored()
+        payloads: list[dict] = []
+
+        def fake_post(*args, **kwargs):
+            payloads.append(kwargs["json"])
+            resp = MagicMock()
+            resp.raise_for_status.return_value = None
+            resp.json.return_value = {
+                "choices": [{"message": {"content": _valid_model_output(scored)}}]
+            }
+            return resp
+
+        monkeypatch.setattr("httpx.post", fake_post)
+        syn.synthesize(scored, date="2026-08-02")
+
+        assert payloads, "主族请求没发出去"
+        body = payloads[0]
+        assert body["model"] == "deepseek/deepseek-v4-flash"
+        assert body["reasoning_effort"] == "max"
+
+    def test_fallback_request_does_not_inherit_primary_effort(self, monkeypatch):
+        """备族 Gemini 不套主族 max，避免把 DeepSeek 档位误加到另一家。"""
+        scored = _load_scored()
+        monkeypatch.setenv(syn._FAMILY_FALLBACK_ENV, "1")
+        payloads: list[dict] = []
+
+        def fake_post(*args, **kwargs):
+            payloads.append(kwargs["json"])
+            resp = MagicMock()
+            resp.raise_for_status.return_value = None
+            resp.json.return_value = {
+                "choices": [{"message": {"content": _valid_model_output(scored)}}]
+            }
+            return resp
+
+        monkeypatch.setattr("httpx.post", fake_post)
+        syn.synthesize(scored, date="2026-08-02")
+
+        assert len(payloads) == 1
+        assert payloads[0]["model"] == syn._FALLBACK_SYNTHESIS_MODEL
+        assert "reasoning_effort" not in payloads[0]

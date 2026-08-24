@@ -62,11 +62,15 @@ def _reject_preview_model(model: str, source: str) -> str:
     return model
 
 
-# 合成阶段专用模型（可由环境变量覆盖）。默认取正式版 deepseek —— 与同管线的
-# translate.py:36 `_TRANSLATE_MODEL` 同族同形态（gateway id），不另起一套。
+# 合成阶段专用模型（可由环境变量覆盖）。默认取正式版 deepseek flash ——
+# 与 translate.py 同族（gateway id 仍是 deepseek/），但合成是日报主成本，走 flash+max。
 # 这里的字面量在导入期就过 -preview 校验：默认值绝不可能再退回预览版。
-_DEFAULT_SYNTHESIS_MODEL = _reject_preview_model("deepseek/deepseek-v4-pro", "default")
+_DEFAULT_SYNTHESIS_MODEL = _reject_preview_model(
+    "deepseek/deepseek-v4-flash", "default"
+)
 _SYNTHESIS_MODEL = os.environ.get("AKB2_SYNTHESIS_MODEL", _DEFAULT_SYNTHESIS_MODEL)
+_DEFAULT_SYNTHESIS_REASONING_EFFORT = "max"
+_SYNTHESIS_REASONING_EFFORT_ENV = "AKB2_SYNTHESIS_REASONING_EFFORT"
 
 # 备用模型族（宪法 P7 点名的兜底族，正式版）。主族不可用时降级再试一次，
 # 两族都挂才 fail-closed —— 「降级用尽后才拒」而不是「一挂就拒」。
@@ -100,6 +104,16 @@ def _resolve_synthesis_model() -> str:
     model = os.environ.get("AKB2_SYNTHESIS_MODEL") or _SYNTHESIS_MODEL
     return _reject_preview_model(model, "AKB2_SYNTHESIS_MODEL")
 
+
+def _resolve_synthesis_reasoning_effort() -> str | None:
+    """主族合成的 reasoning 档。空 / none / off 表示不传该字段。"""
+    raw = os.environ.get(
+        _SYNTHESIS_REASONING_EFFORT_ENV, _DEFAULT_SYNTHESIS_REASONING_EFFORT
+    ).strip()
+    if raw.lower() in {"", "none", "off"}:
+        return None
+    return raw
+
 # 合成 prompt 文件路径：synthesis.py 在 <root>/src/akb2/briefing/ 下，docs/ 在 <root>/，
 # 故 4 层 parent 到 <root>（worktree 与主仓库结构一致，均适用）。
 # 历史 bug：曾用 5 层 → 多跳一级到不存在的目录 → 回退内联兜底 prompt（无短序号指令）
@@ -132,6 +146,7 @@ def _call_llm(
     max_retries: int = 1,
     timeout: int = 300,
     base_url: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> str:
     """通用 LLM 调用（OpenAI-compatible），失败重试一次，返回 raw content string。"""
     import httpx
@@ -143,6 +158,8 @@ def _call_llm(
     payload: dict = {"model": model, "messages": messages, "temperature": 0.2}
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
+    if reasoning_effort:
+        payload["reasoning_effort"] = reasoning_effort
 
     for attempt in range(max_retries + 1):
         try:
@@ -264,6 +281,7 @@ def _call_deepseek(prompt: str, max_retries: int = 2) -> str:
         )
 
     primary = _resolve_synthesis_model()
+    primary_effort = _resolve_synthesis_reasoning_effort()
 
     # 本次运行已判定主族不可用（质量重试的第 2/3 轮会走到这里）→ 不再白烧一轮
     if primary in _unavailable_families:
@@ -278,7 +296,10 @@ def _call_deepseek(prompt: str, max_retries: int = 2) -> str:
         )
 
     try:
-        return _call_llm(messages, model=primary, json_mode=True, max_retries=max_retries)
+        return _call_llm(
+            messages, model=primary, json_mode=True, max_retries=max_retries,
+            reasoning_effort=primary_effort,
+        )
     except SynthesisUnavailableError:
         raise  # 预览版误配是部署错误，换族掩盖不了
     except Exception as primary_err:
