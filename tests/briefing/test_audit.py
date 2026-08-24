@@ -847,3 +847,26 @@ def test_audit_returns_structured_key():
     structured = result["standard_issues_structured"]
     assert isinstance(structured, list)
     assert all(isinstance(it, dict) and "kind" in it for it in structured)
+
+
+def test_audit_default_model_is_grok_with_high_effort():
+    """社交审计默认 xAI Grok + high，与合成主族 DeepSeek 异族。"""
+    from akb2.briefing import audit as au
+
+    assert au._AUDIT_MODEL == "x-ai-grok/grok-4.6"
+    assert au._resolve_audit_reasoning_effort() == "high"
+
+    captured: dict = {}
+
+    def mock_call_llm(messages, model, **kwargs):
+        captured["model"] = model
+        captured["kwargs"] = kwargs
+        return json.dumps(
+            {"drift_score": 0.0, "accuracy_issues": [], "llm_verdict": "pass"}
+        )
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=mock_call_llm):
+        au.audit_briefing(SYNTH_ZH_GOOD, SYNTH_EN)
+
+    assert captured["model"] == "x-ai-grok/grok-4.6"
+    assert captured["kwargs"].get("reasoning_effort") == "high"

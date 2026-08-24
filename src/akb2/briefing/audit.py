@@ -29,8 +29,20 @@ import re
 import sys
 from datetime import UTC, datetime
 
-# 审计专用模型（默认中文母语模型）
-_AUDIT_MODEL = os.environ.get("AKB2_AUDIT_MODEL", "qwen/qwen3.6-plus")
+# 审计专用模型：默认 xAI Grok，与合成主族 DeepSeek 异族（宪法 P7）。
+# 档位默认 high；空 / none / off 表示不传 reasoning_effort。
+_AUDIT_MODEL = os.environ.get("AKB2_AUDIT_MODEL", "x-ai-grok/grok-4.6")
+_DEFAULT_AUDIT_REASONING_EFFORT = "high"
+_AUDIT_REASONING_EFFORT_ENV = "AKB2_AUDIT_REASONING_EFFORT"
+
+
+def _resolve_audit_reasoning_effort() -> str | None:
+    raw = os.environ.get(
+        _AUDIT_REASONING_EFFORT_ENV, _DEFAULT_AUDIT_REASONING_EFFORT
+    ).strip()
+    if raw.lower() in {"", "none", "off"}:
+        return None
+    return raw
 
 _AUDIT_SYSTEM = (
     "你是严格的 AI 趋势简报质量审计员。\n"
@@ -745,7 +757,13 @@ def _run_llm_audit(synth_zh: dict, synth_en: dict, model: str) -> dict:
         {"role": "system", "content": _AUDIT_SYSTEM},
         {"role": "user", "content": prompt},
     ]
-    raw = _call_llm(messages, model=model, json_mode=True, timeout=120)
+    raw = _call_llm(
+        messages,
+        model=model,
+        json_mode=True,
+        timeout=120,
+        reasoning_effort=_resolve_audit_reasoning_effort(),
+    )
     return json.loads(raw)
 
 
