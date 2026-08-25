@@ -14,7 +14,7 @@
    - 检索 token（与 Mini `~/.config/akb2/retrieval.env` 同一份）
 3. 聊天里 `$akb2` 或让 Agent 调 `search` / `get`。
 
-Mini 连不上时，worker 会改搜包内 `snapshot.json`（`source=snapshot`，带 `degraded=true`）。快照要重新打包才更新。
+Mini **连不上**（拒绝连接 / 超时）时，worker 才改搜包内 `snapshot.json`（`source=snapshot`，带 `degraded=true`）。live 已达但笔记 404、或 HTTP 4xx/5xx，直接报错，不用过期快照顶上。快照要重新打包才更新。
 
 ## Mini 侧
 

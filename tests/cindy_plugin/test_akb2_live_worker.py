@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from akb2.retrieval.http_server import MIN_TOKEN_LEN, build_server
@@ -68,9 +70,54 @@ def _spawn_worker(env: dict[str, str]) -> subprocess.Popen:
     )
 
 
-def test_worker_live_search_and_get(tmp_path: Path) -> None:
-    import os
+def _write_snapshot(path: Path) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "notes": [
+                    {
+                        "path": "wiki/sources/addy-osmani-loop-engineering.md",
+                        "title": "should not appear from snapshot",
+                        "body": "snapshot loop engineering 正文",
+                        "how_density": "1. 跑 `echo snapshot`",
+                        "how_executability": ["echo snapshot"],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
 
+
+def _stub_status_server(status: int) -> ThreadingHTTPServer:
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            self._reply()
+
+        def do_POST(self) -> None:  # noqa: N802
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            if length:
+                self.rfile.read(length)
+            self._reply()
+
+        def _reply(self) -> None:
+            body = b'{"error":"stub"}'
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, fmt: str, *args: object) -> None:
+            return
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    return httpd
+
+
+def test_worker_live_search_and_get(tmp_path: Path) -> None:
     vault = _vault(tmp_path)
     httpd = build_server(bind="127.0.0.1", port=0, vault_root=vault, token=TOKEN)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -139,8 +186,6 @@ def test_worker_snapshot_fallback_when_live_down(tmp_path: Path) -> None:
 
 
 def test_worker_unauthorized_does_not_fall_back_to_snapshot(tmp_path: Path) -> None:
-    import os
-
     vault = _vault(tmp_path)
     httpd = build_server(bind="127.0.0.1", port=0, vault_root=vault, token=TOKEN)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -174,6 +219,73 @@ def test_worker_unauthorized_does_not_fall_back_to_snapshot(tmp_path: Path) -> N
             token="x" * MIN_TOKEN_LEN,
         )
         assert result["error"]["message"] == "unauthorized"
+    finally:
+        proc.kill()
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_worker_live_404_does_not_use_snapshot(tmp_path: Path) -> None:
+    """live 已达且 get=404：笔记已不在 promoted 集，不得用过期快照顶上。"""
+    vault = tmp_path / "empty-vault"
+    (vault / "wiki" / "sources").mkdir(parents=True)
+    snapshot = tmp_path / "snapshot.json"
+    _write_snapshot(snapshot)
+    httpd = build_server(bind="127.0.0.1", port=0, vault_root=vault, token=TOKEN)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    host, port = httpd.server_address
+    env = os.environ.copy()
+    env["AKB2_PLUGIN_SNAPSHOT"] = str(snapshot)
+    proc = _spawn_worker(env)
+    try:
+        result = _rpc(
+            proc,
+            "get",
+            {
+                "path": "wiki/sources/addy-osmani-loop-engineering.md",
+                "host": host,
+                "port": port,
+            },
+            token=TOKEN,
+        )
+        assert result["error"]["message"] == "not_found"
+        assert "result" not in result or result.get("result") is None
+    finally:
+        proc.kill()
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_worker_live_http_error_does_not_use_snapshot(tmp_path: Path) -> None:
+    """live 可达但 5xx：不是连不上，不得标 live_unreachable 后读快照。"""
+    snapshot = tmp_path / "snapshot.json"
+    _write_snapshot(snapshot)
+    httpd = _stub_status_server(500)
+    host, port = httpd.server_address
+    env = os.environ.copy()
+    env["AKB2_PLUGIN_SNAPSHOT"] = str(snapshot)
+    proc = _spawn_worker(env)
+    try:
+        result = _rpc(
+            proc,
+            "search",
+            {"query": "loop engineering", "host": host, "port": port},
+            token=TOKEN,
+        )
+        assert result["error"]["message"] == "live_http_500"
+        assert "result" not in result
+        got = _rpc(
+            proc,
+            "get",
+            {
+                "path": "wiki/sources/addy-osmani-loop-engineering.md",
+                "host": host,
+                "port": port,
+            },
+            token=TOKEN,
+        )
+        assert got["error"]["message"] == "live_http_500"
     finally:
         proc.kill()
         httpd.shutdown()

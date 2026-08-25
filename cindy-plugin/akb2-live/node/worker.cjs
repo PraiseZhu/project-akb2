@@ -79,6 +79,29 @@ function snapshotGet(relPath) {
   };
 }
 
+const TRANSPORT_CODES = new Set([
+  'ECONNREFUSED',
+  'ENOTFOUND',
+  'EHOSTUNREACH',
+  'ECONNRESET',
+  'EPIPE',
+  'ETIMEDOUT',
+  'EAI_AGAIN',
+]);
+
+function taggedError(code, message, extra) {
+  const err = new Error(message);
+  err.code = code;
+  if (extra) Object.assign(err, extra);
+  return err;
+}
+
+function isUnreachable(err) {
+  if (!err) return false;
+  if (err.code === 'timeout' || err.message === 'timeout') return true;
+  return TRANSPORT_CODES.has(err.code);
+}
+
 function httpJson(options) {
   return new Promise((resolve, reject) => {
     const req = http.request(options, (res) => {
@@ -90,7 +113,7 @@ function httpJson(options) {
         try {
           payload = raw ? JSON.parse(raw) : {};
         } catch {
-          reject(new Error('invalid_json'));
+          reject(taggedError('invalid_json', 'invalid_json'));
           return;
         }
         resolve({ status: res.statusCode || 0, payload });
@@ -98,7 +121,7 @@ function httpJson(options) {
     });
     req.on('error', reject);
     req.setTimeout(REQUEST_TIMEOUT_MS, () => {
-      req.destroy(new Error('timeout'));
+      req.destroy(taggedError('timeout', 'timeout'));
     });
     if (options.body) req.write(options.body);
     req.end();
@@ -124,12 +147,10 @@ async function liveSearch(params, token) {
     body,
   });
   if (status === 401) {
-    const err = new Error('unauthorized');
-    err.code = 'unauthorized';
-    throw err;
+    throw taggedError('unauthorized', 'unauthorized');
   }
   if (status !== 200) {
-    throw new Error(`http_${status}`);
+    throw taggedError('http_error', `http_${status}`, { status });
   }
   return payload;
 }
@@ -147,13 +168,35 @@ async function liveGet(params, token) {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (status === 401) {
-    const err = new Error('unauthorized');
-    err.code = 'unauthorized';
-    throw err;
+    throw taggedError('unauthorized', 'unauthorized');
   }
-  if (status === 404) return null;
-  if (status !== 200) throw new Error(`http_${status}`);
+  if (status === 404) {
+    throw taggedError('not_found', 'not_found');
+  }
+  if (status !== 200) {
+    throw taggedError('http_error', `http_${status}`, { status });
+  }
   return payload;
+}
+
+function snapshotFallbackSearch(query, limit) {
+  const fallback = snapshotSearch(query, limit);
+  fallback.degraded = true;
+  fallback.reason = 'live_unreachable';
+  return fallback;
+}
+
+function snapshotFallbackGet(rel) {
+  const snap = snapshotGet(rel);
+  if (!snap) return { error: { code: -32004, message: 'not_found' } };
+  snap.degraded = true;
+  snap.reason = 'live_unreachable';
+  return snap;
+}
+
+function liveHttpError(err) {
+  const status = Number(err && err.status) || 0;
+  return { error: { code: -32002, message: `live_http_${status || 'error'}` } };
 }
 
 async function handleSearch(request) {
@@ -167,10 +210,13 @@ async function handleSearch(request) {
     if (err && err.code === 'unauthorized') {
       return { error: { code: -32001, message: 'unauthorized' } };
     }
-    const fallback = snapshotSearch(query, limit);
-    fallback.degraded = true;
-    fallback.reason = 'live_unreachable';
-    return fallback;
+    if (err && (err.code === 'http_error' || err.code === 'invalid_json')) {
+      return liveHttpError(err);
+    }
+    if (isUnreachable(err)) {
+      return snapshotFallbackSearch(query, limit);
+    }
+    return liveHttpError(err);
   }
 }
 
@@ -179,22 +225,21 @@ async function handleGet(request) {
   const token = secretToken(request);
   const rel = String(params.path || '');
   try {
-    const live = await liveGet(params, token);
-    if (live) return live;
-    const snap = snapshotGet(rel);
-    if (snap) return snap;
-    return { error: { code: -32004, message: 'not_found' } };
+    return await liveGet(params, token);
   } catch (err) {
     if (err && err.code === 'unauthorized') {
       return { error: { code: -32001, message: 'unauthorized' } };
     }
-    const snap = snapshotGet(rel);
-    if (snap) {
-      snap.degraded = true;
-      snap.reason = 'live_unreachable';
-      return snap;
+    if (err && err.code === 'not_found') {
+      return { error: { code: -32004, message: 'not_found' } };
     }
-    return { error: { code: -32004, message: 'not_found' } };
+    if (err && (err.code === 'http_error' || err.code === 'invalid_json')) {
+      return liveHttpError(err);
+    }
+    if (isUnreachable(err)) {
+      return snapshotFallbackGet(rel);
+    }
+    return liveHttpError(err);
   }
 }
 
