@@ -59,6 +59,7 @@ python3 -m akb2.quality.calibration \
 | 模块 | 职责 |
 |------|------|
 | `briefing/` | 社媒日报主链路：intake → scoring → synthesis → gate → 写 vault。含 `github/` 子链路、audit_fix 收敛循环、translate、embeddings |
+| `retrieval/` | 只读检索：promoted 笔记关键词引擎 + CLI（search / serve）+ token 保护的 HTTP（给同事 Cindy 插件直连 Mini，不是网页） |
 | `quality/` | **循环1 主质量管线（唯一入库出口）**：`admission`（准入三硬判定，二值无连续分）→ `distill`（DeepSeek 两段式提炼）→ `checks_structural`（A 层 6 项纯代码结构校验）→ `grader`（B 层 10 维 LLM 评分，GPT-5.4）→ `repair`（定点修复循环，收敛优先）→ `promote`（五闸升格）。`runner` 是 24h 常驻串行单工 daemon（七段生命线），`calibration` 满仓端到端校准 + 出厂判定，`llm_router` 三族模型统一路由，`smoke_validator` 只读冒烟校验。含 `intake/`、`source_ops_scanners/` 子模块 |
 | `loops/` | 循环骨架：`ledger`（幂等账本追加）/ `signatures`（故障签名记录与升级）/ `paths`（隔离区与 staging 路径常量） |
 | `video/` | 视频报告链路：collector → extractor → reasoner → assembler，LLM 经 `llm_adapter`。**触发方式 = `schedule`（每天 02:00）**，由 `~/Library/LaunchAgents/com.akb2.video.plist` 驱动；该 plist **不在仓库 `launchd/` 内、未入 git**（2026-07-28 查实，此前文档误记为"CLI 手动触发"） |

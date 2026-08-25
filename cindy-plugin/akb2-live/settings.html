@@ -1,0 +1,18 @@
+<!doctype html>
+<meta charset="utf-8">
+<body style="margin:0;padding:12px;font:13px/1.45 system-ui,sans-serif">
+  <p style="margin:0 0 12px">Mini 检索地址写在下面；token 只进主机保险库，不要贴到聊天里。</p>
+  <label style="display:block;margin-bottom:8px">Mini 地址
+    <input id="host" placeholder="172.26.163.197" style="width:100%;box-sizing:border-box;margin-top:4px;background:var(--surface,#fff);color:inherit;border:1px solid var(--border-default,#e4e4e0)">
+  </label>
+  <label style="display:block;margin-bottom:8px">端口
+    <input id="port" placeholder="8787" style="width:100%;box-sizing:border-box;margin-top:4px;background:var(--surface,#fff);color:inherit;border:1px solid var(--border-default,#e4e4e0)">
+  </label>
+  <label style="display:block;margin-bottom:8px">检索 token
+    <input id="token" type="password" autocomplete="off" style="width:100%;box-sizing:border-box;margin-top:4px;background:var(--surface,#fff);color:inherit;border:1px solid var(--border-default,#e4e4e0)">
+  </label>
+  <p id="token-state" style="margin:0 0 8px;opacity:.7"></p>
+  <button id="save">保存</button>
+  <p id="status" style="margin:8px 0 0"></p>
+  <script src="/settings.js"></script>
+</body>

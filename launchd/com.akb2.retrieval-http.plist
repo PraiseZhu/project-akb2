@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  AKB2 只读检索 HTTP — 给同事 Cindy 插件直连 Mini 上的 promoted 笔记。
+
+  不是网页 UI。JSON API only。token 不进本 plist，由包装脚本读
+  ~/.config/akb2/retrieval.env。
+
+  ==== 安装 ====
+  本文件含 __AKB2_REPO_ROOT__ / __AKB2_VAULT_ROOT__ / __AKB2_HOME__ 占位符,
+  不要直接 launchctl bootstrap 本模板。
+  先写 ~/.config/akb2/retrieval.env（见 config/retrieval.env.example），再:
+
+    bash scripts/bootstrap_launchd.sh --plist-src launchd/com.akb2.retrieval-http.plist
+
+  卸载:
+    launchctl bootout gui/$(id -u)/com.akb2.retrieval-http
+
+  ==== 绑定 ====
+  默认 127.0.0.1。同事要从内网连 Mini 时，在 retrieval.env 设
+  AKB2_RETRIEVAL_BIND 为 Mini 内网 IP（例如 172.26.163.197）。
+  包装脚本和 HTTP 入口都拒绝 0.0.0.0。
+
+  ==== 用户授权 ====
+  2026-08-25 owner 批准本常驻检索入口（同事 Cindy 插件直连 Mini）。
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.akb2.retrieval-http</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__AKB2_REPO_ROOT__/scripts/akb2-retrieval-http.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__AKB2_REPO_ROOT__</string>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+
+    <key>StandardOutPath</key>
+    <string>__AKB2_REPO_ROOT__/logs/akb2-retrieval-http.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__AKB2_REPO_ROOT__/logs/akb2-retrieval-http.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONPATH</key>
+        <string>__AKB2_REPO_ROOT__/src</string>
+        <key>PATH</key>
+        <string>__AKB2_HOME__/.pyenv/shims:__AKB2_HOME__/.pyenv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>AKB2_VAULT_ROOT</key>
+        <string>__AKB2_VAULT_ROOT__/Praise Space/AKB2.0</string>
+    </dict>
+</dict>
+</plist>

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -36,14 +37,31 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="显式指定 vault 根（默认经 config/vault.toml 解析）",
     )
+    serve_p = sub.add_parser(
+        "serve",
+        help="启动只读检索 HTTP（token 保护；给 Cindy 插件直连，不是网页）",
+    )
+    serve_p.add_argument(
+        "--bind",
+        default=None,
+        help="绑定地址（默认 env AKB2_RETRIEVAL_BIND 或 127.0.0.1；拒绝 0.0.0.0）",
+    )
+    serve_p.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="端口（默认 env AKB2_RETRIEVAL_PORT 或 8787）",
+    )
+    serve_p.add_argument(
+        "--vault-root",
+        type=Path,
+        default=None,
+        help="显式指定 vault 根（默认经 config/vault.toml 解析）",
+    )
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
-    if args.command != "search":
-        print(f"未知命令: {args.command}", file=sys.stderr)
-        return 2
+def _run_search(args: argparse.Namespace) -> int:
     try:
         root = args.vault_root if args.vault_root is not None else get_akb2_root()
     except RuntimeError as exc:
@@ -65,6 +83,28 @@ def main(argv: list[str] | None = None) -> int:
     json.dump(payload, sys.stdout, ensure_ascii=False, indent=2)
     sys.stdout.write("\n")
     return 0
+
+
+def _run_serve(args: argparse.Namespace) -> int:
+    from akb2.retrieval.http_server import run_server
+
+    # token 只从 env 读，不接受 CLI 参数（会出现在 ps 命令行）。
+    return run_server(
+        bind=args.bind,
+        port=args.port,
+        vault_root=args.vault_root,
+        token=os.environ.get("AKB2_RETRIEVAL_TOKEN"),
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+    if args.command == "search":
+        return _run_search(args)
+    if args.command == "serve":
+        return _run_serve(args)
+    print(f"未知命令: {args.command}", file=sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":
