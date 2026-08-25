@@ -186,7 +186,7 @@ if ! printf '%s\n' "$PRINT_OUT" | grep -qF "$VERIFY_PROGRAM_TOKEN"; then
     verify_failed "注册的 job 未引用 $VERIFY_PROGRAM_TOKEN"
 fi
 if [ -z "$VERIFY_SCHEDULE_TOKEN" ]; then
-    verify_failed "模板未能派生出调度锚（既无 StartCalendarInterval.Hour 也无 StartInterval）"
+    verify_failed "模板未能派生出调度锚（既无 StartCalendarInterval.Hour 也无 StartInterval 也无 KeepAlive）"
 fi
 if ! printf '%s\n' "$PRINT_OUT" | grep -qF "$VERIFY_SCHEDULE_TOKEN"; then
     verify_failed "注册的 job 调度不是 ${VERIFY_SCHEDULE_TOKEN}"
