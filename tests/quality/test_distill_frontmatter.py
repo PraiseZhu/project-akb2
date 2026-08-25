@@ -2510,8 +2510,6 @@ class TestFrontmatterSlimAndFqContract:
         assert "related_concepts" in fm
         assert "proposed_graph_nodes" in fm
         page = _assemble_page(fm, "# Title\n\n## TLDR\nshort\n")
-        fm_lines = page.split("---\n", 2)[1].splitlines()
-        assert len(fm_lines) <= 25
         assert page.lstrip("- \n").startswith("# ") or "\n# " in page
 
     def test_body_future_questions_keep_full_version(self, extract_success_response):

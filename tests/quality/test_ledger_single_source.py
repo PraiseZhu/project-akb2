@@ -86,14 +86,54 @@ def test_legacy_ledger_content_is_inherited_not_dropped(tmp_path, monkeypatch):
     assert legacy.exists(), "继承是复制，旧文件必须保留不删"
 
 
+def test_distill_lane_demotion_default_uses_shared_resolver(tmp_path, monkeypatch):
+    """未设 AKB2_QUALITY_LEDGER 时，lane_demotion 必须写机器本地账本，不得写 vault staging。"""
+    import json
+
+    from akb2.quality.distill import _record_lane_demotion
+
+    state_root = tmp_path / "state"
+    vault = tmp_path / "vault"
+    (vault / "staging").mkdir(parents=True)
+    monkeypatch.setenv("AKB2_STATE_ROOT", str(state_root))
+    monkeypatch.delenv("AKB2_QUALITY_LEDGER", raising=False)
+    monkeypatch.setattr(
+        "src.akb2.loops.paths.get_akb2_root",
+        lambda: vault,
+    )
+
+    _record_lane_demotion(
+        from_lane="concept",
+        to_lane="pattern",
+        reason="test shared ledger",
+        raw_path="raw/demo.md",
+        basis={"component_count": 0, "source_causal_edge_count": 0},
+    )
+
+    shared = resolve_state_file(
+        "quality-ledger.jsonl",
+        subdir=LEDGER_SUBDIR,
+        legacy_path=vault / "staging" / "quality-ledger.jsonl",
+    )
+    legacy = vault / "staging" / "quality-ledger.jsonl"
+    assert shared.exists(), "lane_demotion 应写入机器本地账本"
+    events = [
+        json.loads(line)
+        for line in shared.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert any(ev.get("event") == "lane_demotion" for ev in events)
+    assert not legacy.exists(), "不得再写 vault/staging 旧账本"
+
+
 def test_requeue_and_synthesis_assembler_use_the_shared_resolver():
-    """两个 CLI 不得再自行拼 `<vault>/staging/...`（回归防线）。
+    """CLI / distill 不得再自行拼 `<vault>/staging/...`（回归防线）。
 
     断言源码里不存在旧拼法 —— 这类分裂只在生产跑起来才显形，源码级检查是唯一
     能在 CI 抓住它的手段。
     """
     root = Path(__file__).resolve().parents[2] / "src" / "akb2" / "quality"
-    for name in ("requeue.py", "synthesis_assembler.py", "promote.py"):
+    for name in ("requeue.py", "synthesis_assembler.py", "promote.py", "distill.py"):
         src = (root / name).read_text(encoding="utf-8")
         # 允许出现在注释/docstring 里（说明历史成因），只禁止真实路径拼接
         offenders = [

@@ -568,7 +568,8 @@ test
         assert any("related_concepts" in d.location for d in defects_active)
 
     def test_frontmatter_line_cap_and_h1_required(self):
-        """t4: A2 拦截 frontmatter 超 25 行，以及正文缺 H1。"""
+        """t4: proposal 候选阶段不算行数闸（冷启动必超 25 行）；H1 仍对所有 mode 生效；
+        active 仍拦行数超标。"""
         extra = "\n".join(f"extra_{i}: v" for i in range(20))
         text = f"""---
 status: candidate
@@ -589,8 +590,16 @@ related_concepts:
 test
 """
         defects = check_a2_frontmatter(text)
-        assert any("行数超标" in d.defect for d in defects)
+        assert not any("行数超标" in d.defect for d in defects)
         assert any(d.location == "正文 H1" for d in defects)
+
+        defects_proposal_explicit = check_a2_frontmatter(text, promotion_mode="proposal")
+        assert not any("行数超标" in d.defect for d in defects_proposal_explicit)
+        assert any(d.location == "正文 H1" for d in defects_proposal_explicit)
+
+        defects_active = check_a2_frontmatter(text, promotion_mode="active")
+        assert any("行数超标" in d.defect for d in defects_active)
+        assert any(d.location == "正文 H1" for d in defects_active)
 
 
 # ---------------------------------------------------------------------------
