@@ -459,8 +459,10 @@ def check_a2_frontmatter(
             )
         )
 
+    # 候选阶段 proposal 不算行数闸（冷启动 proposed_graph_nodes 必超 25）；
+    # active/lint（promotion_mode != proposal）仍拦。
     fm_match = re.match(r"^---\s*\n(.*?)\n---", text, re.DOTALL)
-    if fm_match:
+    if fm_match and not is_coldstart_proposal:
         fm_line_count = len(fm_match.group(1).splitlines())
         if fm_line_count > MAX_FRONTMATTER_LINES:
             defects.append(

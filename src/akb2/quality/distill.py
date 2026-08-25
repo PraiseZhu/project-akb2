@@ -5115,9 +5115,12 @@ def _record_lane_demotion(
     ledger_path = os.environ.get("AKB2_QUALITY_LEDGER", "").strip()
     if not ledger_path:
         try:
-            from src.akb2.loops.paths import get_staging_root
+            from src.akb2.loops.paths import get_akb2_root
+            from src.akb2.quality.promote import _resolve_ledger_path
 
-            ledger_path = str(get_staging_root() / "quality-ledger.jsonl")
+            ledger_path = str(
+                _resolve_ledger_path(get_akb2_root(), "quality-ledger.jsonl")
+            )
         except Exception:
             ledger_path = ""
     if not ledger_path:
