@@ -12,9 +12,11 @@ MVP 形态 = 仓内引擎 + CLI，对主链路已升格（promoted）的笔记�
 | 模块 | 职责 |
 |---|---|
 | `src/akb2/retrieval/engine.py` | 检索引擎：promoted 判定、AND 匹配、How 节提取 |
-| `src/akb2/retrieval/cli.py` | CLI 入口（`python3 -m akb2.retrieval.cli`） |
+| `src/akb2/retrieval/cli.py` | CLI 入口（`python3 -m akb2.retrieval.cli`）；子命令 `search` / `serve` |
+| `src/akb2/retrieval/http_server.py` | 只读 HTTP（token 保护；给 Cindy 插件直连 Mini，不是网页） |
 
 固定字段契约（§5）供后续 MCP 化与端到端链路消费，字段名以本文为准。
+HTTP 部署见 `docs/runbooks/retrieval-http.md`。
 
 ## 2. 只读保证等级：T1
 
@@ -87,7 +89,8 @@ PYTHONPATH=src python3 -m akb2.retrieval.cli search "loop engineering" --output 
 PYTHONPATH=src python3 -m akb2.retrieval.cli frobnicate
 ```
 
-退出码为 2；当前唯一子命令是 `search`。
+退出码为 2；当前子命令是 `search` 与 `serve`。`serve` 的部署见
+`docs/runbooks/retrieval-http.md`，不进本文件的 bash 示例块。
 
 ## 4. vault 根解析
 

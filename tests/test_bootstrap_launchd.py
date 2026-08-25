@@ -1106,6 +1106,17 @@ GITHUB_PRINT_OK = """com.akb2.github_briefing = {
 """
 
 
+RETRIEVAL_HTTP_LABEL = "com.akb2.retrieval-http"
+RETRIEVAL_HTTP_PRINT_OK = """com.akb2.retrieval-http = {
+		arguments = {
+			/bin/bash
+			/fake/repo/scripts/akb2-retrieval-http.sh
+		}
+		keep alive = true
+	}
+	"""
+
+
 def test_plist_src_derives_identity_from_template_label(tmp_path: Path) -> None:
     """--plist-src 传 github 模板 → 全链身份为 com.akb2.github_briefing，零 social 痕迹。
 
@@ -1170,6 +1181,7 @@ def test_manifest_installer_line_installs_declared_label(tmp_path: Path) -> None
     verify_by_label = {
         BRIEFING_LABEL: BRIEFING_PRINT_OK,
         GITHUB_BRIEFING_LABEL: GITHUB_PRINT_OK,
+        RETRIEVAL_HTTP_LABEL: RETRIEVAL_HTTP_PRINT_OK,
     }
     for index, job in enumerate(targets):
         label = job["label"]

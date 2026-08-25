@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 2,
+  "id": "akb2-live",
+  "name": "AKB2 知识库",
+  "version": "0.1.0",
+  "description": "在 Cindy 里检索 Mini 上实时的 AKB2 promoted 笔记；连不上时用包内快照兜底。",
+  "whenToUse": "需要搜索 AKB2 知识库、promoted 笔记、操作步骤、How 节，或用户说 akb / 知识库 / Mini 知识库时使用。",
+  "kind": "chip",
+  "entry": "main.js",
+  "command": "akb2",
+  "slots": ["tool", "node"],
+  "settingsHtml": "settings.html",
+  "settingsHeight": 280,
+  "node": {
+    "entry": "node/worker.cjs",
+    "protocol": "json-rpc-stdio",
+    "lifecycle": "on-demand",
+    "idleTimeoutSeconds": 60,
+    "secretBindings": [
+      {
+        "key": "retrieval_token",
+        "label": "AKB2 检索 token",
+        "hint": "与 Mini 上 ~/.config/akb2/retrieval.env 的 AKB2_RETRIEVAL_TOKEN 同一份",
+        "methods": ["search", "get"]
+      }
+    ]
+  },
+  "setup": {
+    "requires": [
+      { "anyOf": ["secret:retrieval_token"] }
+    ]
+  },
+  "tools": [
+    {
+      "name": "search",
+      "description": "搜索 AKB2 已升格（promoted）笔记。空白分词 AND 匹配标题和正文，返回 How 节与可执行命令。优先打 Mini 实时库，连不上时用包内快照。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "检索词，原样透传，不要扩写"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "返回条数上限，缺省 10，最大 50"
+          }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "get",
+      "description": "按 vault 相对路径读取一篇 promoted 笔记全文。path 必须来自 search 结果，形如 wiki/sources/<slug>.md。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "search 返回的 path 字段，原样传入"
+          }
+        },
+        "required": ["path"]
+      }
+    }
+  ]
+}

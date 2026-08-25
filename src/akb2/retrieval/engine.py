@@ -205,6 +205,67 @@ def extract_executable_commands(how_text: str) -> list[str]:
     return commands
 
 
+@dataclass(frozen=True)
+class NoteDocument:
+    """单篇 promoted 笔记全文（HTTP / 插件 get 的契约）。"""
+
+    path: str
+    title: str
+    body: str
+    how_density: str
+    how_executability: list[str]
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+def _safe_sources_path(root: Path, rel_path: str) -> Path | None:
+    """把 vault 相对路径解析到 wiki/sources/ 内的真实文件；越界或畸形返回 None。"""
+    if not rel_path or "\x00" in rel_path:
+        return None
+    candidate = Path(rel_path)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        return None
+    if candidate.suffix != ".md":
+        return None
+    sources_dir = (root / SOURCES_SUBDIR).resolve()
+    target = (root / candidate).resolve()
+    try:
+        target.relative_to(sources_dir)
+    except ValueError:
+        return None
+    if target.name == _INDEX_FILENAME:
+        return None
+    if not target.is_file():
+        return None
+    return target
+
+
+def read_promoted(root: Path, rel_path: str) -> NoteDocument | None:
+    """读取一篇 promoted 笔记全文。非 promoted / 越界 / 超预算一律 None。"""
+    target = _safe_sources_path(root, rel_path)
+    if target is None:
+        return None
+    try:
+        if target.stat().st_size > MAX_NOTE_BYTES:
+            return None
+        text = target.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    fm_text, body = _split_frontmatter(text)
+    if not fm_text or not is_promoted(fm_text):
+        return None
+    title = _extract_title(fm_text, target.stem)
+    how_text = extract_how_section(body)
+    return NoteDocument(
+        path=target.relative_to(root).as_posix(),
+        title=title,
+        body=body,
+        how_density=how_text,
+        how_executability=extract_executable_commands(how_text),
+    )
+
+
 def search(root: Path, query: str, limit: int = 10) -> list[SearchResult]:
     """对 promoted 笔记做关键词检索。
 

@@ -170,3 +170,15 @@ jobs:
       - AKB2_ROOT
       - PATH
       - PYTHONPATH
+  - label: com.akb2.retrieval-http
+    template: launchd/com.akb2.retrieval-http.plist
+    installed: ~/Library/LaunchAgents/com.akb2.retrieval-http.plist
+    installer: scripts/bootstrap_launchd.sh --plist-src launchd/com.akb2.retrieval-http.plist
+    should_load: true
+    pending_human_install: false
+    expected_schedule:
+      kind: keepalive
+    expected_env_keys:
+      - AKB2_VAULT_ROOT
+      - PATH
+      - PYTHONPATH
