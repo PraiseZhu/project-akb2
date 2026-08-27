@@ -193,7 +193,15 @@ def _assert_json_contract(payload: dict, *, query: str, limit: int) -> dict:
 
 
 def _assert_result_fields(hit: dict) -> None:
-    assert set(hit) == {"path", "title", "how_density", "how_executability", "score"}
+    assert set(hit) == {
+        "path",
+        "title",
+        "how_density",
+        "how_executability",
+        "score",
+        "related_concepts",
+        "graph_links",
+    }
 
 
 # ---------------------------------------------------------------------------

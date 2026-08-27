@@ -40,6 +40,9 @@ _REVIEWER_LOOP_RE = re.compile(rf"^reviewer:\s*{re.escape(MACHINE_REVIEWER)}\s*$
 
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 _TITLE_RE = re.compile(r"^title:\s*(.*?)\s*$", re.M)
+_WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]")
+_RELATED_LINE_RE = re.compile(r"^related_concepts:\s*(.*?)\s*$", re.M)
+_RELATED_ITEM_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]*")
 
 # How 节（How 密度内容载体）：新链路 = ## 论证与解释 下的 ### 操作步骤
 # （与 quality/checks_structural._how_section_text 同口径）；历史 golden
@@ -80,6 +83,8 @@ class SearchResult:
     how_density: str
     how_executability: list[str]
     score: int
+    related_concepts: list[str]
+    graph_links: list[str]
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -111,6 +116,41 @@ def _extract_title(fm_text: str, fallback: str) -> str:
         return fallback
     title = m.group(1).strip().strip('"').strip("'").strip()
     return title or fallback
+
+
+def _normalize_graph_token(raw: str) -> str:
+    token = raw.strip().strip('"').strip("'").strip()
+    if token.startswith("[[") and token.endswith("]]"):
+        token = token[2:-2]
+    token = token.split("|", 1)[0].split("#", 1)[0].strip()
+    if token.startswith("concept-"):
+        return token
+    # related_concepts 里常见 loop_engineering 这种下划线标识，升成 concept-*
+    if "_" in token and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", token):
+        return f"concept-{token.replace('_', '-')}"
+    return token
+
+
+def extract_graph_fields(fm_text: str, body: str) -> tuple[list[str], list[str]]:
+    """抽出 related_concepts 与正文 [[wikilink]]，去重保序。"""
+    related: list[str] = []
+    seen_related: set[str] = set()
+    related_line = _RELATED_LINE_RE.search(fm_text or "")
+    if related_line:
+        for item in _RELATED_ITEM_RE.findall(related_line.group(1)):
+            token = _normalize_graph_token(item)
+            if token and token not in seen_related:
+                seen_related.add(token)
+                related.append(token)
+
+    links: list[str] = []
+    seen_links: set[str] = set()
+    for match in _WIKILINK_RE.finditer(f"{fm_text or ''}\n{body or ''}"):
+        token = _normalize_graph_token(match.group(1))
+        if token and token not in seen_links:
+            seen_links.add(token)
+            links.append(token)
+    return related, links
 
 
 def _fence_state_table(lines: list[str]) -> list[bool]:
@@ -214,6 +254,8 @@ class NoteDocument:
     body: str
     how_density: str
     how_executability: list[str]
+    related_concepts: list[str]
+    graph_links: list[str]
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -257,21 +299,26 @@ def read_promoted(root: Path, rel_path: str) -> NoteDocument | None:
         return None
     title = _extract_title(fm_text, target.stem)
     how_text = extract_how_section(body)
+    related, links = extract_graph_fields(fm_text, body)
     return NoteDocument(
         path=target.relative_to(root).as_posix(),
         title=title,
         body=body,
         how_density=how_text,
         how_executability=extract_executable_commands(how_text),
+        related_concepts=related,
+        graph_links=links,
     )
 
 
-def search(root: Path, query: str, limit: int = 10) -> list[SearchResult]:
+def search(root: Path, query: str, limit: int | None = None) -> list[SearchResult]:
     """对 promoted 笔记做关键词检索。
 
     - query 按空白分词，全部 token 命中（AND，大小写不敏感）才收录；
       匹配域 = 标题 + 正文全文。
-    - 排序：命中次数降序，同分按路径字典序；limit 截断。
+    - 排序：命中次数降序，同分按路径字典序。
+    - limit 缺省或 <=0：返回全部命中（图谱跟读不得按条数截断）。
+      用户显式给正整数时才截断。
     - 只读：不写任何文件；样本集 exact 限定 wiki/sources/ 内 promoted 笔记。
     """
     return scan_report(root, query, limit=limit).results
@@ -290,7 +337,7 @@ class ScanReport:
     skipped: list[tuple[str, SkipReason]]
 
 
-def scan_report(root: Path, query: str, limit: int = 10) -> ScanReport:
+def scan_report(root: Path, query: str, limit: int | None = None) -> ScanReport:
     """search 的报告形态：结果 + 被跳过笔记的显式清单（sc-engine-input-shapes）。
 
     不可信读路径四种形状的处置：
@@ -300,7 +347,7 @@ def scan_report(root: Path, query: str, limit: int = 10) -> ScanReport:
       - OSError（权限等）→ 跳过计数
     """
     tokens = [t.lower() for t in query.split()]
-    if not tokens or limit <= 0:
+    if not tokens:
         return ScanReport(results=[], skipped=[])
     sources_dir = root / SOURCES_SUBDIR
     if not sources_dir.is_dir():
@@ -336,6 +383,7 @@ def scan_report(root: Path, query: str, limit: int = 10) -> ScanReport:
             continue
         score = sum(haystack.count(t) for t in tokens)
         how_text = extract_how_section(body)
+        related, links = extract_graph_fields(fm_text, body)
         results.append(
             SearchResult(
                 path=rel_path,
@@ -343,7 +391,11 @@ def scan_report(root: Path, query: str, limit: int = 10) -> ScanReport:
                 how_density=how_text,
                 how_executability=extract_executable_commands(how_text),
                 score=score,
+                related_concepts=related,
+                graph_links=links,
             )
         )
     results.sort(key=lambda r: (-r.score, r.path))
-    return ScanReport(results=results[:limit], skipped=skipped)
+    if limit is not None and limit > 0:
+        results = results[:limit]
+    return ScanReport(results=results, skipped=skipped)

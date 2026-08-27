@@ -67,7 +67,7 @@ PYTHONPATH=src python3 -m akb2.retrieval.cli search "zzz-wubqi-nohit" --vault-ro
 PYTHONPATH=src python3 -m akb2.retrieval.cli search "retrieval" --limit 1 --vault-root "$AKB2_ROOT"
 ```
 
-`--limit` 只截断排序后的结果，不影响匹配与排序本身。
+只有用户显式传正整数 `--limit` 才截断排序后的结果；缺省或不传 = 全部命中。不影响匹配与排序本身。
 
 ### 3.5 经 env 解析 vault 根（不传 --vault-root）
 
@@ -125,7 +125,7 @@ RuntimeError: vault.toml akb2_root=/Volumes/AKB2/Obsidian/Praise Space/AKB2.0 �
 | 字段 | 类型 | 含义 |
 |---|---|---|
 | `query` | string | 检索词原样回显 |
-| `limit` | integer | 请求的条数上限回显 |
+| `limit` | integer | 请求的条数上限回显；`0` = 未截断、返回全部命中 |
 | `count` | integer | 实际返回条数（无命中为零） |
 | `results` | array | 结果数组，按 `score` 降序、同分按 `path` 字典序 |
 
@@ -138,6 +138,8 @@ RuntimeError: vault.toml akb2_root=/Volumes/AKB2/Obsidian/Praise Space/AKB2.0 �
 | `how_density` | string | How 节全文；笔记无 How 节时为空串 |
 | `how_executability` | array[string] | How 节内 inline 反引号命令，去重保序 |
 | `score` | integer | 全部 token 在标题+正文的命中次数之和 |
+| `related_concepts` | array[string] | frontmatter `related_concepts`，去重保序 |
+| `graph_links` | array[string] | 笔记里的 `[[wikilink]]`，去重保序 |
 
 结构骨架（占位符示意，实际值以运行结果为准）：
 
@@ -152,7 +154,9 @@ RuntimeError: vault.toml akb2_root=/Volumes/AKB2/Obsidian/Praise Space/AKB2.0 �
       "title": "<string>",
       "how_density": "<string>",
       "how_executability": ["<string>"],
-      "score": <int>
+      "score": <int>,
+      "related_concepts": ["<string>"],
+      "graph_links": ["<string>"]
     }
   ]
 }
@@ -163,7 +167,7 @@ RuntimeError: vault.toml akb2_root=/Volumes/AKB2/Obsidian/Praise Space/AKB2.0 �
 - 检索词按空白分词，全部 token 命中才收录（AND 语义）；大小写不敏感。
 - 匹配域 = 标题（frontmatter 提取值）+ 正文全文；frontmatter 其余字段不参与匹配。
 - `score` = 各 token 在匹配域出现次数之和，出现多的排前。
-- `--limit` 缺省值 10；为零或负数时直接返回空结果；只截断、不参与排序。
+- `--limit` 缺省 0 = 返回全部命中。只有显式正整数才截断；零或负数与缺省相同，不截断。只截断、不参与排序。图谱跟读不要按条数截断。
 - How 节识别两种形态：`### 操作步骤`（新链路）或标题含 `(How 模板)` 的
   `##` 节（历史黄金样张）；都没有时 How 两字段为空，不编造内容。
 - How 节内的 code fence 块：块内反引号片段不算可执行命令，块内行也不

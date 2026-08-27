@@ -3,7 +3,7 @@ const $ = (s) => document.querySelector(s);
 async function load() {
   const cfg = await (await fetch('/kv')).json();
   $('#host').value = cfg.host || '172.26.163.197';
-  $('#port').value = cfg.port || 8787;
+  $('#port').value = cfg.port || 8788;
   const secrets = await (await fetch('/secrets')).json();
   const row = Array.isArray(secrets)
     ? secrets.find((item) => item.key === 'retrieval_token')
@@ -14,7 +14,7 @@ async function load() {
 
 $('#save').onclick = async () => {
   const host = $('#host').value.trim() || '172.26.163.197';
-  const port = Number($('#port').value || 8787);
+  const port = Number($('#port').value || 8788);
   await fetch('/kv', {
     method: 'PUT',
     body: JSON.stringify({ host, port }),

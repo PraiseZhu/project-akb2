@@ -136,10 +136,56 @@ def test_worker_live_search_and_get(tmp_path: Path) -> None:
         body = result["result"]
         assert body["source"] == "live"
         assert body["count"] == 1
+        assert body["limit"] == 5
         path = body["results"][0]["path"]
         got = _rpc(proc, "get", {"path": path, "host": host, "port": port}, token=TOKEN)
         assert got["result"]["source"] == "live"
         assert "pytest -q tests/" in got["result"]["body"]
+    finally:
+        proc.kill()
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_worker_omitted_limit_returns_all_live_hits(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    sources = vault / "wiki" / "sources"
+    for i in range(3):
+        sources.joinpath(f"graph-{i}.md").write_text(
+            f"""---
+title: Graph {i}
+page_status: active
+status: active
+gate_decision: active
+reviewer: akb2-quality-loop-v1
+related_concepts: ["[[concept-harness-engineering]]"]
+---
+
+graph 笔记 {i} [[quality-gate]]
+""",
+            encoding="utf-8",
+        )
+    httpd = build_server(bind="127.0.0.1", port=0, vault_root=vault, token=TOKEN)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    host, port = httpd.server_address
+    proc = _spawn_worker(os.environ.copy())
+    try:
+        result = _rpc(
+            proc,
+            "search",
+            {"query": "graph", "host": host, "port": port},
+            token=TOKEN,
+        )
+        body = result["result"]
+        assert body["source"] == "live"
+        assert body["limit"] == 0
+        assert body["count"] == 3
+        assert all("quality-gate" in hit["graph_links"] for hit in body["results"])
+        assert all(
+            "concept-harness-engineering" in hit["related_concepts"]
+            for hit in body["results"]
+        )
     finally:
         proc.kill()
         httpd.shutdown()

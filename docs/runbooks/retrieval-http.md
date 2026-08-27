@@ -26,7 +26,8 @@ PYTHONPATH=src python3 -m akb2.retrieval.cli serve --vault-root "$AKB2_ROOT"
 | GET | `/v1/note?path=` | Bearer | 读一篇 promoted 笔记 |
 
 检索 JSON 与 CLI 契约相同（`query` / `limit` / `count` / `results`），另加 `source=live`。
-`results` 单条字段仍是 `path` / `title` / `how_density` / `how_executability` / `score`。
+`results` 单条字段是 `path` / `title` / `how_density` / `how_executability` / `score` / `related_concepts` / `graph_links`。
+缺省不传 `limit`（或 `limit<=0`）返回全部命中；只有调用方显式给正整数才截断。
 
 无凭证或凭证不对 → HTTP 401，body `{"error":"unauthorized"}`，不降级成空结果。
 

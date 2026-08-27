@@ -36,11 +36,12 @@ slug: addy-osmani-loop-engineering
 gate_decision: active
 reviewer: akb2-quality-loop-v1
 reviewed_at: 2026-06-11
+related_concepts: ["[[concept-harness-engineering]]"]
 ---
 
 ## 论证与解释
 
-正文 loop engineering。
+正文 loop engineering。见 [[loop-engineering]]。
 
 ### 操作步骤
 
@@ -162,6 +163,48 @@ def test_search_post_returns_cli_contract_plus_source(tmp_path: Path) -> None:
         hit = payload["results"][0]
         assert hit["path"] == "wiki/sources/addy-osmani-loop-engineering.md"
         assert "pytest -q tests/" in hit["how_executability"]
+        assert hit["related_concepts"] == ["concept-harness-engineering"]
+        assert "loop-engineering" in hit["graph_links"]
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_search_default_limit_returns_all_hits(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    sources = vault / "wiki" / "sources"
+    for i in range(3):
+        sources.joinpath(f"graph-note-{i}.md").write_text(
+            f"""---
+title: Graph note {i}
+page_status: active
+status: active
+gate_decision: active
+reviewer: akb2-quality-loop-v1
+related_concepts: ["[[concept-agent-collaboration]]"]
+---
+
+graph 正文 {i} 见 [[quality-gate]]。
+""",
+            encoding="utf-8",
+        )
+    httpd, base = _start(vault)
+    try:
+        status, payload = _req(
+            f"{base}/v1/search",
+            token=TOKEN,
+            method="POST",
+            data=json.dumps({"query": "graph"}).encode(),
+        )
+        assert status == 200
+        assert payload["limit"] == 0
+        assert payload["count"] == 3
+        assert {hit["title"] for hit in payload["results"]} == {
+            "Graph note 0",
+            "Graph note 1",
+            "Graph note 2",
+        }
+        assert all("quality-gate" in hit["graph_links"] for hit in payload["results"])
     finally:
         httpd.shutdown()
         httpd.server_close()
