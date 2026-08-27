@@ -30,6 +30,7 @@ slug: addy-osmani-loop-engineering
 gate_decision: active
 reviewer: akb2-quality-loop-v1
 reviewed_at: 2026-06-11
+related_concepts: ["[[concept-harness-engineering]]", "[[concept-agent-collaboration]]"]
 source_refs:
   - raw/addy-osmani-loop-engineering--raw--2026-06-11.md
 ---
@@ -51,7 +52,7 @@ Loop engineering 是把任务做成有目标、验证与停止条件的受控闭
 
 ## 适用边界
 
-适用于可机器验证的工程 loop。
+适用于可机器验证的工程 loop。见 [[concept-context-engineering]] 与 [[loop-engineering]]。
 """
 
 _STAGING_FM = """---
@@ -369,6 +370,95 @@ def test_and_semantics_and_limit(tmp_path):
         "wiki/sources/mcp-readonly-server.md",
     }
     assert len(engine.search(root, "engineering", limit=1)) == 1
+    # 缺省 / limit<=0：不截断，返回全部命中
+    assert len(engine.search(root, "engineering")) == 2
+    assert len(engine.search(root, "engineering", limit=0)) == 2
+
+
+def test_graph_fields_from_related_concepts_and_wikilinks(tmp_path):
+    root = _make_vault(tmp_path)
+    hit = engine.search(root, "loop engineering")[0]
+    assert hit.related_concepts == [
+        "concept-harness-engineering",
+        "concept-agent-collaboration",
+    ]
+    assert "concept-context-engineering" in hit.graph_links
+    assert "loop-engineering" in hit.graph_links
+    assert hit.graph_links == list(dict.fromkeys(hit.graph_links))
+
+
+def test_related_concepts_yaml_block_list_and_wikilink_alias(tmp_path):
+    """生成器常用 YAML block list；alias 不得拆成 Loop / Engineering。"""
+    root = tmp_path / "vault"
+    sources = root / "wiki" / "sources"
+    sources.mkdir(parents=True)
+    sources.joinpath("graph-block.md").write_text(
+        """---
+title: Graph block
+page_status: active
+status: active
+gate_decision: active
+reviewer: akb2-quality-loop-v1
+related_concepts:
+  - [[concept-harness-engineering]]
+  - [[loop_engineering|Loop Engineering]]
+---
+
+graph 正文见 [[quality-gate]]。
+""",
+        encoding="utf-8",
+    )
+    sources.joinpath("graph-indentless.md").write_text(
+        """---
+title: Graph indentless
+page_status: active
+status: active
+gate_decision: active
+reviewer: akb2-quality-loop-v1
+related_concepts:
+- '[[concept-harness-engineering]]'
+- '[[loop_engineering|Loop Engineering]]'
+---
+
+graph indentless 正文。
+""",
+        encoding="utf-8",
+    )
+    sources.joinpath("graph-alias-flow.md").write_text(
+        """---
+title: Graph alias flow
+page_status: active
+status: active
+gate_decision: active
+reviewer: akb2-quality-loop-v1
+related_concepts: ["[[loop_engineering|Loop Engineering]]", "[[quality-gate]]"]
+---
+
+graph 正文。
+""",
+        encoding="utf-8",
+    )
+    block = engine.search(root, "graph block")[0]
+    assert block.related_concepts == [
+        "concept-harness-engineering",
+        "concept-loop-engineering",
+    ]
+    assert "Loop" not in block.related_concepts
+    assert "Engineering" not in block.related_concepts
+    assert "quality-gate" in block.graph_links
+    assert "Loop" not in block.graph_links
+    assert "Engineering" not in block.graph_links
+    indentless = engine.search(root, "graph indentless")[0]
+    assert indentless.related_concepts == [
+        "concept-harness-engineering",
+        "concept-loop-engineering",
+    ]
+    assert "Loop" not in indentless.related_concepts
+    assert "Engineering" not in indentless.related_concepts
+    flow = engine.search(root, "graph alias")[0]
+    assert flow.related_concepts == ["concept-loop-engineering", "quality-gate"]
+    assert "Loop" not in flow.related_concepts
+    assert "Engineering" not in flow.related_concepts
 
 
 def test_no_match_and_missing_sources_dir(tmp_path):
@@ -457,7 +547,17 @@ def test_cli_search_json_contract(repo_root, tmp_path):
     assert payload["limit"] == 5
     assert payload["count"] == 1
     (hit,) = payload["results"]
-    assert set(hit) == {"path", "title", "how_density", "how_executability", "score"}
+    assert set(hit) == {
+        "path",
+        "title",
+        "how_density",
+        "how_executability",
+        "score",
+        "related_concepts",
+        "graph_links",
+    }
+    assert "concept-harness-engineering" in hit["related_concepts"]
+    assert "concept-context-engineering" in hit["graph_links"]
     assert hit["path"] == "wiki/sources/addy-osmani-loop-engineering.md"
     assert hit["title"] == "Loop Engineering 黄金样张"
     assert "pytest -q tests/" in hit["how_density"]

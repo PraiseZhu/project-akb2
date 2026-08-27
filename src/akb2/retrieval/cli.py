@@ -24,7 +24,12 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     search_p = sub.add_parser("search", help="关键词检索 promoted 笔记")
     search_p.add_argument("query", help="检索词（空白分词，AND 匹配）")
-    search_p.add_argument("--limit", type=int, default=10, help="返回条数上限")
+    search_p.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="返回条数上限；缺省 0 = 全部命中（图谱跟读不截断）。只有显式正整数才截断",
+    )
     search_p.add_argument(
         "--output",
         choices=["json"],

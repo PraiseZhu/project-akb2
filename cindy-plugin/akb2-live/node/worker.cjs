@@ -6,9 +6,8 @@ const path = require('node:path');
 const readline = require('node:readline');
 
 const DEFAULT_HOST = '172.26.163.197';
-const DEFAULT_PORT = 8787;
-const DEFAULT_LIMIT = 10;
-const MAX_LIMIT = 50;
+const DEFAULT_PORT = 8788;
+const DEFAULT_LIMIT = 0;
 const REQUEST_TIMEOUT_MS = 8000;
 const SNAPSHOT_PATH =
   process.env.AKB2_PLUGIN_SNAPSHOT || path.join(__dirname, '..', 'snapshot.json');
@@ -24,9 +23,10 @@ function secretToken(request) {
 }
 
 function capLimit(raw) {
+  if (raw === undefined || raw === null || raw === '') return DEFAULT_LIMIT;
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return DEFAULT_LIMIT;
-  return Math.min(Math.floor(n), MAX_LIMIT);
+  return Math.floor(n);
 }
 
 function loadSnapshot() {
@@ -58,10 +58,12 @@ function snapshotSearch(query, limit) {
       how_density: note.how_density || '',
       how_executability: note.how_executability || [],
       score,
+      related_concepts: note.related_concepts || [],
+      graph_links: note.graph_links || [],
     });
   }
   hits.sort((a, b) => b.score - a.score || String(a.path).localeCompare(String(b.path)));
-  const results = hits.slice(0, limit);
+  const results = limit > 0 ? hits.slice(0, limit) : hits;
   return { query, limit, count: results.length, results, source: 'snapshot' };
 }
 
@@ -76,6 +78,8 @@ function snapshotGet(relPath) {
     body: note.body || '',
     how_density: note.how_density || '',
     how_executability: note.how_executability || [],
+    related_concepts: note.related_concepts || [],
+    graph_links: note.graph_links || [],
   };
 }
 

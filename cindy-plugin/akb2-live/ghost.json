@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "id": "akb2-live",
   "name": "AKB2 知识库",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "在 Cindy 里检索 Mini 上实时的 AKB2 promoted 笔记；连不上时用包内快照兜底。",
   "whenToUse": "需要搜索 AKB2 知识库、promoted 笔记、操作步骤、How 节，或用户说 akb / 知识库 / Mini 知识库时使用。",
   "kind": "chip",
@@ -33,7 +33,7 @@
   "tools": [
     {
       "name": "search",
-      "description": "搜索 AKB2 已升格（promoted）笔记。空白分词 AND 匹配标题和正文，返回 How 节与可执行命令。优先打 Mini 实时库，连不上时用包内快照。",
+      "description": "搜索 AKB2 已升格（promoted）笔记。空白分词 AND 匹配标题和正文，返回 How 节、可执行命令、related_concepts 与 [[图谱链接]]。默认返回全部命中，不按条数截断；只有用户明确要 N 条时才传 limit。优先打 Mini 实时库，连不上时用包内快照。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -43,7 +43,7 @@
           },
           "limit": {
             "type": "integer",
-            "description": "返回条数上限，缺省 10，最大 50"
+            "description": "可选。只有用户明确要 N 条时才传；缺省或不传 = 全部命中"
           }
         },
         "required": ["query"]

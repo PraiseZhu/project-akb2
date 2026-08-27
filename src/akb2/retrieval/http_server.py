@@ -24,8 +24,7 @@ from akb2.retrieval import engine
 MIN_TOKEN_LEN = 32
 DEFAULT_BIND = "127.0.0.1"
 DEFAULT_PORT = 8787
-DEFAULT_LIMIT = 10
-MAX_LIMIT = 50
+DEFAULT_LIMIT = 0
 MAX_QUERY_CHARS = 500
 MAX_BODY_BYTES = 64 * 1024
 FORBIDDEN_BINDS = frozenset({"0.0.0.0", "::", "[::]", "*", ""})
@@ -76,13 +75,16 @@ def _token_matches(provided: str, expected: str) -> bool:
     return hmac.compare_digest(a, b)
 
 
-def search_payload(root: Path, query: str, limit: int) -> dict[str, Any]:
-    """与 CLI JSON 契约同四键，另加 source=live。"""
-    capped = DEFAULT_LIMIT if limit <= 0 else min(limit, MAX_LIMIT)
-    report = engine.scan_report(root, query, limit=capped)
+def search_payload(root: Path, query: str, limit: int | None) -> dict[str, Any]:
+    """与 CLI JSON 契约同四键，另加 source=live。
+
+    limit 缺省 / <=0：返回全部命中。只有调用方显式给正整数才截断。
+    """
+    effective = None if limit is None or limit <= 0 else limit
+    report = engine.scan_report(root, query, limit=effective)
     return {
         "query": query,
-        "limit": capped,
+        "limit": 0 if effective is None else effective,
         "count": len(report.results),
         "results": [r.to_dict() for r in report.results],
         "source": "live",

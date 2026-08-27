@@ -9,7 +9,7 @@ cindy.onHostMessage(async function (msg) {
     cfg = {};
   }
   const host = String(cfg.host || '172.26.163.197');
-  const port = Number(cfg.port || 8787);
+  const port = Number(cfg.port || 8788);
   const method = msg.tool === 'get' ? 'get' : 'search';
   const params =
     method === 'get'

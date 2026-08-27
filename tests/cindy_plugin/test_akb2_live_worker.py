@@ -136,10 +136,56 @@ def test_worker_live_search_and_get(tmp_path: Path) -> None:
         body = result["result"]
         assert body["source"] == "live"
         assert body["count"] == 1
+        assert body["limit"] == 5
         path = body["results"][0]["path"]
         got = _rpc(proc, "get", {"path": path, "host": host, "port": port}, token=TOKEN)
         assert got["result"]["source"] == "live"
         assert "pytest -q tests/" in got["result"]["body"]
+    finally:
+        proc.kill()
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_worker_omitted_limit_returns_all_live_hits(tmp_path: Path) -> None:
+    vault = _vault(tmp_path)
+    sources = vault / "wiki" / "sources"
+    for i in range(3):
+        sources.joinpath(f"graph-{i}.md").write_text(
+            f"""---
+title: Graph {i}
+page_status: active
+status: active
+gate_decision: active
+reviewer: akb2-quality-loop-v1
+related_concepts: ["[[concept-harness-engineering]]"]
+---
+
+graph 笔记 {i} [[quality-gate]]
+""",
+            encoding="utf-8",
+        )
+    httpd = build_server(bind="127.0.0.1", port=0, vault_root=vault, token=TOKEN)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    host, port = httpd.server_address
+    proc = _spawn_worker(os.environ.copy())
+    try:
+        result = _rpc(
+            proc,
+            "search",
+            {"query": "graph", "host": host, "port": port},
+            token=TOKEN,
+        )
+        body = result["result"]
+        assert body["source"] == "live"
+        assert body["limit"] == 0
+        assert body["count"] == 3
+        assert all("quality-gate" in hit["graph_links"] for hit in body["results"])
+        assert all(
+            "concept-harness-engineering" in hit["related_concepts"]
+            for hit in body["results"]
+        )
     finally:
         proc.kill()
         httpd.shutdown()
@@ -160,6 +206,8 @@ def test_worker_snapshot_fallback_when_live_down(tmp_path: Path) -> None:
                         "body": "snapshot loop engineering 正文",
                         "how_density": "1. 跑 `pytest -q tests/`",
                         "how_executability": ["pytest -q tests/"],
+                        "related_concepts": ["concept-harness-engineering"],
+                        "graph_links": ["quality-gate"],
                     }
                 ]
             }
@@ -181,6 +229,23 @@ def test_worker_snapshot_fallback_when_live_down(tmp_path: Path) -> None:
         assert body["degraded"] is True
         assert body["count"] == 1
         assert body["results"][0]["title"] == "Loop Engineering 黄金样张"
+        assert body["results"][0]["related_concepts"] == ["concept-harness-engineering"]
+        assert body["results"][0]["graph_links"] == ["quality-gate"]
+        got = _rpc(
+            proc,
+            "get",
+            {
+                "path": "wiki/sources/addy-osmani-loop-engineering.md",
+                "host": "127.0.0.1",
+                "port": 1,
+            },
+            token=TOKEN,
+        )
+        snap = got["result"]
+        assert snap["source"] == "snapshot"
+        assert snap["degraded"] is True
+        assert snap["related_concepts"] == ["concept-harness-engineering"]
+        assert snap["graph_links"] == ["quality-gate"]
     finally:
         proc.kill()
 
