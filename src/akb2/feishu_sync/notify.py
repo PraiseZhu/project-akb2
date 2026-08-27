@@ -47,9 +47,8 @@ def _write_alert_log(msg: str) -> None:
         pass
 
 
-def _local_notify(msg: str) -> None:
+def _local_notify(msg: str, title: str = "简报飞书同步失败") -> None:
     """macOS 本地通知 —— 不依赖飞书的独立告警通道。"""
-    title = "简报飞书同步失败"
     body = msg.replace('"', "'")[:200]
     try:
         subprocess.run(
@@ -77,21 +76,33 @@ def _is_feishu_error(error: Exception | None, msg: str = "") -> bool:
     return False
 
 
-def alert_failure(msg: str, *, error: Exception | None = None) -> None:
+def alert_title_for(msg: str) -> str:
+    """按真因分级标题：上游 skip/阻断 ≠ 飞书发送失败。"""
+    lowered = msg.lower()
+    if "skipped:" in lowered or "blocked:" in lowered or "真因: skipped" in msg:
+        return "简报上游未产出"
+    if "缺失" in msg and "飞书发送失败" not in msg:
+        return "简报上游未产出"
+    return "简报飞书同步失败"
+
+
+def alert_failure(msg: str, *, error: Exception | None = None, title: str | None = None) -> None:
     """失败告警：双通道，飞书本身不可达时不复用受限飞书 API。
 
     Args:
         msg: 失败摘要（面向用户/日志）。
         error: 可选的结构化错误对象（FeishuSendError 等）；提供时用于精确判定
             是否飞书侧错误。未提供时从 msg 文本判定。
+        title: 可选覆盖标题；缺省按 msg 真因分级。
     """
+    resolved_title = title or alert_title_for(msg)
     _write_alert_log(msg)
     log_line(f"FAILED — {msg}")
 
     # SC-8：飞书限流/认证/不可达 → 不复用受限飞书 API 发 DM（只本地告警）
     if _is_feishu_error(error, msg):
         _write_alert_log(f"alert DM suppressed (feishu error): {msg}")
-        _local_notify(msg)
+        _local_notify(msg, title=resolved_title)
         return
 
     # 通道①：飞书私信（best-effort，复用 SC-6 退避；失败不掩盖原错）
@@ -99,11 +110,11 @@ def alert_failure(msg: str, *, error: Exception | None = None) -> None:
         from . import config
         from .feishu.send import send_text_dm
 
-        send_text_dm(config.dm_open_id(), f"⚠️ 简报飞书同步失败\n{msg}")
+        send_text_dm(config.dm_open_id(), f"⚠️ {resolved_title}\n{msg}")
     except Exception as exc:  # noqa: BLE001 — 告警通道失败必须吞掉；飞书侧失败则抑制
         if _is_feishu_error(exc):
             _write_alert_log(f"alert DM suppressed (feishu error): {exc}")
         # 飞书通道挂了不影响本地通道
 
     # 通道②：本地通知（独立于飞书，飞书挂了也能触达）
-    _local_notify(msg)
+    _local_notify(msg, title=resolved_title)

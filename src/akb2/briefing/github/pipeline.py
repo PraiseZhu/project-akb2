@@ -284,12 +284,17 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
         )
         _novelty_db.parent.mkdir(parents=True, exist_ok=True)
     pre_novelty_count = len(aggregated)  # SC-6: capture before dedup for diagnostics
+    pre_novelty_aggregated = dict(aggregated)
+    window_blocked: dict = {}
     _novelty = DedupStore(_novelty_db)
     try:
-        aggregated = {
-            u: d for u, d in aggregated.items()
-            if not _novelty.is_duplicate(u, d.get("first_mention_at"))
-        }
+        kept = {}
+        for u, d in aggregated.items():
+            if not _novelty.is_duplicate(u, d.get("first_mention_at")):
+                kept[u] = d
+            elif _novelty.in_dedup_window(u):
+                window_blocked[u] = d
+        aggregated = kept
         # SC-1 fix: post-novelty L2 supplement for layer1 dead-zone.
         # Pre-novelty ≥10 but novelty dedup may reduce below 10; try layer2 before giving up.
         if len(aggregated) < _IDEAL_REPOS_FOR_BRIEFING and fallback_layer == "layer1":
@@ -310,6 +315,21 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
                     fallback_layer = "layer1+2"
     finally:
         _novelty.close()
+
+    # 08-27：layer2 兜底被 7 天窗口（不变式 1）剪到 < MIN 时，只回填窗口内仓。
+    # 窗口外同一旧提及（不变式 2）仍拦，避免静默复推。
+    layer2_novelty_bypass = False
+    if (
+        len(aggregated) < _MIN_REPOS_FOR_BRIEFING
+        and fallback_layer == "layer2"
+        and len(pre_novelty_aggregated) >= _MIN_REPOS_FOR_BRIEFING
+        and window_blocked
+    ):
+        restored = dict(aggregated)
+        restored.update(window_blocked)
+        if len(restored) >= _MIN_REPOS_FOR_BRIEFING:
+            aggregated = restored
+            layer2_novelty_bypass = True
 
     if len(aggregated) < _MIN_REPOS_FOR_BRIEFING:
         _emit_sc7_metrics(_make_zero_sc7_metrics())
@@ -387,14 +407,19 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
 
     # 回填后的身份必须重新过 novelty：301 改名（codedrobe/codex-skill →
     # CodeDrobe/skills）时旧名不在账本里、新名可能已推过，只查旧名等于漏判。
+    # layer2 窗口内 bypass 的仓此处不再剪；窗口外同一旧提及仍拦。
     if enriched:
         _novelty = DedupStore(_novelty_db)
         try:
             kept = []
             for data in enriched:
-                if _novelty.is_duplicate(data["repo_url"], data.get("first_mention_at")):
+                url = data["repo_url"]
+                if layer2_novelty_bypass and _novelty.in_dedup_window(url):
+                    kept.append(data)
+                    continue
+                if _novelty.is_duplicate(url, data.get("first_mention_at")):
                     sys.stderr.write(
-                        f"WARNING [github-pipeline]: 回填后身份 {data['repo_url']} "
+                        f"WARNING [github-pipeline]: 回填后身份 {url} "
                         f"已推过（原始 {data.get('requested_repo_url')}）— 剔除\n"
                     )
                     continue

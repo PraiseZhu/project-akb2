@@ -155,6 +155,15 @@ class DedupStore:
             return True
         return False
 
+    def in_dedup_window(self, normalized_url: str) -> bool:
+        """只判不变式 1：窗口内推过。窗口外的旧提及仍由 is_duplicate 拦。"""
+        cutoff = (datetime.now(UTC) - timedelta(days=self._window_days)).isoformat()
+        row = self._conn.execute(
+            "SELECT seen_at FROM seen_urls WHERE normalized_url = ?",
+            (normalized_url,),
+        ).fetchone()
+        return bool(row) and row[0] >= cutoff
+
     def mark_seen(self, normalized_url: str,
                   first_mention_at: str | None = None) -> None:
         """记录一次推送：推送时刻 + 本次推送依据的 first_mention_at。"""

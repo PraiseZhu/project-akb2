@@ -76,8 +76,8 @@ jobs:
     expected_schedule:
       kind: calendar
       entries:
-        - Hour: 10
-          Minute: 0
+        - Hour: 11
+          Minute: 15
     expected_env_keys:
       - PATH
       - PYTHONPATH

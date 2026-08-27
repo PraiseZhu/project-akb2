@@ -621,7 +621,7 @@ def test_launchctl_probe_is_wall_clock_bounded(tmp_path: Path) -> None:
 # strict expat 拒解，但 plutil 与 launchd 自身的加载器都接受 —— 实测 launchd/ 下
 # 9 个模板 `plutil -lint` 全 OK。逐字取自 launchd/com.akb2.feishu-sync.plist。
 _BARE_DASH_COMMENT = (
-    "  feishu-briefing-sync 每日 10:00 调度（prod：发 XD WEB 群）。\n"
+    "  feishu-briefing-sync 每日 11:15 调度（prod：发 XD WEB 群）。\n"
     "  注意：本 plist 仅在 merge 部署后才 launchctl load；dev 期手动跑 wrapper"
     "（默认 --target dm）。"
 )

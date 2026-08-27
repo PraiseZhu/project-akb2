@@ -626,6 +626,56 @@ class TestSC3PartialOutput:
 
         assert rc != 0  # SC-4: skip 路径未交付 → fail-visible 非 0
 
+    def test_layer2_fallback_writes_when_novelty_drops_below_min(self, tmp_path, monkeypatch):
+        """08-27 事故：layer2 16 仓被 7 天 novelty 剪到 4（< MIN=6）仍须写出降级稿。
+
+        layer1 空、整批来自 trending HTML 时，再用主推 novelty 窗剪仓 = 结构性空窗。
+        真新仓不足 6 的 layer1 路径仍 skip（见 test_below_min_repos_still_skips）。
+        """
+        from datetime import UTC, date, datetime
+        from unittest.mock import patch
+
+        from akb2.briefing.github.dedup_sqlite import DedupStore
+        from akb2.briefing.github.intake import Candidate
+        from akb2.briefing.github.pipeline import run_pipeline
+
+        now = datetime.now(UTC).isoformat()
+        seen_urls = [f"https://github.com/seen/repo{i}" for i in range(12)]
+        fresh_urls = [f"https://github.com/fresh/repo{i}" for i in range(4)]
+        l2_cands = [
+            Candidate(u, "@github_trending", None, now, None)
+            for u in seen_urls + fresh_urls
+        ]
+
+        vault = tmp_path / "vault"
+        out_dir = vault / "Praise Space/AKB2.0/AI TRENDS/GitHub"
+        out_dir.mkdir(parents=True)
+        novelty_db = tmp_path / "novelty.sqlite"
+        store = DedupStore(novelty_db)
+        for u in seen_urls:
+            store.mark_seen(u)
+        store.close()
+        monkeypatch.setenv("AKB2_NOVELTY_DB", str(novelty_db))
+        monkeypatch.setenv("VAULT_ROOT", str(vault))
+
+        with (
+            patch("akb2.briefing.github.pipeline._real_intake",
+                  return_value=(l2_cands, "layer2", {})),
+            patch("akb2.briefing.github.pipeline.enrich", side_effect=_mock_enrich),
+            patch("akb2.briefing.github.pipeline.synthesize", side_effect=_mock_synth),
+        ):
+            rc = run_pipeline(mock=False)
+
+        assert rc == 0, "layer2 降级稿被 novelty 剪到 <6 仍应写出，而不是 skip"
+        today = date.today().isoformat()
+        md_path = out_dir / f"{today} GitHub Briefing.md"
+        json_path = out_dir / f"{today} GitHub Briefing.json"
+        assert md_path.exists(), f"Expected md output: {md_path}"
+        assert json_path.exists(), f"Expected json output: {json_path}"
+        with open(json_path) as f:
+            data = json.load(f)
+        assert len(data["top_repos"]) >= 4
+
 
 # ── SC-4: github 未交付 fail-visible ───────────────────────────────────────
 

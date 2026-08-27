@@ -28,7 +28,10 @@ def _github_validator() -> Draft7Validator:
 def gate_decision(b: Briefing) -> tuple[bool, str]:
     if b.kind == "ai_trends":
         fm = b.frontmatter
-        passed = fm.get("audit_verdict") == "pass" and fm.get("proposed_gate_decision") == "active"
+        passed = (
+            fm.get("audit_verdict") in {"pass", "warn"}
+            and fm.get("proposed_gate_decision") == "active"
+        )
         return passed, "audit/gate 未过"
 
     if b.kind != "github":

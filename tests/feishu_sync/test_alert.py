@@ -20,7 +20,9 @@ def test_alert_dual_channel_when_feishu_down(monkeypatch, tmp_path, feishu_env):
 
     monkeypatch.setattr(send_mod, "send_text_dm", boom)
     called = {"local": False}
-    monkeypatch.setattr(notify, "_local_notify", lambda msg: called.__setitem__("local", True))
+    monkeypatch.setattr(
+        notify, "_local_notify", lambda msg, title=None: called.__setitem__("local", True)
+    )
 
     # 飞书通道抛错也不应让 alert_failure 崩
     notify.alert_failure("boom-msg")
@@ -58,7 +60,9 @@ def test_alert_feishu_error_does_not_reuse_dm(monkeypatch, tmp_path, feishu_env)
     dm_called: list = []
     monkeypatch.setattr(send_mod, "send_text_dm", lambda *a, **k: dm_called.append(1))
     local_called: list = []
-    monkeypatch.setattr(notify, "_local_notify", lambda msg: local_called.append(msg))
+    monkeypatch.setattr(
+        notify, "_local_notify", lambda msg, title=None: local_called.append(msg)
+    )
 
     notify.alert_failure(
         "rate-limited send",
@@ -78,11 +82,42 @@ def test_alert_non_feishu_error_still_tries_dm(monkeypatch, tmp_path, feishu_env
 
     dm_called: list = []
     monkeypatch.setattr(send_mod, "send_text_dm", lambda *a, **k: dm_called.append(1))
-    monkeypatch.setattr(notify, "_local_notify", lambda msg: None)
+    monkeypatch.setattr(notify, "_local_notify", lambda msg, title=None: None)
 
     notify.alert_failure("github 缺失（期望路径: /x/2026-06-30 GitHub Briefing.md）")
 
     assert dm_called, "非飞书错误应仍尝试飞书 DM"
+
+
+def test_upstream_skip_alert_title_is_not_sync_failure(monkeypatch, tmp_path, feishu_env):
+    """08-27：上游 skipped 不得套「简报飞书同步失败」标题。
+
+    飞书同步本身成功发出了「github 缺失」诊断；把 skip 打成 sync fail
+    会把运维引去查飞书通道，而不是 intake/novelty。
+    """
+    _redirect_logs(monkeypatch, tmp_path)
+    titles: list[str] = []
+    bodies: list[str] = []
+
+    def capture_dm(oid, text):
+        bodies.append(text)
+
+    monkeypatch.setattr(send_mod, "send_text_dm", capture_dm)
+    monkeypatch.setattr(
+        notify, "_local_notify",
+        lambda msg, title="简报飞书同步失败": titles.append(title),
+    )
+
+    notify.alert_failure(
+        "github 缺失（期望路径: /x/2026-08-27 GitHub Briefing.md）；"
+        "真因: skipped: too_few_aggregated_repos",
+        title="简报上游未产出",
+    )
+
+    assert bodies, "仍应发 DM"
+    assert all("简报飞书同步失败" not in b for b in bodies)
+    assert any("简报上游未产出" in b for b in bodies)
+    assert titles == ["简报上游未产出"]
 
 
 def test_dry_run_smoke_no_feishu_send_or_alert_dm(monkeypatch, tmp_path, vault, feishu_env):

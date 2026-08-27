@@ -25,7 +25,7 @@
 告警出口:
     复用 `feishu_sync.feishu.send.send_text_dm`(自带 9499/429 退避重试 + 凭证走
     `feishu_sync.config` 的 `~/.akb2-secrets.sh` env 机制)。**不复用**
-    `feishu_sync.notify.alert_failure`:它的固定标题/前缀是"简报飞书同步失败",
+    `feishu_sync.notify.alert_failure`:它按真因分级标题，默认前缀是"简报飞书同步失败",
     套在入库断流上属于错误归因(宪法 P4 要求失败可见,不是失败可见但说错地方)。
     飞书本身不可达时降级到 macOS 本地通知 + stderr + 退出码 1(不静默)。
 

@@ -18,7 +18,7 @@
   | 链路              | Label                           | 触发时间 (CST) | 触发时间 (UTC) | AVOID_WINDOW (UTC ±15min) |
   | github_briefing   | com.akb2.github_briefing        | 05:30          | 21:30 (前日)   | 21:15 - 21:45             |
   | briefing          | com.akb2.briefing               | 07:30          | 23:30 (前日)   | 23:15 - 23:45             |
-  | feishu-sync       | com.akb2.feishu-sync            | 10:00          | 02:00          | 01:45 - 02:15             |
+  | feishu-sync       | com.akb2.feishu-sync            | 11:15          | 03:15          | 03:00 - 03:30             |
   | main-pipeline     | com.akb2.main-pipeline          | 常驻 (KeepAlive)| N/A           | 三窗口内暂停取新队列      |
 
   避让规则: 在以上三个 AVOID_WINDOW 内，runner 暂停从 raw 目录取新队列，
