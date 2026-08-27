@@ -161,6 +161,8 @@ fi
 
 # Verify — AND 语义：两条断言分别 grep，任一不满足即失败。
 # 旧版是 `grep -E 'daily_briefing\.sh|hour = 7'`（OR），只要引用了脚本就算过，
+# 调度锚必须对得上 `launchctl print` 的真实字段（`"Hour" => N`），
+# 写成 `hour = N` 会在 macOS 上把刚装上的 job 误判失败并回滚。
 # 调度断言实际从未生效；且两个 token 都硬编码成 social 的值，`--plist-src` 换模板后
 # 必然验证失败。现在两个 token 都从**模板**派生（见 akb2_plist_identity）。
 #
