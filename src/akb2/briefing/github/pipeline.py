@@ -207,12 +207,24 @@ def _merge_canonical(existing: dict, incoming: dict) -> None:
 
     直接丢弃后来者会丢 mention 与 engagement 证据，故合并而非覆盖；聚合语义与
     `_aggregate` 保持一致（mention 累加、mentioner 去重、first_mention 取最早、
-    engagement 取 MAX）。
+    engagement 取 MAX）。来源 URL 全部保留，layer2 bypass 才不会因为 alias
+    先于 canonical 进入而丢掉 window_blocked 资格。
     """
     existing["mention_count"] = existing.get("mention_count", 0) + incoming.get("mention_count", 0)
     for m in incoming.get("mentioners", []):
         if m not in existing["mentioners"]:
             existing["mentioners"].append(m)
+    sources = list(existing.get("requested_repo_urls") or [])
+    for src in (
+        incoming.get("requested_repo_url"),
+        *(incoming.get("requested_repo_urls") or []),
+    ):
+        if src and src not in sources:
+            sources.append(src)
+    if sources:
+        existing["requested_repo_urls"] = sources
+        if not existing.get("requested_repo_url"):
+            existing["requested_repo_url"] = sources[0]
     inc_first = incoming.get("first_mention_at")
     cur_first = existing.get("first_mention_at")
     if inc_first and (not cur_first or inc_first < cur_first):
@@ -374,6 +386,11 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
             canonical_url = data.get("repo_url") or repo_url
             data["repo_url"] = canonical_url
             data["requested_repo_url"] = data.get("requested_repo_url") or repo_url
+            data["requested_repo_urls"] = list(
+                dict.fromkeys(
+                    [*(data.get("requested_repo_urls") or []), data["requested_repo_url"], repo_url]
+                )
+            )
             data["mention_count"] = agg["mention_count"]
             data["mentioners"] = list(agg["mentioners"])
             data["first_mention_at"] = agg["first_mention_at"]
@@ -416,8 +433,12 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
             kept = []
             for data in enriched:
                 url = data["repo_url"]
-                intake_url = data.get("requested_repo_url") or url
-                if layer2_novelty_bypass and intake_url in window_blocked:
+                intake_urls = [
+                    url,
+                    *(data.get("requested_repo_urls") or []),
+                    data.get("requested_repo_url") or "",
+                ]
+                if layer2_novelty_bypass and any(src in window_blocked for src in intake_urls if src):
                     kept.append(data)
                     continue
                 if _novelty.is_duplicate(url, data.get("first_mention_at")):
