@@ -78,10 +78,16 @@ def _is_feishu_error(error: Exception | None, msg: str = "") -> bool:
 
 def alert_title_for(msg: str) -> str:
     """按真因分级标题：上游 skip/阻断 ≠ 飞书发送失败。"""
+    if "飞书发送失败" in msg:
+        return "简报飞书同步失败"
     lowered = msg.lower()
-    if "skipped:" in lowered or "blocked:" in lowered or "真因: skipped" in msg:
-        return "简报上游未产出"
-    if "缺失" in msg and "飞书发送失败" not in msg:
+    if (
+        "skipped:" in lowered
+        or "blocked:" in lowered
+        or "真因: skipped" in msg
+        or "skip-gate" in lowered
+        or "缺失" in msg
+    ):
         return "简报上游未产出"
     return "简报飞书同步失败"
 

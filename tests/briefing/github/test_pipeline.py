@@ -676,6 +676,60 @@ class TestSC3PartialOutput:
             data = json.load(f)
         assert len(data["top_repos"]) >= 4
 
+    def test_layer2_bypass_does_not_admit_fresh_alias_of_window_canonical(
+        self, tmp_path, monkeypatch
+    ):
+        """bypass 只放行初次 window_blocked 的仓；fresh alias 301 到窗口内 canonical 仍拦。"""
+        from datetime import UTC, date, datetime
+        from unittest.mock import patch
+
+        from akb2.briefing.github.dedup_sqlite import DedupStore
+        from akb2.briefing.github.intake import Candidate
+        from akb2.briefing.github.pipeline import run_pipeline
+
+        now = datetime.now(UTC).isoformat()
+        seen_urls = [f"https://github.com/seen/repo{i}" for i in range(5)]
+        canonical = "https://github.com/seen/canonical"
+        alias = "https://github.com/fresh/alias"
+        l2_cands = [
+            Candidate(u, "@github_trending", None, now, None)
+            for u in seen_urls + [alias]
+        ]
+
+        vault = tmp_path / "vault"
+        out_dir = vault / "Praise Space/AKB2.0/AI TRENDS/GitHub"
+        out_dir.mkdir(parents=True)
+        novelty_db = tmp_path / "novelty.sqlite"
+        store = DedupStore(novelty_db)
+        for u in seen_urls + [canonical]:
+            store.mark_seen(u)
+        store.close()
+        monkeypatch.setenv("AKB2_NOVELTY_DB", str(novelty_db))
+        monkeypatch.setenv("VAULT_ROOT", str(vault))
+
+        def enrich_with_alias(url):
+            data = _mock_enrich(url)
+            if url == alias:
+                data["repo_url"] = canonical
+                data["requested_repo_url"] = alias
+            return data
+
+        with (
+            patch("akb2.briefing.github.pipeline._real_intake",
+                  return_value=(l2_cands, "layer2", {})),
+            patch("akb2.briefing.github.pipeline.enrich", side_effect=enrich_with_alias),
+            patch("akb2.briefing.github.pipeline.synthesize", side_effect=_mock_synth),
+        ):
+            rc = run_pipeline(mock=False)
+
+        today = date.today().isoformat()
+        json_path = out_dir / f"{today} GitHub Briefing.json"
+        if rc == 0 and json_path.exists():
+            with open(json_path) as f:
+                data = json.load(f)
+            urls = [r["repo_url"] for r in data["top_repos"]]
+            assert canonical not in urls, "fresh alias 不得借 bypass 把窗口内 canonical 写进产物"
+
 
 # ── SC-4: github 未交付 fail-visible ───────────────────────────────────────
 

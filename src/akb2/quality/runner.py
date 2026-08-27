@@ -128,9 +128,9 @@ DISTILL_EXTRACT_WORKER_MODULE: str = "src.akb2.quality.distill_worker"
 # 实测读取自现有 plist (CST=UTC+8):
 #   github_briefing: 05:30 CST = 21:30 UTC → (21, 30)
 #   briefing:        07:30 CST = 23:30 UTC → (23, 30)
-#   feishu-sync:     10:00 CST = 02:00 UTC → (2, 0)
+#   feishu-sync:     11:15 CST = 03:15 UTC → (3, 15)
 AVOID_WINDOWS: list[tuple[int, int]] = [
-    (2, 0),    # feishu-sync (10:00 CST)
+    (3, 15),   # feishu-sync (11:15 CST)
     (21, 30),  # github_briefing (05:30 CST)
     (23, 30),  # briefing (07:30 CST)
 ]

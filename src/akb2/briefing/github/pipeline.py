@@ -373,6 +373,7 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
             # 旧名与新名必须收敛到同一条目，否则同仓双份入库、去重键分裂。
             canonical_url = data.get("repo_url") or repo_url
             data["repo_url"] = canonical_url
+            data["requested_repo_url"] = data.get("requested_repo_url") or repo_url
             data["mention_count"] = agg["mention_count"]
             data["mentioners"] = list(agg["mentioners"])
             data["first_mention_at"] = agg["first_mention_at"]
@@ -407,14 +408,16 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
 
     # 回填后的身份必须重新过 novelty：301 改名（codedrobe/codex-skill →
     # CodeDrobe/skills）时旧名不在账本里、新名可能已推过，只查旧名等于漏判。
-    # layer2 窗口内 bypass 的仓此处不再剪；窗口外同一旧提及仍拦。
+    # layer2 bypass 只放行初次 window_blocked 的仓；fresh alias 301 到窗口内
+    # canonical 仍走 is_duplicate。
     if enriched:
         _novelty = DedupStore(_novelty_db)
         try:
             kept = []
             for data in enriched:
                 url = data["repo_url"]
-                if layer2_novelty_bypass and _novelty.in_dedup_window(url):
+                intake_url = data.get("requested_repo_url") or url
+                if layer2_novelty_bypass and intake_url in window_blocked:
                     kept.append(data)
                     continue
                 if _novelty.is_duplicate(url, data.get("first_mention_at")):

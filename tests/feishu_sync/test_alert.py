@@ -120,6 +120,20 @@ def test_upstream_skip_alert_title_is_not_sync_failure(monkeypatch, tmp_path, fe
     assert titles == ["简报上游未产出"]
 
 
+def test_alert_title_for_github_skip_gate_is_upstream():
+    from akb2.feishu_sync.notify import alert_title_for
+
+    msg = "2026-08-27 简报同步 1 项失败: github skip-gate（schema 校验失败）"
+    assert alert_title_for(msg) == "简报上游未产出"
+
+
+def test_alert_title_for_real_feishu_send_failure_keeps_sync_title():
+    from akb2.feishu_sync.notify import alert_title_for
+
+    msg = "github 发送失败: 飞书发送失败 (code=999 msg=blocked: policy)"
+    assert alert_title_for(msg) == "简报飞书同步失败"
+
+
 def test_dry_run_smoke_no_feishu_send_or_alert_dm(monkeypatch, tmp_path, vault, feishu_env):
     """SC-8: dry-run 冒烟不触发任何飞书发送/告警 DM。"""
     _redirect_logs(monkeypatch, tmp_path)

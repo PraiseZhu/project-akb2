@@ -266,9 +266,20 @@ class TestRunnerAvoidWindows:
         import src.akb2.quality.runner as runner_mod
 
         windows = runner_mod.AVOID_WINDOWS
-        # 模拟 feishu-sync 窗口内的时间 (02:05 UTC = 10:05 CST)
+        # 模拟 feishu-sync 窗口内的时间 (03:20 UTC = 11:20 CST)
         with mock.patch.object(runner_mod, "_now") as mock_now:
-            mock_now.return_value = datetime(2026, 6, 13, 2, 5, 0, tzinfo=UTC)
+            mock_now.return_value = datetime(2026, 6, 13, 3, 20, 0, tzinfo=UTC)
+            assert runner_mod._should_avoid(windows) is True
+
+    def test_avoid_window_tracks_feishu_sync_115(self) -> None:
+        """feishu-sync 改到 11:15 CST 后，旧 10:00 窗口不得再避让，新窗口必须避让。"""
+        import src.akb2.quality.runner as runner_mod
+
+        windows = runner_mod.AVOID_WINDOWS
+        with mock.patch.object(runner_mod, "_now") as mock_now:
+            mock_now.return_value = datetime(2026, 8, 27, 2, 5, 0, tzinfo=UTC)
+            assert runner_mod._should_avoid(windows) is False
+            mock_now.return_value = datetime(2026, 8, 27, 3, 15, 0, tzinfo=UTC)
             assert runner_mod._should_avoid(windows) is True
 
     def test_avoid_window_inactive(self) -> None:
