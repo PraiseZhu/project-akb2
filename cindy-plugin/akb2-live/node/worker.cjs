@@ -78,6 +78,8 @@ function snapshotGet(relPath) {
     body: note.body || '',
     how_density: note.how_density || '',
     how_executability: note.how_executability || [],
+    related_concepts: note.related_concepts || [],
+    graph_links: note.graph_links || [],
   };
 }
 

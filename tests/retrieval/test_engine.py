@@ -387,6 +387,57 @@ def test_graph_fields_from_related_concepts_and_wikilinks(tmp_path):
     assert hit.graph_links == list(dict.fromkeys(hit.graph_links))
 
 
+def test_related_concepts_yaml_block_list_and_wikilink_alias(tmp_path):
+    """生成器常用 YAML block list；alias 不得拆成 Loop / Engineering。"""
+    root = tmp_path / "vault"
+    sources = root / "wiki" / "sources"
+    sources.mkdir(parents=True)
+    sources.joinpath("graph-block.md").write_text(
+        """---
+title: Graph block
+page_status: active
+status: active
+gate_decision: active
+reviewer: akb2-quality-loop-v1
+related_concepts:
+  - [[concept-harness-engineering]]
+  - [[loop_engineering|Loop Engineering]]
+---
+
+graph 正文见 [[quality-gate]]。
+""",
+        encoding="utf-8",
+    )
+    sources.joinpath("graph-alias-flow.md").write_text(
+        """---
+title: Graph alias flow
+page_status: active
+status: active
+gate_decision: active
+reviewer: akb2-quality-loop-v1
+related_concepts: ["[[loop_engineering|Loop Engineering]]", "[[quality-gate]]"]
+---
+
+graph 正文。
+""",
+        encoding="utf-8",
+    )
+    block = engine.search(root, "graph block")[0]
+    assert block.related_concepts == [
+        "concept-harness-engineering",
+        "concept-loop-engineering",
+    ]
+    assert "Loop" not in block.related_concepts
+    assert "Engineering" not in block.related_concepts
+    assert "quality-gate" in block.graph_links
+    assert "Loop" not in block.graph_links
+    assert "Engineering" not in block.graph_links
+    flow = engine.search(root, "graph alias")[0]
+    assert flow.related_concepts == ["concept-loop-engineering", "quality-gate"]
+    assert "Loop" not in flow.related_concepts
+    assert "Engineering" not in flow.related_concepts
+
+
 def test_no_match_and_missing_sources_dir(tmp_path):
     root = _make_vault(tmp_path)
     assert engine.search(root, "不存在的关键词xyz") == []

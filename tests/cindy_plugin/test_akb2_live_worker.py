@@ -206,6 +206,8 @@ def test_worker_snapshot_fallback_when_live_down(tmp_path: Path) -> None:
                         "body": "snapshot loop engineering 正文",
                         "how_density": "1. 跑 `pytest -q tests/`",
                         "how_executability": ["pytest -q tests/"],
+                        "related_concepts": ["concept-harness-engineering"],
+                        "graph_links": ["quality-gate"],
                     }
                 ]
             }
@@ -227,6 +229,23 @@ def test_worker_snapshot_fallback_when_live_down(tmp_path: Path) -> None:
         assert body["degraded"] is True
         assert body["count"] == 1
         assert body["results"][0]["title"] == "Loop Engineering 黄金样张"
+        assert body["results"][0]["related_concepts"] == ["concept-harness-engineering"]
+        assert body["results"][0]["graph_links"] == ["quality-gate"]
+        got = _rpc(
+            proc,
+            "get",
+            {
+                "path": "wiki/sources/addy-osmani-loop-engineering.md",
+                "host": "127.0.0.1",
+                "port": 1,
+            },
+            token=TOKEN,
+        )
+        snap = got["result"]
+        assert snap["source"] == "snapshot"
+        assert snap["degraded"] is True
+        assert snap["related_concepts"] == ["concept-harness-engineering"]
+        assert snap["graph_links"] == ["quality-gate"]
     finally:
         proc.kill()
 

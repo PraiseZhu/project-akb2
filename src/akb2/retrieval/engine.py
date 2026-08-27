@@ -41,8 +41,13 @@ _REVIEWER_LOOP_RE = re.compile(rf"^reviewer:\s*{re.escape(MACHINE_REVIEWER)}\s*$
 _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 _TITLE_RE = re.compile(r"^title:\s*(.*?)\s*$", re.M)
 _WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]")
-_RELATED_LINE_RE = re.compile(r"^related_concepts:\s*(.*?)\s*$", re.M)
-_RELATED_ITEM_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]*")
+_RELATED_BLOCK_RE = re.compile(
+    r"^related_concepts:\s*(.*(?:\n(?:[ \t]+-|[ \t]+#).*)*)",
+    re.M,
+)
+_RELATED_WIKILINK_RE = re.compile(r"\[\[([^\[\]]+)\]\]")
+_RELATED_QUOTED_RE = re.compile(r"""(['"])(.*?)\1""")
+_RELATED_BARE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]*")
 
 # How 节（How 密度内容载体）：新链路 = ## 论证与解释 下的 ### 操作步骤
 # （与 quality/checks_structural._how_section_text 同口径）；历史 golden
@@ -131,13 +136,36 @@ def _normalize_graph_token(raw: str) -> str:
     return token
 
 
+def _related_raw_tokens(blob: str) -> list[str]:
+    """从 related_concepts 值里抽出完整 token：wikilink 优先，不拆 alias 单词。"""
+    tokens: list[str] = []
+    consumed: list[tuple[int, int]] = []
+    for match in _RELATED_WIKILINK_RE.finditer(blob):
+        tokens.append(match.group(1))
+        consumed.append(match.span())
+    for match in _RELATED_QUOTED_RE.finditer(blob):
+        if any(start <= match.start() < end for start, end in consumed):
+            continue
+        tokens.append(match.group(2))
+        consumed.append(match.span())
+    for match in _RELATED_BARE_RE.finditer(blob):
+        if any(start <= match.start() < end for start, end in consumed):
+            continue
+        tokens.append(match.group(0))
+    return tokens
+
+
 def extract_graph_fields(fm_text: str, body: str) -> tuple[list[str], list[str]]:
-    """抽出 related_concepts 与正文 [[wikilink]]，去重保序。"""
+    """抽出 related_concepts 与正文 [[wikilink]]，去重保序。
+
+    related_concepts 同时认 flow 单行与 YAML block list；wikilink alias
+    （[[loop_engineering|Loop Engineering]]）只取竖线左侧 id。
+    """
     related: list[str] = []
     seen_related: set[str] = set()
-    related_line = _RELATED_LINE_RE.search(fm_text or "")
-    if related_line:
-        for item in _RELATED_ITEM_RE.findall(related_line.group(1)):
+    related_match = _RELATED_BLOCK_RE.search(fm_text or "")
+    if related_match:
+        for item in _related_raw_tokens(related_match.group(1)):
             token = _normalize_graph_token(item)
             if token and token not in seen_related:
                 seen_related.add(token)
