@@ -438,7 +438,8 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
                     *(data.get("requested_repo_urls") or []),
                     data.get("requested_repo_url") or "",
                 ]
-                if layer2_novelty_bypass and any(src in window_blocked for src in intake_urls if src):
+                novelty_hit = any(src in window_blocked for src in intake_urls if src)
+                if layer2_novelty_bypass and novelty_hit:
                     kept.append(data)
                     continue
                 if _novelty.is_duplicate(url, data.get("first_mention_at")):
