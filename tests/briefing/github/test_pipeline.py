@@ -626,6 +626,168 @@ class TestSC3PartialOutput:
 
         assert rc != 0  # SC-4: skip 路径未交付 → fail-visible 非 0
 
+    def test_layer2_fallback_writes_when_novelty_drops_below_min(self, tmp_path, monkeypatch):
+        """08-27 事故：layer2 16 仓被 7 天 novelty 剪到 4（< MIN=6）仍须写出降级稿。
+
+        layer1 空、整批来自 trending HTML 时，再用主推 novelty 窗剪仓 = 结构性空窗。
+        真新仓不足 6 的 layer1 路径仍 skip（见 test_below_min_repos_still_skips）。
+        """
+        from datetime import UTC, date, datetime
+        from unittest.mock import patch
+
+        from akb2.briefing.github.dedup_sqlite import DedupStore
+        from akb2.briefing.github.intake import Candidate
+        from akb2.briefing.github.pipeline import run_pipeline
+
+        now = datetime.now(UTC).isoformat()
+        seen_urls = [f"https://github.com/seen/repo{i}" for i in range(12)]
+        fresh_urls = [f"https://github.com/fresh/repo{i}" for i in range(4)]
+        l2_cands = [
+            Candidate(u, "@github_trending", None, now, None)
+            for u in seen_urls + fresh_urls
+        ]
+
+        vault = tmp_path / "vault"
+        out_dir = vault / "Praise Space/AKB2.0/AI TRENDS/GitHub"
+        out_dir.mkdir(parents=True)
+        novelty_db = tmp_path / "novelty.sqlite"
+        store = DedupStore(novelty_db)
+        for u in seen_urls:
+            store.mark_seen(u)
+        store.close()
+        monkeypatch.setenv("AKB2_NOVELTY_DB", str(novelty_db))
+        monkeypatch.setenv("VAULT_ROOT", str(vault))
+
+        with (
+            patch("akb2.briefing.github.pipeline._real_intake",
+                  return_value=(l2_cands, "layer2", {})),
+            patch("akb2.briefing.github.pipeline.enrich", side_effect=_mock_enrich),
+            patch("akb2.briefing.github.pipeline.synthesize", side_effect=_mock_synth),
+        ):
+            rc = run_pipeline(mock=False)
+
+        assert rc == 0, "layer2 降级稿被 novelty 剪到 <6 仍应写出，而不是 skip"
+        today = date.today().isoformat()
+        md_path = out_dir / f"{today} GitHub Briefing.md"
+        json_path = out_dir / f"{today} GitHub Briefing.json"
+        assert md_path.exists(), f"Expected md output: {md_path}"
+        assert json_path.exists(), f"Expected json output: {json_path}"
+        with open(json_path) as f:
+            data = json.load(f)
+        assert len(data["top_repos"]) >= 4
+
+    def test_layer2_bypass_does_not_admit_fresh_alias_of_window_canonical(
+        self, tmp_path, monkeypatch
+    ):
+        """bypass 只放行初次 window_blocked 的仓；fresh alias 301 到窗口内 canonical 仍拦。"""
+        from datetime import UTC, date, datetime
+        from unittest.mock import patch
+
+        from akb2.briefing.github.dedup_sqlite import DedupStore
+        from akb2.briefing.github.intake import Candidate
+        from akb2.briefing.github.pipeline import run_pipeline
+
+        now = datetime.now(UTC).isoformat()
+        seen_urls = [f"https://github.com/seen/repo{i}" for i in range(5)]
+        canonical = "https://github.com/seen/canonical"
+        alias = "https://github.com/fresh/alias"
+        l2_cands = [
+            Candidate(u, "@github_trending", None, now, None)
+            for u in seen_urls + [alias]
+        ]
+
+        vault = tmp_path / "vault"
+        out_dir = vault / "Praise Space/AKB2.0/AI TRENDS/GitHub"
+        out_dir.mkdir(parents=True)
+        novelty_db = tmp_path / "novelty.sqlite"
+        store = DedupStore(novelty_db)
+        for u in seen_urls + [canonical]:
+            store.mark_seen(u)
+        store.close()
+        monkeypatch.setenv("AKB2_NOVELTY_DB", str(novelty_db))
+        monkeypatch.setenv("VAULT_ROOT", str(vault))
+
+        def enrich_with_alias(url):
+            data = _mock_enrich(url)
+            if url == alias:
+                data["repo_url"] = canonical
+                data["requested_repo_url"] = alias
+            return data
+
+        with (
+            patch("akb2.briefing.github.pipeline._real_intake",
+                  return_value=(l2_cands, "layer2", {})),
+            patch("akb2.briefing.github.pipeline.enrich", side_effect=enrich_with_alias),
+            patch("akb2.briefing.github.pipeline.synthesize", side_effect=_mock_synth),
+        ):
+            rc = run_pipeline(mock=False)
+
+        today = date.today().isoformat()
+        json_path = out_dir / f"{today} GitHub Briefing.json"
+        if rc == 0 and json_path.exists():
+            with open(json_path) as f:
+                data = json.load(f)
+            urls = [r["repo_url"] for r in data["top_repos"]]
+            assert canonical not in urls, "fresh alias 不得借 bypass 把窗口内 canonical 写进产物"
+
+    def test_layer2_bypass_keeps_canonical_when_alias_enriches_first(
+        self, tmp_path, monkeypatch
+    ):
+        """alias 先于窗口内 canonical 归一时，合并条目仍应保留 bypass 资格并出稿。"""
+        from datetime import UTC, date, datetime
+        from unittest.mock import patch
+
+        from akb2.briefing.github.dedup_sqlite import DedupStore
+        from akb2.briefing.github.intake import Candidate
+        from akb2.briefing.github.pipeline import run_pipeline
+
+        now = datetime.now(UTC).isoformat()
+        seen_urls = [f"https://github.com/seen/repo{i}" for i in range(5)]
+        canonical = "https://github.com/seen/canonical"
+        alias = "https://github.com/fresh/alias"
+        # alias 必须先于 canonical，复现 _merge_canonical 只留首个 requested_repo_url。
+        # 5 个其他窗口内仓 + canonical + alias = 7 输入，301 归一后仍应 ≥6。
+        intake_urls = [alias, canonical, *seen_urls]
+        l2_cands = [
+            Candidate(u, "@github_trending", None, now, None) for u in intake_urls
+        ]
+
+        vault = tmp_path / "vault"
+        out_dir = vault / "Praise Space/AKB2.0/AI TRENDS/GitHub"
+        out_dir.mkdir(parents=True)
+        novelty_db = tmp_path / "novelty.sqlite"
+        store = DedupStore(novelty_db)
+        for u in seen_urls + [canonical]:
+            store.mark_seen(u)
+        store.close()
+        monkeypatch.setenv("AKB2_NOVELTY_DB", str(novelty_db))
+        monkeypatch.setenv("VAULT_ROOT", str(vault))
+
+        def enrich_with_alias(url):
+            data = _mock_enrich(url)
+            if url == alias:
+                data["repo_url"] = canonical
+                data["requested_repo_url"] = alias
+            return data
+
+        with (
+            patch("akb2.briefing.github.pipeline._real_intake",
+                  return_value=(l2_cands, "layer2", {})),
+            patch("akb2.briefing.github.pipeline.enrich", side_effect=enrich_with_alias),
+            patch("akb2.briefing.github.pipeline.synthesize", side_effect=_mock_synth),
+        ):
+            rc = run_pipeline(mock=False)
+
+        assert rc == 0, "窗口内 canonical 与 alias 合并后仍应写出降级稿"
+        today = date.today().isoformat()
+        json_path = out_dir / f"{today} GitHub Briefing.json"
+        assert json_path.exists()
+        with open(json_path) as f:
+            data = json.load(f)
+        urls = [r["repo_url"] for r in data["top_repos"]]
+        assert canonical in urls
+        assert len(data["top_repos"]) >= 6
+
 
 # ── SC-4: github 未交付 fail-visible ───────────────────────────────────────
 

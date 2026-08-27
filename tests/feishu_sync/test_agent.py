@@ -128,6 +128,19 @@ def test_gate_blocks_unapproved_ai_trends(monkeypatch, tmp_path, vault, feishu_e
     assert sent == []
 
 
+def test_gate_sends_ai_trends_on_audit_warn(monkeypatch, tmp_path, vault, feishu_env):
+    _redirect_logs(monkeypatch, tmp_path)
+    write_ai_trends(vault, "2026-08-27", audit="warn")
+    sent = []
+    monkeypatch.setattr(agent, "send_card_dm", lambda oid, card: sent.append(card))
+
+    rc = agent.run_sync(
+        date="2026-08-27", vault_root=vault, target="dm", state_path=tmp_path / "s.json"
+    )
+    assert rc == 0
+    assert sent, "audit_verdict=warn 应发出，不得当 skip-gate"
+
+
 def test_github_gate_failure_is_fail_visible(monkeypatch, tmp_path, vault, feishu_env):
     _redirect_logs(monkeypatch, tmp_path)
     write_github(vault, "2026-06-03", with_json=False)

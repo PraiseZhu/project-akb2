@@ -207,12 +207,24 @@ def _merge_canonical(existing: dict, incoming: dict) -> None:
 
     直接丢弃后来者会丢 mention 与 engagement 证据，故合并而非覆盖；聚合语义与
     `_aggregate` 保持一致（mention 累加、mentioner 去重、first_mention 取最早、
-    engagement 取 MAX）。
+    engagement 取 MAX）。来源 URL 全部保留，layer2 bypass 才不会因为 alias
+    先于 canonical 进入而丢掉 window_blocked 资格。
     """
     existing["mention_count"] = existing.get("mention_count", 0) + incoming.get("mention_count", 0)
     for m in incoming.get("mentioners", []):
         if m not in existing["mentioners"]:
             existing["mentioners"].append(m)
+    sources = list(existing.get("requested_repo_urls") or [])
+    for src in (
+        incoming.get("requested_repo_url"),
+        *(incoming.get("requested_repo_urls") or []),
+    ):
+        if src and src not in sources:
+            sources.append(src)
+    if sources:
+        existing["requested_repo_urls"] = sources
+        if not existing.get("requested_repo_url"):
+            existing["requested_repo_url"] = sources[0]
     inc_first = incoming.get("first_mention_at")
     cur_first = existing.get("first_mention_at")
     if inc_first and (not cur_first or inc_first < cur_first):
@@ -284,12 +296,17 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
         )
         _novelty_db.parent.mkdir(parents=True, exist_ok=True)
     pre_novelty_count = len(aggregated)  # SC-6: capture before dedup for diagnostics
+    pre_novelty_aggregated = dict(aggregated)
+    window_blocked: dict = {}
     _novelty = DedupStore(_novelty_db)
     try:
-        aggregated = {
-            u: d for u, d in aggregated.items()
-            if not _novelty.is_duplicate(u, d.get("first_mention_at"))
-        }
+        kept = {}
+        for u, d in aggregated.items():
+            if not _novelty.is_duplicate(u, d.get("first_mention_at")):
+                kept[u] = d
+            elif _novelty.in_dedup_window(u):
+                window_blocked[u] = d
+        aggregated = kept
         # SC-1 fix: post-novelty L2 supplement for layer1 dead-zone.
         # Pre-novelty ≥10 but novelty dedup may reduce below 10; try layer2 before giving up.
         if len(aggregated) < _IDEAL_REPOS_FOR_BRIEFING and fallback_layer == "layer1":
@@ -310,6 +327,21 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
                     fallback_layer = "layer1+2"
     finally:
         _novelty.close()
+
+    # 08-27：layer2 兜底被 7 天窗口（不变式 1）剪到 < MIN 时，只回填窗口内仓。
+    # 窗口外同一旧提及（不变式 2）仍拦，避免静默复推。
+    layer2_novelty_bypass = False
+    if (
+        len(aggregated) < _MIN_REPOS_FOR_BRIEFING
+        and fallback_layer == "layer2"
+        and len(pre_novelty_aggregated) >= _MIN_REPOS_FOR_BRIEFING
+        and window_blocked
+    ):
+        restored = dict(aggregated)
+        restored.update(window_blocked)
+        if len(restored) >= _MIN_REPOS_FOR_BRIEFING:
+            aggregated = restored
+            layer2_novelty_bypass = True
 
     if len(aggregated) < _MIN_REPOS_FOR_BRIEFING:
         _emit_sc7_metrics(_make_zero_sc7_metrics())
@@ -353,6 +385,12 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
             # 旧名与新名必须收敛到同一条目，否则同仓双份入库、去重键分裂。
             canonical_url = data.get("repo_url") or repo_url
             data["repo_url"] = canonical_url
+            data["requested_repo_url"] = data.get("requested_repo_url") or repo_url
+            data["requested_repo_urls"] = list(
+                dict.fromkeys(
+                    [*(data.get("requested_repo_urls") or []), data["requested_repo_url"], repo_url]
+                )
+            )
             data["mention_count"] = agg["mention_count"]
             data["mentioners"] = list(agg["mentioners"])
             data["first_mention_at"] = agg["first_mention_at"]
@@ -387,14 +425,25 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
 
     # 回填后的身份必须重新过 novelty：301 改名（codedrobe/codex-skill →
     # CodeDrobe/skills）时旧名不在账本里、新名可能已推过，只查旧名等于漏判。
+    # layer2 bypass 只放行初次 window_blocked 的仓；fresh alias 301 到窗口内
+    # canonical 仍走 is_duplicate。
     if enriched:
         _novelty = DedupStore(_novelty_db)
         try:
             kept = []
             for data in enriched:
-                if _novelty.is_duplicate(data["repo_url"], data.get("first_mention_at")):
+                url = data["repo_url"]
+                intake_urls = [
+                    url,
+                    *(data.get("requested_repo_urls") or []),
+                    data.get("requested_repo_url") or "",
+                ]
+                if layer2_novelty_bypass and any(src in window_blocked for src in intake_urls if src):
+                    kept.append(data)
+                    continue
+                if _novelty.is_duplicate(url, data.get("first_mention_at")):
                     sys.stderr.write(
-                        f"WARNING [github-pipeline]: 回填后身份 {data['repo_url']} "
+                        f"WARNING [github-pipeline]: 回填后身份 {url} "
                         f"已推过（原始 {data.get('requested_repo_url')}）— 剔除\n"
                     )
                     continue

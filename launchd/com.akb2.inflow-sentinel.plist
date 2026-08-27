@@ -31,7 +31,7 @@
 
   ==== 触发时间（本地时区 CST）====
   每日 09:00 与 21:00，共 2 次。避开三条链路的 AVOID_WINDOW
-  （github_briefing 05:30 / briefing 07:30 / feishu-sync 10:00），
+  （github_briefing 05:30 / briefing 07:30 / feishu-sync 11:15），
   免得断流告警和简报推送在同一分钟撞飞书限流（9499）。
 
   ==== 有界 / 幂等（宪法 P1）====

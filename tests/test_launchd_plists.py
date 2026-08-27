@@ -424,6 +424,38 @@ class TestBackstopScheduleWithinDeadline:
         )
 
 
+def test_feishu_sync_runs_after_last_github_backstop() -> None:
+    """飞书同步必须晚于 github backstop 最后一次补跑，否则补出的文件当天发不出去。
+
+    2026-08-06 实证：github 文件 11:04 落盘，feishu-sync 10:00 已按缺失告警，
+    群当天永远收不到。10:00 早于 11:00 补跑窗 = 结构性空窗，不是偶发迟到。
+    """
+    github_backstop = _load_rendered_plist(
+        LAUNCHD_DIR / "com.akb2.github_briefing.backstop.plist"
+    )
+    feishu = _load_rendered_plist(LAUNCHD_DIR / "com.akb2.feishu-sync.plist")
+
+    def _minutes(slot: dict[str, Any]) -> int:
+        return int(slot.get("Hour", 0)) * 60 + int(slot.get("Minute", 0))
+
+    backstop_slots = github_backstop["StartCalendarInterval"]
+    if isinstance(backstop_slots, dict):
+        backstop_slots = [backstop_slots]
+    last_backstop = max(_minutes(s) for s in backstop_slots)
+
+    feishu_slots = feishu["StartCalendarInterval"]
+    if isinstance(feishu_slots, dict):
+        feishu_slots = [feishu_slots]
+    first_feishu = min(_minutes(s) for s in feishu_slots)
+
+    assert first_feishu > last_backstop, (
+        f"feishu-sync {first_feishu // 60:02d}:{first_feishu % 60:02d} "
+        f"不晚于 github backstop 最后一次 "
+        f"{last_backstop // 60:02d}:{last_backstop % 60:02d}，"
+        "补跑成功的简报当天发不出"
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # SC-R1-11 / SC-R1-12 —— manifest 的参照数据必须与同提交的 plist 模板一致
 # ═══════════════════════════════════════════════════════════════════════════

@@ -62,6 +62,13 @@ def test_ai_trends_audit_fail():
     )
 
 
+def test_ai_trends_audit_warn_passes():
+    """08-27：warn 已写进 vault，gate 丢掉等于群里当天当没写。"""
+    assert passes_gate(
+        _b("ai_trends", {"audit_verdict": "warn", "proposed_gate_decision": "active"})
+    )
+
+
 def test_ai_trends_gate_inactive():
     assert not passes_gate(
         _b("ai_trends", {"audit_verdict": "pass", "proposed_gate_decision": "hold"})
