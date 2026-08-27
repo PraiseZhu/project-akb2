@@ -149,7 +149,7 @@ akb2_python_bin() {
 # akb2_plist_identity <plist> —— 从 plist 派生**这次安装的身份**，写三个全局：
 #   AKB2_PLIST_LABEL           Label 键（决定目标文件名 / launchctl 域标签 / 验证对象）
 #   AKB2_PLIST_PROGRAM_TOKEN   验证用的程序锚（`-m <module>` 优先，否则脚本 basename）
-#   AKB2_PLIST_SCHEDULE_TOKEN  验证用的调度锚（`hour = N` / StartInterval 秒数 / keep alive = true）
+#   AKB2_PLIST_SCHEDULE_TOKEN  验证用的调度锚（`"Hour" => N` / StartInterval 秒数 / keep alive = true）
 #
 # 为什么必须派生而不是硬编码：`--plist-src` 是本轮新增参数，而 Label / 目标文件 /
 # bootout 域标签 / 验证断言全都写死成 com.akb2.briefing —— 于是 INSTALL-MANIFEST 里
@@ -194,10 +194,10 @@ if not program:
 schedule = ""
 calendar = data.get("StartCalendarInterval")
 if isinstance(calendar, dict) and "Hour" in calendar:
-    schedule = "hour = %s" % calendar["Hour"]
+    schedule = '"Hour" => %s' % calendar["Hour"]
 elif isinstance(calendar, list) and calendar and isinstance(calendar[0], dict) \
         and "Hour" in calendar[0]:
-    schedule = "hour = %s" % calendar[0]["Hour"]
+    schedule = '"Hour" => %s' % calendar[0]["Hour"]
 elif isinstance(data.get("StartInterval"), int):
     schedule = str(data["StartInterval"])
 elif data.get("KeepAlive") is True:

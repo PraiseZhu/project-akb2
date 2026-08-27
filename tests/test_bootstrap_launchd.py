@@ -57,7 +57,7 @@ BRIEFING_PRINT_OK = """com.akb2.briefing = {
 		/bin/bash
 		/fake/repo/scripts/daily_briefing.sh
 	}
-	hour = 7
+	"Hour" => 7
 	minute = 30
 }
 """
@@ -964,25 +964,25 @@ class TestVerificationAndSemantics:
         assert "intake.orchestrator" in result.stderr, result.stderr
 
     def test_briefing_verification_fails_when_hour_missing(self, tmp_path: Path) -> None:
-        """briefing:print 有 daily_briefing.sh 但调度不是 hour = 7 → 非 0 退出。"""
+        """briefing:print 有 daily_briefing.sh 但调度不是 Hour => 7 → 非 0 退出。"""
         work = _prepare_fake_repo(tmp_path, subdir="repo-and-brief")
         env, _la, _log, _home = _prepare_env(
             tmp_path,
-            verify_out="com.akb2.briefing = {\n\t/x/scripts/daily_briefing.sh\n\thour = 3\n}\n",
+            verify_out='com.akb2.briefing = {\n\t/x/scripts/daily_briefing.sh\n\t"Hour" => 3\n}\n',
             tag="and-brief",
         )
 
         result = _run(work / "scripts" / "bootstrap_launchd.sh", env)
 
         assert result.returncode != 0, result.stdout + result.stderr
-        assert "hour = 7" in result.stderr, result.stderr
+        assert '"Hour" => 7' in result.stderr, result.stderr
 
     def test_briefing_verification_fails_when_script_missing(self, tmp_path: Path) -> None:
-        """briefing:print 有 hour = 7 但未引用 daily_briefing.sh → 非 0 退出。"""
+        """briefing:print 有 Hour => 7 但未引用 daily_briefing.sh → 非 0 退出。"""
         work = _prepare_fake_repo(tmp_path, subdir="repo-and-brief2")
         env, _la, _log, _home = _prepare_env(
             tmp_path,
-            verify_out="com.akb2.briefing = {\n\t/x/scripts/other.sh\n\thour = 7\n}\n",
+            verify_out='com.akb2.briefing = {\n\t/x/scripts/other.sh\n\t"Hour" => 7\n}\n',
             tag="and-brief2",
         )
 
@@ -1100,7 +1100,7 @@ GITHUB_PRINT_OK = """com.akb2.github_briefing = {
 		/bin/bash
 		/fake/repo/scripts/launchd_wrapper.sh
 	}
-	hour = 5
+	"Hour" => 5
 	minute = 30
 }
 """
@@ -1150,9 +1150,9 @@ def test_plist_src_derives_identity_from_template_label(tmp_path: Path) -> None:
     calls = call_log.read_text(encoding="utf-8")
     assert GITHUB_BRIEFING_LABEL in calls, calls
     assert BRIEFING_LABEL not in calls, f"launchctl 被喂了 social 身份:\n{calls}"
-    # ④ 验证断言用的是 github 模板派生的 token（launchd_wrapper.sh + hour = 5）
+    # ④ 验证断言用的是 github 模板派生的 token（launchd_wrapper.sh + "Hour" => 5）
     assert "launchd_wrapper.sh detected" in result.stdout, result.stdout
-    assert "hour = 5" in result.stdout, result.stdout
+    assert '"Hour" => 5' in result.stdout, result.stdout
     assert "daily_briefing.sh" not in combined, combined
 
 
@@ -1222,7 +1222,7 @@ def test_postverify_failure_rolls_back(tmp_path: Path) -> None:
     env, launch_agents, call_log, _home = _prepare_env(
         tmp_path,
         # print 里 daily_briefing.sh 有、但 hour 是 3（模板是 7）→ 调度断言失败
-        verify_out="com.akb2.briefing = {\n\t/x/scripts/daily_briefing.sh\n\thour = 3\n}\n",
+        verify_out='com.akb2.briefing = {\n\t/x/scripts/daily_briefing.sh\n\t"Hour" => 3\n}\n',
         tag="postverify",
     )
     dst = launch_agents / f"{BRIEFING_LABEL}.plist"
