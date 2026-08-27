@@ -408,6 +408,22 @@ graph 正文见 [[quality-gate]]。
 """,
         encoding="utf-8",
     )
+    sources.joinpath("graph-indentless.md").write_text(
+        """---
+title: Graph indentless
+page_status: active
+status: active
+gate_decision: active
+reviewer: akb2-quality-loop-v1
+related_concepts:
+- '[[concept-harness-engineering]]'
+- '[[loop_engineering|Loop Engineering]]'
+---
+
+graph indentless 正文。
+""",
+        encoding="utf-8",
+    )
     sources.joinpath("graph-alias-flow.md").write_text(
         """---
 title: Graph alias flow
@@ -432,6 +448,13 @@ graph 正文。
     assert "quality-gate" in block.graph_links
     assert "Loop" not in block.graph_links
     assert "Engineering" not in block.graph_links
+    indentless = engine.search(root, "graph indentless")[0]
+    assert indentless.related_concepts == [
+        "concept-harness-engineering",
+        "concept-loop-engineering",
+    ]
+    assert "Loop" not in indentless.related_concepts
+    assert "Engineering" not in indentless.related_concepts
     flow = engine.search(root, "graph alias")[0]
     assert flow.related_concepts == ["concept-loop-engineering", "quality-gate"]
     assert "Loop" not in flow.related_concepts

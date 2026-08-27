@@ -42,7 +42,7 @@ _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 _TITLE_RE = re.compile(r"^title:\s*(.*?)\s*$", re.M)
 _WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]")
 _RELATED_BLOCK_RE = re.compile(
-    r"^related_concepts:\s*(.*(?:\n(?:[ \t]+-|[ \t]+#).*)*)",
+    r"^related_concepts:\s*(.*(?:\n(?:[ \t]*-[ \t]|[ \t]+#).*)*)",
     re.M,
 )
 _RELATED_WIKILINK_RE = re.compile(r"\[\[([^\[\]]+)\]\]")
