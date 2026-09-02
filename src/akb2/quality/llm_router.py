@@ -442,6 +442,7 @@ def _append_quality_budget_event(
     diagnostics: BudgetDiagnostics,
     model_family: str,
     consumer: str,
+    loop_id: str = "loop1",
 ) -> None:
     if diagnostics.provider_code != PROVIDER_CODE_429:
         return
@@ -449,6 +450,8 @@ def _append_quality_budget_event(
         append_event(
             _quality_ledger_path(),
             {
+                "loop_id": loop_id or "loop1",
+                "node": "llm_router",
                 "ts": dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "event": "llm_gateway_429",
                 "model_family": model_family,
@@ -1156,6 +1159,7 @@ def route_llm(
                     diagnostics=diagnostics,
                     model_family=model_family,
                     consumer=budget_consumer,
+                    loop_id=loop_id,
                 )
                 try:
                     record_budget_event(diagnostics, consumer=budget_consumer)

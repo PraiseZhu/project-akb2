@@ -1207,6 +1207,7 @@ def _run_admission_segment(
                 # 重审预算该留给"重跑就能过"的上游抖动(判据见 _INFRA_ERROR_MARKERS)。
                 "failure_kind": FAILURE_KIND_INFRA,
             },
+            loop_id=loop_id,
         )
         return (
             False,

@@ -421,7 +421,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--state-file", default=DEFAULT_STATE_FILE)
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--vault-root", default="")
-    parser.add_argument("--quality-ledger", default="")
+    parser.add_argument("--quality-ledger", default=None)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--limit", type=int, default=0)
     args = parser.parse_args(argv)
@@ -431,7 +431,7 @@ def main(argv: list[str] | None = None) -> int:
             state_file=args.state_file,
             output_dir=args.output_dir,
             vault_root=args.vault_root or None,
-            quality_ledger_path=args.quality_ledger or None,
+            quality_ledger_path=args.quality_ledger,
             dry_run=args.dry_run,
             limit=args.limit,
         )

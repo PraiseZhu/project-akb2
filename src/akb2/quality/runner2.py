@@ -119,7 +119,10 @@ def _run_maker2_segments(
     if not extract_result.success and os.environ.get("AKB2_MAKER_FALLBACK", "1") != "0":
         maker_primary_error = extract_result.error
         extract_result = build_deterministic_extract_result(
-            raw_content, raw_path, content_lane=content_lane
+            raw_content,
+            raw_path,
+            content_lane=content_lane,
+            loop_id=LOOP2_LOOP_ID,
         )
         maker_fallback_used = extract_result.success
     if not extract_result.success:

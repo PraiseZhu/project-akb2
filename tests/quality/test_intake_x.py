@@ -11,7 +11,7 @@ from src.akb2.briefing.intake.l0_collector import UPSTREAM_FATAL_FAILFAST_STREAK
 from src.akb2.quality.intake.raw_archiver import REQUIRED_ANCHORS
 from src.akb2.quality.intake_x.channels import FORBIDDEN_ARGV_TOKENS, fetch_feed, fetch_list
 from src.akb2.quality.intake_x.normalize import normalize_tweet
-from src.akb2.quality.intake_x.orchestrator import IntakeXFailFast, run_intake_x
+from src.akb2.quality.intake_x.orchestrator import IntakeXFailFast, main, run_intake_x
 from src.akb2.quality.intake_x.prefilter import (
     PrefilterBatchResult,
     PrefilterDecision,
@@ -455,3 +455,20 @@ def test_orchestrator_has_main_guard():
     ).read_text(encoding="utf-8")
     assert 'if __name__ == "__main__":' in src
     assert "sys.exit(main())" in src
+
+
+def test_cli_empty_quality_ledger_disables_default(tmp_path: Path, monkeypatch):
+    """--quality-ledger '' 必须关掉默认共享账本；省略该 flag 才走默认路径。"""
+    from src.akb2.quality.intake_x import orchestrator as orch
+
+    captured: list[object] = []
+
+    def fake_run(**kwargs):
+        captured.append(kwargs.get("quality_ledger_path"))
+        return {"archived": 0}
+
+    monkeypatch.setattr(orch, "run_intake_x", fake_run)
+    assert main(["--quality-ledger", ""]) == 0
+    assert captured[-1] == ""
+    assert main([]) == 0
+    assert captured[-1] is None

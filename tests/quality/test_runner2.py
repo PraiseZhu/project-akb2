@@ -236,6 +236,56 @@ def test_intake_cli_defaults_quality_ledger():
     assert "--quality-ledger" in src
     assert "skipped_prefilter_budget" in src
     assert "intake_x_prefilter_budget" in src
+    assert "quality_ledger_path=args.quality_ledger" in src
+    assert 'add_argument("--quality-ledger", default=None)' in src
+    assert "args.quality_ledger or None" not in src
+
+
+def test_admission_bad_index_preserves_loop_id(tmp_path: Path, monkeypatch):
+    captured: list[dict] = []
+
+    def fake_append(_path, entry):
+        captured.append(entry)
+        return True
+
+    monkeypatch.setattr("src.akb2.loops.ledger.append_event", fake_append)
+    config = RunnerConfig(
+        raw_dir=str(tmp_path),
+        ledger_path=str(tmp_path / "quality-ledger.jsonl"),
+        staging_dir=str(tmp_path),
+        vault_root=str(tmp_path),
+        failures_path=str(tmp_path / "failures.jsonl"),
+        grader_result_dir=str(tmp_path),
+    )
+    from src.akb2.quality.runner import LANE_INDEX_STATUS_EMPTY, _run_admission_segment
+
+    passed, reason, *_rest = _run_admission_segment(
+        str(tmp_path / "raw.md"),
+        "body",
+        config,
+        index_status=LANE_INDEX_STATUS_EMPTY,
+        content_hash="abc",
+        loop_id="loop2",
+    )
+    assert passed is False
+    assert "novelty_index_unavailable" in reason
+    assert captured[0]["loop_id"] == "loop2"
+
+
+def test_runner2_maker_fallback_passes_loop2():
+    src = Path(__file__).resolve().parents[2] / "src/akb2/quality/runner2.py"
+    text = src.read_text(encoding="utf-8")
+    maker = text.split("def _run_maker2_segments", 1)[1].split("\ndef ", 1)[0]
+    assert "loop_id=LOOP2_LOOP_ID" in maker
+
+
+def test_llm_gateway_429_carries_loop_id():
+    src = Path(__file__).resolve().parents[2] / "src/akb2/quality/llm_router.py"
+    text = src.read_text(encoding="utf-8")
+    fn = text.split("def _append_quality_budget_event", 1)[1].split("\ndef ", 1)[0]
+    assert 'loop_id: str = "loop1"' in fn
+    assert '"loop_id": loop_id or "loop1"' in fn
+    assert "loop_id=loop_id" in text.split("if diagnostics.provider_code == PROVIDER_CODE_429", 1)[1][:800]
 
 
 def test_shadow_path_skips_run_promote():
