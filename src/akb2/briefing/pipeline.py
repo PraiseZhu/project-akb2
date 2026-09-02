@@ -25,6 +25,7 @@ Design:
 from __future__ import annotations
 
 import argparse
+import copy
 import datetime
 import json
 import os
@@ -37,8 +38,9 @@ import time
 import zoneinfo
 from pathlib import Path
 
+from akb2.briefing.audit import _requires_chinese  # noqa: E402
 from akb2.briefing.audit_fix import run_audit_fix_loop  # noqa: E402
-from akb2.briefing.translate import translate_briefing  # noqa: E402
+from akb2.briefing.translate import _display_tweet_indices, translate_briefing  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -890,6 +892,102 @@ def build_temp_briefing_markdown(
     return frontmatter + "\n" + body
 
 
+def _drop_untranslated_after_budget(synth: dict) -> dict:
+    """预算耗尽后剪到能过 audit 的降级稿，避免英文残留整份拒发。
+
+    2026-09-02：translate time_budget 耗尽，tweets[23].core_excerpt 仍是英文，
+    standard=fail → 当天 Social 空。S-4 只把耗尽原因落盘，没把未译条目移出
+    展示集。分析字段（摘要/主题）仍走 fail-closed，这里只剪推文/主题。
+
+    剪完必须再闭合：支撑 < 2 的主题整段拿掉；删后晋升进展示集、却没有
+    zh_point 的孤儿也剪掉，直到展示集稳定。
+    """
+    if not synth.get("translate_budget_exhausted"):
+        return synth
+
+    result = copy.deepcopy(synth)
+    dropped_any = False
+
+    while True:
+        tweets = result.get("tweets") or []
+        display_idxs = _display_tweet_indices(result)
+        drop_idx: set[int] = set()
+        for i, tw in enumerate(tweets):
+            text = (tw.get("text") or "").strip()
+            core = (tw.get("core_excerpt") or "").strip()
+            if _requires_chinese(text) or _requires_chinese(core):
+                drop_idx.add(i)
+            elif i in display_idxs and not (tw.get("zh_point") or "").strip():
+                drop_idx.add(i)
+        if drop_idx:
+            tweets = [tw for i, tw in enumerate(tweets) if i not in drop_idx]
+            dropped_any = True
+
+        kept_ids = {str(tw.get("id", "")) for tw in tweets if tw.get("id") is not None}
+        surviving_refs: set[str] = set()
+        surviving_topics = []
+        for fd in result.get("focus_discussions") or []:
+            ids = [tid for tid in (fd.get("supporting_tweet_ids") or []) if str(tid) in kept_ids]
+            surviving_topics.append((fd, ids))
+            surviving_refs.update(str(tid) for tid in ids)
+        refill = [
+            str(tw.get("id", ""))
+            for tw in sorted(tweets, key=lambda t: t.get("score", 0), reverse=True)
+            if (tw.get("zh_point") or "").strip()
+            and str(tw.get("id", "")) in kept_ids
+            and str(tw.get("id", "")) not in surviving_refs
+        ]
+        fds = []
+        dropped_topic = False
+        claimed: set[str] = set()
+        for fd, ids in surviving_topics:
+            for tid in refill:
+                if len(ids) >= 2:
+                    break
+                if tid not in ids and tid not in claimed:
+                    ids.append(tid)
+                    claimed.add(tid)
+            if len(ids) < 2:
+                dropped_topic = True
+                continue
+            fd = dict(fd)
+            fd["supporting_tweet_ids"] = ids
+            fds.append(fd)
+        if dropped_topic:
+            dropped_any = True
+
+        # SC-1：分数最高的 3 条必须出现在某个主题的 supporting_tweet_ids
+        if fds:
+            top_ids = [
+                str(tw.get("id", ""))
+                for tw in sorted(tweets, key=lambda t: t.get("score", 0), reverse=True)[:3]
+                if tw.get("id") is not None
+            ]
+            referenced = {str(tid) for fd in fds for tid in fd.get("supporting_tweet_ids") or []}
+            for tid in top_ids:
+                if tid in referenced:
+                    continue
+                tw = next((t for t in tweets if str(t.get("id", "")) == tid), None)
+                if tw is None or not (tw.get("zh_point") or "").strip():
+                    continue
+                fds[0]["supporting_tweet_ids"].append(tid)
+                referenced.add(tid)
+                dropped_any = True
+
+        result["tweets"] = tweets
+        result["focus_discussions"] = fds
+        if not drop_idx and not dropped_topic:
+            break
+
+    if dropped_any:
+        sys.stderr.write(
+            "WARNING [pipeline]: translate 预算耗尽，剪掉未译展示推文后保留 "
+            f"{len(result.get('tweets') or [])} 条、"
+            f"{len(result.get('focus_discussions') or [])} 个主题以免 audit 整份拒发\n"
+        )
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
@@ -1124,6 +1222,7 @@ def main(argv: list[str] | None = None) -> int:
             "WARNING [pipeline]: translate 总预算耗尽"
             f"（{translate_budget_exhausted}）——未翻译条目见 translate_failed_fields\n"
         )
+        synth_zh = _drop_untranslated_after_budget(synth_zh)
 
     stage_start = time.monotonic()
     _stage_log("audit_fix", "start")
