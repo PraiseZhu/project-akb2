@@ -250,6 +250,26 @@ def _han_count(text: str) -> int:
     return sum(1 for c in text if "一" <= c <= "鿿") if text else 0
 
 
+def _local_zh_point(text: str, max_chars: int = 30) -> str:
+    """中文推文的确定性点题：取第一句，截到 ≤30 字。"""
+    snippet = _first_segment(text or "", max_chars=max_chars)
+    snippet = snippet.strip()
+    if len(snippet) <= max_chars:
+        return snippet
+    return snippet[:max_chars].rstrip()
+
+
+def _local_zh_tweet_item(idx: int, tweet: dict) -> dict:
+    """lang=zh 展示推文不走 LLM：正文保留原文，点题本地生成。"""
+    text = (tweet.get("text") or "").strip()
+    item = {"idx": idx, "text_zh": text, "zh_point": _local_zh_point(text)}
+    if len(text) > LONG_TWEET_THRESHOLD:
+        excerpt = _first_segment(text, max_chars=400)
+        item["core_excerpt_en"] = excerpt
+        item["core_excerpt_zh"] = excerpt
+    return item
+
+
 def _is_translated_topic(text: str, min_han: int = 2) -> bool:
     """判断 topic 是否已翻译（含足够中文）。
 
@@ -344,6 +364,11 @@ class _TranslateBudget:
     def elapsed(self) -> float:
         return time.monotonic() - self.started_at
 
+    def remaining_seconds(self) -> int:
+        """发起下一次 HTTP 前还剩多少秒；≤0 表示不得再打。"""
+        leftover = self.max_seconds - self.elapsed()
+        return max(0, int(leftover))
+
     def take(self) -> bool:
         """领一次调用额度；返回 False 表示预算已耗尽（不得再发起调用）。"""
         if self.calls >= self.max_calls:
@@ -395,6 +420,17 @@ def _call_json_with_chain(
             if used_model in _TRANSLATE_FALLBACK_MODELS
             else None
         )
+        call_timeout = timeout
+        if budget is not None:
+            leftover = budget.remaining_seconds()
+            if leftover <= 0:
+                budget.exhausted_reason = "time_budget"
+                sys.stderr.write(
+                    f"WARNING [translate]: 翻译总预算耗尽（{budget.describe()}），"
+                    f"{label} 停止尝试剩余模型 {chain[i:]}\n"
+                )
+                return None, chain
+            call_timeout = min(timeout, leftover)
         try:
             raw = _call_llm(
                 [
@@ -403,8 +439,9 @@ def _call_json_with_chain(
                 ],
                 model=used_model,
                 json_mode=True,
-                timeout=timeout,
+                timeout=call_timeout,
                 base_url=fb_base_url,
+                extra_body=_translate_extra_body(used_model),
             )
             parsed = json.loads(raw)
             if not isinstance(parsed, dict):
@@ -464,6 +501,17 @@ def _extract_tweet_item(payload: dict, idx: int) -> dict | None:
 
 # 单条推文调用的超时上限（秒）：单条内容远小于整批，300s 只会把串行总时长放大到不可接受
 _TWEET_TIMEOUT_CAP = 120
+# analysis 同样封顶：默认 300s 时 DeepSeek 一挂就烧掉 1/3 的 900s 总预算
+_ANALYSIS_TIMEOUT_CAP = 120
+# DeepSeek 推理模型默认 Think Max；翻译不需要思维链，关掉才把时间落到正文
+_TRANSLATE_DEEPSEEK_EXTRA_BODY = {"enable_thinking": False}
+
+
+def _translate_extra_body(model: str) -> dict | None:
+    """只对 deepseek 注入 enable_thinking=False（glm/claude 不认该字段）。"""
+    if "deepseek" in (model or "").lower():
+        return _TRANSLATE_DEEPSEEK_EXTRA_BODY
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -639,8 +687,9 @@ def translate_briefing(
     chain = _model_chain(model)
     budget = _TranslateBudget()
 
+    analysis_timeout = min(timeout, _ANALYSIS_TIMEOUT_CAP)
     trans, chain = _call_json_with_chain(
-        _build_analysis_prompt(synth), chain, timeout=timeout, label="analysis",
+        _build_analysis_prompt(synth), chain, timeout=analysis_timeout, label="analysis",
         budget=budget,
     )
     if trans is None:
@@ -667,8 +716,13 @@ def translate_briefing(
             # 预算已耗尽：剩余条目一律不再发起调用，但必须逐条点名（不静默返回英文）
             failed_fields.append(f"tweets[{idx}](budget_exhausted)")
             continue
+        tweet = tweets[idx]
+        if (tweet.get("lang") or "").lower() == "zh":
+            # 中文原文已过 audit 中文闸；zh_point 用确定性截取，不烧 LLM。
+            tweet_items.append(_local_zh_tweet_item(idx, tweet))
+            continue
         payload, chain = _call_json_with_chain(
-            _build_tweet_prompt(idx, tweets[idx]),
+            _build_tweet_prompt(idx, tweet),
             chain,
             timeout=tweet_timeout,
             label=f"tweets[{idx}]",
@@ -878,6 +932,17 @@ def _translate_snippet(
                 "snippet 补译停止（返回空串，调用方降级）\n"
             )
             return ""
+        call_timeout = timeout
+        if budget is not None:
+            leftover = budget.remaining_seconds()
+            if leftover <= 0:
+                budget.exhausted_reason = "time_budget"
+                sys.stderr.write(
+                    f"WARNING [translate]: 翻译总预算耗尽（{budget.describe()}），"
+                    "snippet 补译停止（返回空串，调用方降级）\n"
+                )
+                return ""
+            call_timeout = min(timeout, leftover)
         fb_base_url = (
             _TRANSLATE_FALLBACK_BASE_URL
             if used_model in _TRANSLATE_FALLBACK_MODELS
@@ -898,8 +963,9 @@ def _translate_snippet(
                 messages,
                 model=used_model,
                 json_mode=False,
-                timeout=timeout,
+                timeout=call_timeout,
                 base_url=fb_base_url,
+                extra_body=_translate_extra_body(used_model),
             ).strip()
         except Exception as e:
             remaining = chain[i + 1:]

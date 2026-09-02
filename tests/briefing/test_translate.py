@@ -752,6 +752,159 @@ def test_lang_zh_tweet_skips_text_translation():
     assert zh_tweet.get("zh_point") == "中文推文要点。", "lang=zh 仍应写入 zh_point"
 
 
+def test_lang_zh_display_tweet_does_not_call_llm():
+    """lang=zh 展示推文不发翻译调用：中文原文已过 audit，zh_point 由确定性截取生成。
+
+    2026-09-02 主跑 85 条里约一半是中文账号；条目级隔离仍对它们打 120s LLM，
+    把 900s 总预算烧在不需要翻译的条目上。
+    """
+    from akb2.briefing.translate import translate_briefing
+
+    synth = {
+        "executive_summary": "Summary.",
+        "focus_discussions": [
+            {"topic": "T", "summary": "S.", "supporting_tweet_ids": ["zh", "en"]},
+        ],
+        "tweets": [
+            {
+                "id": "zh",
+                "author": "@dotey",
+                "lang": "zh",
+                "text": "这是中文原文，不该再送去翻译。",
+                "score": 0.9,
+                "url": "u1",
+            },
+            {
+                "id": "en",
+                "author": "@sama",
+                "lang": "en",
+                "text": "English tweet that still needs translation.",
+                "score": 0.8,
+                "url": "u2",
+            },
+        ],
+    }
+    requested: list[int | None] = []
+    mock = _make_mock_call_llm({
+        "executive_summary": "今日摘要。",
+        "focus_discussions": [{"idx": 0, "topic": "主题", "summary": "中文总结。"}],
+        "tweets": [
+            {"idx": 1, "text_zh": "仍需翻译的英文推文。", "zh_point": "英文看点。"},
+        ],
+    })
+
+    def spy(messages, model, **kwargs):
+        requested.append(_requested_tweet_idx(messages))
+        return mock(messages, model, **kwargs)
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=spy):
+        result = translate_briefing(synth)
+
+    assert 0 not in requested, f"lang=zh 推文不该发 LLM，实际请求 idx={requested}"
+    assert 1 in requested, f"英文推文仍应翻译，实际请求 idx={requested}"
+    zh = result["tweets"][0]
+    assert zh["text"] == "这是中文原文，不该再送去翻译。"
+    assert "text_original" not in zh
+    assert zh.get("zh_point"), "中文推文仍需中文点题，否则展示集 audit 会因缺 zh_point 拒发"
+
+
+def test_translate_caps_http_timeout_to_remaining_budget():
+    """单次 HTTP timeout 不得超过剩余总预算，避免一次 analysis 把整天额度烧光。"""
+    from akb2.briefing import translate as tr
+
+    synth = {
+        "executive_summary": "Summary.",
+        "focus_discussions": [
+            {"topic": "T", "summary": "S.", "supporting_tweet_ids": ["1"]},
+        ],
+        "tweets": [
+            {"id": "1", "author": "@x", "text": "short tweet", "score": 0.9, "url": "u"},
+        ],
+    }
+    timeouts: list[int] = []
+
+    def fake(messages, model, **kwargs):
+        timeouts.append(int(kwargs["timeout"]))
+        raise TimeoutError("read timed out")
+
+    with patch.object(tr, "_TRANSLATE_TOTAL_TIME_BUDGET_S", 90), \
+         patch.object(tr, "_DEFAULT_TRANSLATE_TIMEOUT", 300), \
+         patch.object(tr, "_TWEET_TIMEOUT_CAP", 120), \
+         patch("akb2.briefing.synthesis._call_llm", side_effect=fake):
+        result = tr.translate_briefing(synth, timeout=300)
+
+    assert timeouts, "至少应发起一次 analysis 调用"
+    assert all(t <= 90 for t in timeouts), (
+        f"单次 timeout 必须 ≤ 剩余 90s 预算，实际 {timeouts}"
+    )
+    assert result.get("translate_failed") is True
+
+
+def test_analysis_http_timeout_capped_like_tweets():
+    """analysis 不得用 300s 默认超时：DeepSeek 一挂就烧掉 1/3 的 900s 总预算。"""
+    from akb2.briefing.translate import translate_briefing
+
+    synth = {
+        "executive_summary": "Summary.",
+        "focus_discussions": [
+            {"topic": "T", "summary": "S.", "supporting_tweet_ids": ["1"]},
+        ],
+        "tweets": [
+            {"id": "1", "author": "@x", "text": "short tweet", "score": 0.9, "url": "u"},
+        ],
+    }
+    analysis_timeouts: list[int] = []
+    mock = _make_mock_call_llm({
+        "executive_summary": "今日摘要。",
+        "focus_discussions": [{"idx": 0, "topic": "主题", "summary": "中文总结。"}],
+        "tweets": [{"idx": 0, "text_zh": "短推文。", "zh_point": "看点。"}],
+    })
+
+    def spy(messages, model, **kwargs):
+        if _requested_tweet_idx(messages) is None:
+            analysis_timeouts.append(int(kwargs["timeout"]))
+        return mock(messages, model, **kwargs)
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=spy):
+        translate_briefing(synth, timeout=300)
+
+    assert analysis_timeouts == [120], (
+        f"analysis HTTP timeout 应封顶 120s，实际 {analysis_timeouts}"
+    )
+
+
+def test_translate_disables_deepseek_thinking():
+    """翻译调用必须关掉 DeepSeek thinking，否则单条 75s+ 会把 900s 预算烧光。"""
+    from akb2.briefing.translate import translate_briefing
+
+    extra_bodies: list[object] = []
+    mock = _make_mock_call_llm({
+        "executive_summary": "今日摘要。",
+        "focus_discussions": [{"idx": 0, "topic": "主题", "summary": "中文总结。"}],
+        "tweets": [{"idx": 0, "text_zh": "短推文。", "zh_point": "看点。"}],
+    })
+
+    def spy(messages, model, **kwargs):
+        extra_bodies.append(kwargs.get("extra_body"))
+        return mock(messages, model, **kwargs)
+
+    with patch("akb2.briefing.synthesis._call_llm", side_effect=spy):
+        translate_briefing({
+            "executive_summary": "Summary.",
+            "focus_discussions": [
+                {"topic": "T", "summary": "S.", "supporting_tweet_ids": ["1"]},
+            ],
+            "tweets": [
+                {"id": "1", "author": "@x", "text": "short tweet", "score": 0.9, "url": "u"},
+            ],
+        })
+
+    assert extra_bodies, "应至少发起一次翻译调用"
+    assert all(body == {"enable_thinking": False} for body in extra_bodies), (
+        f"翻译必须传 enable_thinking=False，实际 {extra_bodies}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # #15 拆掉批量翻译的串味通道（条目级隔离）
 # ---------------------------------------------------------------------------

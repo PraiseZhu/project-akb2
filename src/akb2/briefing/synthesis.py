@@ -147,8 +147,13 @@ def _call_llm(
     timeout: int = 300,
     base_url: str | None = None,
     reasoning_effort: str | None = None,
+    extra_body: dict | None = None,
 ) -> str:
-    """通用 LLM 调用（OpenAI-compatible），失败重试一次，返回 raw content string。"""
+    """通用 LLM 调用（OpenAI-compatible），瞬时错误重试一次，返回 raw content string。
+
+    读超时不重试同模型：再打只会再烧一整次 timeout，应由调用方换族。
+    extra_body 合并进请求体（如 DeepSeek ``enable_thinking=False``）。
+    """
     import httpx
 
     api_key = os.environ.get("AI_GATEWAY_API_KEY")
@@ -160,6 +165,8 @@ def _call_llm(
         payload["response_format"] = {"type": "json_object"}
     if reasoning_effort:
         payload["reasoning_effort"] = reasoning_effort
+    if extra_body:
+        payload.update(extra_body)
 
     for attempt in range(max_retries + 1):
         try:
@@ -188,6 +195,9 @@ def _call_llm(
                     f"跳过剩余 {max_retries - attempt} 次重试；"
                     f"补救只有等额度重置到具名边界。"
                 ) from exc
+            # 读超时再打同一模型只会再烧一整次 timeout；翻译链应立刻换族。
+            if isinstance(exc, httpx.TimeoutException):
+                raise
             if attempt == max_retries:
                 raise
             time.sleep(2 ** attempt)

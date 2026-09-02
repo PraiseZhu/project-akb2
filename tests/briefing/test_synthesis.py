@@ -107,6 +107,33 @@ def test_retry_on_api_failure():
     assert "focus_discussions" in data
 
 
+def test_call_llm_does_not_retry_same_model_on_read_timeout():
+    """读超时再打同一模型只会再烧一整次 timeout，翻译链应立刻换族。
+
+    2026-09-02：analysis 用 AKB2_TRANSLATE_TIMEOUT=300，_call_llm max_retries=1
+    让 deepseek 超时后再同模型重试一次，单次 budget.take() 烧掉 600s / 900s。
+    """
+    import httpx
+
+    from akb2.briefing import synthesis
+
+    posts: list[int] = []
+
+    def mock_post(*args, **kwargs):
+        posts.append(kwargs.get("timeout") or 0)
+        raise httpx.ReadTimeout("The read operation timed out")
+
+    with patch("httpx.post", side_effect=mock_post), patch("time.sleep"):
+        with pytest.raises(httpx.ReadTimeout):
+            synthesis._call_llm(
+                [{"role": "user", "content": "x"}],
+                model="deepseek/deepseek-v4-pro",
+                timeout=300,
+            )
+
+    assert posts == [300], f"读超时不得同模型重试，实际打了 {len(posts)} 次"
+
+
 # ---------------------------------------------------------------------------
 # SC-5b test 4: fallback schema valid — _fallback_synthesis 产出必须通过 schema
 # ---------------------------------------------------------------------------
