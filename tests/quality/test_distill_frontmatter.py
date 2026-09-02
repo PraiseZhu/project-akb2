@@ -1102,6 +1102,32 @@ class TestBodyContractAlignment:
         assert "Chrome" not in boundary
         assert "MCP" not in boundary
 
+    def test_tutorial_without_browser_evidence_skips_chrome_template(self):
+        """非浏览器 tutorial 不得套 Chrome/MCP 适用边界模板。"""
+        from src.akb2.quality.distill import _build_applicability_boundary_text
+
+        claims = [
+            {
+                "text": "Use LoRA adapters to fine-tune a local model.",
+                "anchor": "§A",
+                "provenance": "source_grounded",
+            },
+            {
+                "text": "Keep a held-out eval set before promoting weights.",
+                "anchor": "§B",
+                "provenance": "source_grounded",
+            },
+        ]
+        text = _build_applicability_boundary_text(
+            "",
+            claims,
+            [],
+            content_lane="tutorial",
+        )
+        assert "Chrome" not in text
+        assert "MCP" not in text
+        assert "Firefox" not in text
+
     def test_graph_evidence_gets_provenance_and_local_contract_passes(self):
         """回归真实 smoke: 图谱 evidence 必须补 provenance，并通过本地 A7/A8 契约。"""
         from src.akb2.quality.checks_structural import (

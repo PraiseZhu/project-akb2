@@ -1575,7 +1575,12 @@ def _run_distill_segment(
     )
 
 
-def _run_extract_claims_worker(raw_content: str, content_lane: str = "") -> Any:
+def _run_extract_claims_worker(
+    raw_content: str,
+    content_lane: str = "",
+    *,
+    loop_id: str = "loop1",
+) -> Any:
     """Run DeepSeek extract in a killable child process.
 
     SDK/http stacks can occasionally ignore in-process timers while waiting on
@@ -1590,7 +1595,11 @@ def _run_extract_claims_worker(raw_content: str, content_lane: str = "") -> Any:
 
     cmd = [sys.executable, "-m", DISTILL_EXTRACT_WORKER_MODULE]
     worker_input = json.dumps(
-        {"raw_content": raw_content, "content_lane": content_lane},
+        {
+            "raw_content": raw_content,
+            "content_lane": content_lane,
+            "loop_id": loop_id or "loop1",
+        },
         ensure_ascii=False,
     )
     worker_timeout_s = _distill_extract_worker_timeout_s(raw_content)
@@ -2529,7 +2538,11 @@ def _is_weekly_check_time() -> bool:
     return now.hour == 0
 
 
-def _sample_recent_promoted(config: RunnerConfig) -> list[dict[str, str]]:
+def _sample_recent_promoted(
+    config: RunnerConfig,
+    *,
+    loop_id: str | None = None,
+) -> list[dict[str, str]]:
     """从账本抽最近期入库的 SPOT_CHECK_SAMPLE_SIZE 篇。
 
     Returns:
@@ -2550,6 +2563,8 @@ def _sample_recent_promoted(config: RunnerConfig) -> list[dict[str, str]]:
                     entry = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if loop_id and entry.get("loop_id") != loop_id:
+                    continue
                 if (
                     entry.get("event") == "finalize"
                     and entry.get("node") == "finalize"
@@ -2569,7 +2584,11 @@ def _sample_recent_promoted(config: RunnerConfig) -> list[dict[str, str]]:
     return promoted_items[-SPOT_CHECK_SAMPLE_SIZE:]
 
 
-def _regrade_sample(samples: list[dict[str, str]]) -> list[bool]:
+def _regrade_sample(
+    samples: list[dict[str, str]],
+    *,
+    loop_id: str = "loop1",
+) -> list[bool]:
     """对抽检样本重新过 grader。
 
     Returns:
@@ -2590,7 +2609,7 @@ def _regrade_sample(samples: list[dict[str, str]]) -> list[bool]:
 
         try:
             from src.akb2.quality.grader import run_grader_detailed
-            grader_result = run_grader_detailed(_text)
+            grader_result = run_grader_detailed(_text, loop_id=loop_id)
         except Exception:
             results.append(False)
             continue
@@ -2608,13 +2627,15 @@ def _regrade_sample(samples: list[dict[str, str]]) -> list[bool]:
 def _run_weekly_spot_check(
     config: RunnerConfig,
     weekly_dir: str,
+    *,
+    loop_id: str = "loop1",
 ) -> None:
     """执行周抽检。
 
     抽近期入库 3 篇重过 grader，pass_rate < 80% 写校准任务文件 +
     落账 + 产 weekly-summary.json。
     """
-    samples = _sample_recent_promoted(config)
+    samples = _sample_recent_promoted(config, loop_id=loop_id)
     weekly_path = Path(weekly_dir)
     weekly_path.mkdir(parents=True, exist_ok=True)
 
@@ -2635,7 +2656,7 @@ def _run_weekly_spot_check(
         return
 
     # 重新评分
-    results = _regrade_sample(samples)
+    results = _regrade_sample(samples, loop_id=loop_id)
     pass_count = sum(1 for r in results if r)
     pass_rate = pass_count / len(results) if results else 0.0
 
@@ -2669,6 +2690,7 @@ def _run_weekly_spot_check(
                 "total": len(results),
                 "calibration_task": str(task_path),
             },
+            loop_id=loop_id,
         )
 
         # 自动校准任务，无需人工介入 — 两计数保持 0（plan SC-6.1）

@@ -216,6 +216,10 @@ def test_runner2_uses_extract_worker_and_maker_fallback():
     assert 'os.environ.get("AKB2_MAKER_FALLBACK"' in text
     maker = text.split("def _run_maker2_segments", 1)[1].split("\ndef ", 1)[0]
     assert "extract_claims(" not in maker
+    assert "loop_id=LOOP2_LOOP_ID" in maker
+    assert '"model_used"' in text
+    assert "maker_fallback_used" in text
+    assert "loop_id=LOOP2_LOOP_ID" in text.split("def main", 1)[1]
 
 
 def test_runner2_requeue_and_grader_carry_loop2():

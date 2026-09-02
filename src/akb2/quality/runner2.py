@@ -112,7 +112,7 @@ def _run_maker2_segments(
     )
 
     extract_result = loop1_runner._run_extract_claims_worker(
-        raw_content, content_lane
+        raw_content, content_lane, loop_id=LOOP2_LOOP_ID
     )
     maker_fallback_used = False
     maker_primary_error = ""
@@ -239,6 +239,8 @@ def _run_maker2_segments(
             "floor_result": floor_result,
             "fixpoint_rounds": fix.rounds,
             "frontmatter_degraded": bool(budgeted.frontmatter_degraded),
+            "maker_fallback_used": maker_fallback_used,
+            "maker_primary_error": maker_primary_error,
         },
     )
 
@@ -386,7 +388,12 @@ def _run_pipeline_segments(
         "distill_extract",
         "distill_extract",
         content_hash,
-        {"status": "success", "content_lane": content_lane},
+        {
+            "status": "success",
+            "content_lane": content_lane,
+            "maker_fallback_used": bool(distill_meta.get("maker_fallback_used")),
+            "maker_primary_error": distill_meta.get("maker_primary_error", ""),
+        },
     )
     _log2(
         config,
@@ -458,6 +465,16 @@ def _run_pipeline_segments(
             ),
             "fallback_used": (
                 quality_meta.get("grader_fallback_used", False) if quality_meta else False
+            ),
+            "model_used": quality_meta.get("grader_model_used", "") if quality_meta else "",
+            "primary_model": (
+                quality_meta.get("grader_primary_model", "") if quality_meta else ""
+            ),
+            "fallback_model": (
+                quality_meta.get("grader_fallback_model", "") if quality_meta else ""
+            ),
+            "suspended": (
+                quality_meta.get("grader_suspended", False) if quality_meta else False
             ),
         },
     )
@@ -658,7 +675,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if args.spot_check:
         weekly_dir = os.path.join(vault_root, "reports", "quality-loop2")
-        _run_weekly_spot_check(config, weekly_dir)
+        _run_weekly_spot_check(config, weekly_dir, loop_id=LOOP2_LOOP_ID)
         return 0
     if args.once:
         queue = _scan_queue(config)

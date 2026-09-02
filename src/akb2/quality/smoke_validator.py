@@ -37,6 +37,23 @@ DEFAULT_SOURCE_LEDGER_MAX_AGE_HOURS = 72
 DEFAULT_MAIN_PLIST = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
 # 与 grader.PRIMARY_GRADER_MODEL 默认对齐；AKB2_GRADER_FAMILY 覆盖时同步。
 EXPECTED_GRADER_MODEL = os.environ.get("AKB2_GRADER_FAMILY", "gpt-5.6-luna")
+EXPECTED_GRADER_MODEL_ALIASES = frozenset(
+    {
+        EXPECTED_GRADER_MODEL,
+        "gpt-5.6-luna",
+        "codex/gpt-5.6-luna",
+    }
+)
+
+
+def _is_expected_grader_model(model_used: object) -> bool:
+    text = str(model_used or "").strip()
+    if text in EXPECTED_GRADER_MODEL_ALIASES:
+        return True
+    expected = str(EXPECTED_GRADER_MODEL or "").strip()
+    if not expected or not text:
+        return False
+    return text.endswith(f"/{expected}") or text == expected
 SOURCE_FAILURE_CLASSES = {
     "config_stale",
     "network_timeout",
@@ -341,7 +358,7 @@ def _assert_grader_result_pass(
         raise SmokeValidationError(f"grader result status != PASS: {data}")
     if data.get("fallback_used") is not False:
         raise SmokeValidationError("grader result fallback_used must be false")
-    if data.get("model_used") != EXPECTED_GRADER_MODEL:
+    if not _is_expected_grader_model(data.get("model_used")):
         raise SmokeValidationError(
             f"grader result model_used != {EXPECTED_GRADER_MODEL}: {data}"
         )
@@ -753,7 +770,7 @@ def validate_happy_path(
     if not grade_events:
         raise SmokeValidationError("missing grade_llm event")
     details = grade_events[-1].get("details", {})
-    if details.get("model_used") != EXPECTED_GRADER_MODEL:
+    if not _is_expected_grader_model(details.get("model_used")):
         raise SmokeValidationError(
             f"grade_llm.model_used != {EXPECTED_GRADER_MODEL}: {details}"
         )

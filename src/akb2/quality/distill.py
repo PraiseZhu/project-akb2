@@ -6840,7 +6840,14 @@ def _build_applicability_boundary_text(
             and str(item.get("text", "")).strip()
             and str(item.get("anchor", "")).strip()
         ]
-        if grounded:
+        source_blob = " ".join(
+            str(item.get("text", "")) for item in grounded
+        ) + " " + str(boundary or "")
+        chrome_grounded = any(
+            token.lower() in source_blob.lower()
+            for token in ("chrome", "mcp", "browser", "浏览器")
+        )
+        if grounded and chrome_grounded:
             def _claim_text(item: dict[str, Any]) -> str:
                 text = _compact_tldr_sentence(str(item.get("text", "")))
                 if "；" in text:

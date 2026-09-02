@@ -16,6 +16,7 @@ from akb2.common.plist_parse import parse_plist_file
 from src.akb2.quality.smoke_validator import (
     EXPECTED_GRADER_MODEL,
     SmokeValidationError,
+    _is_expected_grader_model,
     validate_distill_failure,
     validate_env_parity,
     validate_happy_path,
@@ -180,6 +181,12 @@ def _write_manifest(vault: Path, candidate: Path) -> None:
         "not_active_promotion": True,
     }
     _write_ledger(manifest, [record])
+
+
+def test_expected_grader_model_accepts_codex_alias() -> None:
+    assert _is_expected_grader_model("gpt-5.6-luna")
+    assert _is_expected_grader_model("codex/gpt-5.6-luna")
+    assert not _is_expected_grader_model("gpt-5.4")
 
 
 def _write_grader_pass(vault: Path, candidate: Path) -> Path:
