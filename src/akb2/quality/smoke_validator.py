@@ -48,12 +48,9 @@ EXPECTED_GRADER_MODEL_ALIASES = frozenset(
 
 def _is_expected_grader_model(model_used: object) -> bool:
     text = str(model_used or "").strip()
-    if text in EXPECTED_GRADER_MODEL_ALIASES:
-        return True
-    expected = str(EXPECTED_GRADER_MODEL or "").strip()
-    if not expected or not text:
-        return False
-    return text.endswith(f"/{expected}") or text == expected
+    return text in EXPECTED_GRADER_MODEL_ALIASES
+
+
 SOURCE_FAILURE_CLASSES = {
     "config_stale",
     "network_timeout",

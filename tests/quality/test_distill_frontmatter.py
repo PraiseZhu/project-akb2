@@ -1127,6 +1127,14 @@ class TestBodyContractAlignment:
         assert "Chrome" not in text
         assert "MCP" not in text
         assert "Firefox" not in text
+        leaked = _build_applicability_boundary_text(
+            "The browser of the agent loop is the ledger.",
+            claims,
+            [],
+            content_lane="tutorial",
+        )
+        assert "Chrome" not in leaked
+        assert "MCP" not in leaked
 
     def test_graph_evidence_gets_provenance_and_local_contract_passes(self):
         """回归真实 smoke: 图谱 evidence 必须补 provenance，并通过本地 A7/A8 契约。"""

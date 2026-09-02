@@ -187,6 +187,7 @@ def test_expected_grader_model_accepts_codex_alias() -> None:
     assert _is_expected_grader_model("gpt-5.6-luna")
     assert _is_expected_grader_model("codex/gpt-5.6-luna")
     assert not _is_expected_grader_model("gpt-5.4")
+    assert not _is_expected_grader_model("attacker/gpt-5.6-luna")
 
 
 def _write_grader_pass(vault: Path, candidate: Path) -> Path:

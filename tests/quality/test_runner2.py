@@ -302,3 +302,5 @@ def test_shadow_path_skips_run_promote():
     shadow_idx = text.index("_shadow_promote_enabled()")
     promote_idx = text.index("_run_promote_segment(")
     assert shadow_idx < promote_idx
+    assert '"candidate_path": candidate_path' in text
+    assert text.count('"candidate_path": candidate_path') >= 2

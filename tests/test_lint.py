@@ -92,15 +92,30 @@ def test_loop2_candidate_skips_active_only_lint(tmp_path: Path, monkeypatch):
         encoding="utf-8",
     )
     monkeypatch.setattr(lint, "VAULT_ROOT", vault)
-    fm_dict = {"template_type": "source", "status": "candidate"}
     fm_raw = "template_type: source\nstatus: candidate\nslug: x\n"
     assert lint.rule_r9_source_key_findings_missing_frontmatter(
-        candidate, fm_dict, "## 关键发现\n", {"template_type": "source"}
+        candidate, fm_raw, "## 关键发现\n", {"template_type": "source"}
     ) == []
     mismatch = lint.rule_r16_template_directory_mismatch(
         candidate, fm_raw, "", {"template_type": "source"}
     )
     assert mismatch == []
+
+
+def test_r9_flags_active_source_missing_key_findings_on_string_fm(tmp_path: Path):
+    """lint_page 传入的是 frontmatter 字符串；R9 不得因 fm.get 崩成 P3。"""
+    from src.akb2.lint import akb2_lint as lint
+
+    path = tmp_path / "wiki" / "sources" / "x.md"
+    fm_raw = "template_type: source\nstatus: active\nslug: x\n"
+    findings = lint.rule_r9_source_key_findings_missing_frontmatter(
+        path, fm_raw, "## 关键发现\n", {"template_type": "source"}
+    )
+    assert any(
+        f["rule_id"] == "SOURCE-KEY-FINDINGS-MISSING-FRONTMATTER"
+        and f["severity"] == "P1"
+        for f in findings
+    )
 
 
 def test_query_result_valid_no_p0_p1(repo_root: Path):

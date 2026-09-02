@@ -546,7 +546,11 @@ def _run_pipeline_segments(
             "finalize",
             "finalize",
             content_hash,
-            {"mode": "shadow", "gates_ok": gates_ok},
+            {
+                "mode": "shadow",
+                "gates_ok": gates_ok,
+                "candidate_path": candidate_path,
+            },
         )
         return {
             "converged": True,
@@ -564,8 +568,20 @@ def _run_pipeline_segments(
         candidate_path, config, grader_result_path, loop_id=LOOP2_LOOP_ID
     )
     if promoted:
-        _log2(config, "promote", "promote", content_hash, {"mode": promotion_mode})
-        _log2(config, "finalize", "finalize", content_hash, {"mode": promotion_mode})
+        _log2(
+            config,
+            "promote",
+            "promote",
+            content_hash,
+            {"mode": promotion_mode, "candidate_path": candidate_path},
+        )
+        _log2(
+            config,
+            "finalize",
+            "finalize",
+            content_hash,
+            {"mode": promotion_mode, "candidate_path": candidate_path},
+        )
         final_status = "promoted"
     else:
         _log2(config, "abort", "promote", content_hash, {"reason": promote_detail})
