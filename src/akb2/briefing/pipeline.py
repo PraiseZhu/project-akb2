@@ -25,6 +25,7 @@ Design:
 from __future__ import annotations
 
 import argparse
+import copy
 import datetime
 import json
 import os
@@ -901,8 +902,6 @@ def _drop_untranslated_after_budget(synth: dict) -> dict:
     不限于当前展示集：剪完后未译高分推文会被提成新孤儿，audit 仍 fail。
     判定跟 audit 同一套：text/core_excerpt 无中文，或展示所需 zh_point 缺失。
     """
-    import copy
-
     if not synth.get("translate_budget_exhausted"):
         return synth
 
