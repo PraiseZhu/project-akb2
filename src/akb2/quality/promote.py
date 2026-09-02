@@ -100,6 +100,16 @@ def _run_gate_check(
     stdout = result.stdout
     stderr = result.stderr
 
+    # A non-zero exit means the gate process failed, even if it happened to
+    # emit a stale/partial ``proposed_gate_decision`` on stdout.  Do not parse
+    # or trust that output: promotion must fail closed on subprocess errors.
+    if result.returncode != 0:
+        return (
+            False,
+            f"gate CLI subprocess failed (exit code {result.returncode})",
+            {},
+        )
+
     if stderr.strip():
         # gate CLI 可能输出非致命 stderr（如 parse errors）
         pass
@@ -219,7 +229,7 @@ def _check_source_provenance(candidate_path: Path) -> tuple[bool, str]:
     if not url_match:
         return False, "source_url missing from candidate frontmatter"
     value = url_match.group(1).strip().strip("'\"")
-    if not value:
+    if not value or value.lower() in {"null", "~", "none", "nil", "false", "true", "0"}:
         return False, "source_url is empty in candidate frontmatter"
     return True, f"source_url={value}"
 

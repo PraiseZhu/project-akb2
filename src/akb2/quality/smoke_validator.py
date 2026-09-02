@@ -35,14 +35,13 @@ SENSITIVE_PATH_MARKERS = (
 )
 DEFAULT_SOURCE_LEDGER_MAX_AGE_HOURS = 72
 DEFAULT_MAIN_PLIST = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
-# 与 grader.PRIMARY_GRADER_MODEL 默认对齐；AKB2_GRADER_FAMILY 覆盖时同步。
-EXPECTED_GRADER_MODEL = os.environ.get("AKB2_GRADER_FAMILY", "gpt-5.6-luna")
-EXPECTED_GRADER_MODEL_ALIASES = frozenset(
-    {
-        EXPECTED_GRADER_MODEL,
-        "gpt-5.6-luna",
-        "codex/gpt-5.6-luna",
-    }
+# 只认 luna 家族；AKB2_GRADER_FAMILY 不在集合内时仍按 luna 验收，不把任意字符串放进白名单。
+EXPECTED_GRADER_MODEL_ALIASES = frozenset({"gpt-5.6-luna", "codex/gpt-5.6-luna"})
+_configured_grader = os.environ.get("AKB2_GRADER_FAMILY", "gpt-5.6-luna").strip()
+EXPECTED_GRADER_MODEL = (
+    _configured_grader
+    if _configured_grader in EXPECTED_GRADER_MODEL_ALIASES
+    else "gpt-5.6-luna"
 )
 
 

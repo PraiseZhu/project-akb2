@@ -109,6 +109,10 @@ class TestConsumerBehavior:
                 ok, msg = _check_source_provenance(cand)
                 assert ok is True
                 assert "source_url" in msg
+                for bogus in ("null", "~", "false", "0", "None"):
+                    cand.write_text(_raw_md(bogus), encoding="utf-8")
+                    ok_bogus, _msg = _check_source_provenance(cand)
+                    assert ok_bogus is False, bogus
 
     def test_b_admission_exact_novelty_identity(self) -> None:
         """(b) admission exact-novelty:同 uuid 命中 duplicate_same_claim、异 uuid 不命中。"""
