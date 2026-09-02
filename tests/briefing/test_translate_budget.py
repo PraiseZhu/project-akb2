@@ -318,6 +318,42 @@ def test_budget_drop_drops_topic_if_support_falls_below_two():
     assert _fail_issues(pruned) == [], f"issues={_fail_issues(pruned)}"
 
 
+def test_budget_drop_refill_does_not_steal_other_topic_tweets():
+    """回填只能用未被其他保留主题引用的已译孤儿，不能把乙的支撑借给甲。"""
+    from akb2.briefing.pipeline import _drop_untranslated_after_budget
+
+    synth = {
+        "executive_summary": "今日智能体记忆工具进展综述，覆盖长期记忆与对齐。",
+        "focus_discussions": [
+            {
+                "topic": "主题甲有中文",
+                "summary": "多款记忆工具涌现。它们开始支撑跨会话召回。这是基础设施层面的变化。",
+                "supporting_tweet_ids": ["a", "b"],
+            },
+            {
+                "topic": "主题乙有中文",
+                "summary": "对齐方向有新论文。基础设施正在收敛。跨主题不应串味。",
+                "supporting_tweet_ids": ["x", "y"],
+            },
+        ],
+        "tweets": [
+            {"id": "a", "text": "第 a 条中文译文。", "zh_point": "点题甲", "score": 0.95},
+            {"id": "b", "text": "English leftover after budget.", "score": 0.90},
+            {"id": "x", "text": "第 x 条中文译文。", "zh_point": "点题乙", "score": 0.85},
+            {"id": "y", "text": "第 y 条中文译文。", "zh_point": "点题乙2", "score": 0.80},
+            {"id": "z", "text": "孤儿中文译文。", "zh_point": "孤儿点题", "score": 0.70},
+        ],
+        "translate_budget_exhausted": "call_budget",
+    }
+    pruned = _drop_untranslated_after_budget(synth)
+    by_topic = {fd["topic"]: fd["supporting_tweet_ids"] for fd in pruned["focus_discussions"]}
+    assert "x" not in by_topic["主题甲有中文"], f"甲不应借乙的 x，实际 {by_topic}"
+    assert set(by_topic["主题乙有中文"]) == {"x", "y"}
+    assert "z" in by_topic["主题甲有中文"]
+    assert "a" in by_topic["主题甲有中文"]
+    assert _fail_issues(pruned) == [], f"issues={_fail_issues(pruned)}"
+
+
 def test_budget_drop_closes_post_prune_display_set():
     """删掉高分孤儿后，低分中文不得无 zh_point 晋升进展示集再打 fail。"""
     from akb2.briefing.pipeline import _drop_untranslated_after_budget

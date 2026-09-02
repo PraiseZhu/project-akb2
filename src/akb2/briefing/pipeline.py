@@ -924,25 +924,32 @@ def _drop_untranslated_after_budget(synth: dict) -> dict:
             dropped_any = True
 
         kept_ids = {str(tw.get("id", "")) for tw in tweets if tw.get("id") is not None}
-        claimed: set[str] = set()
+        surviving_refs: set[str] = set()
+        surviving_topics = []
+        for fd in result.get("focus_discussions") or []:
+            ids = [tid for tid in (fd.get("supporting_tweet_ids") or []) if str(tid) in kept_ids]
+            surviving_topics.append((fd, ids))
+            surviving_refs.update(str(tid) for tid in ids)
         refill = [
             str(tw.get("id", ""))
             for tw in sorted(tweets, key=lambda t: t.get("score", 0), reverse=True)
-            if (tw.get("zh_point") or "").strip() and str(tw.get("id", "")) in kept_ids
+            if (tw.get("zh_point") or "").strip()
+            and str(tw.get("id", "")) in kept_ids
+            and str(tw.get("id", "")) not in surviving_refs
         ]
         fds = []
         dropped_topic = False
-        for fd in result.get("focus_discussions") or []:
-            ids = [tid for tid in (fd.get("supporting_tweet_ids") or []) if str(tid) in kept_ids]
+        claimed: set[str] = set()
+        for fd, ids in surviving_topics:
             for tid in refill:
                 if len(ids) >= 2:
                     break
                 if tid not in ids and tid not in claimed:
                     ids.append(tid)
+                    claimed.add(tid)
             if len(ids) < 2:
                 dropped_topic = True
                 continue
-            claimed.update(str(tid) for tid in ids)
             fd = dict(fd)
             fd["supporting_tweet_ids"] = ids
             fds.append(fd)
