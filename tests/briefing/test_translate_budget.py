@@ -151,6 +151,14 @@ def test_snippet_retranslation_also_consumes_budget(monkeypatch):
     assert "focus_discussions[0].topic" in (out.get("translate_failed_fields") or [])
 
 
+def _fail_issues(synth):
+    from akb2.briefing.audit import _check_standard_structured
+    return [
+        it for it in _check_standard_structured(synth)
+        if it.get("severity", "fail") == "fail"
+    ]
+
+
 def test_budget_exhausted_drops_untranslated_display_tweets():
     """预算耗尽后未译展示推文必须从 payload 里拿掉，否则 audit 会因无中文拒发。
 
@@ -241,6 +249,7 @@ def test_budget_drop_keeps_non_display_chinese_without_zh_point():
 
     tweets = [
         {"id": "0", "text": "第 0 条中文译文。", "zh_point": "点题", "score": 1.0},
+        {"id": "sp", "text": "第二条已译支撑。", "zh_point": "支撑点题", "score": 0.94},
         {"id": "1", "text": "English leftover after budget.", "score": 0.99},
     ]
     # 8 条未引用中文，超出 orphan top-K=5，最后一条不进展示集
@@ -256,7 +265,7 @@ def test_budget_drop_keeps_non_display_chinese_without_zh_point():
             {
                 "topic": "智能体记忆",
                 "summary": "多款记忆工具涌现。它们开始支撑跨会话召回。这是基础设施层面的变化。",
-                "supporting_tweet_ids": ["0"],
+                "supporting_tweet_ids": ["0", "sp"],
             }
         ],
         "tweets": tweets,
@@ -265,8 +274,86 @@ def test_budget_drop_keeps_non_display_chinese_without_zh_point():
     }
     pruned = _drop_untranslated_after_budget(synth)
     ids = [t["id"] for t in pruned["tweets"]]
+    from akb2.briefing.translate import _display_tweet_indices
+    display = _display_tweet_indices(pruned)
     assert "1" not in ids
-    assert "9" in ids, f"展示集外中文原文应保留，实际 {ids}"
+    # 删后仍不进展示集的中文原文必须保留；晋升进展示集且无 zh_point 的由闭合循环剪掉
+    for i, tw in enumerate(pruned["tweets"]):
+        if i not in display:
+            continue
+        assert (tw.get("zh_point") or "").strip(), (
+            f"删后展示集 tweets[{i}] id={tw.get('id')!r} 缺 zh_point"
+        )
+    assert _fail_issues(pruned) == [], f"issues={_fail_issues(pruned)}"
+
+
+def test_budget_drop_drops_topic_if_support_falls_below_two():
+    """主题只剩 1 条支撑会被 audit structural fail；应整主题拿掉而不是带着 1 条过闸。"""
+    from akb2.briefing.pipeline import _drop_untranslated_after_budget
+
+    synth = {
+        "executive_summary": "今日智能体记忆工具进展综述，覆盖长期记忆与对齐。",
+        "focus_discussions": [
+            {
+                "topic": "智能体记忆",
+                "summary": "多款记忆工具涌现。它们开始支撑跨会话召回。这是基础设施层面的变化。",
+                "supporting_tweet_ids": ["a", "b"],
+            }
+        ],
+        "tweets": [
+            {"id": "a", "text": "第 a 条中文译文。", "zh_point": "点题", "score": 0.95},
+            {"id": "b", "text": "English leftover after budget.", "score": 0.90},
+            {"id": "c", "text": "第 c 条中文译文。", "zh_point": "另一点题", "score": 0.80},
+            {"id": "d", "text": "第 d 条中文译文。", "zh_point": "第三点题", "score": 0.70},
+        ],
+        "translate_budget_exhausted": "call_budget",
+    }
+    pruned = _drop_untranslated_after_budget(synth)
+    ids = [t["id"] for t in pruned["tweets"]]
+    assert "b" not in ids
+    assert "a" in ids
+    sup = pruned["focus_discussions"][0]["supporting_tweet_ids"]
+    assert len(sup) >= 2
+    assert "a" in sup
+    assert _fail_issues(pruned) == [], f"issues={_fail_issues(pruned)}"
+
+
+def test_budget_drop_closes_post_prune_display_set():
+    """删掉高分孤儿后，低分中文不得无 zh_point 晋升进展示集再打 fail。"""
+    from akb2.briefing.pipeline import _drop_untranslated_after_budget
+    from akb2.briefing.translate import _display_tweet_indices
+
+    tweets = [
+        {"id": "c", "text": "English orphan leftover.", "score": 1.0},
+        {"id": "a", "text": "第 a 条中文译文。", "zh_point": "点题", "score": 0.95},
+        {"id": "b", "text": "第 b 条中文译文。", "zh_point": "点题", "score": 0.90},
+    ]
+    for i, sid in enumerate(["d1", "d2", "d3", "d4", "d5", "d6"], 1):
+        tweets.append({
+            "id": sid,
+            "text": f"这是中文原文 {sid}。",
+            "score": 0.6 - i * 0.1,
+        })
+    synth = {
+        "executive_summary": "今日智能体记忆工具进展综述，覆盖长期记忆与对齐。",
+        "focus_discussions": [
+            {
+                "topic": "智能体记忆",
+                "summary": "多款记忆工具涌现。它们开始支撑跨会话召回。这是基础设施层面的变化。",
+                "supporting_tweet_ids": ["a", "b"],
+            }
+        ],
+        "tweets": tweets,
+        "translate_budget_exhausted": "time_budget",
+    }
+    pruned = _drop_untranslated_after_budget(synth)
+    display = _display_tweet_indices(pruned)
+    tweets_out = pruned["tweets"]
+    for i in display:
+        assert (tweets_out[i].get("zh_point") or "").strip(), (
+            f"删后展示集 tweets[{i}] id={tweets_out[i].get('id')!r} 缺 zh_point"
+        )
+    assert _fail_issues(pruned) == [], f"issues={_fail_issues(pruned)}"
 
 
 def test_no_budget_marker_on_normal_run():
