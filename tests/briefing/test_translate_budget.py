@@ -235,6 +235,40 @@ def test_budget_drop_does_not_promote_english_orphans():
     assert fail_issues == [], f"issues={fail_issues}"
 
 
+def test_budget_drop_keeps_non_display_chinese_without_zh_point():
+    """展示集之外的中文原文从未要求 zh_point，不得当未译剪掉。"""
+    from akb2.briefing.pipeline import _drop_untranslated_after_budget
+
+    tweets = [
+        {"id": "0", "text": "第 0 条中文译文。", "zh_point": "点题", "score": 1.0},
+        {"id": "1", "text": "English leftover after budget.", "score": 0.99},
+    ]
+    # 8 条未引用中文，超出 orphan top-K=5，最后一条不进展示集
+    for i in range(2, 10):
+        tweets.append({
+            "id": str(i),
+            "text": f"这是第 {i} 条中文原文推文。",
+            "score": 0.5 - i / 100,
+        })
+    synth = {
+        "executive_summary": "今日智能体记忆工具进展综述，覆盖长期记忆与对齐。",
+        "focus_discussions": [
+            {
+                "topic": "智能体记忆",
+                "summary": "多款记忆工具涌现。它们开始支撑跨会话召回。这是基础设施层面的变化。",
+                "supporting_tweet_ids": ["0"],
+            }
+        ],
+        "tweets": tweets,
+        "translate_budget_exhausted": "time_budget",
+        "translate_failed_fields": ["tweets[1](budget_exhausted)"],
+    }
+    pruned = _drop_untranslated_after_budget(synth)
+    ids = [t["id"] for t in pruned["tweets"]]
+    assert "1" not in ids
+    assert "9" in ids, f"展示集外中文原文应保留，实际 {ids}"
+
+
 def test_no_budget_marker_on_normal_run():
     """反向守卫：预算充裕的正常运行不得出现预算标记（避免恒真断言）。"""
     calls: list[str] = []

@@ -40,7 +40,7 @@ from pathlib import Path
 
 from akb2.briefing.audit import _requires_chinese  # noqa: E402
 from akb2.briefing.audit_fix import run_audit_fix_loop  # noqa: E402
-from akb2.briefing.translate import translate_briefing  # noqa: E402
+from akb2.briefing.translate import _display_tweet_indices, translate_briefing  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -906,13 +906,16 @@ def _drop_untranslated_after_budget(synth: dict) -> dict:
         return synth
 
     tweets = synth.get("tweets") or []
+    display_idxs = _display_tweet_indices(synth)
     drop_idx: set[int] = set()
 
     for i, tw in enumerate(tweets):
         text = (tw.get("text") or "").strip()
         core = (tw.get("core_excerpt") or "").strip()
-        zh_point = (tw.get("zh_point") or "").strip()
-        if _requires_chinese(text) or _requires_chinese(core) or not zh_point:
+        # 英文残留全表剪；zh_point 缺失只剪展示集（与 audit SC-8 对齐）
+        if _requires_chinese(text) or _requires_chinese(core):
+            drop_idx.add(i)
+        elif i in display_idxs and not (tw.get("zh_point") or "").strip():
             drop_idx.add(i)
 
     if not drop_idx:
