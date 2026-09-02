@@ -912,7 +912,13 @@ def _schema_mismatch_hint(content: Any, content_lane: str = "") -> str:
 # ---------------------------------------------------------------------------
 
 
-def run_grader_detailed(candidate_text: str, content_lane: str = "") -> GraderResult:
+def run_grader_detailed(
+    candidate_text: str,
+    content_lane: str = "",
+    *,
+    loop_id: str = "loop1",
+    timeout_s: float | None = None,
+) -> GraderResult:
     """运行 B 层 10 维量规评分。
 
     调用 GPT-5.4 评分；GPT-5.4 不可用时切 gemini-flash 兜底（FR-008）。
@@ -959,6 +965,8 @@ def run_grader_detailed(candidate_text: str, content_lane: str = "") -> GraderRe
                 model_family=PRIMARY_GRADER_MODEL,
                 messages=messages,
                 response_schema=response_schema,
+                loop_id=loop_id,
+                timeout_s=timeout_s,
             )
             defects, parse_ok = _parse_grader_output(response.content, content_lane)
             if parse_ok:
@@ -997,6 +1005,8 @@ def run_grader_detailed(candidate_text: str, content_lane: str = "") -> GraderRe
                 model_family=FALLBACK_GRADER_MODEL,
                 messages=fallback_messages,
                 response_schema=response_schema,
+                loop_id=loop_id,
+                timeout_s=timeout_s,
             )
             defects, parse_ok = _parse_grader_output(response.content, content_lane)
             if parse_ok:

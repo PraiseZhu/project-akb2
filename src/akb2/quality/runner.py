@@ -497,7 +497,11 @@ def _admission_failure_probe(reason: str, checks: Any, lane_reason: str = "") ->
 
 
 def _maybe_auto_infra_requeue(
-    config: RunnerConfig, content_hash: str, error_text: str
+    config: RunnerConfig,
+    content_hash: str,
+    error_text: str,
+    *,
+    loop_id: str = "loop1",
 ) -> bool:
     """abort 后若属基础设施性死亡 → 自动追加 requeue 事件一次(F26 语义重开)。
 
@@ -529,6 +533,7 @@ def _maybe_auto_infra_requeue(
     return _log_event(
         config, "requeue", "requeue", content_hash,
         {"reason": f"{_AUTO_INFRA_REASON_PREFIX}: {str(error_text)[:140]}"},
+        loop_id=loop_id,
     )
 
 
@@ -1810,6 +1815,9 @@ def _run_quality_segments(
     floor_result: Any = None,
     known_concepts: list[str] | None = None,
     pending_queue: list[str] | None = None,
+    *,
+    loop_id: str = "loop1",
+    grader_timeout_s: float | None = None,
 ) -> tuple[bool, str, str, dict[str, Any]]:
     """段 5-6: 结构校验 + 评分 + 修复。
 
@@ -1950,7 +1958,12 @@ def _run_quality_segments(
 
     if not a_defects:
         # B 层: LLM 评分。只有 A 层通过时才调用，避免对结构不合格稿件花费裁判预算。
-        grader_result = run_grader_detailed(candidate_text, content_lane=content_lane)
+        grader_result = run_grader_detailed(
+            candidate_text,
+            content_lane=content_lane,
+            loop_id=loop_id,
+            timeout_s=grader_timeout_s,
+        )
         b_defects = grader_result.defects
         grader_meta = {
             "grader_model_used": grader_result.model_used,

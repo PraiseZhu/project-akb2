@@ -208,6 +208,34 @@ def test_loop2_abort_logs_defect_summary():
     assert "final_defects_summary" in text
 
 
+def test_runner2_uses_extract_worker_and_maker_fallback():
+    src = Path(__file__).resolve().parents[2] / "src/akb2/quality/runner2.py"
+    text = src.read_text(encoding="utf-8")
+    assert "_run_extract_claims_worker" in text
+    assert "build_deterministic_extract_result" in text
+    assert 'os.environ.get("AKB2_MAKER_FALLBACK"' in text
+    maker = text.split("def _run_maker2_segments", 1)[1].split("\ndef ", 1)[0]
+    assert "extract_claims(" not in maker
+
+
+def test_runner2_requeue_and_grader_carry_loop2():
+    src = Path(__file__).resolve().parents[2] / "src/akb2/quality/runner2.py"
+    text = src.read_text(encoding="utf-8")
+    assert "loop_id=LOOP2_LOOP_ID" in text
+    assert "grader_timeout_s=float(LOOP2_GRADER_TIMEOUT_S)" in text
+    assert text.count("loop_id=LOOP2_LOOP_ID") >= 4
+
+
+def test_intake_cli_defaults_quality_ledger():
+    src = (
+        Path(__file__).resolve().parents[2]
+        / "src/akb2/quality/intake_x/orchestrator.py"
+    ).read_text(encoding="utf-8")
+    assert "quality_ledger_path is None" in src
+    assert "QUALITY_LEDGER_FILE" in src
+    assert "--quality-ledger" in src
+
+
 def test_shadow_path_skips_run_promote():
     src = Path(__file__).resolve().parents[2] / "src/akb2/quality/runner2.py"
     text = src.read_text(encoding="utf-8")

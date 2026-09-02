@@ -106,12 +106,22 @@ def _run_maker2_segments(
     """段 3-4：extract_claims → fulfill_extract_contract → distill compose
     → maker2.compose_candidate → run_fixpoint。不复制 loop1 F4 增援 / procedural H1 / retake。
     """
-    from src.akb2.quality.distill import compose_candidate, extract_claims
-
-    started = time.monotonic()
-    extract_result = extract_claims(
-        raw_content, content_lane=content_lane, loop_id=LOOP2_LOOP_ID
+    from src.akb2.quality.distill import (
+        build_deterministic_extract_result,
+        compose_candidate,
     )
+
+    extract_result = loop1_runner._run_extract_claims_worker(
+        raw_content, content_lane
+    )
+    maker_fallback_used = False
+    maker_primary_error = ""
+    if not extract_result.success and os.environ.get("AKB2_MAKER_FALLBACK", "1") != "0":
+        maker_primary_error = extract_result.error
+        extract_result = build_deterministic_extract_result(
+            raw_content, raw_path, content_lane=content_lane
+        )
+        maker_fallback_used = extract_result.success
     if not extract_result.success:
         return (
             False,
@@ -121,15 +131,9 @@ def _run_maker2_segments(
             {
                 "failed_node": "distill_extract",
                 "retries_used": extract_result.retries_used,
+                "maker_fallback_used": maker_fallback_used,
+                "maker_primary_error": maker_primary_error,
             },
-        )
-    if time.monotonic() - started > LOOP2_EXTRACT_SEGMENT_TIMEOUT_S:
-        return (
-            False,
-            "extract_worker_timeout",
-            f"抽取超过 {LOOP2_EXTRACT_SEGMENT_TIMEOUT_S}s",
-            None,
-            {"failed_node": "distill_extract", "timeout_s": LOOP2_EXTRACT_SEGMENT_TIMEOUT_S},
         )
 
     content_lane = str(
@@ -298,7 +302,9 @@ def _run_pipeline_segments(
                 "failure_kind": _classify_failure_kind(admission_probe),
             },
         )
-        _maybe_auto_infra_requeue(config, content_hash, admission_probe)
+        _maybe_auto_infra_requeue(
+            config, content_hash, admission_probe, loop_id=LOOP2_LOOP_ID
+        )
         error = reason if str(reason).startswith("准入未通过") else f"准入未通过: {reason}"
         return {
             "converged": False,
@@ -357,7 +363,9 @@ def _run_pipeline_segments(
         details["segment_timeout_s"] = LOOP2_EXTRACT_SEGMENT_TIMEOUT_S
         details["failure_kind"] = _classify_failure_kind(error_detail)
         _log2(config, "abort", failed_node, content_hash, details)
-        _maybe_auto_infra_requeue(config, content_hash, error_detail)
+        _maybe_auto_infra_requeue(
+            config, content_hash, error_detail, loop_id=LOOP2_LOOP_ID
+        )
         return {
             "converged": False,
             "rounds": rounds,
@@ -420,6 +428,8 @@ def _run_pipeline_segments(
         floor_result=distill_meta.get("floor_result"),
         known_concepts=vault_index.get("known_concepts"),
         pending_queue=vault_index.get("pending_queue"),
+        loop_id=LOOP2_LOOP_ID,
+        grader_timeout_s=float(LOOP2_GRADER_TIMEOUT_S),
     )
     rounds = quality_meta.get("repair_rounds", 0) if quality_meta else 0
     _log2(
@@ -466,7 +476,9 @@ def _run_pipeline_segments(
             content_hash,
             abort_details,
         )
-        _maybe_auto_infra_requeue(config, content_hash, str(error_detail))
+        _maybe_auto_infra_requeue(
+            config, content_hash, str(error_detail), loop_id=LOOP2_LOOP_ID
+        )
         return {
             "converged": False,
             "rounds": rounds,

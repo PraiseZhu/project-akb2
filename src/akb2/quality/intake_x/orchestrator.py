@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 import time
@@ -17,6 +18,7 @@ from src.akb2.briefing.intake.l0_collector import (
     UPSTREAM_HARD_FAILURE_FAILFAST_STREAK,
     match_upstream_fatal,
 )
+from src.akb2.common.state_paths import LEDGER_SUBDIR, resolve_state_file
 from src.akb2.quality.intake.orchestrator import (
     DEFAULT_OUTPUT_DIR,
     _source_rotation_offset,
@@ -47,6 +49,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_STATE_FILE = "reports/intake/loop2-intake-state.jsonl"
 LOOP2_LOOP_ID = "loop2"
+QUALITY_LEDGER_FILE = "quality-ledger.jsonl"
 
 FetchChannelFn = Callable[..., tuple[list[dict[str, Any]], str | None, str]]
 PrefilterFn = Callable[..., Any]
@@ -66,6 +69,34 @@ def _rotate(channels: tuple[XChannel, ...]) -> tuple[XChannel, ...]:
 def _is_hard_failure(sample: str) -> bool:
     text = (sample or "").lower()
     return text in {"timeout", "non-json"} or "non-json" in text or text.startswith("timeout")
+
+
+def _utc_today() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%d")
+
+
+def _count_channel_archived_today(state_file: str | Path, slug: str, day: str) -> int:
+    path = Path(state_file)
+    if not path.exists():
+        return 0
+    counted = 0
+    with path.open(encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if record.get("source_slug") != slug:
+                continue
+            if record.get("status") != "archived":
+                continue
+            fetched = str(record.get("last_fetch_at") or "")
+            if fetched.startswith(day):
+                counted += 1
+    return counted
 
 
 def _append_quality_event(ledger_path: str | Path, event: str, details: dict[str, Any]) -> None:
@@ -128,8 +159,13 @@ def run_intake_x(
         "skipped_short": 0,
         "dropped_prefilter": 0,
         "dropped_batch": 0,
+        "skipped_day_cap": 0,
         "failed": 0,
     }
+    if quality_ledger_path is None:
+        quality_ledger_path = resolve_state_file(QUALITY_LEDGER_FILE, subdir=LEDGER_SUBDIR)
+    elif str(quality_ledger_path) == "":
+        quality_ledger_path = None
     fatal_streak = 0
     hard_streak = 0
     last_fetch: float | None = None
@@ -137,8 +173,19 @@ def run_intake_x(
     archived = 0
 
     for channel in channels:
+        remaining_today = None
+        if channel.per_day_cap is not None:
+            used_today = _count_channel_archived_today(
+                state_file, channel.slug, _utc_today()
+            )
+            remaining_today = max(0, int(channel.per_day_cap) - used_today)
+            if remaining_today == 0:
+                stats["skipped_day_cap"] += 1
+                continue
         items, fatal, sample = fetch_fn(channel, last_fetch_monotonic=last_fetch)
         last_fetch = time.monotonic()
+        if remaining_today is not None:
+            items = items[:remaining_today]
         stats["fetched"] += len(items)
         if fatal or match_upstream_fatal(sample or ""):
             fatal_streak += 1
@@ -347,6 +394,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--state-file", default=DEFAULT_STATE_FILE)
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--vault-root", default="")
+    parser.add_argument("--quality-ledger", default="")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--limit", type=int, default=0)
     args = parser.parse_args(argv)
@@ -356,6 +404,7 @@ def main(argv: list[str] | None = None) -> int:
             state_file=args.state_file,
             output_dir=args.output_dir,
             vault_root=args.vault_root or None,
+            quality_ledger_path=args.quality_ledger or None,
             dry_run=args.dry_run,
             limit=args.limit,
         )

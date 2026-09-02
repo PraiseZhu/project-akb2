@@ -300,6 +300,7 @@ def test_failfast_streak(tmp_path: Path):
             sources_config=path,
             state_file=tmp_path / "state.jsonl",
             output_dir=tmp_path / "raw",
+            quality_ledger_path="",
             dry_run=True,
             fetch_fn=fetch,
             prefilter_fn=lambda items, **kwargs: PrefilterBatchResult(),
@@ -339,6 +340,7 @@ def test_cross_channel_and_cross_loop_dedup(tmp_path: Path):
         state_file=tmp_path / "state.jsonl",
         output_dir=tmp_path / "raw",
         vault_root=vault,
+        quality_ledger_path="",
         dry_run=False,
         fetch_fn=fetch,
         prefilter_fn=keep_all,
@@ -353,6 +355,50 @@ def test_normalize_skips_short_tweets():
     channel = XChannel(channel="feed", slug="x-home-feed", enabled=True)
     tweet = {"id": "1", "text": "gm", "author": {"screenName": "bob"}}
     assert normalize_tweet(tweet, channel) is None
+
+
+def test_bookmarks_day_cap_skips_fetch_when_full(tmp_path: Path):
+    """per_day_cap=60 必须跨轮累计；今天已 archived 60 条后 bookmarks 不再 fetch。"""
+    import json
+    from datetime import UTC, datetime
+
+    path = _write_sources(tmp_path)
+    state = tmp_path / "state.jsonl"
+    today = datetime.now(UTC).strftime("%Y-%m-%dT12:00:00Z")
+    rows = [
+        json.dumps(
+            {
+                "article_id": f"bm-{i}",
+                "daily_count": i + 1,
+                "last_fetch_at": today,
+                "quarantine_status": False,
+                "run_id": "old",
+                "source_slug": "x-bookmarks",
+                "status": "archived",
+            },
+            sort_keys=True,
+        )
+        for i in range(60)
+    ]
+    state.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    fetched_slugs: list[str] = []
+
+    def fetch(channel, last_fetch_monotonic=None):
+        fetched_slugs.append(channel.slug)
+        return [], None, ""
+
+    stats = run_intake_x(
+        sources_config=path,
+        state_file=state,
+        output_dir=tmp_path / "raw",
+        quality_ledger_path="",
+        dry_run=True,
+        fetch_fn=fetch,
+        prefilter_fn=lambda items, **kwargs: PrefilterBatchResult(),
+    )
+    assert stats["skipped_day_cap"] == 1
+    assert "x-bookmarks" not in fetched_slugs
+    assert "x-home-feed" in fetched_slugs
 
 
 def test_orchestrator_has_main_guard():
