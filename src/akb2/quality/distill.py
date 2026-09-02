@@ -6829,7 +6829,9 @@ def _build_applicability_boundary_text(
 ) -> str:
     """把适用边界渲染为可判定场景，不保留模板占位或来源事实列表。"""
     lane = _normalize_content_lane(content_lane)
-    if lane != CONTENT_LANE_CONCEPT:
+    # 空车道走通用兜底。专用 Chrome 场景句只给 design/tutorial/pattern，
+    # 避免 loop 工程夹具被渲染成浏览器 MCP 边界。
+    if lane in {CONTENT_LANE_DESIGN, CONTENT_LANE_TUTORIAL, CONTENT_LANE_PATTERN}:
         grounded = [
             item
             for item in claims
