@@ -92,6 +92,21 @@ class TestBudgetArithmetic:
         # 实测生产逼真形态正经 how_params 产出 89.4s;预算低于它=回归到掐死状态
         assert EXTRACT_SEGMENT_TIMEOUT_S >= 100
 
+    def test_loop2_raised_segment_timeout_scales_attempt(self, monkeypatch):
+        """wrapper 抬 AKB2_EXTRACT_SEGMENT_TIMEOUT_S=360 时 attempt 必须变成 740。"""
+        import importlib
+
+        import src.akb2.quality.distill as distill_mod
+
+        monkeypatch.setenv("AKB2_EXTRACT_SEGMENT_TIMEOUT_S", "360")
+        reloaded = importlib.reload(distill_mod)
+        try:
+            assert reloaded.EXTRACT_SEGMENT_TIMEOUT_S == 360
+            assert reloaded.DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S == 740
+        finally:
+            monkeypatch.delenv("AKB2_EXTRACT_SEGMENT_TIMEOUT_S", raising=False)
+            importlib.reload(distill_mod)
+
 
 # ---------------------------------------------------------------------------
 # 词面 token 与组件支撑判定

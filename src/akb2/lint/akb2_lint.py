@@ -548,9 +548,11 @@ def rule_r9_source_key_findings_missing_frontmatter(path, fm, body, ctx):
     """PAGE-TEMPLATES §4.2 H7: source 模板 active 缺 frontmatter key_findings ≥3"""
     if ctx.get("template_type") != "source":
         return []
+    # parse_fm_field_raw intentionally preserves YAML quoting for inline arrays;
+    # status is a scalar, so normalize the common quoted forms before comparing.
     status = str(
         parse_fm_field_raw(fm, "status") or parse_fm_field_raw(fm, "page_status") or ""
-    ).strip()
+    ).strip().strip('"').strip("'")
     if status and status != "active":
         return []
     arr = parse_fm_array(fm, "key_findings")

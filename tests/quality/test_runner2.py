@@ -12,6 +12,7 @@ from src.akb2.quality.requeue import run_requeue
 from src.akb2.quality.runner import RunnerConfig, _log_event
 from src.akb2.quality.runner2 import (
     C1_LAUNCHD_BOOTIN,
+    LOOP2_EXTRACT_ATTEMPT_TIMEOUT_S,
     LOOP2_EXTRACT_SEGMENT_TIMEOUT_S,
     LOOP2_LOOP_ID,
     LOOP2_PROCESSING_LOCK_NAME,
@@ -52,10 +53,18 @@ def test_runner2_defaults_to_loop2_dirs():
 
 
 def test_loop2_extract_budget_covers_one_distill_attempt():
-    """runner2 段预算不得短于 distill 单次 attempt（380s），否则会掐死可成功的慢抽取。"""
-    from src.akb2.quality.distill import DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S
+    """attempt 必须盖住 claims+how_params 两段 HTTP；账本 segment 记真实 per-call。"""
+    from src.akb2.quality.distill import (
+        DISTILL_EXTRACT_ATTEMPT_SLACK_S,
+        DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S,
+        EXTRACT_SEGMENT_TIMEOUT_S,
+    )
 
-    assert LOOP2_EXTRACT_SEGMENT_TIMEOUT_S >= DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S
+    assert DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S == (
+        2 * EXTRACT_SEGMENT_TIMEOUT_S + DISTILL_EXTRACT_ATTEMPT_SLACK_S
+    )
+    assert LOOP2_EXTRACT_SEGMENT_TIMEOUT_S == EXTRACT_SEGMENT_TIMEOUT_S
+    assert LOOP2_EXTRACT_ATTEMPT_TIMEOUT_S == DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S
 
 
 def test_loop2_pipeline_raises_http_segment_timeout():
@@ -67,10 +76,12 @@ def test_loop2_pipeline_raises_http_segment_timeout():
 
 
 def test_loop2_abort_details_use_loop2_segment_timeout():
-    """loop1 helper 默认写 180；runner2 abort 必须覆盖成 380，否则账本撒谎。"""
+    """runner2 abort 必须写真实 HTTP 段超时，不得把 attempt 380 冒充 segment。"""
     src = Path(__file__).resolve().parents[2] / "src/akb2/quality/runner2.py"
     text = src.read_text(encoding="utf-8")
     assert 'details["segment_timeout_s"] = LOOP2_EXTRACT_SEGMENT_TIMEOUT_S' in text
+    assert 'details["attempt_timeout_s"] = LOOP2_EXTRACT_ATTEMPT_TIMEOUT_S' in text
+    assert "LOOP2_EXTRACT_SEGMENT_TIMEOUT_S = EXTRACT_SEGMENT_TIMEOUT_S" in text
 
 
 def test_grader_fallback_predicate_unedited():

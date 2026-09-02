@@ -118,6 +118,22 @@ def test_r9_flags_active_source_missing_key_findings_on_string_fm(tmp_path: Path
     )
 
 
+def test_r9_flags_quoted_active_source_missing_key_findings(tmp_path: Path):
+    """quoted YAML scalar status: active 仍须按 active-only 规则检查。"""
+    from src.akb2.lint import akb2_lint as lint
+
+    path = tmp_path / "wiki" / "sources" / "quoted.md"
+    fm_raw = 'template_type: source\nstatus: "active"\nslug: quoted\n'
+    findings = lint.rule_r9_source_key_findings_missing_frontmatter(
+        path, fm_raw, "## 关键发现\n", {"template_type": "source"}
+    )
+    assert any(
+        f["rule_id"] == "SOURCE-KEY-FINDINGS-MISSING-FRONTMATTER"
+        and f["severity"] == "P1"
+        for f in findings
+    )
+
+
 def test_query_result_valid_no_p0_p1(repo_root: Path):
     """valid-query-result.md should lint with 0 P0/P1 findings."""
     import subprocess
@@ -376,4 +392,3 @@ def test_r14_active_with_related_not_flagged():
     assert rule(path, fm_active_ok, "body", ctx) == [], (
         "active + 非空 related_concepts 应放行(规则正常)"
     )
-

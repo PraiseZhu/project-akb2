@@ -1909,6 +1909,7 @@ def _run_quality_segments(
             encoding="utf-8",
         )
 
+    grader_result: Any | None = None
     grader_meta: dict[str, Any] = {
         "grader_model_used": "",
         "grader_primary_model": "",
@@ -2035,8 +2036,8 @@ def _run_quality_segments(
                 "repair_rounds": 0, "final_defects_summary": [],
             }
             _gate = _check_concept_hard_gates(
-                grader_result.interpretation_entailment,
-                grader_result.dimension_scores,
+                getattr(grader_result, "interpretation_entailment", None),
+                getattr(grader_result, "dimension_scores", {}),
                 content_lane,
                 _base,
             )

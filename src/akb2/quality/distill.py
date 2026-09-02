@@ -155,13 +155,27 @@ DISTILL_MAX_RETRIES: int = 0
 #             撞同一慢网关 → infra abort。p0 重排队实证 6 篇全为此模式,切
 #             flash(模型侧)不缓解 → 瓶颈在网关延迟,放宽 per-call 是唯一
 #             不新增机制的止血点)
-#   attempt   = 2 segment × 180 + 20 归一化/校验 = 380
-#   worker    = 2 × attempt + 30 = 790 (runner.py;Sol 审 P1-4:重试是整
-#               attempt 重启,契约取"至少一次完整重试可用")
-EXTRACT_SEGMENT_TIMEOUT_S: float = float(
-    os.environ.get("AKB2_EXTRACT_SEGMENT_TIMEOUT_S", "180")
+#   attempt   = 2 segment × per-call + 20 归一化/校验
+#             默认 180 → 380；loop2 wrapper 抬 AKB2_EXTRACT_SEGMENT_TIMEOUT_S
+#             时必须跟着涨，否则第一段吃光预算、第二段被 SIGALRM 截断。
+#   worker    = 2 × 默认 attempt(380) + 30 = 790 (runner.py 常量按 loop1 默认；
+#               Sol 审 P1-4:重试是整 attempt 重启,契约取"至少一次完整重试可用")
+def _positive_timeout_env(name: str, default: str) -> float:
+    raw = os.environ.get(name, default)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = float(default)
+    return value if value > 0 else float(default)
+
+
+EXTRACT_SEGMENT_TIMEOUT_S: float = _positive_timeout_env(
+    "AKB2_EXTRACT_SEGMENT_TIMEOUT_S", "180"
 )
-DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S: float = 380.0
+DISTILL_EXTRACT_ATTEMPT_SLACK_S: float = 20.0
+DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S: float = (
+    2 * EXTRACT_SEGMENT_TIMEOUT_S + DISTILL_EXTRACT_ATTEMPT_SLACK_S
+)
 DISTILL_DISABLE_THINKING: bool = True
 # Step-7: 语义型 How 抖动兜底。how_params segment（LLM 自由文本 how_steps，
 # 非 must_cover 代码直出）多取取交集，抵抗单次 LLM 抖动。有界：SEMANTIC_RETAKE_MAX 次。

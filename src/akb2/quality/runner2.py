@@ -14,6 +14,10 @@ from pathlib import Path
 from typing import Any
 
 from src.akb2.quality import runner as loop1_runner
+from src.akb2.quality.distill import (
+    DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S,
+    EXTRACT_SEGMENT_TIMEOUT_S,
+)
 from src.akb2.quality.maker2 import (
     compose_candidate as maker2_compose_candidate,
 )
@@ -51,7 +55,9 @@ from src.akb2.quality.runner import (
 
 LOOP2_POLL_INTERVAL_SECONDS = 300
 LOOP2_ARTICLE_BUDGET_SECONDS = 900
-LOOP2_EXTRACT_SEGMENT_TIMEOUT_S = 380.0
+# 与 distill 实际 HTTP 段超时同源；attempt = 2×该值 + 20。账本不得再写死 380。
+LOOP2_EXTRACT_SEGMENT_TIMEOUT_S = EXTRACT_SEGMENT_TIMEOUT_S
+LOOP2_EXTRACT_ATTEMPT_TIMEOUT_S = DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S
 LOOP2_GRADER_TIMEOUT_S = 180
 LOOP2_AUTO_INFRA_REQUEUE_MAX = 1
 LOOP2_LOOP_ID = "loop2"
@@ -344,6 +350,7 @@ def _run_pipeline_segments(
             "status": "start",
             "model_family": DISTILL_MODEL_FAMILY,
             "segment_timeout_s": LOOP2_EXTRACT_SEGMENT_TIMEOUT_S,
+            "attempt_timeout_s": LOOP2_EXTRACT_ATTEMPT_TIMEOUT_S,
             "provider_max_retries": DISTILL_MAX_RETRIES,
             "extract_max_attempts": _extract_max_attempts(content_lane),
             "content_lane": content_lane,
@@ -366,6 +373,7 @@ def _run_pipeline_segments(
             content_lane=content_lane,
         )
         details["segment_timeout_s"] = LOOP2_EXTRACT_SEGMENT_TIMEOUT_S
+        details["attempt_timeout_s"] = LOOP2_EXTRACT_ATTEMPT_TIMEOUT_S
         details["failure_kind"] = _classify_failure_kind(error_detail)
         _log2(config, "abort", failed_node, content_hash, details)
         _maybe_auto_infra_requeue(
