@@ -129,6 +129,17 @@ def test_deterministic_cannot_fabricate_when_raw_has_no_mechanism() -> None:
     assert result.fabricated is False
 
 
+def test_maker2_enrich_env_off_skips_deterministic_fill(monkeypatch) -> None:
+    """AKB2_MAKER2_ENRICH=0 必须关掉 thin-concept 确定性补全。"""
+    monkeypatch.setenv("AKB2_MAKER2_ENRICH", "0")
+    result = fulfill_extract_contract(
+        _zero_component_extract(), _RAW_WITH_CAUSAL, content_lane="concept"
+    )
+    assert result.enriched is False
+    assert result.components_added == 0
+    assert result.extract_data["mechanism_components"] == []
+
+
 def test_contract_anchors_subset_of_raw() -> None:
     result = fulfill_extract_contract(
         _zero_component_extract(), _RAW_WITH_CAUSAL, content_lane="concept"

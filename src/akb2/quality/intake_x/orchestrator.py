@@ -159,6 +159,7 @@ def run_intake_x(
         "skipped_short": 0,
         "dropped_prefilter": 0,
         "dropped_batch": 0,
+        "skipped_prefilter_budget": 0,
         "skipped_day_cap": 0,
         "failed": 0,
     }
@@ -213,13 +214,26 @@ def run_intake_x(
         hard_streak = 0
 
         pending: list[dict[str, Any]] = []
-        for tweet in items:
+        for item_index, tweet in enumerate(items):
             if limit and archived >= limit:
                 break
             pending.append(tweet)
             if len(pending) < X_PREFILTER_BATCH_SIZE:
                 continue
             if batches_used >= X_PREFILTER_MAX_BATCHES_PER_RUN:
+                leftover = len(pending) + (len(items) - item_index - 1)
+                stats["skipped_prefilter_budget"] += leftover
+                if quality_ledger_path:
+                    _append_quality_event(
+                        quality_ledger_path,
+                        "intake_x_prefilter_budget",
+                        {
+                            "slug": channel.slug,
+                            "skipped": leftover,
+                            "batches_used": batches_used,
+                            "max_batches": X_PREFILTER_MAX_BATCHES_PER_RUN,
+                        },
+                    )
                 pending = []
                 break
             archived += _consume_batch(
@@ -259,6 +273,19 @@ def run_intake_x(
                 prefilter_fn=prefilter_fn,
             )
             batches_used += 1
+        elif pending:
+            stats["skipped_prefilter_budget"] += len(pending)
+            if quality_ledger_path:
+                _append_quality_event(
+                    quality_ledger_path,
+                    "intake_x_prefilter_budget",
+                    {
+                        "slug": channel.slug,
+                        "skipped": len(pending),
+                        "batches_used": batches_used,
+                        "max_batches": X_PREFILTER_MAX_BATCHES_PER_RUN,
+                    },
+                )
         if limit and archived >= limit:
             break
     stats["archived"] = archived

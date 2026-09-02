@@ -3,7 +3,7 @@
 策略 = ``cindy://session/<payload session_id>``,不做变换、不生成新 UUID。
 唯一性职责在 sc-asm-schema(session_id 必为小写 canonical UUID4)。
 
-① 基线清单锁定:现测读取点集合 == BASELINE_READERS(9 个,逐个标注性质);
+① 基线清单锁定:现测读取点集合 == BASELINE_READERS(11 个,逐个标注性质);
 ② 逐消费者行为断言 (a)-(e) 全用真 uuid;
 ③ 预测红集:用固定常量的实现在 (b) 必红(所有 session 互相判重);
 ④ lint 对该字段零 finding(锁定当前无格式门控)。
@@ -34,10 +34,10 @@ def _raw_md(url: str, title: str = "T") -> str:
 
 
 # ---------------------------------------------------------------------------
-# ① 基线清单锁定:现测读取点集合 == BASELINE_READERS(9 个)
+# ① 基线清单锁定:现测读取点集合 == BASELINE_READERS(11 个)
 # ---------------------------------------------------------------------------
 
-# lead 实测 grep -rln source_url src/akb2/quality/ --include=*.py 得 9 个文件,
+# lead 实测 grep -rln source_url src/akb2/quality/ --include=*.py；
 # 逐个标注读取性质;漏标文件下次改动时不会触发红灯。
 BASELINE_READERS: dict[str, str] = {
     "quality/promote.py": "行为消费者:Gate-0 非空硬校验(promote.py:205-224)",
@@ -49,6 +49,8 @@ BASELINE_READERS: dict[str, str] = {
     "quality/calibration.py": "写入侧:构造 fixture(calibration.py:538)",
     "quality/checks_structural.py": "非消费者:仅提示文案字符串(checks_structural.py:1588)",
     "quality/intake/frontmatter_repair.py": "非消费者:仅断言修复产物自带该键,不读值做判定(frontmatter_repair.py:110)",
+    "quality/intake_x/orchestrator.py": "行为消费者:跨 loop 去重(_cross_loop_exists 读 wiki/sources source_url)",
+    "quality/maker2/frontmatter_budget.py": "非消费者:IDENTITY_KEYS 保留 source_url 键名,不读值做判定",
 }
 
 
@@ -78,9 +80,9 @@ class TestBaselineReaders:
         for rel in BASELINE_READERS:
             assert (QUALITY.parent / rel).exists(), f"{rel} 不在 quality 下"
 
-    def test_baseline_reader_annotations_cover_all_nine(self) -> None:
-        """清单必须含全部 9 个并逐个标注性质(漏标文件下次改动时不触发红灯)。"""
-        assert len(BASELINE_READERS) == 9
+    def test_baseline_reader_annotations_cover_all_listed(self) -> None:
+        """清单必须含全部读取点并逐个标注性质(漏标文件下次改动时不触发红灯)。"""
+        assert len(BASELINE_READERS) == 11
         for rel, note in BASELINE_READERS.items():
             assert note.strip(), f"{rel} 缺标注"
             assert any(k in note for k in (

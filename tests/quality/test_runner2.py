@@ -234,6 +234,8 @@ def test_intake_cli_defaults_quality_ledger():
     assert "quality_ledger_path is None" in src
     assert "QUALITY_LEDGER_FILE" in src
     assert "--quality-ledger" in src
+    assert "skipped_prefilter_budget" in src
+    assert "intake_x_prefilter_budget" in src
 
 
 def test_shadow_path_skips_run_promote():

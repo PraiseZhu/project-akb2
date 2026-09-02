@@ -246,6 +246,16 @@ step-2 量规外置正当升级 `skillpack/quality/rubric/10-dimensions.md`（�
 | 风险 | 计划下限 4 个 List 已齐，但 design-eng 只有 7 人；S1 三天观察日历今天起不完。loop1 并行保留，未归档 |
 | 后续动作 | 限流过后再补 design-eng 成员。S1/S2/S3 按日历走 |
 
+### loop2 staging 可省略 directory_scope（R16，2026-09-02）
+
+| 项 | 值 |
+|----|----|
+| 影响 | `rule_r16_template_directory_mismatch` 对 `staging-loop2/candidate/` |
+| 现状 | loop2 为压 frontmatter 行预算，缺 `directory_scope` 不报；**写错仍报**。loop1 staging 缺 key 或写错都报 |
+| 为什么留 | maker2 `frontmatter_budget` 优先保 identity 标量；canonical 目录在升格后才落地。错声明不能被豁免掩盖 |
+| 测试 | `tests/test_lint.py::test_r16_exempts_loop2_candidate_omitting_directory_scope` |
+| 后续动作 | S3 正式升格前再决定是否强制补 `directory_scope` |
+
 ---
 
 ### backstop 第二时段 11:00：模板已改，运行态待 owner 重装（2026-08-04 登记）

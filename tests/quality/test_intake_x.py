@@ -401,6 +401,52 @@ def test_bookmarks_day_cap_skips_fetch_when_full(tmp_path: Path):
     assert "x-home-feed" in fetched_slugs
 
 
+def test_prefilter_budget_overflow_is_counted(tmp_path: Path, monkeypatch):
+    """超过 X_PREFILTER_MAX_BATCHES_PER_RUN 的条目必须计入 skipped_prefilter_budget。"""
+    from src.akb2.quality.intake_x import prefilter as prefilter_mod
+
+    monkeypatch.setattr(prefilter_mod, "X_PREFILTER_BATCH_SIZE", 2)
+    monkeypatch.setattr(prefilter_mod, "X_PREFILTER_MAX_BATCHES_PER_RUN", 1)
+    monkeypatch.setattr(
+        "src.akb2.quality.intake_x.orchestrator.X_PREFILTER_BATCH_SIZE", 2
+    )
+    monkeypatch.setattr(
+        "src.akb2.quality.intake_x.orchestrator.X_PREFILTER_MAX_BATCHES_PER_RUN", 1
+    )
+    path = _write_sources(tmp_path)
+    tweets = [
+        {
+            "id": str(i),
+            "text": "https://example.com/long-article-enough-words",
+            "urls": ["https://example.com/long-article-enough-words"],
+            "author": {"screenName": "alice"},
+        }
+        for i in range(5)
+    ]
+
+    def fetch(channel, last_fetch_monotonic=None):
+        if channel.slug != "x-home-feed":
+            return [], None, ""
+        return tweets, None, ""
+
+    def keep_all(items, **kwargs):
+        return PrefilterBatchResult(
+            kept=[(item, PrefilterDecision(keep=True, confidence=0.9)) for item in items]
+        )
+
+    stats = run_intake_x(
+        sources_config=path,
+        state_file=tmp_path / "state.jsonl",
+        output_dir=tmp_path / "raw",
+        quality_ledger_path="",
+        dry_run=True,
+        fetch_fn=fetch,
+        prefilter_fn=keep_all,
+    )
+    assert stats["skipped_prefilter_budget"] == 3
+    assert stats["kept"] == 2
+
+
 def test_orchestrator_has_main_guard():
     """plist 直调 python -m akb2.quality.intake_x.orchestrator 必须进 main。"""
     src = (

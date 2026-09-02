@@ -6,6 +6,7 @@ fabricate components or edges that are not grounded in raw.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -27,6 +28,12 @@ from akb2.quality.raw_anchors import (
 
 # 合同层不重开 LLM 抽取。具名常量只是把 distill 的 0 钉死在 maker2 边界。
 assert EXTRACT_QUALITY_RETRY_CONCEPT == 0
+MAKER2_ENRICH_ENV = "AKB2_MAKER2_ENRICH"
+
+
+def _enrichment_enabled() -> bool:
+    """计划 R2：AKB2_MAKER2_ENRICH=0 关闭确定性补全，便于对照/回滚。"""
+    return os.environ.get(MAKER2_ENRICH_ENV, "1") != "0"
 
 
 @dataclass
@@ -165,7 +172,7 @@ def fulfill_extract_contract(
         "components_added": 0,
         "edges_added": 0,
     }
-    if thin:
+    if thin and _enrichment_enabled():
         enrich_diag = _enrich_zero_eligible_with_deterministic(data, raw_content)
 
     backfill_diag = _backfill_component_evidence(data, raw_content)
