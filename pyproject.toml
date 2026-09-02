@@ -1,6 +1,6 @@
 [project]
 name = "akb2"
-version = "0.4.0"
+version = "0.5.0"
 description = "AKB2.0 工程根：lint/gate/intake CLI + MCP wrapper + tests + eval harness + engineering docs（不含知识库本体）"
 requires-python = ">=3.11"
 # 下界 = 2026-07-25 实测通过 2494 项测试的版本；上界 = 下一个 major/minor 边界。

@@ -264,3 +264,52 @@ class TestF9ABothPathsSameChokePoint:
             for e in data.get("causal_edges", []):
                 assert e.get("from") in comp_names, f"{label}: from 不 canonical"
                 assert e.get("to") in comp_names, f"{label}: to 不 canonical"
+
+    def test_component_short_anchor_resolves_to_fullname(self):
+        """LLM 组件写 §B，raw 声明 §B_INTRODUCTION → F-A 须改写，否则合同当伪造。"""
+        raw = (
+            "§A_CONTENT_START\n\n"
+            "The Captain agent holds the goal.\n"
+            "§B_INTRODUCTION\n\n"
+            "The Executor Pool dispatches tasks.\n"
+        )
+        data = {
+            "claims": [
+                {
+                    "text": "The Captain agent holds the goal.",
+                    "anchor": "§A",
+                    "provenance": "source_grounded",
+                    "evidence_gap": "未量化",
+                }
+            ],
+            "argumentation": [],
+            "mechanism_components": [
+                {
+                    "name": "Captain",
+                    "role": "coord",
+                    "evidence_anchor": "§A",
+                    "evidence_sentence": "The Captain agent holds the goal.",
+                },
+                {
+                    "name": "Executor Pool",
+                    "role": "exec",
+                    "evidence_anchor": "§B",
+                    "evidence_sentence": "The Executor Pool dispatches tasks.",
+                },
+            ],
+            "causal_edges": [],
+            "graph_edges": [],
+            "how_steps": [],
+            "tldr": "The Captain agent holds the goal.",
+            "params": {},
+            "referenced_concepts": [],
+            "applicability_boundary": "",
+        }
+        _normalize_extract_payload(data, raw, "concept", is_fallback=False)
+        declared = declared_anchor_set(raw)
+        for comp in data["mechanism_components"]:
+            anchor = str(comp.get("evidence_anchor", "")).strip()
+            if anchor:
+                assert anchor in declared
+        pool = next(c for c in data["mechanism_components"] if c["name"] == "Executor Pool")
+        assert pool["evidence_anchor"] == "§B_INTRODUCTION"

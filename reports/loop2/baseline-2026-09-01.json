@@ -1,0 +1,34 @@
+{
+  "frozen_at": "2026-09-01",
+  "source": "plan_empirical_v1.1",
+  "ledger_path": "/Users/praise/Obsidian/Praise Space/AKB2.0/staging/quality-ledger.jsonl",
+  "live_last_ts": "2026-08-26T17:43:35Z",
+  "calendar_7d_status": "empty",
+  "window_status": "empty_calendar_7d",
+  "calendar_window": {
+    "start": "2026-08-26",
+    "end": "2026-09-01",
+    "status": "empty"
+  },
+  "empirical_window": {
+    "start": "2026-07-18",
+    "end": "2026-07-24",
+    "note": "plan v1.1 frozen table; live ledger cannot reproduce these counts in calendar last 7d"
+  },
+  "counts": {
+    "intake": 387,
+    "grader": 106,
+    "promote": 0,
+    "abort": 395
+  },
+  "death_causes": {
+    "compose_frontmatter_gt_25": 76,
+    "extract_concept_components_or_edges": 74,
+    "repair_loop_deleted_blocking": 49,
+    "sg_how_density": 35,
+    "integrity_floor_procedural_pattern": 36,
+    "sg_must_cover": 13,
+    "how_tendency": 11,
+    "promote_lint": 12
+  }
+}

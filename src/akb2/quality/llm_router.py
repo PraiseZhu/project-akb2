@@ -1,9 +1,11 @@
 """OpenAI 兼容端点路由 — 三族模型统一路由层。
 
 支持模型家族:
-    deepseek-v4-pro — 提炼（默认 Think Max；distill 可显式关闭）
-    gpt-5.4         — 复核（全量，异族裁判）
-    gemini-flash    — 兜底（正式版，非 -preview）
+    deepseek-v4-pro — 提炼（vendor=deepseek；默认 Think Max；distill 可显式关闭）
+    gpt-5.4         — 旧复核回退（vendor=openai；AKB2_GRADER_FAMILY 覆盖）
+    gpt-5.6-luna    — 现行复核（vendor=openai；骨折通路优先，同族通路重试不置 fallback_used）
+    grok-4.6        — loop2 预筛（vendor=xai）
+    gemini-flash    — 诊断兜底（vendor=google；正式版，非 -preview，不作 PASS）
 
 路由规则:
     - 模型名含 "-preview" 直接拒绝（宪法 P7）
@@ -18,12 +20,13 @@
 端点/模型环境覆盖（走 OpenAI 兼容代理网关，缺省回退官方端点）:
     - DEEPSEEK_BASE_URL / DEEPSEEK_MODEL_ID
     - OPENAI_BASE_URL / OPENAI_MODEL_ID
+    - LUNA_MODEL_ID / XAI_BASE_URL / XAI_MODEL_ID
     - GEMINI_BASE_URL / GEMINI_MODEL_ID
     - AI_GATEWAY_BASE_URL / OPENROUTER_BASE_URL / TAPTAP_BASE_URL
 
 公开接口:
     route_llm(model_family, messages, response_schema=None, ..., article_key=None) -> LLMResponse
-    LLMResponse = dataclass(content, model_used, calls_used)
+    LLMResponse = dataclass(content, model_used, calls_used, fallback_used)
     RouterConfigError — key 缺失时抛出
     ArticleBudgetExceededError — 同 article_key 第 MAX_CALLS_PER_ARTICLE+1 次调用抛出
 """
@@ -47,6 +50,8 @@ from typing import Any
 MAX_CALLS_PER_ARTICLE: int = 5
 TIMEOUT_S: float = 120.0
 MAX_RETRIES: int = 2
+LUNA_GATEWAY_ROUTE_RETRY_MAX: int = 1
+ROUTE_SWITCH_EVENT = "route_switch"
 _DEFAULT_REASONING_EFFORT = "__default__"
 DEEPSEEK_BETA_BASE_URL = "https://api.deepseek.com/beta"
 QUALITY_LEDGER_FILE = "quality-ledger.jsonl"
@@ -115,7 +120,8 @@ GATEWAY_KEY_ENV_CANDIDATES: tuple[str, ...] = (
 
 # 每家含 env_key（API key 环境变量）+ base_url/model_id 的环境覆盖变量与官方默认。
 # 默认走官方端点；若存在统一网关 base/key，则优先走 OpenAI 兼容代理网关。
-_MODEL_CONFIG: dict[str, dict[str, str]] = {
+# vendor 供 validate_maker_checker_separation 比厂商（宪法 P7），不再比族名字符串。
+_MODEL_CONFIG: dict[str, dict[str, Any]] = {
     "deepseek-v4-pro": {
         "env_key": "DEEPSEEK_API_KEY",
         "base_url_env": "DEEPSEEK_BASE_URL",
@@ -123,6 +129,8 @@ _MODEL_CONFIG: dict[str, dict[str, str]] = {
         "model_id_env": "DEEPSEEK_MODEL_ID",
         "model_id_default": "deepseek-v4-pro",
         "gateway_model_id_default": "deepseek/deepseek-v4-pro",
+        "vendor": "deepseek",
+        "reasoning_effort": "max",
     },
     "gpt-5.4": {
         "env_key": "OPENAI_API_KEY",
@@ -131,6 +139,30 @@ _MODEL_CONFIG: dict[str, dict[str, str]] = {
         "model_id_env": "OPENAI_MODEL_ID",
         "model_id_default": "gpt-5.4",
         "gateway_model_id_default": "gpt-5.4",
+        "vendor": "openai",
+    },
+    "gpt-5.6-luna": {
+        "env_key": "OPENAI_API_KEY",
+        "base_url_env": "OPENAI_BASE_URL",
+        "base_url_default": "https://api.openai.com/v1",
+        "model_id_env": "LUNA_MODEL_ID",
+        "model_id_default": "gpt-5.6-luna",
+        "gateway_model_id_default": "codex/gpt-5.6-luna",
+        "gateway_model_ids": ["codex/gpt-5.6-luna", "gpt-5.6-luna"],
+        "vendor": "openai",
+        "reasoning_effort": "medium",
+    },
+    # grok 网关前缀：x-ai/grok-4.6 与 x-ai-grok/grok-4.6 均实测通，/models 不标折扣档。
+    # 2026-09-01 默认 x-ai/grok-4.6；阶段 5 上量前用小额对账单收口（计划 C6/2e）。
+    "grok-4.6": {
+        "env_key": "XAI_API_KEY",
+        "base_url_env": "XAI_BASE_URL",
+        "base_url_default": "https://api.x.ai/v1",
+        "model_id_env": "XAI_MODEL_ID",
+        "model_id_default": "grok-4.6",
+        "gateway_model_id_default": "x-ai/grok-4.6",
+        "vendor": "xai",
+        "reasoning_effort": "low",
     },
     "gemini-flash": {
         "env_key": "GEMINI_API_KEY",
@@ -139,6 +171,7 @@ _MODEL_CONFIG: dict[str, dict[str, str]] = {
         "model_id_env": "GEMINI_MODEL_ID",
         "model_id_default": "gemini-2.5-flash",
         "gateway_model_id_default": "gemini-3.5-flash",
+        "vendor": "google",
     },
 }
 
@@ -159,6 +192,7 @@ class LLMResponse:
     content: str | dict
     model_used: str
     calls_used: int = 1
+    fallback_used: bool = False
 
 
 class RouterConfigError(Exception):
@@ -359,7 +393,8 @@ def reserve_article_call(
 
 
 def _record_article_budget_exceeded(
-    *, article_key: str, model_family: str, consumer: str, limit: int
+    *, article_key: str, model_family: str, consumer: str, limit: int,
+    loop_id: str = "loop1",
 ) -> None:
     """超限事件落 quality 账本（失败可见，宪法 P4）。
 
@@ -372,7 +407,7 @@ def _record_article_budget_exceeded(
         append_event(
             _quality_ledger_path(),
             {
-                "loop_id": "loop1",
+                "loop_id": loop_id or "loop1",
                 "node": "llm_router",
                 "event": ARTICLE_BUDGET_EVENT,
                 "content_hash": key,
@@ -407,6 +442,7 @@ def _append_quality_budget_event(
     diagnostics: BudgetDiagnostics,
     model_family: str,
     consumer: str,
+    loop_id: str = "loop1",
 ) -> None:
     if diagnostics.provider_code != PROVIDER_CODE_429:
         return
@@ -414,6 +450,8 @@ def _append_quality_budget_event(
         append_event(
             _quality_ledger_path(),
             {
+                "loop_id": loop_id or "loop1",
+                "node": "llm_router",
                 "ts": dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "event": "llm_gateway_429",
                 "model_family": model_family,
@@ -427,8 +465,60 @@ def _append_quality_budget_event(
                 "message": diagnostics.raw_message,
             },
         )
-    except Exception as exc:  # noqa: BLE001 - diagnostics must not hide provider error
-        logger.warning("failed to append quality budget diagnostic: %s", exc)
+    except Exception as extra:  # noqa: BLE001 - diagnostics must not hide provider error
+        logger.warning("failed to append quality budget diagnostic: %s", extra)
+
+
+def _append_route_switch_event(
+    *,
+    model_family: str,
+    from_model: str,
+    to_model: str,
+    consumer: str,
+    loop_id: str = "loop1",
+) -> None:
+    """luna 同族通路重试落账（route_switch，不是 fallback）。"""
+    try:
+        append_event(
+            _quality_ledger_path(),
+            {
+                "loop_id": loop_id or "loop1",
+                "node": "llm_router",
+                "event": ROUTE_SWITCH_EVENT,
+                "ts": dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "details": {
+                    "model_family": model_family,
+                    "from_model": from_model,
+                    "to_model": to_model,
+                    "consumer": consumer,
+                    "fallback_used": False,
+                },
+            },
+        )
+    except Exception as extra:  # noqa: BLE001 - 落账失败不改变通路重试语义
+        logger.warning("failed to append %s ledger event: %s", ROUTE_SWITCH_EVENT, extra)
+
+
+def _resolve_reasoning_effort(
+    model_family: str, reasoning_effort: str | None
+) -> str | None:
+    """调用方默认 → 用族配置；显式 None 表示不发送。"""
+    if reasoning_effort == _DEFAULT_REASONING_EFFORT:
+        cfg = _MODEL_CONFIG.get(model_family) or {}
+        family_effort = cfg.get("reasoning_effort")
+        if family_effort:
+            return str(family_effort)
+        return None
+    return reasoning_effort
+
+
+def _route_model_candidates(model_family: str, config: dict[str, Any]) -> list[str]:
+    raw = [str(item) for item in (config.get("model_id_candidates") or [config["model_id"]])]
+    if not raw:
+        raw = [str(config["model_id"])]
+    retry_max = LUNA_GATEWAY_ROUTE_RETRY_MAX if model_family == "gpt-5.6-luna" else 0
+    return raw[: 1 + retry_max]
+
 
 # F20: enable_thinking 是 DeepSeek/Qwen 系参数,gpt-5.4(Azure via litellm)/gemini 不认。
 # 无差别注入导致 gpt-5.4 端点 400 Unknown parameter(账本 169 条 distill_extract 7-03/7-04,
@@ -570,24 +660,35 @@ def _unique_env_names(env_names: list[str]) -> list[str]:
     return unique
 
 
-def validate_maker_checker_separation(maker_family: str, checker_family: str) -> None:
-    """F10-D: 宪法护栏——maker 与 checker 必须不同族(无自评自批)。
+def family_vendor(model_family: str) -> str:
+    """返回模型家族的 vendor。缺字段 fail-closed（宪法 P7）。"""
+    cfg = _MODEL_CONFIG.get(model_family)
+    vendor = cfg.get("vendor") if isinstance(cfg, dict) else None
+    if not isinstance(vendor, str) or not vendor.strip():
+        raise RouterConfigError(
+            f"模型家族缺少 vendor 字段: {model_family!r}（宪法 P7）"
+        )
+    return vendor.strip()
 
-    A/B 双臂对比通过 AKB2_DISTILL_FAMILY/AKB2_GRADER_FAMILY env 覆盖模型族,但两族
-    相同时 fail-fast 拒启动(防 maker/checker 同族自评自批,违宪法 P7/Maker-Checker
-    异族分离)。7×24 禁 -preview 由 _validate_model_family 在调用时拒(本函数不重复)。
-    -preview 族在 env 设置阶段本函数不拦(留给 _validate_model_family 调用点拒)。
+
+def validate_maker_checker_separation(maker_family: str, checker_family: str) -> None:
+    """F10-D: 宪法护栏——maker 与 checker 必须不同厂商(无自评自批)。
+
+    A/B 双臂对比通过 AKB2_DISTILL_FAMILY/AKB2_GRADER_FAMILY env 覆盖模型族。
+    比的是 _MODEL_CONFIG.vendor，不是族名字符串：gpt-5.4 与 gpt-5.6-luna 同为
+    openai，必须 fail-fast。7×24 禁 -preview 由 _validate_model_family 在调用时拒。
     """
     if not maker_family or not checker_family:
         raise RouterConfigError(
             f"maker/checker 模型族为空: maker={maker_family!r} checker={checker_family!r}"
         )
-    if maker_family == checker_family:
+    maker_vendor = family_vendor(maker_family)
+    checker_vendor = family_vendor(checker_family)
+    if maker_vendor == checker_vendor:
         raise RouterConfigError(
-            f"宪法护栏:maker({maker_family})与 checker({checker_family})同族,"
-            f"违 Maker-Checker 异族分离(P7)。A/B 双臂需用不同族:"
-            f"A 臂 = deepseek-v4-pro 提炼 / gpt-5.4 grader;"
-            f"B 臂 = gpt-5.4 提炼 / deepseek-v4-pro grader。"
+            f"宪法护栏:maker({maker_family}/{maker_vendor})与 "
+            f"checker({checker_family}/{checker_vendor})同厂商,"
+            f"违 Maker-Checker 异族分离(P7)。"
         )
 
 
@@ -629,12 +730,20 @@ def _validate_model_family(model_family: str) -> dict[str, Any]:
         base_url = _normalise_openai_base_url(cfg["base_url_default"])
         gateway_selected = False
 
-    model_default = (
-        cfg.get("gateway_model_id_default", cfg["model_id_default"])
-        if gateway_selected
-        else cfg["model_id_default"]
-    )
-    model_id = os.environ.get(cfg["model_id_env"], "").strip() or model_default
+    env_model = os.environ.get(cfg["model_id_env"], "").strip()
+    if env_model:
+        candidates = [env_model]
+    elif gateway_selected:
+        listed = cfg.get("gateway_model_ids")
+        if isinstance(listed, list) and listed:
+            candidates = [str(item) for item in listed]
+        else:
+            candidates = [
+                str(cfg.get("gateway_model_id_default", cfg["model_id_default"]))
+            ]
+    else:
+        candidates = [str(cfg["model_id_default"])]
+    model_id = candidates[0]
 
     key_env_candidates = [cfg["env_key"]]
     if gateway_selected or (family_base_is_gateway and gateway_key):
@@ -650,6 +759,8 @@ def _validate_model_family(model_family: str) -> dict[str, Any]:
         "key_env_candidates": _unique_env_names(key_env_candidates),
         "base_url": base_url,
         "model_id": model_id,
+        "model_id_candidates": candidates,
+        "vendor": cfg.get("vendor", ""),
     }
 
 
@@ -893,6 +1004,7 @@ def route_llm(
     extra_body: dict[str, Any] | None = None,
     budget_consumer: str = "quality.llm_router",
     article_key: str | None = None,
+    loop_id: str = "loop1",
 ) -> LLMResponse:
     """OpenAI 兼容端点路由入口。
 
@@ -936,6 +1048,7 @@ def route_llm(
                 model_family=model_family,
                 consumer=budget_consumer,
                 limit=MAX_CALLS_PER_ARTICLE,
+                loop_id=loop_id,
             )
             raise ArticleBudgetExceededError(
                 f"article {_normalise_article_key(article_key)} 的 LLM 调用已达"
@@ -979,13 +1092,9 @@ def route_llm(
         "messages": outbound_messages,
     }
 
-    # Backward compatible default: legacy DeepSeek calls keep Think Max unless
-    # distill/repair explicitly opts out with reasoning_effort=None.
-    if reasoning_effort == _DEFAULT_REASONING_EFFORT:
-        if model_family == "deepseek-v4-pro":
-            kwargs["reasoning_effort"] = "max"
-    elif reasoning_effort is not None:
-        kwargs["reasoning_effort"] = reasoning_effort
+    resolved_effort = _resolve_reasoning_effort(model_family, reasoning_effort)
+    if resolved_effort is not None:
+        kwargs["reasoning_effort"] = resolved_effort
 
     # completion token 上限（仅 repair 等需要硬上限的链路传入；提炼链路留空不截断）
     if max_tokens is not None:
@@ -1012,41 +1121,67 @@ def route_llm(
                 },
             }
 
-    try:
-        response = client.chat.completions.create(**kwargs)
-    except openai.APITimeoutError as exc:
-        raise LLMTimeoutError(
-            f"LLM 调用超时 ({actual_timeout}s): {model_family}"
-            f" — {_public_provider_detail(exc)}"
-        ) from None
-    except openai.APIError as exc:
-        diagnostics = _diagnostics_from_provider_error(exc)
-        gate_write_note = ""
-        if diagnostics.provider_code == PROVIDER_CODE_429:
-            _append_quality_budget_event(
-                diagnostics=diagnostics,
-                model_family=model_family,
-                consumer=budget_consumer,
+    candidates = _route_model_candidates(model_family, config)
+    response = None
+    used_model_id = candidates[0]
+    calls_used = 0
+    last_error: Exception | None = None
+    for attempt, model_id in enumerate(candidates):
+        kwargs["model"] = model_id
+        try:
+            response = client.chat.completions.create(**kwargs)
+            calls_used += 1
+            used_model_id = model_id
+            if attempt > 0:
+                _append_route_switch_event(
+                    model_family=model_family,
+                    from_model=candidates[attempt - 1],
+                    to_model=model_id,
+                    consumer=budget_consumer,
+                    loop_id=loop_id,
+                )
+            break
+        except openai.APITimeoutError as exc:
+            calls_used += 1
+            last_error = LLMTimeoutError(
+                f"LLM 调用超时 ({actual_timeout}s): {model_family}"
+                f" — {_public_provider_detail(exc)}"
             )
-            try:
-                record_budget_event(diagnostics, consumer=budget_consumer)
-            except UnscopedBudgetEventError as gate_exc:
-                # fail-loud 但不吞掉 provider 错误：分类器坏了要响亮暴露（ERROR 级 +
-                # 进抛出的异常文本），同时保留「这次调用因 provider 429 失败」这条
-                # 主因，否则运维只看到一个 ValueError 却不知道 provider 发生了什么。
-                logger.error("shared budget gate refused unscoped event: %s", gate_exc)
-                gate_write_note = f" | budget_gate_write_refused={gate_exc}"
-        # 异常文本用脱敏后的归因，不用 str(exc)：str(exc) 含 provider 原文
-        # （R1 实测能把 sk-* 探针字面量带进日志）。
-        # SC-R2-11①：`from None` 而非 `from exc` —— 公开文本脱敏了但 `from exc` 把
-        # 未脱敏的 provider 异常留在 __cause__ 里，traceback.format_exception() 全链
-        # 打印照样泄漏（对抗席探针实测 cause_secret=True / traceback_secret=True）。
-        raise LLMProviderError(
-            f"LLM API 错误: {model_family} — error_type={diagnostics.error_type}"
-            f" budget_scope={diagnostics.budget_scope or 'n/a'}"
-            f" provider_code={diagnostics.provider_code or 'n/a'}"
-            f" detail={_public_provider_detail(exc)}{gate_write_note}"
-        ) from None
+            if attempt + 1 >= len(candidates):
+                raise last_error from None
+            continue
+        except openai.APIError as exc:
+            calls_used += 1
+            diagnostics = _diagnostics_from_provider_error(exc)
+            gate_write_note = ""
+            if diagnostics.provider_code == PROVIDER_CODE_429:
+                _append_quality_budget_event(
+                    diagnostics=diagnostics,
+                    model_family=model_family,
+                    consumer=budget_consumer,
+                    loop_id=loop_id,
+                )
+                try:
+                    record_budget_event(diagnostics, consumer=budget_consumer)
+                except UnscopedBudgetEventError as gate_exc:
+                    # fail-loud 但不吞掉 provider 错误：分类器坏了要响亮暴露（ERROR 级 +
+                    # 进抛出的异常文本），同时保留「这次调用因 provider 429 失败」这条
+                    # 主因，否则运维只看到一个 ValueError 却不知道 provider 发生了什么。
+                    logger.error("shared budget gate refused unscoped event: %s", gate_exc)
+                    gate_write_note = f" | budget_gate_write_refused={gate_exc}"
+            last_error = LLMProviderError(
+                f"LLM API 错误: {model_family} — error_type={diagnostics.error_type}"
+                f" budget_scope={diagnostics.budget_scope or 'n/a'}"
+                f" provider_code={diagnostics.provider_code or 'n/a'}"
+                f" detail={_public_provider_detail(exc)}{gate_write_note}"
+            )
+            if attempt + 1 >= len(candidates):
+                raise last_error from None
+            continue
+    if response is None:
+        raise last_error or LLMProviderError(
+            f"LLM API 错误: {model_family} — 无可用通路"
+        )
 
     raw = response.choices[0].message.content or ""
 
@@ -1070,8 +1205,9 @@ def route_llm(
 
     return LLMResponse(
         content=content,
-        model_used=config["model_id"],
-        calls_used=1,
+        model_used=used_model_id,
+        calls_used=calls_used,
+        fallback_used=False,
     )
 
 
@@ -1106,11 +1242,9 @@ def build_outbound_payload(
         "messages": outbound_messages,
     }
 
-    if reasoning_effort == _DEFAULT_REASONING_EFFORT:
-        if model_family == "deepseek-v4-pro":
-            payload["reasoning_effort"] = "max"
-    elif reasoning_effort is not None:
-        payload["reasoning_effort"] = reasoning_effort
+    resolved_effort = _resolve_reasoning_effort(model_family, reasoning_effort)
+    if resolved_effort is not None:
+        payload["reasoning_effort"] = resolved_effort
 
     if extra_body is not None:
         payload["extra_body"] = _filter_extra_body_for_model(model_family, extra_body)

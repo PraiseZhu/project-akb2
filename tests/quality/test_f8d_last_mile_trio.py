@@ -250,6 +250,85 @@ class TestF8DItem3TLDRElementCoverage:
         for a in anchors:
             assert a in decl
 
+    def test_tutorial_tldr_uses_claims_not_component_inventory(self):
+        """实跑 abort：tutorial 被「机制组件（4 个）」盖掉 → TLDR 密度 blocking。"""
+        from src.akb2.quality.distill import _build_body
+
+        extract = {
+            "claims": [
+                {
+                    "text": "chrome-devtools-mcp 是 MCP 服务器，Coding Agent 可控制实时 Chrome。",
+                    "anchor": "§A",
+                    "provenance": "source_grounded",
+                    "evidence_gap": "未提供对比",
+                },
+                {
+                    "text": "默认收集使用统计，可用 --no-usage-statistics 退出。",
+                    "anchor": "§B_INTRODUCTION",
+                    "provenance": "source_grounded",
+                    "evidence_gap": "未披露字段",
+                },
+                {
+                    "text": "该服务器可通过 npx 在多种 MCP 客户端中配置。",
+                    "anchor": "§B",
+                    "provenance": "source_grounded",
+                    "evidence_gap": "未量化频率",
+                },
+                {
+                    "text": "性能工具会把 trace URL 发到 CrUX，可用 --no-performance-crux 禁用。",
+                    "anchor": "§A",
+                    "provenance": "source_grounded",
+                    "evidence_gap": "未量化频率",
+                },
+            ],
+            "how_steps": [],
+            "mechanism_components": [
+                {"name": "chrome-devtools-mcp", "role": "server", "evidence_anchor": "§A"},
+                {"name": "puppeteer", "role": "automation", "evidence_anchor": "§A"},
+                {"name": "Chrome", "role": "browser", "evidence_anchor": "§A"},
+            ],
+            "causal_edges": [
+                {
+                    "from": "puppeteer",
+                    "to": "Chrome",
+                    "relation": "automates",
+                    "edge_kind": "source_causal",
+                    "evidence": "puppeteer automates Chrome",
+                    "evidence_anchor": "§A",
+                }
+            ],
+            "tldr": "puppeteer automates Chrome",
+            "argumentation": [],
+            "referenced_concepts": [],
+            "applicability_boundary": (
+                "适用场景：需要让 coding agent 控制实时 Chrome 做调试/性能分析；"
+                "不适用场景：非 Chromium 浏览器或禁止把页面内容暴露给 MCP 客户端。"
+            ),
+            "graph_edges": [],
+        }
+        body = _build_body(
+            extract, "x.md", None, raw_content=_RAW, content_lane="tutorial"
+        )
+        tldr = body.split("## TLDR", 1)[1].split("## ", 1)[0]
+        assert "机制组件" not in tldr
+        assert "chrome-devtools-mcp" in tldr or "使用统计" in tldr or "CrUX" in tldr
+        assert "…" not in tldr
+        assert "--no-usage-s…" not in tldr
+        assert "如 A" not in tldr
+        assert " that [" not in tldr
+        assert tldr.count("[raw") >= 2
+        assert "chrome-devtools-mcp" in tldr or "MCP" in tldr
+        assert "使用统计" in tldr or "CrUX" in tldr or "npx" in tldr
+        boundary = body.split("## 适用边界", 1)[1].split("## ", 1)[0]
+        assert "内容管线" not in boundary
+        assert "知识库管线" not in boundary
+        assert boundary.count("适用场景") >= 2
+        assert "不适用场景" in boundary
+        assert "原文未覆盖" not in boundary
+        assert "原文未披露" not in boundary
+        assert "需要让编码代理" in boundary or "需要按" in boundary
+        assert "是一个 MCP 服务器" not in boundary
+
     def test_no_eligible_mechanism_sentence_empty(self):
         data = {
             "mechanism_components": [{"name": "A", "role": "x"}],

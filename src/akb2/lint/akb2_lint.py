@@ -548,6 +548,13 @@ def rule_r9_source_key_findings_missing_frontmatter(path, fm, body, ctx):
     """PAGE-TEMPLATES §4.2 H7: source 模板 active 缺 frontmatter key_findings ≥3"""
     if ctx.get("template_type") != "source":
         return []
+    # parse_fm_field_raw intentionally preserves YAML quoting for inline arrays;
+    # status is a scalar, so normalize the common quoted forms before comparing.
+    status = str(
+        parse_fm_field_raw(fm, "status") or parse_fm_field_raw(fm, "page_status") or ""
+    ).strip().strip('"').strip("'")
+    if status and status != "active":
+        return []
     arr = parse_fm_array(fm, "key_findings")
     if arr is None:
         return [make_finding(
@@ -703,10 +710,16 @@ def rule_r16_template_directory_mismatch(path, fm, body, ctx):
         # staging/candidate/);其 canonical 目标由 frontmatter directory_scope 声明,
         # 升格后物理路径才会落到 expected 目录。此处只校验 directory_scope 已正确声明,
         # 避免与 gate HC-01「候选必须 staging」互斥误报(否则 source 模板候选永远过不了 Gate-4)。
-        if "staging/candidate/" in rel_path.replace("\\", "/"):
+        normalized = rel_path.replace("\\", "/")
+        in_loop1_staging = "staging/candidate/" in normalized
+        in_loop2_staging = "staging-loop2/candidate/" in normalized
+        if in_loop1_staging or in_loop2_staging:
             declared = parse_fm_field_raw(fm, "directory_scope")
             if declared and expected in declared:
                 return []  # 候选已声明正确 canonical 目标,物理路径待升格后落地
+            # loop2 为压 frontmatter 行预算可省略 directory_scope；声明错了仍报。
+            if not declared and in_loop2_staging:
+                return []
         return [make_finding(
             "TEMPLATE-DIRECTORY-MISMATCH", "P1", path,
             actual=f"template_type={tt}, path={rel_path}",

@@ -79,6 +79,9 @@ def run_requeue(
     raw_files: list[str],
     reason: str,
     vault_root: str,
+    *,
+    loop_id: str = "loop1",
+    raw_subdir: str = "raw",
 ) -> int:
     """执行有界 requeue。返回退出码(0=全部成功;1=存在失败,fail-visible)。"""
     if len(raw_files) > REQUEUE_MAX_PER_RUN:
@@ -89,7 +92,14 @@ def run_requeue(
         )
         return 1
 
-    raw_dir = Path(vault_root) / "raw"
+    subdir = Path(raw_subdir).name
+    if subdir not in {"raw", "raw-loop2"}:
+        print(
+            f"ERROR: raw_subdir={raw_subdir!r} 不在 {{raw, raw-loop2}}，拒绝",
+            file=sys.stderr,
+        )
+        return 1
+    raw_dir = Path(vault_root) / subdir
     # 与 runner / promote 共用同一份账本；写到 vault 旧账本会让 requeue 事件
     # runner 看不到 → 手动重排队静默失效（F26 通路失灵）。
     from src.akb2.quality.promote import _resolve_ledger_path
@@ -126,7 +136,7 @@ def run_requeue(
             print(f"[SKIP-OK] {base}: 已有未消费的 requeue 或处理中,不重复追加")
             continue
         event = {
-            "loop_id": "loop1",
+            "loop_id": loop_id or "loop1",
             "node": "requeue",
             "event": "requeue",
             "content_hash": content_hash,
@@ -160,6 +170,14 @@ def main(argv: list[str] | None = None) -> int:
         "--vault-root", default=os.environ.get("AKB2_VAULT_ROOT", ""),
         help="AKB2 vault 根(默认 env AKB2_VAULT_ROOT;缺失 fail-closed)",
     )
+    parser.add_argument(
+        "--loop-id", default="loop1",
+        help="账本 loop_id（loop2 影子链用 loop2）",
+    )
+    parser.add_argument(
+        "--raw-subdir", default="raw",
+        help="raw 子目录：raw（loop1）或 raw-loop2（loop2）",
+    )
     args = parser.parse_args(argv)
 
     if not args.vault_root:
@@ -170,7 +188,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    return run_requeue(args.raw_files, args.reason, args.vault_root)
+    return run_requeue(
+        args.raw_files,
+        args.reason,
+        args.vault_root,
+        loop_id=args.loop_id,
+        raw_subdir=args.raw_subdir,
+    )
 
 
 if __name__ == "__main__":

@@ -182,3 +182,32 @@ jobs:
       - AKB2_VAULT_ROOT
       - PATH
       - PYTHONPATH
+  - label: com.akb2.loop2-intake
+    template: launchd/com.akb2.loop2-intake.plist
+    installed: ~/Library/LaunchAgents/com.akb2.loop2-intake.plist
+    installer: scripts/bootstrap_launchd.sh --plist-src launchd/com.akb2.loop2-intake.plist
+    should_load: true
+    pending_human_install: false
+    expected_schedule:
+      kind: interval
+      seconds: 14400
+    expected_env_keys:
+      - AKB2_VAULT_ROOT
+      - PATH
+      - PYTHONPATH
+  - label: com.akb2.loop2-runner
+    template: launchd/com.akb2.loop2-runner.plist
+    installed: ~/Library/LaunchAgents/com.akb2.loop2-runner.plist
+    installer: scripts/bootstrap_launchd.sh --plist-src launchd/com.akb2.loop2-runner.plist
+    should_load: true
+    pending_human_install: false
+    expected_schedule:
+      kind: keepalive
+    expected_env_keys:
+      - AKB2_AMENDMENT_APPLIED
+      - AKB2_AUTO_PROMOTE
+      - AKB2_LOOP2_SHADOW_PROMOTE
+      - AKB2_MAKER_FALLBACK
+      - AKB2_VAULT_ROOT
+      - PATH
+      - PYTHONPATH

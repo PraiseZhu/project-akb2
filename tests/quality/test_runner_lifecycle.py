@@ -1052,6 +1052,33 @@ class TestRunnerWeeklySpotCheck:
             summary = json.loads(summary_path.read_text(encoding="utf-8"))
             assert summary.get("samples_checked", 0) == 0
 
+    def test_sample_recent_promoted_filters_loop_id(self, tmp_path: Path) -> None:
+        """loop2 抽检不得把 loop1 finalize 样本算进去。"""
+        from src.akb2.quality.runner import _sample_recent_promoted
+
+        config = _make_runner_config(tmp_path)
+        ledger = Path(config.ledger_path)
+        rows = [
+            {
+                "loop_id": "loop1",
+                "event": "finalize",
+                "node": "finalize",
+                "details": {"candidate_path": str(tmp_path / "loop1.md")},
+            },
+            {
+                "loop_id": "loop2",
+                "event": "finalize",
+                "node": "finalize",
+                "details": {"candidate_path": str(tmp_path / "loop2.md")},
+            },
+        ]
+        ledger.write_text(
+            "\n".join(json.dumps(row) for row in rows) + "\n",
+            encoding="utf-8",
+        )
+        sampled = _sample_recent_promoted(config, loop_id="loop2")
+        assert [item["slug"] for item in sampled] == ["loop2"]
+
 
 # ---------------------------------------------------------------------------
 # SC-6.3 下游拒收 degraded grader 的 PASS（step-6）

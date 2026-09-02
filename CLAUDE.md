@@ -94,7 +94,7 @@ briefing pipeline 的三重断言保证：stdout 的 `proposed_gate_decision` ==
 4. **预算显式 / 失败可见** — LLM/外部额度循环的预算用具名常量；部分失败（"队列只清了 60%"）必须明示，不得报成功
 5. **工程与 vault 解耦** — 禁止向 vault 写入任何 `.py`/`.sh`；vault 路径只经 `config/vault.toml` 解析
 6. **黄金样张质量锚定** — 入库产出必须达样张级（机判：14 步清单 + 量规）；负样本必拒；新循环设计必须过八要素对账
-7. **Maker/Checker 异族分离** — 生产与裁决不同模型家族（deepseek 提炼 / gpt-5.4 复核 / gemini-flash 兜底）；任何机制不自评自批；7×24 管线禁用 -preview 模型
+7. **Maker/Checker 异族分离** — 生产与裁决不同模型家族（deepseek 提炼 / gpt-5.6-luna 复核 / gemini-flash 兜底）；任何机制不自评自批；7×24 管线禁用 -preview 模型
 8. **实测价值裁决** — 价值由调用数据定（星级 0-3 封顶）；入库用硬指标 pass/fail，无连续分数排序
 
 循环工程详规：`docs/loops-design-decisions.md`（7 循环 4 Plan）+ `docs/main-pipeline-golden-sample.md`（14 步验收基准）

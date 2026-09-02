@@ -269,10 +269,10 @@ def scan_ledger(ledger_path: str | Path, pattern: str = DEFAULT_PATTERN) -> Scan
 # ---------------------------------------------------------------------------
 
 
-def build_requeue_event(candidate: Candidate, ts: str) -> dict:
+def build_requeue_event(candidate: Candidate, ts: str, *, loop_id: str = "loop1") -> dict:
     """构造 requeue 事件(与 runner._log_event / requeue.py 同 schema)。"""
     return {
-        "loop_id": "loop1",
+        "loop_id": loop_id or "loop1",
         "node": "requeue",
         "event": "requeue",
         "content_hash": candidate.content_hash,

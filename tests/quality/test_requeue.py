@@ -141,3 +141,28 @@ class TestRequeueCli:
         rc = requeue_main(["--raw-file", "a--raw--x.md", "--reason", "t",
                            "--vault-root", ""])
         assert rc == 1
+
+    def test_loop2_raw_subdir_requeues(self, tmp_path: Path) -> None:
+        """loop2 raw 在 raw-loop2，默认 raw/ 找不到会假失败。"""
+        vault = tmp_path / "vault"
+        name = "x-home-feed--aaaa--raw--2026-09-01.md"
+        (vault / "raw-loop2").mkdir(parents=True)
+        (vault / "raw").mkdir(parents=True)
+        (vault / "staging").mkdir(parents=True)
+        (vault / "raw-loop2" / name).write_text("# t\n", encoding="utf-8")
+        h = _compute_raw_hash(str(vault / "raw-loop2" / name))
+        _write_ledger(vault / "staging" / "quality-ledger.jsonl", [_ev("abort", h)])
+        rc = requeue_main([
+            "--raw-file", name,
+            "--reason", "loop2 short-anchor fix",
+            "--vault-root", str(vault),
+            "--loop-id", "loop2",
+            "--raw-subdir", "raw-loop2",
+        ])
+        assert rc == 0
+        resolved = _resolve_ledger_path(vault, "quality-ledger.jsonl")
+        lines = [json.loads(x) for x in resolved.read_text().splitlines()]
+        assert lines[-1]["event"] == "requeue"
+        assert lines[-1]["loop_id"] == "loop2"
+        assert lines[-1]["content_hash"] == h
+        assert _is_processed(h, str(resolved)) is False

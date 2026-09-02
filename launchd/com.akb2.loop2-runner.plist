@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  AKB2 loop2 quality runner — 常驻串行单工 daemon（300s 轮询）
+
+  ==== 安装 ====
+  本文件含 __AKB2_REPO_ROOT__ / __AKB2_VAULT_ROOT__ / __AKB2_HOME__ 占位符,
+  不要直接 launchctl bootstrap 本模板。owner 2026-09-01 批准 Mini 通电。
+  代码侧 C1_LAUNCHD_BOOTIN 仍为 False（主仓常量，不等于 Mini 运行态）。
+
+    bash scripts/bootstrap_launchd.sh --plist-src launchd/com.akb2.loop2-runner.plist
+
+  # 卸载：
+  launchctl bootout gui/$(id -u)/com.akb2.loop2-runner
+  # 查看状态：
+  launchctl list | grep com.akb2.loop2-runner
+
+  ==== 触发 ====
+  KeepAlive 常驻；runner2 默认 poll=300s。独立锁 loop2-processing.lock，
+  不与 com.akb2.main-pipeline 抢 processing.lock。
+  读 vault/raw-loop2，写 vault/staging-loop2，升格仍进同一 wiki。
+
+  ==== 环境变量 ====
+  AKB2_AUTO_PROMOTE=1  — 与 loop1 运行态对齐；五闸 PASS 后写 active 页
+  PYTHONPATH           — 指向 src/
+  AKB2_VAULT_ROOT      — vault AKB2.0 根
+
+  ==== 日志 ====
+  stdout/stderr 重定向到 logs/akb2-loop2-runner.log
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.akb2.loop2-runner</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__AKB2_REPO_ROOT__/scripts/akb2-loop2-pipeline.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__AKB2_REPO_ROOT__</string>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+
+    <key>StandardOutPath</key>
+    <string>__AKB2_REPO_ROOT__/logs/akb2-loop2-runner.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__AKB2_REPO_ROOT__/logs/akb2-loop2-runner.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>AKB2_AUTO_PROMOTE</key>
+        <string>1</string>
+        <key>AKB2_AMENDMENT_APPLIED</key>
+        <string>0</string>
+        <key>AKB2_MAKER_FALLBACK</key>
+        <string>1</string>
+        <key>AKB2_LOOP2_SHADOW_PROMOTE</key>
+        <string>1</string>
+        <key>PYTHONPATH</key>
+        <string>__AKB2_REPO_ROOT__/src</string>
+        <key>PATH</key>
+        <string>__AKB2_HOME__/.pyenv/shims:__AKB2_HOME__/.pyenv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>AKB2_VAULT_ROOT</key>
+        <string>__AKB2_VAULT_ROOT__/Praise Space/AKB2.0</string>
+    </dict>
+</dict>
+</plist>

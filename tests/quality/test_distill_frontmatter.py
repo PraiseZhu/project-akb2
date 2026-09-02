@@ -230,7 +230,8 @@ class TestFrontmatterGateDecision:
         fm = _build_frontmatter("raw/test.md", data)
         assert "key_findings" not in fm
         assert "[raw §A]" in fm["gate_reason"]
-        assert "GPT-5.4 裁判" in fm["gate_reason"]
+        assert "待裁判与五闸确认" in fm["gate_reason"]
+        assert "GPT-5.4" not in fm["gate_reason"]
         assert "段1抽取" not in fm["gate_reason"]
         assert 2 <= len(fm["future_questions"]) <= 3
         assert all(isinstance(q, str) and q.strip() for q in fm["future_questions"])
@@ -1098,6 +1099,42 @@ class TestBodyContractAlignment:
         assert "约束条件" in body
         assert "### 来源明示边界" not in boundary
         assert "来源事实：" not in boundary
+        assert "Chrome" not in boundary
+        assert "MCP" not in boundary
+
+    def test_tutorial_without_browser_evidence_skips_chrome_template(self):
+        """非浏览器 tutorial 不得套 Chrome/MCP 适用边界模板。"""
+        from src.akb2.quality.distill import _build_applicability_boundary_text
+
+        claims = [
+            {
+                "text": "Use LoRA adapters to fine-tune a local model.",
+                "anchor": "§A",
+                "provenance": "source_grounded",
+            },
+            {
+                "text": "Keep a held-out eval set before promoting weights.",
+                "anchor": "§B",
+                "provenance": "source_grounded",
+            },
+        ]
+        text = _build_applicability_boundary_text(
+            "",
+            claims,
+            [],
+            content_lane="tutorial",
+        )
+        assert "Chrome" not in text
+        assert "MCP" not in text
+        assert "Firefox" not in text
+        leaked = _build_applicability_boundary_text(
+            "The browser of the agent loop is the ledger.",
+            claims,
+            [],
+            content_lane="tutorial",
+        )
+        assert "Chrome" not in leaked
+        assert "MCP" not in leaked
 
     def test_graph_evidence_gets_provenance_and_local_contract_passes(self):
         """回归真实 smoke: 图谱 evidence 必须补 provenance，并通过本地 A7/A8 契约。"""
@@ -1581,8 +1618,9 @@ source_url: https://example.com/neighbor
             "A well-designed loop has five components",
             "Fix specific defects rather than restarting the entire pipeline",
         ):
-            assert claim_line not in tldr
             assert claim_line in findings
+        # tutorial/procedural TLDR 用去重短句，不再要求全文 claim 不出现。
+        assert "[raw §A]" in tldr or "[raw §B]" in tldr or "[raw §C]" in tldr
 
     def test_smoke_style_compose_keeps_provenance_ratio_under_self_gate(self):
         """真实 smoke 回归：Future Questions 可标 provenance，但全文比例仍需过 self-gate。"""

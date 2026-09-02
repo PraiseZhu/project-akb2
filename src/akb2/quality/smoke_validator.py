@@ -35,6 +35,21 @@ SENSITIVE_PATH_MARKERS = (
 )
 DEFAULT_SOURCE_LEDGER_MAX_AGE_HOURS = 72
 DEFAULT_MAIN_PLIST = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
+# 只认 luna 家族；AKB2_GRADER_FAMILY 不在集合内时仍按 luna 验收，不把任意字符串放进白名单。
+EXPECTED_GRADER_MODEL_ALIASES = frozenset({"gpt-5.6-luna", "codex/gpt-5.6-luna"})
+_configured_grader = os.environ.get("AKB2_GRADER_FAMILY", "gpt-5.6-luna").strip()
+EXPECTED_GRADER_MODEL = (
+    _configured_grader
+    if _configured_grader in EXPECTED_GRADER_MODEL_ALIASES
+    else "gpt-5.6-luna"
+)
+
+
+def _is_expected_grader_model(model_used: object) -> bool:
+    text = str(model_used or "").strip()
+    return text in EXPECTED_GRADER_MODEL_ALIASES
+
+
 SOURCE_FAILURE_CLASSES = {
     "config_stale",
     "network_timeout",
@@ -339,8 +354,10 @@ def _assert_grader_result_pass(
         raise SmokeValidationError(f"grader result status != PASS: {data}")
     if data.get("fallback_used") is not False:
         raise SmokeValidationError("grader result fallback_used must be false")
-    if data.get("model_used") != "gpt-5.4":
-        raise SmokeValidationError(f"grader result model_used != gpt-5.4: {data}")
+    if not _is_expected_grader_model(data.get("model_used")):
+        raise SmokeValidationError(
+            f"grader result model_used != {EXPECTED_GRADER_MODEL}: {data}"
+        )
     findings = data.get("findings", [])
     if findings:
         raise SmokeValidationError(f"grader result findings must be empty: {findings}")
@@ -749,8 +766,10 @@ def validate_happy_path(
     if not grade_events:
         raise SmokeValidationError("missing grade_llm event")
     details = grade_events[-1].get("details", {})
-    if details.get("model_used") != "gpt-5.4":
-        raise SmokeValidationError(f"grade_llm.model_used != gpt-5.4: {details}")
+    if not _is_expected_grader_model(details.get("model_used")):
+        raise SmokeValidationError(
+            f"grade_llm.model_used != {EXPECTED_GRADER_MODEL}: {details}"
+        )
     if details.get("fallback_used") is not False:
         raise SmokeValidationError("grade_llm.fallback_used must be false")
     if details.get("suspended") is not False:

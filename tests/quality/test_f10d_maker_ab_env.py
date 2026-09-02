@@ -25,9 +25,9 @@ class TestF10DValidateSeparation:
 
     def test_same_family_fail_fast(self):
         """同族 → RouterConfigError fail-fast(宪法 P7 异族分离,无自评自批)。"""
-        with pytest.raises(RouterConfigError, match="同族"):
+        with pytest.raises(RouterConfigError, match="同厂商"):
             validate_maker_checker_separation("gpt-5.4", "gpt-5.4")
-        with pytest.raises(RouterConfigError, match="同族"):
+        with pytest.raises(RouterConfigError, match="同厂商"):
             validate_maker_checker_separation("deepseek-v4-pro", "deepseek-v4-pro")
 
     def test_empty_family_fail_fast(self):
@@ -59,10 +59,10 @@ class TestF10DEnvOverride:
         # 清理:reload 回默认
         monkeypatch.delenv("AKB2_GRADER_FAMILY", raising=False)
         importlib.reload(grader_mod)
-        assert grader_mod.PRIMARY_GRADER_MODEL == "gpt-5.4"
+        assert grader_mod.PRIMARY_GRADER_MODEL == "gpt-5.6-luna"
 
     def test_default_no_env_unchanged(self, monkeypatch):
-        """无 env → 默认值不变(deepseek-v4-pro / gpt-5.4)。"""
+        """无 env → 默认值不变(deepseek-v4-pro / gpt-5.6-luna)。"""
         monkeypatch.delenv("AKB2_DISTILL_FAMILY", raising=False)
         monkeypatch.delenv("AKB2_GRADER_FAMILY", raising=False)
         import src.akb2.quality.distill as distill_mod
@@ -70,7 +70,7 @@ class TestF10DEnvOverride:
         importlib.reload(distill_mod)
         importlib.reload(grader_mod)
         assert distill_mod.DISTILL_MODEL_FAMILY == "deepseek-v4-pro"
-        assert grader_mod.PRIMARY_GRADER_MODEL == "gpt-5.4"
+        assert grader_mod.PRIMARY_GRADER_MODEL == "gpt-5.6-luna"
         # 默认两族不同(宪法护栏基线)
         assert distill_mod.DISTILL_MODEL_FAMILY != grader_mod.PRIMARY_GRADER_MODEL
 
@@ -87,7 +87,7 @@ class TestF10DCalibrationRecordsFamilies:
         importlib.reload(distill_mod)
         importlib.reload(grader_mod)
         importlib.reload(calib_mod)
-        with pytest.raises(RouterConfigError, match="同族"):
+        with pytest.raises(RouterConfigError, match="同厂商"):
             calib_mod.run_calibration(
                 corpus_path="", report_out="/tmp/f10d_test.json", persist_raw=False
             )

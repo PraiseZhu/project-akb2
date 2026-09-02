@@ -192,6 +192,17 @@ _DEFAULT_DOMAIN_TAXONOMY: list[str] = [
     "LLM Architecture & Training",
     "LLM Inference & Interpretability",
     "RAG & Retrieval Engineering",
+    # [loop2 扩锚 2026-09-01] AI 广域：models/training/evals/infra/tooling/agents/product/research
+    # 只扩收录面，novelty/mechanism/地板零动。
+    # 与 skillpack/quality/concept-index-injection.md 两端同步。
+    "Foundation Models",
+    "Model Training",
+    "AI Evals & Benchmarks",
+    "AI Infrastructure",
+    "AI Tooling",
+    "Agent Products",
+    "AI Product",
+    "AI Research",
 ]
 
 # ---------------------------------------------------------------------------
@@ -252,6 +263,8 @@ def run_admission(
     ledger_path: str,
     wiki_references: list[str] | None = None,
     route_llm_fn: Any = None,
+    *,
+    loop_id: str = "loop1",
 ) -> AdmissionResult:
     """执行准入判定（单次结构化 LLM 判定 + 确定性预筛）。
 
@@ -276,7 +289,16 @@ def run_admission(
         from src.akb2.quality.llm_router import route_llm as _default
 
         route_llm_fn = _default
-    guarded_llm = _make_single_call_guard(route_llm_fn)
+
+    def _routed(model_family: str, messages: list[dict], **kwargs: Any):
+        kwargs.setdefault("loop_id", loop_id)
+        try:
+            return route_llm_fn(model_family, messages, **kwargs)
+        except TypeError:
+            kwargs.pop("loop_id", None)
+            return route_llm_fn(model_family, messages, **kwargs)
+
+    guarded_llm = _make_single_call_guard(_routed)
 
     # 剥离 raw 样板（frontmatter + §锚点目录 TOC），让判定看正文而非元数据骨架。
     # 此前直接判 raw_content：4000 字窗口被 ~960 字 frontmatter+26 行锚点目录稀释，
@@ -298,6 +320,7 @@ def run_admission(
         _log_rejection(
             raw_path, checks, ledger_path,
             content_lane="", lane_failed=False, lane_reason=lane_reason,
+            loop_id=loop_id,
         )
         return AdmissionResult(
             passed=False, checks=checks, reason=reason,
@@ -377,6 +400,7 @@ def run_admission(
             content_lane=content_lane,
             lane_failed=lane_failed,
             lane_reason=lane_reason,
+            loop_id=loop_id,
         )
 
     topic_borderline = bool(
@@ -1345,6 +1369,8 @@ def _log_rejection(
     content_lane: str = "",
     lane_failed: bool = False,
     lane_reason: str = "",
+    *,
+    loop_id: str = "loop1",
 ) -> None:
     """落账拒收事件。
 
@@ -1369,7 +1395,7 @@ def _log_rejection(
         failure_details["content_lane"] = {"passed": False, "reason": lane_reason}
 
     event: dict[str, Any] = {
-        "loop_id": "loop1",
+        "loop_id": loop_id or "loop1",
         "node": "admission",
         "event": "admission",
         "content_hash": content_hash,

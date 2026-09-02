@@ -74,6 +74,66 @@ def test_lint_module_size_nonzero(lint_path: Path):
     )
 
 
+def test_loop2_candidate_skips_active_only_lint(tmp_path: Path, monkeypatch):
+    """实跑 Gate-4：candidate 缺 key_findings、路径在 staging-loop2 被当 P1。"""
+    from src.akb2.lint import akb2_lint as lint
+
+    vault = tmp_path / "vault"
+    candidate = vault / "staging-loop2" / "candidate" / "b" / "x.md"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_text(
+        "---\n"
+        "template_type: source\n"
+        "status: candidate\n"
+        "slug: x\n"
+        "---\n\n"
+        "## 关键发现\n\n"
+        "- one\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(lint, "VAULT_ROOT", vault)
+    fm_raw = "template_type: source\nstatus: candidate\nslug: x\n"
+    assert lint.rule_r9_source_key_findings_missing_frontmatter(
+        candidate, fm_raw, "## 关键发现\n", {"template_type": "source"}
+    ) == []
+    mismatch = lint.rule_r16_template_directory_mismatch(
+        candidate, fm_raw, "", {"template_type": "source"}
+    )
+    assert mismatch == []
+
+
+def test_r9_flags_active_source_missing_key_findings_on_string_fm(tmp_path: Path):
+    """lint_page 传入的是 frontmatter 字符串；R9 不得因 fm.get 崩成 P3。"""
+    from src.akb2.lint import akb2_lint as lint
+
+    path = tmp_path / "wiki" / "sources" / "x.md"
+    fm_raw = "template_type: source\nstatus: active\nslug: x\n"
+    findings = lint.rule_r9_source_key_findings_missing_frontmatter(
+        path, fm_raw, "## 关键发现\n", {"template_type": "source"}
+    )
+    assert any(
+        f["rule_id"] == "SOURCE-KEY-FINDINGS-MISSING-FRONTMATTER"
+        and f["severity"] == "P1"
+        for f in findings
+    )
+
+
+def test_r9_flags_quoted_active_source_missing_key_findings(tmp_path: Path):
+    """quoted YAML scalar status: active 仍须按 active-only 规则检查。"""
+    from src.akb2.lint import akb2_lint as lint
+
+    path = tmp_path / "wiki" / "sources" / "quoted.md"
+    fm_raw = 'template_type: source\nstatus: "active"\nslug: quoted\n'
+    findings = lint.rule_r9_source_key_findings_missing_frontmatter(
+        path, fm_raw, "## 关键发现\n", {"template_type": "source"}
+    )
+    assert any(
+        f["rule_id"] == "SOURCE-KEY-FINDINGS-MISSING-FRONTMATTER"
+        and f["severity"] == "P1"
+        for f in findings
+    )
+
+
 def test_query_result_valid_no_p0_p1(repo_root: Path):
     """valid-query-result.md should lint with 0 P0/P1 findings."""
     import subprocess
@@ -230,6 +290,25 @@ def test_r16_still_flags_staging_candidate_with_wrong_directory_scope(monkeypatc
     )
 
 
+def test_r16_exempts_loop2_candidate_omitting_directory_scope(monkeypatch):
+    """loop2 候选可省略 directory_scope（压 frontmatter 行预算）；写错仍报。"""
+    from src.akb2.lint import akb2_lint
+
+    monkeypatch.setattr(akb2_lint, "VAULT_ROOT", Path("/tmp/akb2-r16-test-vault"))
+    rule = akb2_lint.rule_r16_template_directory_mismatch
+    ctx = {"template_type": "source"}
+    loop2_path = Path("/tmp/akb2-r16-test-vault/staging-loop2/candidate/batch/test.md")
+    fm_omit = "template_type: source\nstatus: candidate\n"
+    assert rule(loop2_path, fm_omit, "body", ctx) == []
+    fm_wrong = (
+        "template_type: source\n"
+        "directory_scope: wiki/tools/\n"
+        "status: candidate\n"
+    )
+    findings = rule(loop2_path, fm_wrong, "body", ctx)
+    assert any(f["rule_id"] == "TEMPLATE-DIRECTORY-MISMATCH" for f in findings)
+
+
 def test_r14_candidate_empty_related_not_flagged():
     """F8-B(lead 裁决 1):R14 加 status=='active' 守卫——candidate(非 active)空 related
     不再误报。冷启动 related 空是诚实状态(frontmatter 语义不失真,不硬塞 component 名)。
@@ -313,4 +392,3 @@ def test_r14_active_with_related_not_flagged():
     assert rule(path, fm_active_ok, "body", ctx) == [], (
         "active + 非空 related_concepts 应放行(规则正常)"
     )
-

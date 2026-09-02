@@ -1112,7 +1112,27 @@ RETRIEVAL_HTTP_PRINT_OK = """com.akb2.retrieval-http = {
 			/bin/bash
 			/fake/repo/scripts/akb2-retrieval-http.sh
 		}
-		keep alive = true
+		properties = keepalive | inferred program
+	}
+	"""
+
+LOOP2_INTAKE_LABEL = "com.akb2.loop2-intake"
+LOOP2_INTAKE_PRINT_OK = """com.akb2.loop2-intake = {
+		arguments = {
+			/bin/bash
+			/fake/repo/scripts/akb2-loop2-intake.sh
+		}
+		run interval = 14400
+	}
+	"""
+
+LOOP2_RUNNER_LABEL = "com.akb2.loop2-runner"
+LOOP2_RUNNER_PRINT_OK = """com.akb2.loop2-runner = {
+		arguments = {
+			/bin/bash
+			/fake/repo/scripts/akb2-loop2-pipeline.sh
+		}
+		properties = keepalive | inferred program
 	}
 	"""
 
@@ -1182,6 +1202,8 @@ def test_manifest_installer_line_installs_declared_label(tmp_path: Path) -> None
         BRIEFING_LABEL: BRIEFING_PRINT_OK,
         GITHUB_BRIEFING_LABEL: GITHUB_PRINT_OK,
         RETRIEVAL_HTTP_LABEL: RETRIEVAL_HTTP_PRINT_OK,
+        LOOP2_INTAKE_LABEL: LOOP2_INTAKE_PRINT_OK,
+        LOOP2_RUNNER_LABEL: LOOP2_RUNNER_PRINT_OK,
     }
     for index, job in enumerate(targets):
         label = job["label"]

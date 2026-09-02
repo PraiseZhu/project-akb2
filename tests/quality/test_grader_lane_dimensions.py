@@ -443,12 +443,20 @@ class TestProceduralParseContract:
                 }
             ],
         }
+        from src.akb2.quality.grader import PRIMARY_GRADER_MODEL
+
         mock = make_mock_route_llm(
-            {"gpt-5.4": LLMResponse(content={"dimensions": dims}, model_used="gpt-5.4", calls_used=1)}
+            {
+                PRIMARY_GRADER_MODEL: LLMResponse(
+                    content={"dimensions": dims},
+                    model_used=PRIMARY_GRADER_MODEL,
+                    calls_used=1,
+                )
+            }
         )
         defects, model_used, suspended = run_grader_with_fixture("候选页", mock)
         assert not suspended
-        assert model_used == "gpt-5.4"
+        assert model_used == PRIMARY_GRADER_MODEL
         assert len(defects) == 1
         assert defects[0].dimension == RUBRIC_DIMENSIONS[0]
         assert defects[0].location

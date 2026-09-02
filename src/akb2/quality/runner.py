@@ -283,6 +283,7 @@ class RunnerConfig:
     # 全部分片（单机形态，向后兼容）。shard_takeover=None → 读 env（默认关）。
     shard_spec: str = ""
     shard_takeover: bool | None = None
+    lock_name: str = ""
     owned_shards: frozenset[int] | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -496,7 +497,11 @@ def _admission_failure_probe(reason: str, checks: Any, lane_reason: str = "") ->
 
 
 def _maybe_auto_infra_requeue(
-    config: RunnerConfig, content_hash: str, error_text: str
+    config: RunnerConfig,
+    content_hash: str,
+    error_text: str,
+    *,
+    loop_id: str = "loop1",
 ) -> bool:
     """abort 后若属基础设施性死亡 → 自动追加 requeue 事件一次(F26 语义重开)。
 
@@ -528,6 +533,7 @@ def _maybe_auto_infra_requeue(
     return _log_event(
         config, "requeue", "requeue", content_hash,
         {"reason": f"{_AUTO_INFRA_REASON_PREFIX}: {str(error_text)[:140]}"},
+        loop_id=loop_id,
     )
 
 
@@ -680,7 +686,7 @@ def _check_cross_machine_safety(config: RunnerConfig) -> bool:
 
 def _lock_file_path(config: RunnerConfig) -> Path:
     """处理锁文件路径。"""
-    return Path(config.lock_dir) / PROCESSING_LOCK_NAME
+    return Path(config.lock_dir) / (config.lock_name or PROCESSING_LOCK_NAME)
 
 
 def _read_lock_holder(lock_file: Path) -> dict | None:
@@ -848,6 +854,8 @@ def _log_event(
     node: str,
     content_hash: str,
     details: dict | None = None,
+    *,
+    loop_id: str = "loop1",
 ) -> bool:
     """记录一条账本事件。"""
     try:
@@ -856,7 +864,7 @@ def _log_event(
         return False
 
     entry: dict[str, Any] = {
-        "loop_id": "loop1",
+        "loop_id": loop_id or "loop1",
         "node": node,
         "event": event,
         "content_hash": content_hash,
@@ -1165,6 +1173,8 @@ def _run_admission_segment(
     wiki_references: list[str] | None = None,
     index_status: str = LANE_INDEX_STATUS_OK,
     content_hash: str = "",
+    *,
+    loop_id: str = "loop1",
 ) -> tuple[bool, str, list, str, str, bool]:
     """段 2: 准入判定（Decision-2：装载 vault wiki_references 喂 novelty）。
 
@@ -1197,6 +1207,7 @@ def _run_admission_segment(
                 # 重审预算该留给"重跑就能过"的上游抖动(判据见 _INFRA_ERROR_MARKERS)。
                 "failure_kind": FAILURE_KIND_INFRA,
             },
+            loop_id=loop_id,
         )
         return (
             False,
@@ -1212,6 +1223,7 @@ def _run_admission_segment(
         raw_content=raw_content,
         ledger_path=config.ledger_path,
         wiki_references=wiki_references,
+        loop_id=loop_id,
     )
     return (
         result.passed,
@@ -1563,7 +1575,12 @@ def _run_distill_segment(
     )
 
 
-def _run_extract_claims_worker(raw_content: str, content_lane: str = "") -> Any:
+def _run_extract_claims_worker(
+    raw_content: str,
+    content_lane: str = "",
+    *,
+    loop_id: str = "loop1",
+) -> Any:
     """Run DeepSeek extract in a killable child process.
 
     SDK/http stacks can occasionally ignore in-process timers while waiting on
@@ -1578,7 +1595,11 @@ def _run_extract_claims_worker(raw_content: str, content_lane: str = "") -> Any:
 
     cmd = [sys.executable, "-m", DISTILL_EXTRACT_WORKER_MODULE]
     worker_input = json.dumps(
-        {"raw_content": raw_content, "content_lane": content_lane},
+        {
+            "raw_content": raw_content,
+            "content_lane": content_lane,
+            "loop_id": loop_id or "loop1",
+        },
         ensure_ascii=False,
     )
     worker_timeout_s = _distill_extract_worker_timeout_s(raw_content)
@@ -1804,6 +1825,9 @@ def _run_quality_segments(
     floor_result: Any = None,
     known_concepts: list[str] | None = None,
     pending_queue: list[str] | None = None,
+    *,
+    loop_id: str = "loop1",
+    grader_timeout_s: float | None = None,
 ) -> tuple[bool, str, str, dict[str, Any]]:
     """段 5-6: 结构校验 + 评分 + 修复。
 
@@ -1885,6 +1909,7 @@ def _run_quality_segments(
             encoding="utf-8",
         )
 
+    grader_result: Any | None = None
     grader_meta: dict[str, Any] = {
         "grader_model_used": "",
         "grader_primary_model": "",
@@ -1944,7 +1969,12 @@ def _run_quality_segments(
 
     if not a_defects:
         # B 层: LLM 评分。只有 A 层通过时才调用，避免对结构不合格稿件花费裁判预算。
-        grader_result = run_grader_detailed(candidate_text, content_lane=content_lane)
+        grader_result = run_grader_detailed(
+            candidate_text,
+            content_lane=content_lane,
+            loop_id=loop_id,
+            timeout_s=grader_timeout_s,
+        )
         b_defects = grader_result.defects
         grader_meta = {
             "grader_model_used": grader_result.model_used,
@@ -2006,8 +2036,8 @@ def _run_quality_segments(
                 "repair_rounds": 0, "final_defects_summary": [],
             }
             _gate = _check_concept_hard_gates(
-                grader_result.interpretation_entailment,
-                grader_result.dimension_scores,
+                getattr(grader_result, "interpretation_entailment", None),
+                getattr(grader_result, "dimension_scores", {}),
                 content_lane,
                 _base,
             )
@@ -2060,6 +2090,8 @@ def _run_promote_segment(
     candidate_path: str,
     config: RunnerConfig,
     grader_result_path: Path | None = None,
+    *,
+    loop_id: str = "loop1",
 ) -> tuple[bool, str, str]:
     """段 7: 升格。
 
@@ -2078,6 +2110,7 @@ def _run_promote_segment(
         candidate_path=cpath,
         vault_root=vault_root,
         grader_result_path=grader_result_path,
+        loop_id=loop_id,
     )
 
     # 写路径权威在 promote.py：六闸全过唯一终态 = 写 active，
@@ -2506,7 +2539,11 @@ def _is_weekly_check_time() -> bool:
     return now.hour == 0
 
 
-def _sample_recent_promoted(config: RunnerConfig) -> list[dict[str, str]]:
+def _sample_recent_promoted(
+    config: RunnerConfig,
+    *,
+    loop_id: str | None = None,
+) -> list[dict[str, str]]:
     """从账本抽最近期入库的 SPOT_CHECK_SAMPLE_SIZE 篇。
 
     Returns:
@@ -2527,6 +2564,8 @@ def _sample_recent_promoted(config: RunnerConfig) -> list[dict[str, str]]:
                     entry = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if loop_id and entry.get("loop_id") != loop_id:
+                    continue
                 if (
                     entry.get("event") == "finalize"
                     and entry.get("node") == "finalize"
@@ -2546,7 +2585,11 @@ def _sample_recent_promoted(config: RunnerConfig) -> list[dict[str, str]]:
     return promoted_items[-SPOT_CHECK_SAMPLE_SIZE:]
 
 
-def _regrade_sample(samples: list[dict[str, str]]) -> list[bool]:
+def _regrade_sample(
+    samples: list[dict[str, str]],
+    *,
+    loop_id: str = "loop1",
+) -> list[bool]:
     """对抽检样本重新过 grader。
 
     Returns:
@@ -2567,7 +2610,7 @@ def _regrade_sample(samples: list[dict[str, str]]) -> list[bool]:
 
         try:
             from src.akb2.quality.grader import run_grader_detailed
-            grader_result = run_grader_detailed(_text)
+            grader_result = run_grader_detailed(_text, loop_id=loop_id)
         except Exception:
             results.append(False)
             continue
@@ -2585,13 +2628,15 @@ def _regrade_sample(samples: list[dict[str, str]]) -> list[bool]:
 def _run_weekly_spot_check(
     config: RunnerConfig,
     weekly_dir: str,
+    *,
+    loop_id: str = "loop1",
 ) -> None:
     """执行周抽检。
 
     抽近期入库 3 篇重过 grader，pass_rate < 80% 写校准任务文件 +
     落账 + 产 weekly-summary.json。
     """
-    samples = _sample_recent_promoted(config)
+    samples = _sample_recent_promoted(config, loop_id=loop_id)
     weekly_path = Path(weekly_dir)
     weekly_path.mkdir(parents=True, exist_ok=True)
 
@@ -2612,7 +2657,7 @@ def _run_weekly_spot_check(
         return
 
     # 重新评分
-    results = _regrade_sample(samples)
+    results = _regrade_sample(samples, loop_id=loop_id)
     pass_count = sum(1 for r in results if r)
     pass_rate = pass_count / len(results) if results else 0.0
 
@@ -2646,6 +2691,7 @@ def _run_weekly_spot_check(
                 "total": len(results),
                 "calibration_task": str(task_path),
             },
+            loop_id=loop_id,
         )
 
         # 自动校准任务，无需人工介入 — 两计数保持 0（plan SC-6.1）

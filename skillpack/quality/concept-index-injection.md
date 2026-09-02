@@ -42,12 +42,23 @@ status: active
 
 ### 工程基础设施
 
-15. **Knowledge Engineering** — 知识工程、知识图谱、信息抽取
-16. **Tool Design** — 工具设计、API 设计、开发者体验
-17. **Protocol Design** — 协议设计（MCP、A2A 等）
-18. **MCP** — Model Context Protocol 相关
-19. **A2A** — Agent-to-Agent 协议相关
-20. **LangGraph** — LangGraph 框架相关
+18. **Knowledge Engineering** — 知识工程、知识图谱、信息抽取
+19. **Tool Design** — 工具设计、API 设计、开发者体验
+20. **Protocol Design** — 协议设计（MCP、A2A 等）
+21. **MCP** — Model Context Protocol 相关
+22. **A2A** — Agent-to-Agent 协议相关
+23. **LangGraph** — LangGraph 框架相关
+
+### AI 广域（loop2 扩锚 2026-09-01）
+
+24. **Foundation Models** — 基础模型、模型发布、能力边界、多模态底座
+25. **Model Training** — 训练数据、微调、对齐、蒸馏与持续训练
+26. **AI Evals & Benchmarks** — 评测集、基准、回归闸、能力切片
+27. **AI Infrastructure** — 推理集群、调度、配额、观测与成本
+28. **AI Tooling** — 开发者工具、SDK、IDE 插件、工作流脚手架
+29. **Agent Products** — 面向用户的 agent 产品形态与交付面
+30. **AI Product** — AI 产品设计、增长、定价与落地形态
+31. **AI Research** — 论文、技术报告、可复现实验与开放研究
 
 ## 内容车道锚点（intake-rebuild p5，sc-p5-taxonomy-sources）
 

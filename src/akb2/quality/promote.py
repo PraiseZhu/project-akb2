@@ -23,6 +23,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 # ---------------------------------------------------------------------------
 # 路径常量
 # ---------------------------------------------------------------------------
@@ -40,6 +42,9 @@ _SNAPSHOTS_DIR = _PROJECT_ROOT / "snapshots"
 GATE_SUBPROCESS_TIMEOUT_SEC = 120
 LINT_SUBPROCESS_TIMEOUT_SEC = 60
 SNAPSHOT_MAX_COUNT = 50  # FR-015: 前 50 条快照
+_EMPTY_SOURCE_URL_TOKENS = frozenset(
+    {"", "null", "~", "none", "nil", "false", "true", "0"}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -100,8 +105,26 @@ def _run_gate_check(
     stdout = result.stdout
     stderr = result.stderr
 
+    # A non-zero exit means the gate process failed, even if it happened to
+    # emit a stale/partial ``proposed_gate_decision`` on stdout.  Do not parse
+    # or trust that output: promotion must fail closed on subprocess errors.
+    if result.returncode != 0:
+        return (
+            False,
+            f"gate CLI subprocess failed (exit code {result.returncode})",
+            {},
+        )
+
+    parse_err_match = re.search(r"^parse_errors:\s*(\d+)\s*$", stdout, re.M)
+    if parse_err_match and int(parse_err_match.group(1)) > 0:
+        return (
+            False,
+            f"gate CLI reported parse_errors={parse_err_match.group(1)}",
+            {},
+        )
+
     if stderr.strip():
-        # gate CLI 可能输出非致命 stderr（如 parse errors）
+        # gate CLI 可能输出非致命 stderr；parse_errors 已按 stdout 计数 fail-closed
         pass
 
     # 解析 proposed_gate_decision
@@ -215,11 +238,19 @@ def _check_source_provenance(candidate_path: Path) -> tuple[bool, str]:
     m = re.match(r"^---\n(.*?)\n---\n", text, re.DOTALL)
     if not m:
         return False, "candidate has no frontmatter"
-    url_match = re.search(r"^source_url:\s*(.*)$", m.group(1), re.M)
-    if not url_match:
+    try:
+        data = yaml.safe_load(m.group(1))
+    except yaml.YAMLError as exc:
+        return False, f"candidate frontmatter is not valid YAML: {exc}"
+    if not isinstance(data, dict):
+        return False, "candidate frontmatter is not a mapping"
+    if "source_url" not in data:
         return False, "source_url missing from candidate frontmatter"
-    value = url_match.group(1).strip().strip("'\"")
-    if not value:
+    raw_value = data.get("source_url")
+    if raw_value is None or isinstance(raw_value, (bool, int, float, list, dict)):
+        return False, "source_url is empty in candidate frontmatter"
+    value = str(raw_value).strip()
+    if not value or value.lower() in _EMPTY_SOURCE_URL_TOKENS:
         return False, "source_url is empty in candidate frontmatter"
     return True, f"source_url={value}"
 
@@ -1072,6 +1103,8 @@ def _write_ledger_event(
     node: str,
     content_hash: str = "",
     details: dict | None = None,
+    *,
+    loop_id: str = "loop1",
 ) -> bool:
     """落账事件到 quality-ledger.jsonl。"""
     try:
@@ -1084,7 +1117,7 @@ def _write_ledger_event(
     # finalize 事件 runner 看不到 → `_is_processed` 判"未处理" → 同一篇重复入库。
     ledger_path = _resolve_ledger_path(vault_root, "quality-ledger.jsonl")
     event = {
-        "loop_id": "loop1",
+        "loop_id": loop_id or "loop1",
         "node": node,
         "event": event_type,
         "content_hash": content_hash,
@@ -1098,6 +1131,8 @@ def run_promote(
     candidate_path: Path,
     vault_root: Path,
     grader_result_path: Path | None = None,
+    *,
+    loop_id: str = "loop1",
 ) -> tuple[bool, str, str | None]:
     """主入口：六闸判定（含 Gate-0 溯源），全过唯一终态 = 写 active。
 
@@ -1127,7 +1162,8 @@ def run_promote(
         # 落账 failure 事件
         _write_ledger_event(
             vault_root, "abort", "promote", candidate_hash,
-            {"failed_gate": failed_gate, "reason": gates_detail}
+            {"failed_gate": failed_gate, "reason": gates_detail},
+            loop_id=loop_id,
         )
         return False, f"Five gates failed at {failed_gate}: {gates_detail}", None
 
@@ -1145,7 +1181,8 @@ def run_promote(
                 "note": "修宪 2026-07-06:proposed_node_only 允许 auto-active,"
                         "概念落 pending 队列由图谱兜底链路补全",
                 "gates_detail": gates_detail,
-            }
+            },
+            loop_id=loop_id,
         )
 
     # 确定受影响文件列表
@@ -1193,7 +1230,8 @@ def run_promote(
             "mode": "active",
             "snapshot_id": snapshot_id,
             "gates_detail": gates_detail,
-        }
+        },
+        loop_id=loop_id,
     )
 
     # Step.4: 收尾
@@ -1208,7 +1246,8 @@ def run_promote(
                 "mode": "active",
                 "snapshot_id": snapshot_id,
                 "files_touched": len(touched),
-            }
+            },
+            loop_id=loop_id,
         )
         return True, f"Auto-promote success: {detail}", snapshot_id
     else:
@@ -1218,7 +1257,8 @@ def run_promote(
                 "mode": "active",
                 "snapshot_id": snapshot_id,
                 "reason": detail,
-            }
+            },
+            loop_id=loop_id,
         )
         return False, f"Auto-promote failed: {detail}", snapshot_id
 

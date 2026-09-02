@@ -75,6 +75,25 @@ def test_gate_module_size_nonzero(gate_path: Path):
     )
 
 
+def test_loop2_candidate_path_is_allowed(tmp_path: Path):
+    """实跑 shadow_blocked：gate CLI 拒 staging-loop2/candidate，proposed 变空。"""
+    from src.akb2.gate.akb2_gate_check import (
+        check_candidate_only,
+        guard_input_path,
+    )
+
+    vault = tmp_path / "vault"
+    candidate = vault / "staging-loop2" / "candidate" / "batch" / "x.md"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_text("# t\n", encoding="utf-8")
+    guard_input_path(vault, candidate)
+    ok, reason = check_candidate_only(
+        "staging-loop2/candidate/batch/x.md"
+    )
+    assert ok is True
+    assert "candidate" in reason
+
+
 def test_query_result_gate_pass(repo_root: Path):
     """query-result candidate with valid fields should pass gate (exit 0)."""
     import subprocess
@@ -92,6 +111,30 @@ def test_query_result_gate_pass(repo_root: Path):
     assert result.returncode == 0, f"gate failed: {result.stdout}\n{result.stderr}"
     assert "HC-03" not in result.stdout or "skipped" in result.stdout
     assert "HC-05" not in result.stdout or "skipped" in result.stdout
+
+
+def test_parse_errors_exit_nonzero(tmp_path: Path):
+    """严格 YAML 失败即使 fallback 抽出字段，也不得 exit 0。"""
+    from argparse import Namespace
+
+    from src.akb2.gate.akb2_gate_check import EXIT_PARSE_ERROR, cmd_check
+
+    vault = tmp_path / "vault"
+    cand = vault / "staging" / "candidate" / "bad.md"
+    cand.parent.mkdir(parents=True)
+    cand.write_text(
+        "---\npage_status: candidate\nsource_authors: @nathansobo\n---\n# t\n",
+        encoding="utf-8",
+    )
+    rc = cmd_check(
+        Namespace(
+            akb_root=str(vault),
+            input="staging/candidate/bad.md",
+            date="2026-09-02",
+            write_manifest=False,
+        )
+    )
+    assert rc == EXIT_PARSE_ERROR
 
 
 def test_query_result_template_type_in_enum(gate_source: str):

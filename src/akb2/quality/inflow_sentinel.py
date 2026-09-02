@@ -12,11 +12,11 @@
 判定(二值,无连续分;宪法 P8):
     窗口 = 近 `--window-hours` 小时(默认 `DEFAULT_WINDOW_HOURS`)。
 
-    | intake_raw | finalize | verdict     | 含义                                  |
-    |------------|----------|-------------|---------------------------------------|
-    | > 0        | == 0     | `stalled`   | **有进无出** = 入库断流(主告警)        |
-    | == 0       | == 0     | `no_intake` | 全链零事件 = 采集停摆或 runner 死(降级)|
-    | 任意       | > 0      | `healthy`   | 有入库,不告警                         |
+    | intake_raw | real finalize | verdict | 含义                              |
+    |------------|--------------|-------------|---------------------------------------|
+    | > 0        | == 0         | `stalled`   | **有进无出** = 入库断流(主告警)        |
+    | == 0       | == 0         | `no_intake` | 全链零事件 = 采集停摆或 runner 死(降级)|
+    | 任意       | > 0         | `healthy`   | 有真实入库,不告警                    |
 
     "有进无出才算断流"是刻意的:零 intake_raw 是**另一种**故障,排查现场不同——
     且 intake_raw 事件是 runner 落账的(runner 从 raw/ 取件时写),所以零 intake_raw
@@ -31,8 +31,8 @@
 
 幂等抑制 + 有界重提:
     "同一次断流"的身份 = `verdict + 参照事件时刻 + 窗口长度`(`episode_key`):
-    `stalled` 取账本里**最后一次 finalize** 的时刻(= 流水线上次正常的时刻),
-    `no_intake` 取最后一次 intake_raw 的时刻。只要没有新的 finalize 落账,就还是
+    `stalled` 取账本里**最后一次真实 finalize** 的时刻(= 流水线上次正常的时刻),
+    `no_intake` 取最后一次 intake_raw 的时刻。只要没有新的真实 finalize 落账,就还是
     同一次断流;一旦恢复入库再断,参照时刻变了 → 算新的一次。
 
     同一次断流内的发送节奏(有界,宪法 P1):
@@ -77,6 +77,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # 具名常量(宪法 P4:预算/阈值不得裸字面量)
@@ -124,10 +125,21 @@ VERDICT_STALLED: str = "stalled"
 VERDICT_NO_INTAKE: str = "no_intake"
 VERDICT_HEALTHY: str = "healthy"
 
-# 参与判定的两个事件(其余事件只作诊断上下文)
+# 参与判定的两个事件(其余事件只作诊断上下文)。finalize 需为真实升格；
+# loop2 shadow 的 finalize 仅是终态记账，不计入入库。
 EVENT_INTAKE: str = "intake_raw"
 EVENT_FINALIZE: str = "finalize"
 EVENT_ABORT: str = "abort"
+
+
+def _counts_as_real_finalize(entry: dict[str, Any]) -> bool:
+    """finalize 是否代表真实写入 wiki。
+
+    loop2 影子跑仍写终态 finalize，避免 raw 被重处理；
+    details.mode=shadow 表示没写 active 页，不得把断流判成 healthy。
+    """
+    details = entry.get("details")
+    return not (isinstance(details, dict) and details.get("mode") == "shadow")
 
 # 账本 ts 的规范格式(runner._log_event 写入格式)
 _TS_FORMAT: str = "%Y-%m-%dT%H:%M:%SZ"
@@ -233,6 +245,7 @@ def evaluate_ledger(
     *,
     window_hours: int = DEFAULT_WINDOW_HOURS,
     now: datetime | None = None,
+    loop_id: str | None = None,
 ) -> InflowVerdict:
     """流式扫账本,产出断流判定。
 
@@ -279,6 +292,8 @@ def evaluate_ledger(
                     continue
 
                 event = entry.get("event")
+                if loop_id is not None and entry.get("loop_id") != loop_id:
+                    continue
                 ts = _parse_ts(entry.get("ts"))
                 if ts is None:
                     unparseable_ts += 1
@@ -291,8 +306,8 @@ def evaluate_ledger(
                     future_ts += 1
                     continue
 
-                # 全账本范围:记录最后一次 finalize / intake(用于 episode_key 与文案)
-                if event == EVENT_FINALIZE and (
+                # 全账本范围:记录最后一次真实 finalize / intake(用于 episode_key 与文案)
+                if event == EVENT_FINALIZE and _counts_as_real_finalize(entry) and (
                     last_finalize_ts is None or ts > last_finalize_ts
                 ):
                     last_finalize_ts = ts
@@ -301,7 +316,9 @@ def evaluate_ledger(
 
                 if ts < window_start:
                     continue
-                if isinstance(event, str):
+                if isinstance(event, str) and not (
+                    event == EVENT_FINALIZE and not _counts_as_real_finalize(entry)
+                ):
                     window_counts[event] += 1
                     if event == EVENT_ABORT:
                         abort_reasons[_abort_reason(entry)] += 1
@@ -660,6 +677,7 @@ def run_check(
     state_path: Path | None = None,
     now: datetime | None = None,
     sender=None,
+    loop_id: str | None = None,
 ) -> int:
     """执行一次断流检查(判定 → 抑制 → 发送)。返回进程退出码。
 
@@ -676,7 +694,9 @@ def run_check(
         0 检查完成;1 检查无法完成或发送失败(fail-visible)。
     """
     try:
-        verdict = evaluate_ledger(ledger_path, window_hours=window_hours, now=now)
+        verdict = evaluate_ledger(
+            ledger_path, window_hours=window_hours, now=now, loop_id=loop_id
+        )
     except (OSError, ValueError) as exc:
         print(f"ERROR: 断流判定失败: {exc}", file=sys.stderr)
         return 1
@@ -779,6 +799,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--state-file", default=None, help="抑制状态文件路径(默认经 common.state_paths 解析)"
     )
+    parser.add_argument(
+        "--loop-id",
+        default=None,
+        help="只统计该 loop_id 的账本事件(默认全账本；loop2 影子跑传 loop2)",
+    )
     args = parser.parse_args(argv)
 
     ledger_path = args.ledger
@@ -795,6 +820,7 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=args.dry_run,
         force=args.force,
         state_path=Path(args.state_file) if args.state_file else None,
+        loop_id=args.loop_id,
     )
 
 

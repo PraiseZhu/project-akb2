@@ -125,6 +125,37 @@ class TestRunnerWeightedScoreGate:
         assert converged
 
 
+class TestRunnerAdvisoryOnlyStructuralDefects:
+    def test_concept_gate_fails_closed_without_grader_result(self):
+        """advisory-only A defects must not dereference an uninitialized grader result."""
+        from src.akb2.quality import repair
+        from src.akb2.quality.checks_structural import Defect
+        from src.akb2.quality.runner import _run_quality_segments
+
+        advisory = Defect(
+            dimension="advisory-dimension",
+            location="section",
+            defect="advisory only",
+            suggestion="optional",
+        )
+        with patch(
+            "src.akb2.quality.checks_structural.run_candidate_self_gate",
+            return_value=[advisory],
+        ), patch.object(repair, "ADVISORY_DIMENSIONS", frozenset({"advisory-dimension"})):
+            converged, error_class, _, meta = _run_quality_segments(
+                "candidate",
+                "/tmp/x.md",
+                "raw",
+                config=None,
+                content_lane="concept",
+                floor_result=_pass_floor(),
+            )
+
+        assert not converged
+        assert error_class == "entailment_not_evaluated"
+        assert meta["interpretation_entailment"] is None
+
+
 class TestProceduralNoConceptGates:
     def test_procedural_skips_entailment_and_weighted_score(self):
         """procedural 不启 concept entailment/加权分门（零回归）。

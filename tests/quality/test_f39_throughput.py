@@ -52,6 +52,56 @@ class TestTaxonomyExpansion:
                        "RAG & Retrieval Engineering"):
             assert anchor in doc
 
+    def test_ai_wide_anchors_present(self) -> None:
+        """loop2 扩 8 个 AI 广域锚点：收录面只增不减。"""
+        for anchor in (
+            "Foundation Models",
+            "Model Training",
+            "AI Evals & Benchmarks",
+            "AI Infrastructure",
+            "AI Tooling",
+            "Agent Products",
+            "AI Product",
+            "AI Research",
+        ):
+            assert anchor in _DEFAULT_DOMAIN_TAXONOMY
+
+    def test_x_lane_golden_sample_proposal_exists(self) -> None:
+        """C2 已定版：正样本沿用 loop1 Addy Osmani 路径；负样本仍是 X-N1/X-N2。"""
+        path = (
+            Path(__file__).resolve().parents[2]
+            / "skillpack" / "quality" / "x-lane-golden-sample.md"
+        )
+        text = path.read_text(encoding="utf-8")
+        header = "\n".join(text.split("\n")[0:8])
+        assert "status: active" in header
+        assert "status: proposal" not in header
+        assert "raw/addy-osmani-loop-engineering--raw--2026-06-11.md" in text
+        assert "wiki/sources/addy-osmani-loop-engineering.md" in text
+        assert (
+            "staging/candidate/manual-source-intake-2026-06-11/"
+            "addy-osmani-loop-engineering.md"
+        ) in text
+        assert "负样本 X-N1" in text
+        assert "负样本 X-N2" in text
+
+    def test_ai_wide_injection_doc_in_sync(self) -> None:
+        """loop2 广域锚点与注入文档两端同步。"""
+        doc = (Path(__file__).resolve().parents[2]
+               / "skillpack" / "quality" / "concept-index-injection.md"
+               ).read_text(encoding="utf-8")
+        for anchor in (
+            "Foundation Models",
+            "Model Training",
+            "AI Evals & Benchmarks",
+            "AI Infrastructure",
+            "AI Tooling",
+            "Agent Products",
+            "AI Product",
+            "AI Research",
+        ):
+            assert anchor in doc
+
 
 # ---------------------------------------------------------------------------
 # 刀2: 基础设施性 abort 自动重审

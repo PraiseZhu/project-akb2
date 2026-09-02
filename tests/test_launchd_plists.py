@@ -33,6 +33,8 @@ PLIST_NAMES = [
     "com.akb2.intake-twitter.plist",
     "com.akb2.video.plist",
     "com.akb2.retrieval-http.plist",
+    "com.akb2.loop2-intake.plist",
+    "com.akb2.loop2-runner.plist",
 ]
 XFAIL_REASONS: dict[tuple[str, str], str] = {}
 VAULT_ROOT_BASE = "/Volumes/AKB2/Obsidian"

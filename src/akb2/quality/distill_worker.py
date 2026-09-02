@@ -42,18 +42,22 @@ def _payload(
     return json.dumps(out, ensure_ascii=False)
 
 
-def _decode_payload(payload: Any) -> tuple[str, str]:
-    """从已解析的 JSON payload 提取 (raw_content, content_lane)。
+def _decode_payload(payload: Any) -> tuple[str, str, str]:
+    """从已解析的 JSON payload 提取 (raw_content, content_lane, loop_id)。
 
-    - dict 含 raw_content → 新协议,取 raw_content + content_lane。
-    - str → 被 JSON 序列化的裸内容,content_lane=""(向后兼容)。
-    - 其他形态 → ("", ""),由调用方按空内容处理(extract 会显式失败)。
+    - dict 含 raw_content → 新协议,取 raw_content + content_lane + loop_id。
+    - str → 被 JSON 序列化的裸内容,content_lane=""、loop_id="loop1"(向后兼容)。
+    - 其他形态 → ("", "", "loop1"),由调用方按空内容处理(extract 会显式失败)。
     """
     if isinstance(payload, dict) and "raw_content" in payload:
-        return str(payload.get("raw_content", "")), str(payload.get("content_lane", ""))
+        return (
+            str(payload.get("raw_content", "")),
+            str(payload.get("content_lane", "")),
+            str(payload.get("loop_id") or "loop1"),
+        )
     if isinstance(payload, str):
-        return payload, ""
-    return "", ""
+        return payload, "", "loop1"
+    return "", "", "loop1"
 
 
 def main() -> int:
@@ -89,9 +93,11 @@ def main() -> int:
             print(_payload(False, {}, 0, "retake_no_change", diagnostics=diag))
         return 0
 
-    raw_content, content_lane = _decode_payload(payload)
+    raw_content, content_lane, loop_id = _decode_payload(payload)
     try:
-        result = extract_claims(raw_content, content_lane=content_lane)
+        result = extract_claims(
+            raw_content, content_lane=content_lane, loop_id=loop_id
+        )
     except BaseException as exc:
         print(_payload(False, {}, 0, f"extract_worker_uncaught: {exc}"))
         return 0

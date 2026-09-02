@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -205,6 +206,63 @@ class TestFiveGates:
         r2 = GateCheckResult(passed=False, gate_name="Gate-4", reason="lint findings")
         assert r2.passed is False
         assert "lint" in r2.reason
+
+    def test_gate_subprocess_nonzero_fails_closed(self, tmp_path, monkeypatch):
+        """Gate CLI non-zero exit must reject even with an active-looking stdout."""
+        import src.akb2.quality.promote as promote_mod
+
+        vault = tmp_path / "vault"
+        candidate = vault / "staging" / "candidate" / "batch" / "candidate.md"
+        candidate.parent.mkdir(parents=True)
+        candidate.write_text("---\npage_status: candidate\n---\n", encoding="utf-8")
+
+        monkeypatch.setattr(
+            promote_mod.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=7,
+                stdout="proposed_gate_decision: active\n"
+                "decision_confidence: high\n"
+                "graph_readiness: real_link\n",
+                stderr="gate crashed",
+            ),
+        )
+
+        passed, detail, parsed = promote_mod._run_gate_check(candidate, vault)
+
+        assert passed is False
+        assert "exit code 7" in detail
+        assert parsed == {}
+
+    def test_gate_parse_errors_fail_closed(self, tmp_path, monkeypatch):
+        """stdout parse_errors>0 即使 exit 0 也不得按 active 放行。"""
+        import src.akb2.quality.promote as promote_mod
+
+        vault = tmp_path / "vault"
+        candidate = vault / "staging" / "candidate" / "batch" / "candidate.md"
+        candidate.parent.mkdir(parents=True)
+        candidate.write_text("---\npage_status: candidate\n---\n", encoding="utf-8")
+
+        monkeypatch.setattr(
+            promote_mod.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "parse_errors: 1\n"
+                    "proposed_gate_decision: active\n"
+                    "decision_confidence: high\n"
+                    "graph_readiness: real_link\n"
+                ),
+                stderr="",
+            ),
+        )
+
+        passed, detail, parsed = promote_mod._run_gate_check(candidate, vault)
+
+        assert passed is False
+        assert "parse_errors=1" in detail
+        assert parsed == {}
 
     def test_empty_grader_path_returns_fail(self, gates_vault_root, monkeypatch):
         """grader_result_path 为 None 时闸 5 应 fail。"""
@@ -540,3 +598,22 @@ class TestGate0Provenance:
             candidate, gates_vault_root, grader_path
         )
         assert passed is True, f"应全过,实际 fail 于 {failed_name}: {reason}"
+
+    def test_non_string_source_url_fails_gate0(self, gates_vault_root):
+        """YAML 空值 / 非字符串 source_url 不得过 Gate-0。"""
+        from src.akb2.quality.promote import _check_source_provenance
+
+        candidate = (
+            gates_vault_root / "staging" / "candidate" / "test-batch" / "test-gates.md"
+        )
+        original = candidate.read_text(encoding="utf-8")
+        for bogus in ("[]", "{}", "123", "   ", "false", "null"):
+            candidate.write_text(
+                original.replace(
+                    "source_url: https://example.com/gates-test",
+                    f"source_url: {bogus}",
+                ),
+                encoding="utf-8",
+            )
+            ok, _msg = _check_source_provenance(candidate)
+            assert ok is False, bogus

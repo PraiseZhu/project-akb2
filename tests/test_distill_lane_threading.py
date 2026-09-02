@@ -159,14 +159,19 @@ class TestWorkerMainForwardsLane:
             retries_used = 0
             error = ""
 
-        def _fake_extract(raw_content, content_lane=""):
+        def _fake_extract(raw_content, content_lane="", **kwargs):
             captured["raw_content"] = raw_content
             captured["content_lane"] = content_lane
+            captured["loop_id"] = kwargs.get("loop_id")
             return _FakeResult()
 
         monkeypatch.setattr(distill_worker, "extract_claims", _fake_extract)
         payload = json.dumps(
-            {"raw_content": "some raw body", "content_lane": "concept"},
+            {
+                "raw_content": "some raw body",
+                "content_lane": "concept",
+                "loop_id": "loop2",
+            },
             ensure_ascii=False,
         )
         monkeypatch.setattr("sys.stdin", io.StringIO(payload))
@@ -175,6 +180,7 @@ class TestWorkerMainForwardsLane:
         assert rc == 0
         assert captured["raw_content"] == "some raw body"
         assert captured["content_lane"] == "concept", "worker 必须把 JSON 中的 lane 转给 extract_claims"
+        assert captured["loop_id"] == "loop2"
 
     def test_worker_main_backward_compat_json_string(
         self, monkeypatch: pytest.MonkeyPatch
@@ -188,9 +194,10 @@ class TestWorkerMainForwardsLane:
             retries_used = 0
             error = ""
 
-        def _fake_extract(raw_content, content_lane=""):
+        def _fake_extract(raw_content, content_lane="", **kwargs):
             captured["raw_content"] = raw_content
             captured["content_lane"] = content_lane
+            captured["loop_id"] = kwargs.get("loop_id")
             return _FakeResult()
 
         monkeypatch.setattr(distill_worker, "extract_claims", _fake_extract)
@@ -200,6 +207,7 @@ class TestWorkerMainForwardsLane:
         assert rc == 0
         assert captured["raw_content"] == "legacy raw text"
         assert captured["content_lane"] == ""
+        assert captured["loop_id"] == "loop1"
 
 
 class TestWorkerPayloadCarriesLane:
@@ -232,7 +240,9 @@ class TestWorkerPayloadCarriesLane:
 
         monkeypatch.setattr(runner.subprocess, "Popen", _fake_popen)
 
-        runner._run_extract_claims_worker("RAW BODY HERE", content_lane="tutorial")
+        runner._run_extract_claims_worker(
+            "RAW BODY HERE", content_lane="tutorial", loop_id="loop2"
+        )
 
         assert "input" in captured, "worker 应通过 stdin 传 payload"
         # 传的是 JSON payload（非裸 raw_content）
@@ -240,6 +250,7 @@ class TestWorkerPayloadCarriesLane:
         assert isinstance(payload, dict)
         assert payload["raw_content"] == "RAW BODY HERE"
         assert payload["content_lane"] == "tutorial", "payload 必须携 content_lane 穿过子进程边界"
+        assert payload["loop_id"] == "loop2"
 
 
 # ---------------------------------------------------------------------------

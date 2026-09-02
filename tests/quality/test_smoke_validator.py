@@ -14,7 +14,9 @@ import pytest
 
 from akb2.common.plist_parse import parse_plist_file
 from src.akb2.quality.smoke_validator import (
+    EXPECTED_GRADER_MODEL,
     SmokeValidationError,
+    _is_expected_grader_model,
     validate_distill_failure,
     validate_env_parity,
     validate_happy_path,
@@ -181,6 +183,14 @@ def _write_manifest(vault: Path, candidate: Path) -> None:
     _write_ledger(manifest, [record])
 
 
+def test_expected_grader_model_accepts_codex_alias() -> None:
+    assert _is_expected_grader_model("gpt-5.6-luna")
+    assert _is_expected_grader_model("codex/gpt-5.6-luna")
+    assert not _is_expected_grader_model("gpt-5.4")
+    assert not _is_expected_grader_model("attacker/gpt-5.6-luna")
+    assert not _is_expected_grader_model("attacker")
+
+
 def _write_grader_pass(vault: Path, candidate: Path) -> Path:
     grader = vault / "staging" / "grader-results" / f"{candidate.stem}.grader.json"
     grader.parent.mkdir(parents=True, exist_ok=True)
@@ -190,8 +200,8 @@ def _write_grader_pass(vault: Path, candidate: Path) -> Path:
                 "status": "PASS",
                 "dimensions_checked": 10,
                 "findings": [],
-                "model_used": "gpt-5.4",
-                "primary_model": "gpt-5.4",
+                "model_used": EXPECTED_GRADER_MODEL,
+                "primary_model": EXPECTED_GRADER_MODEL,
                 "fallback_used": False,
             },
             ensure_ascii=False,
@@ -347,7 +357,7 @@ def test_validate_distill_failure_rejects_downstream_grade(tmp_path: Path) -> No
                     "retries_used": 3,
                 },
             ),
-            _row("grade_llm", "grade_llm", {"model_used": "gpt-5.4"}),
+            _row("grade_llm", "grade_llm", {"model_used": EXPECTED_GRADER_MODEL}),
         ],
     )
 
@@ -374,7 +384,7 @@ def test_validate_happy_path_gate(tmp_path: Path) -> None:
                 "grade_llm",
                 "grade_llm",
                 {
-                    "model_used": "gpt-5.4",
+                    "model_used": EXPECTED_GRADER_MODEL,
                     "fallback_used": False,
                     "defect_count": 0,
                     "suspended": False,
@@ -414,7 +424,7 @@ def _happy_ledger(vault: Path) -> Path:
                 "grade_llm",
                 "grade_llm",
                 {
-                    "model_used": "gpt-5.4",
+                    "model_used": EXPECTED_GRADER_MODEL,
                     "fallback_used": False,
                     "defect_count": 0,
                     "suspended": False,
@@ -493,7 +503,7 @@ def test_validate_happy_path_normalizes_tmp_symlink_root(tmp_path: Path) -> None
                 "grade_llm",
                 "grade_llm",
                 {
-                    "model_used": "gpt-5.4",
+                    "model_used": EXPECTED_GRADER_MODEL,
                     "fallback_used": False,
                     "defect_count": 0,
                     "suspended": False,
@@ -530,7 +540,7 @@ def test_validate_happy_path_accepts_repaired_final_pass(tmp_path: Path) -> None
                 "grade_llm",
                 "grade_llm",
                 {
-                    "model_used": "gpt-5.4",
+                    "model_used": EXPECTED_GRADER_MODEL,
                     "fallback_used": False,
                     "defect_count": 0,
                     "initial_defect_count": 3,
@@ -566,7 +576,7 @@ def test_validate_happy_path_rejects_final_llm_defects(tmp_path: Path) -> None:
                 "grade_llm",
                 "grade_llm",
                 {
-                    "model_used": "gpt-5.4",
+                    "model_used": EXPECTED_GRADER_MODEL,
                     "fallback_used": False,
                     "defect_count": 1,
                     "suspended": False,
@@ -606,7 +616,7 @@ def test_validate_happy_path_rejects_grader_fallback(tmp_path: Path) -> None:
         ],
     )
 
-    with pytest.raises(SmokeValidationError, match="gpt-5.4"):
+    with pytest.raises(SmokeValidationError, match=EXPECTED_GRADER_MODEL):
         validate_happy_path(ledger, vault)
 
 
@@ -625,7 +635,7 @@ def test_validate_happy_path_rejects_missing_candidate_quality(tmp_path: Path) -
                 "grade_llm",
                 "grade_llm",
                 {
-                    "model_used": "gpt-5.4",
+                    "model_used": EXPECTED_GRADER_MODEL,
                     "fallback_used": False,
                     "defect_count": 0,
                     "suspended": False,
@@ -652,7 +662,7 @@ def test_validate_happy_path_rejects_non_proposal_mode(tmp_path: Path) -> None:
                 "grade_llm",
                 "grade_llm",
                 {
-                    "model_used": "gpt-5.4",
+                    "model_used": EXPECTED_GRADER_MODEL,
                     "fallback_used": False,
                     "defect_count": 0,
                     "suspended": False,
@@ -686,7 +696,7 @@ def test_validate_rejects_real_vault_paths(tmp_path: Path) -> None:
                 "grade_llm",
                 "grade_llm",
                 {
-                    "model_used": "gpt-5.4",
+                    "model_used": EXPECTED_GRADER_MODEL,
                     "fallback_used": False,
                     "defect_count": 0,
                     "suspended": False,
