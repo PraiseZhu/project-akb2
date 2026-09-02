@@ -1,0 +1,62 @@
+# loop2 X-wiki 直通链源册。不是 briefing 的 intake_sources.yaml。
+# wiki 层「list」是 config/main_sources.yaml 的 type: x_account（twitter user-posts），
+# 不得把 handle 塞进 list_id。loop2 list 通道只吃 twitter CLI 数字 List id。
+# owner 2026-09-02 给出 https://x.com/i/lists/2095025924823785762（AKB2，19 个 wiki x_account）。
+# 同日新建 3 个公开 List，成员与 AKB2 及彼此不重复：
+#   AKB2-AI-research  2095044167345037528  28 人（labs/研究者）
+#   AKB2-AI-builders  2095044647383171157  23 人（落地/harness）
+#   AKB2-design-eng   2095045077727105347   7 人（设计工程；后续加人被 X 403/104 拦住）
+# 四个 twitter list --json 均 ok:true 且有帖。
+version: 1
+defaults:
+  per_run_cap: 40
+  pacing_sec: 3.0
+  min_article_words: 400
+channels:
+  - channel: feed
+    slug: x-home-feed
+    enabled: true
+    per_run_cap: 40
+    topic_hint: []
+    prefilter_weight: 1.0
+    notes: "home feed"
+  - channel: bookmarks
+    slug: x-bookmarks
+    enabled: true
+    per_run_cap: 30
+    per_day_cap: 60
+    topic_hint: []
+    prefilter_weight: 1.0
+    notes: "X_BOOKMARKS_PER_DAY_CAP=60"
+  - channel: list
+    slug: x-wiki-list
+    list_id: "2095025924823785762"
+    enabled: true
+    per_run_cap: 40
+    topic_hint: []
+    prefilter_weight: 1.0
+    notes: "AKB2 https://x.com/i/lists/2095025924823785762 ; 19 wiki x_account"
+  - channel: list
+    slug: x-wiki-list-ai-research
+    list_id: "2095044167345037528"
+    enabled: true
+    per_run_cap: 40
+    topic_hint: []
+    prefilter_weight: 1.0
+    notes: "AKB2-AI-research https://x.com/i/lists/2095044167345037528"
+  - channel: list
+    slug: x-wiki-list-ai-builders
+    list_id: "2095044647383171157"
+    enabled: true
+    per_run_cap: 40
+    topic_hint: []
+    prefilter_weight: 1.0
+    notes: "AKB2-AI-builders https://x.com/i/lists/2095044647383171157"
+  - channel: list
+    slug: x-wiki-list-design
+    list_id: "2095045077727105347"
+    enabled: true
+    per_run_cap: 40
+    topic_hint: []
+    prefilter_weight: 1.0
+    notes: "AKB2-design-eng https://x.com/i/lists/2095045077727105347 ; 7 members after X 403/104"

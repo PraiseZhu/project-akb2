@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import subprocess
 import tempfile
@@ -44,6 +45,22 @@ def _docling_probe() -> None:
 
 MIN_CONTENT_LENGTH = 200  # 最小正文字数（保守下限，与页面声明核对）
 REQUIRED_METADATA_FIELDS = ("title", "author", "published", "url")
+# defuddle CLI 子进程超时。loop1 默认 30s 不动；loop2 intake 包装脚本用
+# AKB2_DEFUDDLE_TIMEOUT_S 覆盖。Mini 2026-09-01 remixicon.com 在 30s 被掐，
+# 随后 scrapling 也空 → intake failed。非法/≤0 回落到默认，禁止挂死。
+DEFUDDLE_TIMEOUT_S = 30
+DEFUDDLE_TIMEOUT_ENV = "AKB2_DEFUDDLE_TIMEOUT_S"
+
+
+def _defuddle_timeout_s() -> float:
+    raw = os.environ.get(DEFUDDLE_TIMEOUT_ENV, str(DEFUDDLE_TIMEOUT_S))
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return float(DEFUDDLE_TIMEOUT_S)
+    if value <= 0:
+        return float(DEFUDDLE_TIMEOUT_S)
+    return value
 
 # 反爬 / JS 重模式列表（defuddle 失败时检测）
 ANTI_BOT_PATTERNS = [
@@ -221,7 +238,7 @@ def _extract_via_defuddle(url: str, html: str | None = None) -> dict[str, Any]:
                 ["defuddle", "parse", source_arg, "--json", "-m"],
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=_defuddle_timeout_s(),
             )
         finally:
             if tmp_path:

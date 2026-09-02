@@ -237,6 +237,15 @@ step-2 量规外置正当升级 `skillpack/quality/rubric/10-dimensions.md`（�
 | 风险 | 入库断流告警能力仍为 0；pending 状态已由 `launchd/INSTALL-MANIFEST.yaml` 和 `scripts/verify-launchd-parity.sh` 显式报出，不再静默 |
 | 后续动作 | 保持人工确认注册的宪法边界；待 owner/人工批准后再安装，不由 agent 私自 bootstrap |
 
+### loop2 两触发器已在 Mini 通电：4 个 List 已开、S1 日历未完成（2026-09-02）
+
+| 项 | 值 |
+|----|----|
+| 影响 label | `com.akb2.loop2-intake`、`com.akb2.loop2-runner` |
+| 当前状态 | owner 2026-09-01 批准 Mini 通电；两 job 已加载。`x_sources.yaml` 现有 4 个启用 List：`2095025924823785762`（AKB2，19）、`2095044167345037528`（AI-research，28）、`2095044647383171157`（AI-builders，23）、`2095045077727105347`（design-eng，7；后续加人被 X 403/104 拦住）。四个 `twitter list --json` 均有帖。影子升格 `AKB2_LOOP2_SHADOW_PROMOTE=1`，不写 wiki |
+| 风险 | 计划下限 4 个 List 已齐，但 design-eng 只有 7 人；S1 三天观察日历今天起不完。loop1 并行保留，未归档 |
+| 后续动作 | 限流过后再补 design-eng 成员。S1/S2/S3 按日历走 |
+
 ---
 
 ### backstop 第二时段 11:00：模板已改，运行态待 owner 重装（2026-08-04 登记）

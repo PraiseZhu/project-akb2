@@ -114,6 +114,19 @@ class TestVerdict:
         assert v.verdict == VERDICT_HEALTHY
         assert v.is_alerting is False
 
+    def test_loop_id_filter_ignores_other_loop(self, tmp_path):
+        """loop2 影子跑只看 loop2 事件，不被 loop1 finalize 盖成 healthy。"""
+        loop1_ok = _ev("finalize", _hours_ago(2))
+        loop2_in = _ev("intake_raw", _hours_ago(3))
+        loop2_in["loop_id"] = "loop2"
+        ledger = _write_ledger(tmp_path / "l.jsonl", [loop1_ok, loop2_in])
+        all_loops = evaluate_ledger(ledger, now=NOW)
+        assert all_loops.verdict == VERDICT_HEALTHY
+        only2 = evaluate_ledger(ledger, now=NOW, loop_id="loop2")
+        assert only2.verdict == VERDICT_STALLED
+        assert only2.intake_count == 1
+        assert only2.finalize_count == 0
+
     def test_no_intake_is_degraded_verdict(self, tmp_path):
         """零 intake_raw ≠ 入库断流:排查现场不同,文案与排查入口都必须不同。
 

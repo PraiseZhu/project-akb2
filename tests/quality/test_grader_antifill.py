@@ -9,6 +9,7 @@ import pytest
 
 from src.akb2.quality.checks_structural import run_structural_checks
 from src.akb2.quality.grader import (
+    PRIMARY_GRADER_MODEL,
     RUBRIC_DIMENSIONS,
     run_grader_with_fixture,
 )
@@ -101,7 +102,7 @@ def anti_fill_grader_response() -> dict:
     - 适用边界: "适用于所有场景"无边界意识
     """
     return {
-        "gpt-5.4": LLMResponse(
+        PRIMARY_GRADER_MODEL: LLMResponse(
             content={
                 "dimensions": [
                     {
@@ -161,7 +162,7 @@ def anti_fill_grader_response() -> dict:
                     },
                 ]
             },
-            model_used="gpt-5.4",
+            model_used=PRIMARY_GRADER_MODEL,
             calls_used=1,
         ),
     }
@@ -193,7 +194,7 @@ class TestAntiFill:
         assert len(defects) > 0, (
             "Anti-fill page MUST be rejected by B layer. Got 0 defects."
         )
-        assert model_used == "gpt-5.4"
+        assert model_used == PRIMARY_GRADER_MODEL
 
         # 关键验证: 至少覆盖以下维度
         failed_dimensions = {d.dimension for d in defects}
@@ -286,14 +287,14 @@ Write ledger before executing — crash recovery reads last entry [raw §B].
 """
 
         all_pass = {
-            "gpt-5.4": LLMResponse(
+            PRIMARY_GRADER_MODEL: LLMResponse(
                 content={
                     "dimensions": [
                         {"dimension": dim, "pass": True, "defects": []}
                         for dim in RUBRIC_DIMENSIONS
                     ]
                 },
-                model_used="gpt-5.4",
+                model_used=PRIMARY_GRADER_MODEL,
                 calls_used=1,
             ),
         }

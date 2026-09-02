@@ -61,6 +61,15 @@ EVIDENCE_GAP_WORDS: tuple[str, ...] = (
     "没有",
     "未验证",
     "未比较",
+    "未说明",
+    "未交代",
+    "未列明",
+    "未列出",
+    "未给出",
+    "未解释",
+    "未披露",
+    "未明确",
+    "未指出",
 )
 
 _VALID_PROVENANCES = {"source_grounded", "akb_interpretation"}

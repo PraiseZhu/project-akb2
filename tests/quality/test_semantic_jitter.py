@@ -3,7 +3,7 @@
 覆盖：
 - SC-7.1: how_params segment 产 SEMANTIC_RETAKE_MAX 次取交集（具名常量=2）
 - SC-7.2: 交集为空/连续不一致达阈值 → fail-closed（有界，不无限重试）
-- SC-7.3: must_cover kind 仍三类；DISTILL_MODEL_FAMILY / PRIMARY_GRADER_MODEL 未变
+- SC-7.3: must_cover kind 仍三类；DISTILL_MODEL_FAMILY 仍 deepseek；PRIMARY_GRADER_MODEL 默认 luna
 - A1 默认关护栏: 默认不设 env 时 retake 关闭——单次 how_params（claims + how_params = 2 次
   调用）；仅当显式 AKB2_DISTILL_SEMANTIC_RETAKE=1 才开启 retake 取交集（3 次调用）
 - M2 字段透传: retake=1 时 _intersect_how_steps 透传首样本 mechanism_components/causal_edges
@@ -441,5 +441,5 @@ class TestBoundaryGuardrails:
         assert DISTILL_MODEL_FAMILY == "deepseek-v4-pro"
 
     def test_primary_grader_model_unchanged(self):
-        """SC-7.3: PRIMARY_GRADER_MODEL 仍为 gpt-5.4（checker 未改）。"""
-        assert PRIMARY_GRADER_MODEL == "gpt-5.4"
+        """SC-7.3: PRIMARY_GRADER_MODEL 默认为 gpt-5.6-luna（checker 换 luna，gemini 仍只诊断）。"""
+        assert PRIMARY_GRADER_MODEL == "gpt-5.6-luna"

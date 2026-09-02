@@ -259,18 +259,26 @@ def _fallback_parse(yaml_text: str) -> tuple[dict, list[str]]:
 # ---------------------------------------------------------------------------
 
 
+def _is_candidate_rel(rel: str | Path) -> bool:
+    """loop1 staging/candidate 与 loop2 staging-loop2/candidate 都算候选区。"""
+    parts = Path(rel).parts
+    if len(parts) < 2 or parts[1] != "candidate":
+        return False
+    return parts[0] in {"staging", "staging-loop2"}
+
+
 def guard_input_path(akb_root: Path, input_path: Path) -> None:
-    """只允许扫描 staging/candidate/ 下文件。"""
+    """只允许扫描 staging/candidate/ 或 staging-loop2/candidate/ 下文件。"""
     try:
         rel = input_path.resolve().relative_to(akb_root.resolve())
     except ValueError as err:
         raise SystemExit(
             f"input path '{input_path}' is not under akb_root '{akb_root}'"
         ) from err
-    parts = rel.parts
-    if len(parts) < 2 or parts[0] != "staging" or parts[1] != "candidate":
+    if not _is_candidate_rel(rel):
         raise SystemExit(
-            f"input path must be under staging/candidate/, got '{rel}'"
+            f"input path must be under staging/candidate/ or "
+            f"staging-loop2/candidate/, got '{rel}'"
         )
 
 
@@ -427,10 +435,10 @@ def is_process_alive(pid: int) -> bool:
 
 
 def check_candidate_only(rel_path: str) -> tuple[bool, str]:
-    """HC-01 candidate-only:文件必须在 staging/candidate/ 下。"""
-    if rel_path.startswith("staging/candidate/"):
-        return True, "in staging/candidate/"
-    return False, f"not under staging/candidate/: {rel_path}"
+    """HC-01 candidate-only:文件必须在 staging/candidate/ 或 staging-loop2/candidate/ 下。"""
+    if _is_candidate_rel(rel_path):
+        return True, "in candidate staging/"
+    return False, f"not under staging/candidate/ or staging-loop2/candidate/: {rel_path}"
 
 
 def check_page_status(fm: dict) -> tuple[bool, str]:

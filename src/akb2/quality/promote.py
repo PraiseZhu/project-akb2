@@ -1072,6 +1072,8 @@ def _write_ledger_event(
     node: str,
     content_hash: str = "",
     details: dict | None = None,
+    *,
+    loop_id: str = "loop1",
 ) -> bool:
     """落账事件到 quality-ledger.jsonl。"""
     try:
@@ -1084,7 +1086,7 @@ def _write_ledger_event(
     # finalize 事件 runner 看不到 → `_is_processed` 判"未处理" → 同一篇重复入库。
     ledger_path = _resolve_ledger_path(vault_root, "quality-ledger.jsonl")
     event = {
-        "loop_id": "loop1",
+        "loop_id": loop_id or "loop1",
         "node": node,
         "event": event_type,
         "content_hash": content_hash,
@@ -1098,6 +1100,8 @@ def run_promote(
     candidate_path: Path,
     vault_root: Path,
     grader_result_path: Path | None = None,
+    *,
+    loop_id: str = "loop1",
 ) -> tuple[bool, str, str | None]:
     """主入口：六闸判定（含 Gate-0 溯源），全过唯一终态 = 写 active。
 
@@ -1127,7 +1131,8 @@ def run_promote(
         # 落账 failure 事件
         _write_ledger_event(
             vault_root, "abort", "promote", candidate_hash,
-            {"failed_gate": failed_gate, "reason": gates_detail}
+            {"failed_gate": failed_gate, "reason": gates_detail},
+            loop_id=loop_id,
         )
         return False, f"Five gates failed at {failed_gate}: {gates_detail}", None
 
@@ -1145,7 +1150,8 @@ def run_promote(
                 "note": "修宪 2026-07-06:proposed_node_only 允许 auto-active,"
                         "概念落 pending 队列由图谱兜底链路补全",
                 "gates_detail": gates_detail,
-            }
+            },
+            loop_id=loop_id,
         )
 
     # 确定受影响文件列表
@@ -1193,7 +1199,8 @@ def run_promote(
             "mode": "active",
             "snapshot_id": snapshot_id,
             "gates_detail": gates_detail,
-        }
+        },
+        loop_id=loop_id,
     )
 
     # Step.4: 收尾
@@ -1208,7 +1215,8 @@ def run_promote(
                 "mode": "active",
                 "snapshot_id": snapshot_id,
                 "files_touched": len(touched),
-            }
+            },
+            loop_id=loop_id,
         )
         return True, f"Auto-promote success: {detail}", snapshot_id
     else:
@@ -1218,7 +1226,8 @@ def run_promote(
                 "mode": "active",
                 "snapshot_id": snapshot_id,
                 "reason": detail,
-            }
+            },
+            loop_id=loop_id,
         )
         return False, f"Auto-promote failed: {detail}", snapshot_id
 

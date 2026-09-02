@@ -1,33 +1,25 @@
 <!--
 Sync Impact Report
 ==================
-Version change: 1.1.0 → 1.2.0
-Bump rationale: MINOR — 重定义原则 8（实测价值裁决）入库判定子句 + 连带修订原则 6（黄金样张质量锚定）量规输出子句：
-由「入库一律硬 pass/fail、零分数」改为「完整性地板硬 pass/fail（不可补偿）+ 地板之上质量维度按车道感知量规加权过阈」。
-判 MINOR 非 MAJOR：原则名称与内核（调用数据裁决价值、禁排序滑坡）保留，完整性硬门不仅未删反而显式强化（新增不可补偿地板），
-仅放宽过严的「零分数」机制约束。属 borderline-MAJOR（反转一条 MUST NOT 子句），审查若需更高可见度可升 2.0.0。
-来源：2026-06-25/26 内容质量循环「内容类型分流」设计会话（concept/procedural 双车道 + 三级 how + 完整性地板/质量分双层）；
-正反样本验收（LangChain 概念正样本过、洗稿/清单水文/飘浮读后感负样本拒）。
+Version change: 1.2.0 → 1.2.1
+Bump rationale: PATCH — 原则 7 当前阵容型号行与运行时对齐：复核模型由 gpt-5.4 改为 gpt-5.6-luna（gemini-flash 仍只诊断不 PASS）。原则内核（异族分离 / 禁自评自批 / 禁 -preview）未改。
+来源：loop2 通电（_tmp/loop2-final-v1.1.md C4）。
 
 Principles:
-  1-5, 7 — 未改
-  6. 黄金样张质量锚定 — AMENDED（量规输出子句：禁「无定位分数」→ 允许加权质量分与缺陷清单并存，但不得以分数取代缺陷清单）
-  8. 实测价值裁决 — AMENDED（入库判定子句：单层硬门 → 完整性地板 + 车道感知加权质量分双层；新增「分数仅用于过阈、不用于排序」「权重/阈值落量规文件」；Rationale 补修订说明）
+  1-6, 8 — 未改
+  7. Maker/Checker 异族分离 — AMENDED（当前阵容型号行：gpt-5.4 → gpt-5.6-luna）
 
 Sections amended:
-  - Core Principles → 原则 6 量规输出子句、原则 8 入库子句 + Rationale
-  - 其余章节（自动化纪律 / 变更纪律 / Governance）— 未改
+  - Core Principles → 原则 7 当前阵容型号行
+  - Governance → Version / Last Amended
+  - 其余章节（自动化纪律 / 变更纪律）— 未改
 
 Files requiring follow-up sync:
-  - ⚠ skillpack/quality/rubric/10-dimensions.md — 量规须重写为车道感知（三级 how / 完整性地板 / 质量分权重 / 阈值），是原则 6+8 的执行细则；Plan 1 范围
-  - ⚠ src/akb2/quality/admission.py — 新增 content_lane 分类（concept/procedural）；Plan 1
-  - ⚠ src/akb2/quality/{distill,checks_structural,grader,repair}.py + runner.py — 按车道贯穿；Plan 1
-  - ⚠ docs/main-pipeline-golden-sample.md — 黄金样张沿用 addy-osmani（不另立概念样张）；需补车道说明 + LangChain 为概念车道验证案例 + A/B/C 负样本 fixture；Plan 1
-  - ✅ docs/loops-design-decisions.md — 分流设计与本修订一致
-  - ⚠ CLAUDE.md「治理约束」节 — 原则 6/8 摘要行需同步（Plan 1 内或本会话随后更新）
-  - n/a docs/allowed-residuals.md — 本次为正式修宪，非残差豁免，无需登记
+  - ✅ src/akb2/quality/grader.py — PRIMARY_GRADER_MODEL 默认 gpt-5.6-luna
+  - ✅ CLAUDE.md「治理约束」节 — 原则 7 摘要行已同步
+  - n/a docs/allowed-residuals.md — 本次为正式修宪 PATCH，非残差豁免
 
-Deferred TODOs: 权重数值与阈值待 Plan 1 落地写入量规文件；本宪法只定原则不定数值
+Deferred TODOs: 无
 -->
 
 # AKB2 Constitution
@@ -89,7 +81,7 @@ Rationale: 工程逻辑与知识库本体混写会让两者互相污染、难以
 Rationale: 设计期两次对账均抓出真实缺口（skill 包缺失、基座面三要素缺失）；没有机判锚点,「每一篇都和样张同级」只是愿望而非工程属性。
 
 ### Maker/Checker 异族分离 (Cross-Family Maker/Checker Separation)
-内容的生产者与质量裁决者 **MUST** 分离，且裁决模型 **MUST** 与生产模型来自不同厂商家族（当前阵容：deepseek-v4-pro 提炼 / gpt-5.4 复核 / gemini-flash 兜底）。
+内容的生产者与质量裁决者 **MUST** 分离，且裁决模型 **MUST** 与生产模型来自不同厂商家族（当前阵容：deepseek-v4-pro 提炼 / gpt-5.6-luna 复核 / gemini-flash 兜底）。
 
 - 任何机制 **MUST NOT** 自评自批：提炼模型不判自己达标；修宪提案者与通过者不得为同一 agent 会话；执行 agent 不自报完成（完成由独立验收判定）。
 - 7×24 管线 **MUST NOT** 使用 `-preview` 后缀模型（预览版的限流/改版/下线不受控，违反原则 4 的可见性要求）。
@@ -143,4 +135,4 @@ Rationale: 入库时预测的价值分数是猜测；调用数据是用户真实
 - **合规审查**：涉及循环、门控、入库、预算、vault 写入的变更，其 review 与 `/gd plan` 的 `Review 对齐` **MUST** 逐条核对本 constitution 的相关原则；违反项 **MUST** 在交付前修复或在 `docs/allowed-residuals.md` 登记豁免。
 - **边界备注**：vault 侧宪法（`AKB-2.0-CONTENT-STANDARD.md`）的修订（如不变量 3「没有自动 active」→ 五闸自动升格）**MUST** 走 vault 宪法自身的修订程序，本文件不替代之；两边修订 **MUST** 互相在 Sync Impact Report 中登记。
 
-**Version**: 1.2.0 | **Ratified**: 2026-06-10 | **Last Amended**: 2026-06-26
+**Version**: 1.2.1 | **Ratified**: 2026-06-10 | **Last Amended**: 2026-09-01

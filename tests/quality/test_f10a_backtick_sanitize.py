@@ -121,3 +121,57 @@ class TestF10AMechanismNarrativeNoBacktickPollution:
         assert cmd_violations == [], (
             f"叙述文本被误报为命令(反引号污染未消): {[v.command for v in cmd_violations]}"
         )
+
+
+class TestTldrTruncationDoesNotSpanHow:
+    def test_long_backtick_tldr_does_not_invent_cru_command(self):
+        """实跑 abort：TLDR 200 字截断切开 `--no-performance-crux`，How 下一处反引号
+        把残片收成 `--no-performance-cru | Add ...`。"""
+        from src.akb2.quality.distill import TLDR_MAX_CHARS, _build_body
+
+        long_flag = "`--no-performance-crux`"
+        filler = "chrome-devtools-mcp 让 Coding Agent 控制实时 Chrome。" * 8
+        extract = {
+            "claims": [
+                {
+                    "text": "chrome-devtools-mcp 是 MCP 服务器。",
+                    "anchor": "§A",
+                    "provenance": "source_grounded",
+                    "evidence_gap": "未提供对比",
+                }
+            ],
+            "how_steps": [
+                {
+                    "instruction": "Add Chrome DevTools MCP server to Amp using CLI",
+                    "command": "amp mcp add chrome-devtools -- npx chrome-devtools-mcp@latest",
+                    "executable": True,
+                    "anchor": "§A",
+                    "how_level": "H1",
+                    "provenance": "source_grounded",
+                }
+            ],
+            "mechanism_components": [],
+            "causal_edges": [],
+            "tldr": filler + " 可通过 " + long_flag + " 禁用 CrUX。",
+            "argumentation": [],
+            "referenced_concepts": [],
+            "applicability_boundary": "",
+            "graph_edges": [],
+        }
+        raw = (
+            "§A_CONTENT_START\n\n"
+            "chrome-devtools-mcp 是 MCP 服务器。可通过 --no-performance-crux 禁用。\n"
+            "amp mcp add chrome-devtools -- npx chrome-devtools-mcp@latest\n"
+        )
+        body = _build_body(
+            extract, "x.md", None, raw_content=raw, content_lane="tutorial"
+        )
+        tldr = body.split("## TLDR", 1)[1].split("## ", 1)[0]
+        assert len(tldr.strip()) <= TLDR_MAX_CHARS + 5
+        violations = verify_commands_in_raw(body, raw)
+        invented = [
+            v for v in violations
+            if "--no-performance-cru |" in getattr(v, "command", "")
+            or "Add Chrome DevTools MCP server to Amp" in getattr(v, "command", "")
+        ]
+        assert invented == [], [v.command for v in invented]

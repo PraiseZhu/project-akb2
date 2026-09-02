@@ -23,9 +23,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.akb2.quality.intake.extract import (
+    DEFUDDLE_TIMEOUT_ENV,
+    DEFUDDLE_TIMEOUT_S,
     MIN_CONTENT_LENGTH,
     ExtractMethod,
     ExtractResult,
+    _defuddle_timeout_s,
     _detect_anti_bot,
     _detect_pdf,
     batch_extract,
@@ -406,6 +409,24 @@ class TestConstants:
     def test_min_content_length(self):
         assert MIN_CONTENT_LENGTH == 200
 
+    def test_defuddle_timeout_default_is_30(self, monkeypatch):
+        """loop1 默认 30s；不得把共享抽取路径抬高成 loop2 值。"""
+        monkeypatch.delenv(DEFUDDLE_TIMEOUT_ENV, raising=False)
+        assert DEFUDDLE_TIMEOUT_S == 30
+        assert _defuddle_timeout_s() == 30.0
+
+    def test_defuddle_timeout_env_override(self, monkeypatch):
+        monkeypatch.setenv(DEFUDDLE_TIMEOUT_ENV, "90")
+        assert _defuddle_timeout_s() == 90.0
+
+    def test_defuddle_timeout_invalid_falls_back(self, monkeypatch):
+        monkeypatch.setenv(DEFUDDLE_TIMEOUT_ENV, "nope")
+        assert _defuddle_timeout_s() == 30.0
+        monkeypatch.setenv(DEFUDDLE_TIMEOUT_ENV, "0")
+        assert _defuddle_timeout_s() == 30.0
+        monkeypatch.setenv(DEFUDDLE_TIMEOUT_ENV, "-1")
+        assert _defuddle_timeout_s() == 30.0
+
 
 # ---------------------------------------------------------------------------
 # SC-2: _extract_via_defuddle 真实调用
@@ -464,6 +485,47 @@ class TestExtractViaDefuddle:
         # 空 HTML 时 defuddle 可能返回空 dict 或很少内容
         # 关键：不抛异常
         assert isinstance(result, dict)
+
+    def test_timeout_expired_returns_empty_dict(self, monkeypatch):
+        """defuddle 超时不得抛出；返回空 dict 让决策树落到 scrapling。"""
+        import subprocess
+
+        from src.akb2.quality.intake import extract as extract_mod
+
+        def boom(*_args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd=kwargs.get("args") or ["defuddle"], timeout=kwargs.get("timeout", 30))
+
+        monkeypatch.setattr(extract_mod.subprocess, "run", boom)
+        result = extract_mod._extract_via_defuddle("https://example.com/article", "<html><p>x</p></html>")
+        assert result == {}
+
+    def test_subprocess_uses_env_timeout(self, monkeypatch):
+        captured: dict[str, float] = {}
+
+        class FakeProc:
+            returncode = 0
+            stdout = json.dumps(
+                {
+                    "title": "T",
+                    "author": "A",
+                    "published": "2026-09-01",
+                    "content": "word " * 80,
+                    "wordCount": 80,
+                }
+            )
+            stderr = ""
+
+        def fake_run(*_args, **kwargs):
+            captured["timeout"] = kwargs["timeout"]
+            return FakeProc()
+
+        monkeypatch.setenv(DEFUDDLE_TIMEOUT_ENV, "90")
+        monkeypatch.setattr("src.akb2.quality.intake.extract.subprocess.run", fake_run)
+        from src.akb2.quality.intake.extract import _extract_via_defuddle
+
+        result = _extract_via_defuddle("https://example.com/article", "<html><p>x</p></html>")
+        assert captured["timeout"] == 90.0
+        assert result["title"] == "T"
 
 
 # ---------------------------------------------------------------------------

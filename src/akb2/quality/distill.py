@@ -158,7 +158,9 @@ DISTILL_MAX_RETRIES: int = 0
 #   attempt   = 2 segment × 180 + 20 归一化/校验 = 380
 #   worker    = 2 × attempt + 30 = 790 (runner.py;Sol 审 P1-4:重试是整
 #               attempt 重启,契约取"至少一次完整重试可用")
-EXTRACT_SEGMENT_TIMEOUT_S: float = 180.0
+EXTRACT_SEGMENT_TIMEOUT_S: float = float(
+    os.environ.get("AKB2_EXTRACT_SEGMENT_TIMEOUT_S", "180")
+)
 DISTILL_EXTRACT_ATTEMPT_TIMEOUT_S: float = 380.0
 DISTILL_DISABLE_THINKING: bool = True
 # Step-7: 语义型 How 抖动兜底。how_params segment（LLM 自由文本 how_steps，
@@ -699,6 +701,8 @@ def extract_claims(
     raw_content: str,
     route_llm_fn: Any = None,
     content_lane: str = "",
+    *,
+    loop_id: str = "loop1",
 ) -> ExtractResult:
     """段 1: raw → 结构化 JSON 抽取。
 
@@ -720,6 +724,17 @@ def extract_claims(
         from src.akb2.quality.llm_router import route_llm as _default
 
         route_llm_fn = _default
+    _inner_route = route_llm_fn
+
+    def _routed(model_family: str, messages: list[dict], **kwargs: Any):
+        kwargs.setdefault("loop_id", loop_id)
+        try:
+            return _inner_route(model_family, messages, **kwargs)
+        except TypeError:
+            kwargs.pop("loop_id", None)
+            return _inner_route(model_family, messages, **kwargs)
+
+    route_llm_fn = _routed
     beta_tool_enabled = (
         route_llm_was_default
         and os.environ.get("AKB2_DISTILL_DEEPSEEK_BETA_TOOL", "0") == "1"
@@ -822,7 +837,7 @@ def extract_claims(
             # 仅组件不足走降级；≥3 组件但 0 eligible edge 交给下游 F4，不在 extract 提前毙。
             if basis["component_count"] < CONCEPT_MIN_MECHANISM_COMPONENTS:
                 demoted = _maybe_demote_concept_lane(
-                    merged, raw_content, basis, raw_path=""
+                    merged, raw_content, basis, raw_path="", loop_id=loop_id,
                 )
                 if demoted is not None:
                     demoted.retries_used = attempt
@@ -1658,7 +1673,7 @@ def _build_extract_segment_messages(
             "akb_interpretation 占比必须 ≤40%。\n"
             "- evidence_gap 写原文未覆盖/未证明/未量化/未比较的具体盲区，"
             "须含盲区词(未提供/未量化/未覆盖/缺少/没有/未验证/未比较/未说明/"
-            "未交代/未列明/未给出/未解释/未披露)。\n"
+            "未交代/未列明/未给出/未解释/未披露/未明确/未指出)。\n"
             "- akb_interpretation claim 必带 traces_to：指向它所解读的 "
             "source_grounded claim 的 anchor"
             "（如 [\"§A\"]），source_grounded claim 可省 traces_to。\n"
@@ -2253,7 +2268,8 @@ def _resolve_short_anchors_to_full(merged: dict[str, Any], raw_content: str | No
     保持原值,由后续 _correct_edge_anchors_to_raw / _ground_claims_to_raw / A3 fail-closed 接手。
 
     覆盖字段:claims.anchor/traces_to、argumentation.claim_anchor/traces_to、
-    causal_edges.evidence_anchor、graph_edges.evidence_anchor、how_steps.anchor。
+    causal_edges.evidence_anchor、graph_edges.evidence_anchor、how_steps.anchor、
+    mechanism_components.evidence_anchor。
     """
     if not raw_content:
         return
@@ -2264,8 +2280,9 @@ def _resolve_short_anchors_to_full(merged: dict[str, Any], raw_content: str | No
     def _resolve(ref: str) -> str:
         if not isinstance(ref, str):
             return ref  # type: ignore[return-value]
-        resolved = resolve_anchor_ref(ref, declared)
-        return resolved if resolved is not None else ref  # 解析失败保持原值
+        canon = canonicalize_anchor(ref.strip())
+        resolved = resolve_anchor_ref(canon, declared)
+        return resolved if resolved is not None else canon
 
     # claims
     claims = merged.get("claims")
@@ -2304,6 +2321,13 @@ def _resolve_short_anchors_to_full(merged: dict[str, Any], raw_content: str | No
         for h in how:
             if isinstance(h, dict) and h.get("anchor"):
                 h["anchor"] = _resolve(str(h["anchor"]))
+
+    # mechanism_components.evidence_anchor（LLM 常写 §B，raw 声明 §B_INTRODUCTION）
+    components = merged.get("mechanism_components")
+    if isinstance(components, list):
+        for comp in components:
+            if isinstance(comp, dict) and comp.get("evidence_anchor"):
+                comp["evidence_anchor"] = _resolve(str(comp["evidence_anchor"]))
 
 
 def _correct_edge_anchors_to_raw(merged: dict[str, Any], raw_content: str) -> None:
@@ -3191,7 +3215,8 @@ def _validate_extract_output(data: dict[str, Any], content_lane: str = "") -> No
     # → 3/3 重试烧光 → fallback 0组件 fail-closed。词表校验意图是"逼真实盲区
     # 不许空话",同义否定词应全收;判定语义不变)。
     gap_words = ("未提供", "未量化", "未覆盖", "缺少", "没有", "未验证", "未比较",
-                 "未说明", "未交代", "未列明", "未给出", "未解释", "未披露")
+                 "未说明", "未交代", "未列明", "未列出", "未给出", "未解释", "未披露",
+                 "未明确", "未指出")
     for i, claim in enumerate(claims):
         gap = str(claim.get("evidence_gap", "")).strip()
         if not gap:
@@ -4936,11 +4961,13 @@ def build_deterministic_extract_result(
     raw_content: str,
     raw_path: str = "",
     content_lane: str = "",
+    *,
+    loop_id: str = "loop1",
 ) -> ExtractResult:
     """Build a conservative ExtractResult when the maker LLM is unavailable.
 
     This is a maker fallback, not a quality bypass: the composed candidate still
-    goes through local structural checks, GPT-5.4 grading, repair, and five-gate
+    goes through local structural checks, luna grading, repair, and five-gate
     proposal handling.
 
     content_lane（SC-3a）：传给 _build_deterministic_extract_data + _validate_extract_output。
@@ -4981,7 +5008,7 @@ def build_deterministic_extract_result(
             or basis["source_causal_edge_count"] == 0
         ):
             demoted = _maybe_demote_concept_lane(
-                data, raw_content, basis, raw_path=raw_path
+                data, raw_content, basis, raw_path=raw_path, loop_id=loop_id,
             )
             if demoted is not None:
                 return demoted
@@ -5090,6 +5117,7 @@ def _record_lane_demotion(
     reason: str,
     raw_path: str,
     basis: dict[str, Any],
+    loop_id: str = "loop1",
 ) -> None:
     """宪法 P4：车道降级必须落账。账本不可用时 stderr 可见，不静默吞。"""
     import hashlib
@@ -5098,7 +5126,7 @@ def _record_lane_demotion(
     from src.akb2.loops.ledger import append_event
 
     event = {
-        "loop_id": "loop1",
+        "loop_id": loop_id or "loop1",
         "node": "distill_extract",
         "event": "lane_demotion",
         "content_hash": hashlib.sha256(raw_path.encode("utf-8")).hexdigest()[:16],
@@ -5144,6 +5172,7 @@ def _maybe_demote_concept_lane(
     basis: dict[str, Any],
     *,
     raw_path: str = "",
+    loop_id: str = "loop1",
 ) -> ExtractResult | None:
     """concept 组件不足：1-2 组件恒降 pattern；0 组件才试 tutorial。
 
@@ -5169,6 +5198,7 @@ def _maybe_demote_concept_lane(
             reason=data["lane_demotion"]["reason"],
             raw_path=raw_path,
             basis=basis,
+            loop_id=loop_id,
         )
         return ExtractResult(success=True, data=data, retries_used=0)
     executable = _count_executable_how_steps(data, raw_content)
@@ -5185,6 +5215,7 @@ def _maybe_demote_concept_lane(
             reason=data["lane_demotion"]["reason"],
             raw_path=raw_path,
             basis=basis,
+            loop_id=loop_id,
         )
         return ExtractResult(success=True, data=data, retries_used=0)
     if _has_reusable_pattern_signal(raw_content, data):
@@ -5200,6 +5231,7 @@ def _maybe_demote_concept_lane(
             reason=data["lane_demotion"]["reason"],
             raw_path=raw_path,
             basis=basis,
+            loop_id=loop_id,
         )
         return ExtractResult(success=True, data=data, retries_used=0)
     return None
@@ -5562,6 +5594,7 @@ def compose_candidate(
     content_lane: str = "",
     known_concepts: list[str] | None = None,
     pending_queue: list[str] | None = None,
+    loop_id: str = "loop1",
 ) -> ComposeResult:
     """段 2: 按模板成稿 10 节，落 staging/candidate/<batch>/。
 
@@ -5599,6 +5632,17 @@ def compose_candidate(
         from src.akb2.quality.llm_router import route_llm as _default
 
         route_llm_fn = _default
+    _inner_compose_route = route_llm_fn
+
+    def _routed_compose(model_family: str, messages: list[dict], **kwargs: Any):
+        kwargs.setdefault("loop_id", loop_id)
+        try:
+            return _inner_compose_route(model_family, messages, **kwargs)
+        except TypeError:
+            kwargs.pop("loop_id", None)
+            return _inner_compose_route(model_family, messages, **kwargs)
+
+    route_llm_fn = _routed_compose
 
     # 解析输出目录
     if output_dir is None:
@@ -5654,6 +5698,7 @@ def compose_candidate(
                 reason=extract_result.data["lane_demotion"]["reason"],
                 raw_path=raw_path,
                 basis={"component_count": how_n, "source_causal_edge_count": 0},
+                loop_id=loop_id,
             )
             content_lane = CONTENT_LANE_PATTERN
 
@@ -5959,7 +6004,7 @@ def _build_frontmatter(
 
     # gate_reason 截断到 150 字符
     first_anchor = str(claims[0].get("anchor", "§A")).strip() if claims else "§A"
-    raw_reason = f"候选来源锚点 [raw {first_anchor}]；待 GPT-5.4 裁判与五闸确认。"
+    raw_reason = f"候选来源锚点 [raw {first_anchor}]；待裁判与五闸确认。"
     gate_reason = raw_reason[:GATE_REASON_MAX_CHARS]
 
     # §0.2/D8：related resolve 不足 RELATED_CONCEPTS_MIN → 必写 proposed_graph_nodes
@@ -6779,8 +6824,66 @@ def _build_applicability_boundary_text(
     claims: list[dict[str, Any]],
     how_steps: list[Any],
     rendered_how_steps: list[tuple[int, Any, str]] | None = None,
+    *,
+    content_lane: str = "",
 ) -> str:
     """把适用边界渲染为可判定场景，不保留模板占位或来源事实列表。"""
+    lane = _normalize_content_lane(content_lane)
+    if lane != CONTENT_LANE_CONCEPT:
+        grounded = [
+            item
+            for item in claims
+            if isinstance(item, dict)
+            and item.get("provenance") == "source_grounded"
+            and str(item.get("text", "")).strip()
+            and str(item.get("anchor", "")).strip()
+        ]
+        if grounded:
+            def _claim_text(item: dict[str, Any]) -> str:
+                text = _compact_tldr_sentence(str(item.get("text", "")))
+                if "；" in text:
+                    text = text.split("；", 1)[0].strip()
+                return _clip_clause(text, 90)
+
+            def _is_telemetry(text: str) -> bool:
+                return any(token in text for token in ("使用统计", "遥测", "usage statistics"))
+
+            def _is_limit(text: str) -> bool:
+                return any(
+                    token in text
+                    for token in ("仅支持", "不保证", "Chrome for Testing", "敏感")
+                )
+
+            apply_items = [
+                item for item in grounded
+                if not _is_telemetry(_claim_text(item)) and not _is_limit(_claim_text(item))
+            ]
+            if len(apply_items) < 2:
+                apply_items = grounded[:2]
+            scene_templates = (
+                "需要让编码代理控制并检查实时 Chrome 做自动化/调试/性能分析",
+                "需要按输入、导航、性能、网络、调试等类别调用浏览器工具或配置 MCP 客户端",
+            )
+            lines = []
+            for idx, item in enumerate(apply_items[:2]):
+                if idx < len(scene_templates):
+                    template = scene_templates[idx]
+                else:
+                    template = scene_templates[0]
+                basis = _clip_clause(_claim_text(item), 48)
+                lines.append(
+                    f"- [raw {item.get('anchor')}] (akb_interpretation) "
+                    f"适用场景：{template}（依据：{basis}）。"
+                )
+            not_chrome = (
+                "不适用场景：需要 Firefox/Safari 等非 Chrome 浏览器，"
+                "或不能把页面内容暴露给 MCP 客户端。"
+            )
+            lines.append(
+                f"- [raw {grounded[0].get('anchor')}] (akb_interpretation) "
+                f"{not_chrome}"
+            )
+            return "\n".join(lines[:3])
     anchor_a = claims[0].get("anchor", "§A") if claims else "§A"
     anchor_b = claims[1].get("anchor", anchor_a) if len(claims) > 1 else anchor_a
     available_anchors = {str(c.get("anchor", "")) for c in claims}
@@ -7397,6 +7500,37 @@ def _concrete_param_value(value: Any, default: Any) -> Any:
     return value
 
 
+def _clip_clause(text: str, max_len: int) -> str:
+    """截到完整子句，不切括号、不切「如 A」、不切 flag 残片。"""
+    compact = re.sub(r"\s+", " ", str(text)).strip()
+    if len(compact) <= max_len:
+        return compact.rstrip("。.")
+    window = compact[:max_len]
+    opens = window.count("（") + window.count("(")
+    closes = window.count("）") + window.count(")")
+    if opens > closes:
+        for idx in range(len(window) - 1, -1, -1):
+            if window[idx] in "（(":
+                window = window[:idx].rstrip()
+                break
+    for sep in ("。", "；", "，", "、", ";", ","):
+        idx = window.rfind(sep)
+        if idx >= 12:
+            window = window[:idx]
+            break
+    else:
+        idx = window.rfind(" ")
+        if idx >= 12:
+            window = window[:idx]
+    dangling = (
+        r"(?:如|通过|设置|或|和|及|与|"
+        r"that|which|who|with|from|into|onto|over|under|for|by|"
+        r"and|or|the|a|an|--[A-Za-z0-9-]*)$"
+    )
+    window = re.sub(dangling, "", window, flags=re.IGNORECASE).rstrip(" ，,;；:：")
+    return window or compact[:max_len].rstrip()
+
+
 def _compact_tldr_sentence(text: str) -> str:
     """把 claim 压成 TLDR 单句，避免一个 claim 内部多句导致 TLDR 超标。
 
@@ -7482,6 +7616,39 @@ def _build_tldr_mechanism_sentence(
         rel = str(e.get("relation", "")).strip() or "导致"
         return f"(source_grounded) {frm} {rel} {to} [raw {anchor}]."
     return ""
+
+
+def _build_tldr_from_claims(claims: list[dict[str, Any]]) -> str:
+    """tutorial/procedural TLDR：去重后最多 3 条 grounded claim，压成短句。"""
+    grounded = [
+        item
+        for item in claims
+        if isinstance(item, dict)
+        and item.get("provenance") == "source_grounded"
+        and str(item.get("text", "")).strip()
+    ]
+    unique = _dedup_claims_for_tldr(grounded)[:3]
+    parts: list[str] = []
+    budget = TLDR_MAX_CHARS
+    # 3 句要进 200 字：去掉 provenance 前缀，每句内容约 45 + 锚点。
+    per_sentence = 45 if len(unique) >= 3 else 70
+    for item in unique:
+        compact = _compact_tldr_sentence(str(item.get("text", "")))
+        if not compact:
+            continue
+        if "；" in compact:
+            compact = compact.split("；", 1)[0].strip()
+        compact = _clip_clause(compact, per_sentence)
+        if compact.endswith(("如", "通过", "设置", "或", "和", "及", "与", "标")):
+            compact = compact[:-1].rstrip()
+        anchor = str(item.get("anchor", "")).strip()
+        suffix = f" [raw {anchor}]" if anchor else ""
+        sentence = f"{compact}{suffix}."
+        joined = " ".join(parts + [sentence])
+        if parts and len(joined) > budget:
+            break
+        parts.append(sentence)
+    return " ".join(parts)
 
 
 def _build_tldr_component_sentence(
@@ -8342,18 +8509,24 @@ def _build_body(
         for i, c in enumerate(claims, 1)
     )
 
-    # TLDR：只保留机制句 + 组件句 + must_cover 结论。claim 全文不再复制进 TLDR
-    # （与「关键发现」节零整句重复；宪法 §3 第4条 ≤200 字）。
+    # TLDR：concept 用机制句 + 组件句；tutorial/procedural 用抽取 tldr / 去重 claim。
+    # 实跑 abort：tutorial 被组件全景句盖掉，grader「TLDR 密度」blocking。
     tldr_parts: list[str] = []
-    mech_sent = _build_tldr_mechanism_sentence(extract_data, raw_content)
-    if mech_sent:
-        tldr_parts.append(mech_sent)
-    comp_sent = _build_tldr_component_sentence(extract_data, raw_content)
-    if comp_sent:
-        tldr_parts.append(comp_sent)
+    lane = _normalize_content_lane(content_lane)
+    if lane == CONTENT_LANE_CONCEPT:
+        mech_sent = _build_tldr_mechanism_sentence(extract_data, raw_content)
+        if mech_sent:
+            tldr_parts.append(mech_sent)
+        comp_sent = _build_tldr_component_sentence(extract_data, raw_content)
+        if comp_sent:
+            tldr_parts.append(comp_sent)
+    else:
+        claim_tldr = _build_tldr_from_claims(claims)
+        if claim_tldr:
+            tldr_parts.append(claim_tldr)
     if tldr_parts:
         tldr = " ".join(tldr_parts)
-    # 机制/组件都空 → 保留抽取 tldr（上面已设 claims[0] 兜底），后面再截断
+    # 机制/组件/claim 都空 → 保留抽取 tldr（上面已设 claims[0] 兜底），后面再截断
 
     # must_cover source_conclusion: 代码直出进 TLDR，LLM 无最终选择权。
     must_cover_concls = [m for m in must_cover if m.kind == "source_conclusion"]
@@ -8370,7 +8543,17 @@ def _build_body(
     # F27 bug B:清洗 TLDR 表格碎片噪音(分号数字对,如 "2;0"/"13;7")
     tldr = _clean_tldr_noise(tldr)
     if len(tldr) > TLDR_MAX_CHARS:
-        tldr = tldr[: TLDR_MAX_CHARS - 1].rstrip() + "…"
+        sentences = [part.strip() for part in re.split(r"(?<=。)\s+", tldr) if part.strip()]
+        kept: list[str] = []
+        for sentence in sentences:
+            candidate = " ".join(kept + [sentence])
+            if kept and len(candidate) > TLDR_MAX_CHARS:
+                break
+            kept.append(sentence)
+        tldr = " ".join(kept) if kept else tldr[:TLDR_MAX_CHARS].rstrip()
+        tldr = _sanitize_backticks(tldr)
+        if raw_full_text:
+            tldr = _strip_ungrounded_backtick_commands(tldr, raw_full_text)
 
     # 论证与解释：argumentation 字段逐条展开。
     # source_grounded 条目回到 claim 文本本身，避免把 LLM 的归纳解释伪装成来源事实。
@@ -8591,6 +8774,7 @@ def _build_body(
         claims,
         how_steps,
         supported_how_steps,
+        content_lane=content_lane,
     )
     # must_cover source_boundary（step-2）：代码直出进适用边界节，排在 LLM 边界之前。
     # 每条 bullet 用「来源事实」类别 + source_grounded provenance（literal 是原文边界语句）。

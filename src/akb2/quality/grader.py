@@ -1,6 +1,6 @@
 """B 层评分器 — 车道量规 LLM 评分（每车道 4–5 加权维 + 全车道 4 项地板），输出可定位缺陷清单。
 
-裁决模型: GPT-5.4（经 llm_router），兜底 gemini-flash。
+裁决模型: gpt-5.6-luna（经 llm_router），兜底 gemini-flash（只诊断不 PASS）。
 量规文本: 从 skillpack/quality/rubric/ 读取，版本化。
 
 intake-rebuild p4：旧 10/7 维集退役——加权维每车道 4–5 项（rubric.yaml lanes 派生），
@@ -9,8 +9,8 @@ intake-rebuild p4：旧 10/7 维集退役——加权维每车道 4–5 项（ru
 核心约束:
     - FR-005: A 全过才调 B（调用方保证，本模块不自我检查）
     - FR-006: 缺 location 的缺陷条目整批拒收
-    - FR-008: GPT-5.4 不可用切 gemini-flash；两者皆不可用挂起不放行
-    - P7: Maker/Checker 异族分离 — 提炼用 DeepSeek，评分用 GPT-5.4
+    - FR-008: gpt-5.6-luna 不可用切 gemini-flash；两者皆不可用挂起不放行
+    - P7: Maker/Checker 异族分离 — 提炼用 DeepSeek，评分用 gpt-5.6-luna
 
 输出: Defect 清单（与 checks_structural.py 的 Defect 同构）
 """
@@ -46,10 +46,12 @@ RUBRIC_FILE = "10-dimensions.md"
 RUBRIC_SPEC_FILE = "rubric.yaml"
 
 # 评分模型阵容
-# F10-D: AKB2_GRADER_FAMILY env 覆盖(默认 gpt-5.4 不变;A/B 双臂对比用)。
+# F10-D: AKB2_GRADER_FAMILY env 覆盖(默认 gpt-5.6-luna;A/B 双臂对比用)。
 # -preview 模型由 llm_router._validate_model_family 在调用时拒(7×24 禁 -preview 不变)。
-PRIMARY_GRADER_MODEL = os.environ.get("AKB2_GRADER_FAMILY", "gpt-5.4")
+# FALLBACK_GRADER_MODEL 保持 gemini-flash：只诊断、不作为 PASS（宪法 P7）。
+PRIMARY_GRADER_MODEL = os.environ.get("AKB2_GRADER_FAMILY", "gpt-5.6-luna")
 FALLBACK_GRADER_MODEL = "gemini-flash"
+GRADER_REASONING_EFFORT = "medium"
 
 # 预算
 MAX_GRADER_RETRIES = 2  # 评分重试次数（解析失败时）

@@ -130,6 +130,21 @@ class TestEvidenceHonesty:
         r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
         assert FLOOR_EVIDENCE_HONESTY in r.failed_floors
 
+    def test_pass_gap_weimingque(self):
+        """实跑句「原文未明确说明…」须被地板盲区词收下。"""
+        d = _concept_pass_extract()
+        for c in d["claims"]:
+            c["evidence_gap"] = "原文未明确说明目标用户群"
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
+        assert FLOOR_EVIDENCE_HONESTY not in r.failed_floors
+
+    def test_pass_gap_weiliechu(self):
+        d = _concept_pass_extract()
+        for c in d["claims"]:
+            c["evidence_gap"] = "原文未列出对 Firefox 的支持计划"
+        r = evaluate_integrity_floor(d, "concept", raw_anchors={"§A", "§B"})
+        assert FLOOR_EVIDENCE_HONESTY not in r.failed_floors
+
 
 # ----------------------------- ③ interpretation_traceability (层①) ----------------------------- #
 

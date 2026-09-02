@@ -75,6 +75,25 @@ def test_gate_module_size_nonzero(gate_path: Path):
     )
 
 
+def test_loop2_candidate_path_is_allowed(tmp_path: Path):
+    """实跑 shadow_blocked：gate CLI 拒 staging-loop2/candidate，proposed 变空。"""
+    from src.akb2.gate.akb2_gate_check import (
+        check_candidate_only,
+        guard_input_path,
+    )
+
+    vault = tmp_path / "vault"
+    candidate = vault / "staging-loop2" / "candidate" / "batch" / "x.md"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_text("# t\n", encoding="utf-8")
+    guard_input_path(vault, candidate)
+    ok, reason = check_candidate_only(
+        "staging-loop2/candidate/batch/x.md"
+    )
+    assert ok is True
+    assert "candidate" in reason
+
+
 def test_query_result_gate_pass(repo_root: Path):
     """query-result candidate with valid fields should pass gate (exit 0)."""
     import subprocess

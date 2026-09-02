@@ -74,7 +74,7 @@ test q1?
 def gpt54_pass_response() -> dict:
     """GPT-5.4 全 pass 响应。"""
     return {
-        "gpt-5.4": LLMResponse(
+        PRIMARY_GRADER_MODEL: LLMResponse(
             content={
                 "dimensions": [
                     {
@@ -104,7 +104,7 @@ def gpt54_pass_response() -> dict:
                     },
                 ]
             },
-            model_used="gpt-5.4",
+            model_used=PRIMARY_GRADER_MODEL,
             calls_used=1,
         ),
     }
@@ -143,7 +143,7 @@ class TestGraderFallback:
         )
 
         assert not suspended
-        assert model_used == "gpt-5.4"
+        assert model_used == PRIMARY_GRADER_MODEL
         assert len(defects) == 0
 
     def test_fallback_to_gemini(self, candidate_page, gemini_flash_pass_response):

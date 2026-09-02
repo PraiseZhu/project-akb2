@@ -283,6 +283,7 @@ class RunnerConfig:
     # 全部分片（单机形态，向后兼容）。shard_takeover=None → 读 env（默认关）。
     shard_spec: str = ""
     shard_takeover: bool | None = None
+    lock_name: str = ""
     owned_shards: frozenset[int] | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -680,7 +681,7 @@ def _check_cross_machine_safety(config: RunnerConfig) -> bool:
 
 def _lock_file_path(config: RunnerConfig) -> Path:
     """处理锁文件路径。"""
-    return Path(config.lock_dir) / PROCESSING_LOCK_NAME
+    return Path(config.lock_dir) / (config.lock_name or PROCESSING_LOCK_NAME)
 
 
 def _read_lock_holder(lock_file: Path) -> dict | None:
@@ -848,6 +849,8 @@ def _log_event(
     node: str,
     content_hash: str,
     details: dict | None = None,
+    *,
+    loop_id: str = "loop1",
 ) -> bool:
     """记录一条账本事件。"""
     try:
@@ -856,7 +859,7 @@ def _log_event(
         return False
 
     entry: dict[str, Any] = {
-        "loop_id": "loop1",
+        "loop_id": loop_id or "loop1",
         "node": node,
         "event": event,
         "content_hash": content_hash,
@@ -1165,6 +1168,8 @@ def _run_admission_segment(
     wiki_references: list[str] | None = None,
     index_status: str = LANE_INDEX_STATUS_OK,
     content_hash: str = "",
+    *,
+    loop_id: str = "loop1",
 ) -> tuple[bool, str, list, str, str, bool]:
     """段 2: 准入判定（Decision-2：装载 vault wiki_references 喂 novelty）。
 
@@ -1212,6 +1217,7 @@ def _run_admission_segment(
         raw_content=raw_content,
         ledger_path=config.ledger_path,
         wiki_references=wiki_references,
+        loop_id=loop_id,
     )
     return (
         result.passed,
@@ -2060,6 +2066,8 @@ def _run_promote_segment(
     candidate_path: str,
     config: RunnerConfig,
     grader_result_path: Path | None = None,
+    *,
+    loop_id: str = "loop1",
 ) -> tuple[bool, str, str]:
     """段 7: 升格。
 
@@ -2078,6 +2086,7 @@ def _run_promote_segment(
         candidate_path=cpath,
         vault_root=vault_root,
         grader_result_path=grader_result_path,
+        loop_id=loop_id,
     )
 
     # 写路径权威在 promote.py：六闸全过唯一终态 = 写 active，
