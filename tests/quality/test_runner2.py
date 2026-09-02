@@ -230,6 +230,7 @@ def test_runner2_uses_extract_worker_and_maker_fallback():
     assert "loop_id=LOOP2_LOOP_ID" in maker
     assert '"model_used"' in text
     assert "maker_fallback_used" in text
+    assert 'extract_result.data or {}).get("content_lane")' in maker
     assert "loop_id=LOOP2_LOOP_ID" in text.split("def main", 1)[1]
 
 
@@ -301,6 +302,88 @@ def test_llm_gateway_429_carries_loop_id():
     assert 'loop_id: str = "loop1"' in fn
     assert '"loop_id": loop_id or "loop1"' in fn
     assert "loop_id=loop_id" in text.split("if diagnostics.provider_code == PROVIDER_CODE_429", 1)[1][:800]
+
+
+def test_runner2_fixpoint_follows_compose_demoted_lane(tmp_path: Path, monkeypatch):
+    """compose 把 tutorial 降成 pattern 后，fixpoint 不得再按 tutorial 卡 SG-how-density。"""
+    from types import SimpleNamespace
+
+    from src.akb2.quality import runner2 as r2
+    from src.akb2.quality.runner import RunnerConfig
+
+    captured: dict[str, str] = {}
+
+    class _Extract:
+        success = True
+        error = ""
+        retries_used = 0
+        data = {"content_lane": "tutorial", "how_steps": [{"text": "one"}]}
+
+    def fake_compose(extract_result, raw_path, batch_id, **kwargs):
+        extract_result.data["content_lane"] = "pattern"
+        cand = tmp_path / "cand.md"
+        cand.write_text("---\ncontent_lane: pattern\n---\n# body\n", encoding="utf-8")
+        return SimpleNamespace(
+            success=True,
+            error="",
+            candidate_path=str(cand),
+            frontmatter={"content_lane": "pattern"},
+        )
+
+    monkeypatch.setattr(
+        r2.loop1_runner, "_run_extract_claims_worker", lambda *a, **k: _Extract()
+    )
+    monkeypatch.setattr(
+        r2,
+        "fulfill_extract_contract",
+        lambda data, raw, content_lane="concept": SimpleNamespace(
+            floor_passed=True,
+            floor_reason="",
+            extract_data=data,
+            fabricated=False,
+            unanchored=[],
+        ),
+    )
+    monkeypatch.setattr("src.akb2.quality.distill.compose_candidate", fake_compose)
+    monkeypatch.setattr(
+        r2,
+        "maker2_compose_candidate",
+        lambda frontmatter, body, candidate_path=None, write=False: SimpleNamespace(
+            success=True,
+            error="",
+            page_text="---\ncontent_lane: pattern\n---\n# body\n",
+            frontmatter=frontmatter,
+            frontmatter_degraded=False,
+        ),
+    )
+
+    def fake_fixpoint(page_text, **kwargs):
+        captured["content_lane"] = kwargs["content_lane"]
+        return SimpleNamespace(success=True, text=page_text, rounds=0, reason="")
+
+    monkeypatch.setattr(r2, "run_fixpoint", fake_fixpoint)
+
+    config = RunnerConfig(
+        raw_dir=str(tmp_path),
+        ledger_path=str(tmp_path / "quality-ledger.jsonl"),
+        staging_dir=str(tmp_path),
+        vault_root=str(tmp_path),
+        failures_path=str(tmp_path / "failures.jsonl"),
+        grader_result_dir=str(tmp_path),
+    )
+    raw = tmp_path / "raw.md"
+    raw.write_text("body", encoding="utf-8")
+    ok, _path, err, _text, meta = r2._run_maker2_segments(
+        str(raw),
+        "body",
+        config,
+        content_lane="tutorial",
+        known_concepts=[],
+        pending_queue=[],
+    )
+    assert ok is True, err
+    assert captured["content_lane"] == "pattern"
+    assert meta["content_lane"] == "pattern"
 
 
 def test_shadow_path_skips_run_promote():

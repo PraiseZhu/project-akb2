@@ -122,6 +122,7 @@ EXIT_OK = 0
 EXIT_ARG_ERROR = 1
 EXIT_GUARD_VIOLATION = 2  # 越权写入风险 / manifest 写失败
 EXIT_LIVE_LOCK = 3  # 活锁拒绝
+EXIT_PARSE_ERROR = 4  # frontmatter 严格解析失败（含 fallback）
 
 
 # ---------------------------------------------------------------------------
@@ -889,6 +890,11 @@ def cmd_check(args: argparse.Namespace) -> int:
         for path, errs in parse_errors:
             print(f"  {path}: {errs}")
         print()
+        sys.stderr.write(
+            f"ERROR: {len(parse_errors)} frontmatter parse error(s); "
+            "refusing successful gate exit\n"
+        )
+        return EXIT_PARSE_ERROR
     print("## per-candidate proposals")
     for r in records:
         print(f"  {r['candidate_path']}")

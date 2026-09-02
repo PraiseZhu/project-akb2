@@ -214,6 +214,14 @@ def _run_maker2_segments(
         )
     page_text = budgeted.page_text or candidate_path.read_text(encoding="utf-8")
 
+    # compose 也可能再降（tutorial 命令不足 → pattern）；fixpoint / 评分段跟终值。
+    content_lane = str(
+        (extract_result.data or {}).get("content_lane")
+        or (budgeted.frontmatter or {}).get("content_lane")
+        or content_lane
+        or ""
+    )
+
     fix = run_fixpoint(
         page_text,
         raw_content=raw_content,

@@ -114,6 +114,23 @@ class TestVerdict:
         assert v.verdict == VERDICT_HEALTHY
         assert v.is_alerting is False
 
+    def test_shadow_finalize_does_not_claim_healthy(self, tmp_path):
+        """loop2 shadow finalize is bookkeeping, not an active promotion."""
+        ledger = _write_ledger(
+            tmp_path / "l.jsonl",
+            [
+                _ev("intake_raw", _hours_ago(2)),
+                {
+                    **_ev("finalize", _hours_ago(1)),
+                    "details": {"mode": "shadow", "gates_ok": False},
+                },
+            ],
+        )
+        v = evaluate_ledger(ledger, now=NOW)
+        assert v.verdict == VERDICT_STALLED
+        assert v.finalize_count == 0
+        assert v.last_finalize_ts is None
+
     def test_loop_id_filter_ignores_other_loop(self, tmp_path):
         """loop2 影子跑只看 loop2 事件，不被 loop1 finalize 盖成 healthy。"""
         loop1_ok = _ev("finalize", _hours_ago(2))

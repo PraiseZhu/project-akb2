@@ -23,6 +23,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 # ---------------------------------------------------------------------------
 # 路径常量
 # ---------------------------------------------------------------------------
@@ -40,6 +42,9 @@ _SNAPSHOTS_DIR = _PROJECT_ROOT / "snapshots"
 GATE_SUBPROCESS_TIMEOUT_SEC = 120
 LINT_SUBPROCESS_TIMEOUT_SEC = 60
 SNAPSHOT_MAX_COUNT = 50  # FR-015: 前 50 条快照
+_EMPTY_SOURCE_URL_TOKENS = frozenset(
+    {"", "null", "~", "none", "nil", "false", "true", "0"}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -110,8 +115,16 @@ def _run_gate_check(
             {},
         )
 
+    parse_err_match = re.search(r"^parse_errors:\s*(\d+)\s*$", stdout, re.M)
+    if parse_err_match and int(parse_err_match.group(1)) > 0:
+        return (
+            False,
+            f"gate CLI reported parse_errors={parse_err_match.group(1)}",
+            {},
+        )
+
     if stderr.strip():
-        # gate CLI 可能输出非致命 stderr（如 parse errors）
+        # gate CLI 可能输出非致命 stderr；parse_errors 已按 stdout 计数 fail-closed
         pass
 
     # 解析 proposed_gate_decision
@@ -225,11 +238,19 @@ def _check_source_provenance(candidate_path: Path) -> tuple[bool, str]:
     m = re.match(r"^---\n(.*?)\n---\n", text, re.DOTALL)
     if not m:
         return False, "candidate has no frontmatter"
-    url_match = re.search(r"^source_url:\s*(.*)$", m.group(1), re.M)
-    if not url_match:
+    try:
+        data = yaml.safe_load(m.group(1))
+    except yaml.YAMLError as exc:
+        return False, f"candidate frontmatter is not valid YAML: {exc}"
+    if not isinstance(data, dict):
+        return False, "candidate frontmatter is not a mapping"
+    if "source_url" not in data:
         return False, "source_url missing from candidate frontmatter"
-    value = url_match.group(1).strip().strip("'\"")
-    if not value or value.lower() in {"null", "~", "none", "nil", "false", "true", "0"}:
+    raw_value = data.get("source_url")
+    if raw_value is None or isinstance(raw_value, (bool, int, float, list, dict)):
+        return False, "source_url is empty in candidate frontmatter"
+    value = str(raw_value).strip()
+    if not value or value.lower() in _EMPTY_SOURCE_URL_TOKENS:
         return False, "source_url is empty in candidate frontmatter"
     return True, f"source_url={value}"
 

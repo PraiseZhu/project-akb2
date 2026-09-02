@@ -109,7 +109,7 @@ class TestConsumerBehavior:
                 ok, msg = _check_source_provenance(cand)
                 assert ok is True
                 assert "source_url" in msg
-                for bogus in ("null", "~", "false", "0", "None"):
+                for bogus in ("null", "~", "false", "0", "None", "[]", "{}", "123"):
                     cand.write_text(_raw_md(bogus), encoding="utf-8")
                     ok_bogus, _msg = _check_source_provenance(cand)
                     assert ok_bogus is False, bogus

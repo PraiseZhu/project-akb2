@@ -113,6 +113,30 @@ def test_query_result_gate_pass(repo_root: Path):
     assert "HC-05" not in result.stdout or "skipped" in result.stdout
 
 
+def test_parse_errors_exit_nonzero(tmp_path: Path):
+    """严格 YAML 失败即使 fallback 抽出字段，也不得 exit 0。"""
+    from argparse import Namespace
+
+    from src.akb2.gate.akb2_gate_check import EXIT_PARSE_ERROR, cmd_check
+
+    vault = tmp_path / "vault"
+    cand = vault / "staging" / "candidate" / "bad.md"
+    cand.parent.mkdir(parents=True)
+    cand.write_text(
+        "---\npage_status: candidate\nsource_authors: @nathansobo\n---\n# t\n",
+        encoding="utf-8",
+    )
+    rc = cmd_check(
+        Namespace(
+            akb_root=str(vault),
+            input="staging/candidate/bad.md",
+            date="2026-09-02",
+            write_manifest=False,
+        )
+    )
+    assert rc == EXIT_PARSE_ERROR
+
+
 def test_query_result_template_type_in_enum(gate_source: str):
     """TEMPLATE_TYPE_ENUM must include 'query-result'."""
     assert '"query-result"' in gate_source or "'query-result'" in gate_source, (
