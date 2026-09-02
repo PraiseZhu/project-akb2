@@ -37,6 +37,7 @@ import time
 import zoneinfo
 from pathlib import Path
 
+from akb2.briefing.audit import _requires_chinese  # noqa: E402
 from akb2.briefing.audit_fix import run_audit_fix_loop  # noqa: E402
 from akb2.briefing.translate import translate_briefing  # noqa: E402
 
@@ -890,6 +891,49 @@ def build_temp_briefing_markdown(
     return frontmatter + "\n" + body
 
 
+def _drop_untranslated_after_budget(synth: dict) -> dict:
+    """预算耗尽后剪掉未译推文，避免 audit 因英文残留整份拒发。
+
+    2026-09-02：translate time_budget 耗尽，tweets[23].core_excerpt 仍是英文，
+    standard=fail → 当天 Social 空。S-4 只把耗尽原因落盘，没把未译条目移出
+    展示集。分析字段（摘要/主题）仍走 fail-closed，这里只剪推文。
+
+    不限于当前展示集：剪完后未译高分推文会被提成新孤儿，audit 仍 fail。
+    判定跟 audit 同一套：text/core_excerpt 无中文，或展示所需 zh_point 缺失。
+    """
+    import copy
+
+    if not synth.get("translate_budget_exhausted"):
+        return synth
+
+    tweets = synth.get("tweets") or []
+    drop_idx: set[int] = set()
+
+    for i, tw in enumerate(tweets):
+        text = (tw.get("text") or "").strip()
+        core = (tw.get("core_excerpt") or "").strip()
+        zh_point = (tw.get("zh_point") or "").strip()
+        if _requires_chinese(text) or _requires_chinese(core) or not zh_point:
+            drop_idx.add(i)
+
+    if not drop_idx:
+        return synth
+
+    result = copy.deepcopy(synth)
+    kept = [tw for i, tw in enumerate(result.get("tweets") or []) if i not in drop_idx]
+    kept_ids = {str(tw.get("id", "")) for tw in kept if tw.get("id") is not None}
+    result["tweets"] = kept
+    for fd in result.get("focus_discussions") or []:
+        ids = fd.get("supporting_tweet_ids") or []
+        fd["supporting_tweet_ids"] = [tid for tid in ids if str(tid) in kept_ids]
+    dropped = sorted(drop_idx)
+    sys.stderr.write(
+        "WARNING [pipeline]: translate 预算耗尽，剪掉未译展示推文 "
+        f"{dropped}，保留 {len(kept)} 条以免 audit 整份拒发\n"
+    )
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
@@ -1124,6 +1168,7 @@ def main(argv: list[str] | None = None) -> int:
             "WARNING [pipeline]: translate 总预算耗尽"
             f"（{translate_budget_exhausted}）——未翻译条目见 translate_failed_fields\n"
         )
+        synth_zh = _drop_untranslated_after_budget(synth_zh)
 
     stage_start = time.monotonic()
     _stage_log("audit_fix", "start")

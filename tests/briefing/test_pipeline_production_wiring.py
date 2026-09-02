@@ -309,6 +309,88 @@ def test_translate_failed_fields_land_in_frontmatter(tmp_path):
 # S-4 翻译总预算耗尽必须落盘
 # ---------------------------------------------------------------------------
 
+def test_budget_exhausted_untranslated_tweets_must_not_block_publish(tmp_path):
+    """生产事故 2026-09-02：translate 预算耗尽后未译条目仍留在展示集，
+    真实 audit 因 core_excerpt/text 无中文判 fail，整份不入库。
+
+    S-4 旧测试把 audit 替身成 pass，测不到这条路径。这里走真实
+    run_audit_fix_loop + 代码标准检查；LLM 审计跳过。已译部分必须降级发布。
+    """
+    from akb2.briefing import pipeline as pl
+    from akb2.briefing.audit_fix import run_audit_fix_loop
+
+    _vault(tmp_path)
+    tweets = [
+        _tweet("100", score=0.95),
+        _tweet("200", "@ylecun", 0.90),
+        _tweet("300", "@karpathy", 0.85),
+    ]
+
+    def budget_exhausted_translate(synth, **kwargs):
+        out = json.loads(json.dumps(synth))
+        # 前两条已译（保留原文数字，避免 number_mismatch）；第 3 条预算耗尽留英文
+        out["tweets"][0]["text"] = "推文 100 关于 AI 智能体。"
+        out["tweets"][0]["zh_point"] = "记忆工具值得关注。"
+        out["tweets"][1]["text"] = "推文 200 关于 AI 智能体。"
+        out["tweets"][1]["zh_point"] = "持久记忆技术突破。"
+        out["tweets"][2]["text"] = (
+            "Brilliant paper on reducing reward hacking in agents. "
+            "If you care about alignment this is required reading for the week."
+        )
+        out["tweets"][2]["core_excerpt"] = (
+            "Brilliant paper on reducing reward hacking in agents."
+        )
+        out["translate_degraded"] = True
+        out["translate_budget_exhausted"] = "time_budget"
+        out["translate_failed_fields"] = ["tweets[2](budget_exhausted)"]
+        return out
+
+    def valid_synth(scored, date):
+        items = scored.get("tweets", [])
+        return {
+            "date": DATE,
+            "generated_at": f"{DATE}T06:00:00Z",
+            "source": {"name": "deepseek_synthesis", "collector_version": "1.0.0"},
+            "executive_summary": "今日 AI 智能体在记忆与对齐方面进展明显。",
+            "scoring_summary": {"total_tweets": len(items), "scored_tweets": len(items)},
+            "tweets": items,
+            "focus_discussions": [
+                {
+                    "topic": "智能体记忆",
+                    "summary": (
+                        "多款记忆工具涌现，开始支撑跨会话召回。"
+                        "对齐方向也有新论文进入视野。"
+                        "基础设施层面正在收敛。"
+                    ),
+                    "supporting_tweet_ids": [t["id"] for t in items],
+                }
+            ],
+        }
+
+    with (
+        patch.object(pl, "run_intake", return_value={"tweets": tweets}),
+        patch.object(pl, "run_synthesis", side_effect=valid_synth),
+        patch.object(pl, "run_gate", return_value="active"),
+        patch("akb2.briefing.pipeline.translate_briefing", side_effect=budget_exhausted_translate),
+        patch("akb2.briefing.audit._run_llm_audit", return_value={
+            "llm_verdict": "pass", "accuracy_issues": [], "drift_score": 0.0,
+        }),
+        patch("akb2.briefing.translate._translate_snippet", return_value=""),
+        patch("akb2.briefing.audit_fix._generate_zh_point", return_value=""),
+        patch.object(pl, "run_audit_fix_loop", side_effect=run_audit_fix_loop),
+    ):
+        rc = pl.main(["--date", DATE, "--vault-root", str(tmp_path)])
+
+    social = _social(tmp_path)
+    assert rc == 0, f"已译部分应降级入库，实际 exit={rc} social_exists={social.exists()}"
+    assert social.exists(), "预算耗尽不得把整份简报挡在 Social 外"
+    body = social.read_text()
+    assert "Brilliant paper on reducing reward hacking" not in body
+    fm = _frontmatter(body)
+    assert "translate_budget_exhausted: time_budget" in fm
+    assert "translate_status: degraded" in fm
+
+
 def test_translate_budget_exhausted_lands_in_frontmatter(tmp_path):
     """translate 报总预算耗尽时，产出必须自报原因 + 点名未翻译条目。"""
     _vault(tmp_path)

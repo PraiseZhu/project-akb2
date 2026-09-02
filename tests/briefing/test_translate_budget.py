@@ -151,6 +151,90 @@ def test_snippet_retranslation_also_consumes_budget(monkeypatch):
     assert "focus_discussions[0].topic" in (out.get("translate_failed_fields") or [])
 
 
+def test_budget_exhausted_drops_untranslated_display_tweets():
+    """预算耗尽后未译展示推文必须从 payload 里拿掉，否则 audit 会因无中文拒发。
+
+    2026-09-02：tweets[23].core_excerpt 英文残留 → standard=fail → 当天 Social 空。
+    已译条目、主题 supporting_tweet_ids 必须跟着收敛。
+    """
+    from akb2.briefing.audit import _check_standard_structured
+    from akb2.briefing.pipeline import _drop_untranslated_after_budget
+
+    synth = {
+        "executive_summary": "今日智能体记忆工具进展综述，覆盖长期记忆与对齐。",
+        "focus_discussions": [
+            {
+                "topic": "智能体记忆",
+                "summary": "多款记忆工具涌现。它们开始支撑跨会话召回。这是基础设施层面的变化。",
+                "supporting_tweet_ids": ["0", "1", "5"],
+            }
+        ],
+        "tweets": [
+            {"id": "0", "text": "第 0 条中文译文。", "zh_point": "点题", "score": 1.0},
+            {"id": "1", "text": "第 1 条中文译文。", "zh_point": "点题", "score": 0.99},
+            {"id": "2", "text": "English tweet number 2 about agents.", "score": 0.98},
+            {"id": "3", "text": "English tweet number 3 about agents.", "score": 0.97},
+            {"id": "4", "text": "English tweet number 4 about agents.", "score": 0.96},
+            {"id": "5", "text": "English tweet number 5 about agents.",
+             "core_excerpt": "English tweet number 5 about agents.", "score": 0.95},
+        ],
+        "translate_degraded": True,
+        "translate_budget_exhausted": "call_budget",
+        "translate_failed_fields": [
+            "tweets[2](budget_exhausted)",
+            "tweets[3](budget_exhausted)",
+            "tweets[4](budget_exhausted)",
+            "tweets[5](budget_exhausted)",
+        ],
+    }
+
+    pruned = _drop_untranslated_after_budget(synth)
+    ids = [t["id"] for t in pruned["tweets"]]
+    assert ids == ["0", "1"], f"未译展示推文应被剪掉，实际 {ids}"
+    assert pruned["focus_discussions"][0]["supporting_tweet_ids"] == ["0", "1"]
+    fail_issues = [
+        it for it in _check_standard_structured(pruned)
+        if it.get("severity", "fail") == "fail"
+        and it["kind"] in {"untranslated", "zh_point_missing", "zh_point_untranslated"}
+    ]
+    assert fail_issues == [], f"剪完后不得再因未译拒发，issues={fail_issues}"
+
+
+def test_budget_drop_does_not_promote_english_orphans():
+    """剪掉未译展示推文后，剩余未译高分推文不得被提成新孤儿再打 fail。"""
+    from akb2.briefing.audit import _check_standard_structured
+    from akb2.briefing.pipeline import _drop_untranslated_after_budget
+
+    synth = {
+        "executive_summary": "今日智能体记忆工具进展综述，覆盖长期记忆与对齐。",
+        "focus_discussions": [
+            {
+                "topic": "智能体记忆",
+                "summary": "多款记忆工具涌现。它们开始支撑跨会话召回。这是基础设施层面的变化。",
+                "supporting_tweet_ids": ["0", "1"],
+            }
+        ],
+        "tweets": [
+            {"id": "0", "text": "第 0 条中文译文。", "zh_point": "点题", "score": 1.0},
+            {"id": "1", "text": "第 1 条中文译文。", "zh_point": "点题", "score": 0.99},
+            {"id": "99", "text": "English leftover that was not in the original display set.",
+             "score": 0.98},
+        ],
+        "translate_budget_exhausted": "time_budget",
+        "translate_failed_fields": ["tweets[1](budget_exhausted)"],
+    }
+    # tweets[1] 其实已译；这里模拟「点名不准」+ 库里还有未展示英文推文
+    pruned = _drop_untranslated_after_budget(synth)
+    ids = [t["id"] for t in pruned["tweets"]]
+    assert "99" not in ids, f"未译高分推文不得留在 payload 里被提成孤儿，实际 {ids}"
+    fail_issues = [
+        it for it in _check_standard_structured(pruned)
+        if it.get("severity", "fail") == "fail"
+        and it["kind"] in {"untranslated", "zh_point_missing", "zh_point_untranslated"}
+    ]
+    assert fail_issues == [], f"issues={fail_issues}"
+
+
 def test_no_budget_marker_on_normal_run():
     """反向守卫：预算充裕的正常运行不得出现预算标记（避免恒真断言）。"""
     calls: list[str] = []
