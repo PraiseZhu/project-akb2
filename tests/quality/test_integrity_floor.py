@@ -952,3 +952,15 @@ class TestLoop2DryGoodsHowOverride:
             d, "tutorial", raw_anchors={"§A"}, allow_dry_goods_how=True
         )
         assert FLOOR_CORE_VALUE_F4 in r.failed_floors
+
+    def test_override_rejects_forged_anchor_without_raw_set(self):
+        """trusted 空时非空伪锚不得过 F4。"""
+        d = _pattern_design_extract("design", [
+            {"instruction": "I killed the outer container",
+             "command": "", "executable": False, "anchor": "§Z",
+             "how_level": "H1"},
+        ])
+        r = evaluate_integrity_floor(
+            d, "design", raw_anchors=set(), allow_dry_goods_how=True
+        )
+        assert FLOOR_CORE_VALUE_F4 in r.failed_floors

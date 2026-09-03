@@ -294,9 +294,7 @@ def _step_is_anchored_decision(step: dict, trusted: set[str]) -> bool:
     if not instruction:
         return False
     anchor = str(step.get("anchor") or "").strip()
-    if trusted and anchor not in trusted:
-        return False
-    if not trusted and not anchor:
+    if not anchor or anchor not in trusted:
         return False
     return True
 

@@ -2023,13 +2023,16 @@ def _run_quality_segments(
 
     all_defects = _rl_blocking(a_defects) + _rl_blocking(b_defects)
     if str(loop_id or "") == "loop2":
-        # loop2：成稿写歪（TLDR/适用边界/How 可执行性）记可见，不挡过关干货进 wiki。
+        # loop2：只把 grader B 层成稿写歪记可见。A 层硬结构（含 A8-适用边界）仍 blocking。
         compose_noise = ("TLDR 密度", "适用边界", "How 可执行性")
+        b_blocking = _rl_blocking(b_defects)
         kept: list[Any] = []
         demoted: list[Any] = []
         for defect in all_defects:
             dimension = str(getattr(defect, "dimension", "") or "")
-            if any(token in dimension for token in compose_noise):
+            if defect in b_blocking and any(
+                token in dimension for token in compose_noise
+            ):
                 demoted.append(defect)
             else:
                 kept.append(defect)
