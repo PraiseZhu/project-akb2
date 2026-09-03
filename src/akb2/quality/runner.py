@@ -2022,9 +2022,25 @@ def _run_quality_segments(
     from src.akb2.quality.repair import _blocking_defects as _rl_blocking
 
     all_defects = _rl_blocking(a_defects) + _rl_blocking(b_defects)
-    advisory_initial = [
-        d for d in (a_defects + b_defects) if d not in all_defects
-    ]
+    if str(loop_id or "") == "loop2":
+        # loop2：成稿写歪（TLDR/适用边界/How 可执行性）记可见，不挡过关干货进 wiki。
+        compose_noise = ("TLDR 密度", "适用边界", "How 可执行性")
+        kept: list[Any] = []
+        demoted: list[Any] = []
+        for defect in all_defects:
+            dimension = str(getattr(defect, "dimension", "") or "")
+            if any(token in dimension for token in compose_noise):
+                demoted.append(defect)
+            else:
+                kept.append(defect)
+        all_defects = kept
+        advisory_initial = [
+            d for d in (a_defects + b_defects) if d not in all_defects
+        ] + demoted
+    else:
+        advisory_initial = [
+            d for d in (a_defects + b_defects) if d not in all_defects
+        ]
     if not all_defects:
         # step-3 SC-3c/SC-3d：concept 车道无 defects 后，判 F3 层② entailment + 加权分过阈
         # （initial 无 defects 路径；repair 收敛后路径在下方也调同一 helper——codex P1 修复）。

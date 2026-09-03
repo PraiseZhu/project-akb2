@@ -267,10 +267,46 @@ def count_eligible_edges(
     return counts
 
 
+def _step_has_actionable_how(step: dict) -> bool:
+    """tutorial 干货步骤：命令、编号指令、或可跟做的操作句，不必反引号命令。"""
+    instruction = str(step.get("instruction") or step.get("step") or "").strip()
+    command = str(step.get("command") or "").strip()
+    if command:
+        return True
+    if step.get("executable") is True:
+        return True
+    if not instruction:
+        return False
+    if instruction[:1].isdigit():
+        return True
+    action_markers = (
+        "run ", "call ", "set ", "use ", "ask ", "check ", "start ",
+        "include ", "leave ", "write ", "test ", "运行", "调用", "设置",
+        "检查", "先", "再", "然后",
+    )
+    lowered = instruction.lower()
+    return any(marker in lowered for marker in action_markers)
+
+
+def _step_is_anchored_decision(step: dict, trusted: set[str]) -> bool:
+    """design/pattern 手记：可锚定的决策/模式句即可，不强制 H3/H2 标签。"""
+    instruction = str(step.get("instruction") or step.get("step") or "").strip()
+    if not instruction:
+        return False
+    anchor = str(step.get("anchor") or "").strip()
+    if trusted and anchor not in trusted:
+        return False
+    if not trusted and not anchor:
+        return False
+    return True
+
+
 def _core_value_f4_failed(
     extract_data: dict,
     content_lane: str,
     raw_anchors: set[str] | None = None,
+    *,
+    allow_dry_goods_how: bool = False,
 ) -> tuple[bool, str]:
     """④ 车道核心价值（F4）。
 
@@ -336,6 +372,12 @@ def _core_value_f4_failed(
             and s.get("how_level") in LANE_CORE_HOW_LEVELS
             and str(s.get("anchor", "")).strip() in trusted
         )
+        if core_count < 1 and allow_dry_goods_how:
+            core_count = sum(
+                1
+                for s in how_steps
+                if isinstance(s, dict) and _step_is_anchored_decision(s, trusted)
+            )
         if core_count < 1:
             return True, (
                 f"{lane} F4：无可锚定的 H3/H2 核心条目（模式名+适用条件/设计决策+"
@@ -348,6 +390,10 @@ def _core_value_f4_failed(
     h1_count = sum(
         1 for s in how_steps if isinstance(s, dict) and s.get("how_level") == "H1"
     )
+    if h1_count < 1 and allow_dry_goods_how:
+        h1_count = sum(
+            1 for s in how_steps if isinstance(s, dict) and _step_has_actionable_how(s)
+        )
     if h1_count < 1:
         return True, "procedural F4：无 H1 命令级步骤（H1<1）"
     return False, ""
@@ -357,6 +403,8 @@ def evaluate_integrity_floor(
     extract_data: dict,
     content_lane: str = "",
     raw_anchors: set[str] | None = None,
+    *,
+    allow_dry_goods_how: bool = False,
 ) -> FloorResult:
     """评估完整性地板四成员（全车道：①②③车道无关；④按车道分支判据）。
 
@@ -398,7 +446,10 @@ def evaluate_integrity_floor(
         trace_meta["traceability_skipped_no_grounded_anchor"] = True
 
     f4_failed, f4_reason = _core_value_f4_failed(
-        extract_data, content_lane, raw_anchors=raw_anchors
+        extract_data,
+        content_lane,
+        raw_anchors=raw_anchors,
+        allow_dry_goods_how=allow_dry_goods_how,
     )
     if f4_failed:
         failed.append(FLOOR_CORE_VALUE_F4)
