@@ -178,7 +178,9 @@ def fulfill_extract_contract(
     backfill_diag = _backfill_component_evidence(data, raw_content)
     _resolve_short_evidence_anchors(data, declared)
     _drop_floating_interpretations(data)
-    floor = evaluate_integrity_floor(data, lane, raw_anchors=declared)
+    floor = evaluate_integrity_floor(
+        data, lane, raw_anchors=declared, allow_dry_goods_how=True
+    )
 
     used_anchors = _collect_evidence_anchors(data)
     unanchored = [

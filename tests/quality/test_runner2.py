@@ -398,3 +398,11 @@ def test_shadow_path_skips_run_promote():
     assert shadow_idx < promote_idx
     assert '"candidate_path": candidate_path' in text
     assert text.count('"candidate_path": candidate_path') >= 2
+
+
+def test_loop2_contract_uses_dry_goods_f4():
+    src = (
+        Path(__file__).resolve().parents[2]
+        / "src/akb2/quality/maker2/extract_contract.py"
+    ).read_text(encoding="utf-8")
+    assert "allow_dry_goods_how=True" in src

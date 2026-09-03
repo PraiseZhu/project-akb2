@@ -915,3 +915,52 @@ class TestF1FollowupRawAnchorUniverse:
         assert FLOOR_CORE_VALUE_F4 in r.failed_floors, (
             "raw 无 §Z → 即使 claim+edge 都写 §Z 也不 trusted → F4 fail（根治反方向放水缝）"
         )
+
+
+class TestLoop2DryGoodsHowOverride:
+    """loop2 合同层放宽：官方文档/设计手记不必长得像 H1 命令。loop1 默认不放。"""
+
+    def test_tutorial_action_sentence_passes_only_when_override_on(self):
+        d = _pattern_design_extract("tutorial", [
+            {"instruction": "Start at high effort then test the other levels",
+             "command": "", "executable": False, "anchor": "§A",
+             "how_level": "H2"},
+        ])
+        loop1 = evaluate_integrity_floor(d, "tutorial", raw_anchors={"§A"})
+        loop2 = evaluate_integrity_floor(
+            d, "tutorial", raw_anchors={"§A"}, allow_dry_goods_how=True
+        )
+        assert FLOOR_CORE_VALUE_F4 in loop1.failed_floors
+        assert FLOOR_CORE_VALUE_F4 not in loop2.failed_floors
+
+    def test_design_unlabeled_anchored_decision_passes_only_when_override_on(self):
+        d = _pattern_design_extract("design", [
+            {"instruction": "I killed the outer container and made the entity key a section header",
+             "command": "", "executable": False, "anchor": "§A",
+             "how_level": "H1"},
+        ])
+        loop1 = evaluate_integrity_floor(d, "design", raw_anchors={"§A"})
+        loop2 = evaluate_integrity_floor(
+            d, "design", raw_anchors={"§A"}, allow_dry_goods_how=True
+        )
+        assert FLOOR_CORE_VALUE_F4 in loop1.failed_floors
+        assert FLOOR_CORE_VALUE_F4 not in loop2.failed_floors
+
+    def test_override_still_rejects_empty_how(self):
+        d = _pattern_design_extract("tutorial", [])
+        r = evaluate_integrity_floor(
+            d, "tutorial", raw_anchors={"§A"}, allow_dry_goods_how=True
+        )
+        assert FLOOR_CORE_VALUE_F4 in r.failed_floors
+
+    def test_override_rejects_forged_anchor_without_raw_set(self):
+        """trusted 空时非空伪锚不得过 F4。"""
+        d = _pattern_design_extract("design", [
+            {"instruction": "I killed the outer container",
+             "command": "", "executable": False, "anchor": "§Z",
+             "how_level": "H1"},
+        ])
+        r = evaluate_integrity_floor(
+            d, "design", raw_anchors=set(), allow_dry_goods_how=True
+        )
+        assert FLOOR_CORE_VALUE_F4 in r.failed_floors

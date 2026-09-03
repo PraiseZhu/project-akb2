@@ -207,3 +207,95 @@ class TestNoIntermediateState:
         assert meta["repair_rounds"] == 0
         assert meta["final_defects_summary"][0]["dimension"] == "A7-图谱证据"
         mock_repair.assert_not_called()
+
+    def test_loop2_compose_noise_does_not_block(self) -> None:
+        """loop2：TLDR/适用边界/How 可执行性记可见，不挡升格。loop1 仍终态失败。"""
+        from src.akb2.quality.checks_structural import Defect
+        from src.akb2.quality.grader import PRIMARY_GRADER_MODEL, GraderResult
+        from src.akb2.quality.integrity_floor import FloorResult
+        from src.akb2.quality.runner import _run_quality_segments
+
+        tldr = Defect(
+            dimension="TLDR 密度",
+            location="TLDR 第2句",
+            defect="不完整句子",
+            suggestion="补全",
+        )
+        grader = GraderResult(
+            defects=[tldr],
+            model_used="gpt-5.6-luna",
+            suspended=False,
+            primary_model=PRIMARY_GRADER_MODEL,
+            content_lane="tutorial",
+            interpretation_entailment=True,
+            dimension_scores={},
+        )
+        floor = FloorResult(
+            passed=True, failed_floors=[], reason="", content_lane="tutorial"
+        )
+        with patch(
+            "src.akb2.quality.checks_structural.run_candidate_self_gate",
+            return_value=[],
+        ), patch(
+            "src.akb2.quality.grader.run_grader_detailed", return_value=grader
+        ), patch(
+            "src.akb2.quality.repair.run_repair_loop"
+        ) as mock_repair:
+            loop1 = _run_quality_segments(
+                "candidate", "/tmp/x.md", "raw",
+                config=MagicMock(), content_lane="tutorial", floor_result=floor,
+            )
+            loop2 = _run_quality_segments(
+                "candidate", "/tmp/x.md", "raw",
+                config=MagicMock(), content_lane="tutorial", floor_result=floor,
+                loop_id="loop2",
+            )
+        assert loop1[0] is False
+        assert loop1[1] == "blocking_defects_present"
+        assert loop2[0] is True
+        assert loop2[1] == ""
+        assert loop2[3]["advisory_residual_summary"][0]["dimension"] == "TLDR 密度"
+        mock_repair.assert_not_called()
+
+    def test_loop2_a8_boundary_stays_blocking(self) -> None:
+        """A8-适用边界是 A 层硬结构，loop2 不得因「适用边界」子串降级。"""
+        from src.akb2.quality.checks_structural import Defect
+        from src.akb2.quality.grader import PRIMARY_GRADER_MODEL, GraderResult
+        from src.akb2.quality.integrity_floor import FloorResult
+        from src.akb2.quality.runner import _run_quality_segments
+
+        a8 = Defect(
+            dimension="A8-适用边界",
+            location="适用边界",
+            defect="边界条目缺 raw anchor",
+            suggestion="补锚",
+        )
+        grader = GraderResult(
+            defects=[],
+            model_used="gpt-5.6-luna",
+            suspended=False,
+            primary_model=PRIMARY_GRADER_MODEL,
+            content_lane="tutorial",
+            interpretation_entailment=True,
+            dimension_scores={},
+        )
+        floor = FloorResult(
+            passed=True, failed_floors=[], reason="", content_lane="tutorial"
+        )
+        with patch(
+            "src.akb2.quality.checks_structural.run_candidate_self_gate",
+            return_value=[a8],
+        ), patch(
+            "src.akb2.quality.grader.run_grader_detailed", return_value=grader
+        ) as mock_grader, patch(
+            "src.akb2.quality.repair.run_repair_loop"
+        ):
+            loop2 = _run_quality_segments(
+                "candidate", "/tmp/x.md", "raw",
+                config=MagicMock(), content_lane="tutorial", floor_result=floor,
+                loop_id="loop2",
+            )
+        assert loop2[0] is False
+        assert loop2[1] == "blocking_defects_present"
+        assert loop2[3]["final_defects_summary"][0]["dimension"] == "A8-适用边界"
+        mock_grader.assert_not_called()
