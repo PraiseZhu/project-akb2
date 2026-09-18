@@ -92,5 +92,8 @@ evals/main-pipeline-quality/fixtures/raw-html/*
 # 临时调试产物（项目规范：projects/<P>/_tmp/debug/，不入 git）
 _tmp/
 
+# Cindy 会话树（本机隔离副本；.stignore 已排除，gitignore 必须同形）
+.cindy-worktrees/
+
 # Cindy 插件打包产物（源码在 cindy-plugin/，.cindy 不入库）
 cindy-plugin/**/*.cindy
