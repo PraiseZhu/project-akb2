@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # daily_github_briefing.sh — GitHub Curator 日推主入口
-# Usage: bash scripts/daily_github_briefing.sh [--vault-root <path>] [--mock] [--force-layer N]
+# Usage: bash scripts/daily_github_briefing.sh [--vault-root <path>]
+#        [--date YYYY-MM-DD] [--mock] [--force-layer N]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -13,10 +14,12 @@ GITHUB_BUDGET_CONSUMER="github_briefing_main"
 MOCK_FLAG=""
 FORCE_LAYER=""
 VAULT_ROOT_ARG=""
+DATE_ARG=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --vault-root) VAULT_ROOT_ARG="$2"; shift ;;
+        --date) DATE_ARG="$2"; shift ;;
         --mock) MOCK_FLAG="--mock" ;;
         --force-layer) FORCE_LAYER="--force-layer $2"; shift ;;
         *) echo "Unknown arg: $1"; exit 2 ;;
@@ -38,12 +41,18 @@ EOF
 fi
 
 PYTHON_BIN="$(bash "$SCRIPT_DIR/find-python311.sh")"
-RUN_DATE="$(TZ=Asia/Shanghai date +%Y-%m-%d)"
+if [[ -z "$DATE_ARG" ]]; then
+    DATE_ARG="$(TZ=Asia/Shanghai date +%Y-%m-%d)"
+fi
+RUN_DATE="$DATE_ARG"
 if [[ -n "${AKB2_GITHUB_BRIEFING_PIPELINE_BIN:-}" ]]; then
     PIPELINE_CMD=("${AKB2_GITHUB_BRIEFING_PIPELINE_BIN}")
 else
     PIPELINE_CMD=("$PYTHON_BIN" -m akb2.briefing.github.pipeline)
 fi
+# --date 必须进 pipeline：run_with_deadline 的 --date 只管 12:00 截止，
+# 不写 vault 文件名（2026-09-14..17 补跑全部落成当天）。
+PIPELINE_CMD+=(--date "$DATE_ARG")
 if [[ -n "$MOCK_FLAG" ]]; then
     PIPELINE_CMD+=("$MOCK_FLAG")
 fi

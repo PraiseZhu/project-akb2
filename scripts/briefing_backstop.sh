@@ -107,6 +107,10 @@ LOCK_FILE="${AKB2_BACKSTOP_LOCK_FILE:-$STATE_ROOT/locks/briefing-backstop.lock}"
 # 主修法是下面的双读者交叉验证：同一个 awk 重试 N 次不构成独立观测。
 readonly VERDICT_READ_ATTEMPT_BUDGET=4
 readonly VERDICT_READ_RETRY_SLEEP_SECONDS="${AKB2_BACKSTOP_READ_RETRY_SLEEP:-5}"
+# 补跑 rc=0 后先短等再读产物：外置卷上 write 返回不等于下一进程立刻 open 成功
+# （2026-09-18 11:49:44 write_social 结束，11:49:46 awk 4 轮 + native 都
+# can't open file → false_recovery；文件其实已在 vault）。测试可把秒数调到 0/2。
+readonly POST_RERUN_SETTLE_SECONDS="${AKB2_BACKSTOP_POST_RERUN_SETTLE:-2}"
 # 纯 bash 回退读者的行数上限（宪法 P1：任何循环都要有界）。frontmatter 不会更长。
 readonly NATIVE_READER_MAX_LINES=200
 
@@ -140,6 +144,10 @@ if ! [[ "$RERUN_ATTEMPT_BUDGET" =~ ^[0-9]+$ ]] || (( RERUN_ATTEMPT_BUDGET < 1 ))
 fi
 if ! [[ "$RERUN_BACKOFF_SECONDS" =~ ^[0-9]+$ ]]; then
   echo "ERROR: AKB2_BRIEFING_RERUN_BACKOFF 必须是非负整数，实际 '$RERUN_BACKOFF_SECONDS'" >&2
+  exit 1
+fi
+if ! [[ "$POST_RERUN_SETTLE_SECONDS" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: AKB2_BACKSTOP_POST_RERUN_SETTLE 必须是非负整数，实际 '$POST_RERUN_SETTLE_SECONDS'" >&2
   exit 1
 fi
 
@@ -645,6 +653,14 @@ while (( attempt <= RERUN_ATTEMPT_BUDGET )); do
   # 本文件头部花了 8 行论证「假阳性降到 0 之前不能接告警通道」，指的是假 FAILED；
   # 这里关掉的是同族的**假 recovered**，而 terminal= 正是告警通道要读的那个键。
   if (( rc == 0 )); then
+    # 写后立刻读外置卷会抖。短等不是重试预算（那个是同一观测者连打 N 次），
+    # 是给目录项可见性一个窗口，再交给双读者。
+    if (( POST_RERUN_SETTLE_SECONDS > 0 )); then
+      log "info — 补跑 rc=0，settle ${POST_RERUN_SETTLE_SECONDS}s 后再读产物 post_rerun_settle=${POST_RERUN_SETTLE_SECONDS} attempt=$attempt/$RERUN_ATTEMPT_BUDGET ($DATE)"
+      sleep "$POST_RERUN_SETTLE_SECONDS"
+    else
+      log "info — 补跑 rc=0，post_rerun_settle=0 立即读产物 attempt=$attempt/$RERUN_ATTEMPT_BUDGET ($DATE)"
+    fi
     resolve_published_state "$SOCIAL_FILE"
     RERUN_POST_STATUS="$PUBLISHED_STATUS"
     if [[ "$RERUN_POST_STATUS" == "pass" ]]; then
@@ -686,7 +702,22 @@ fi
 # "异常" —— 它们是 pipeline **已定义**的结局，不是异常。误标的归因会把排查带偏
 # （宪法 P4：失败要可见，且不得误导）。
 case "$rc" in
-  0)  log_terminal recovered "recovered — 重跑成功已入库 attempt=$attempts_used/$RERUN_ATTEMPT_BUDGET (exit 0, $DATE)" ;;
+  0)
+    log_terminal recovered "recovered — 重跑成功已入库 attempt=$attempts_used/$RERUN_ATTEMPT_BUDGET (exit 0, $DATE)"
+    # 11:00 补跑常晚于 11:15 飞书扫描（2026-09-18 社稿 11:49 才落盘）。
+    # recovered 立刻补发，不能干等到次日。失败只记日志，不改 recovered 退出码。
+    FEISHU_SYNC_SCRIPT="${AKB2_FEISHU_SYNC_SCRIPT:-$SCRIPT_DIR/feishu_sync.sh}"
+    set +e
+    bash "$FEISHU_SYNC_SCRIPT" \
+      --vault-root "$VAULT_ROOT" --date "$DATE" --target group --reconcile-missing 9<&-
+    feishu_rc=$?
+    set -e
+    if (( feishu_rc == 0 )); then
+      log "info — recovered 后飞书补发完成 feishu_reconcile=ok date=$DATE ($DATE)"
+    else
+      log "warn — recovered 后飞书补发失败 feishu_reconcile=failed rc=$feishu_rc date=$DATE ($DATE)"
+    fi
+    ;;
   1)  log_terminal failed "FAILED — 重跑 exit 1 (未交付：上游硬失败 / gate reject / vault 不可用)，当日无简报 attempt=$attempts_used/$RERUN_ATTEMPT_BUDGET exit_code=1 ($DATE)" ;;
   2)  log_terminal failed "FAILED — 重跑 exit 2 (audit 判 fail，产出留 staging 未入库)，当日无简报 attempt=$attempts_used/$RERUN_ATTEMPT_BUDGET exit_code=2 ($DATE)" ;;
   3)  log_terminal failed "FAILED — 重跑 exit 3 (intake 降级到测试 fixture，硬阻断)，当日无简报 attempt=$attempts_used/$RERUN_ATTEMPT_BUDGET exit_code=3 ($DATE)" ;;

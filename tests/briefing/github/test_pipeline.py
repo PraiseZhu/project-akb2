@@ -208,6 +208,53 @@ class TestSC8Launchd:
             / "GitHub"
         ).exists()
 
+    def test_daily_github_forwards_date_to_pipeline(self, tmp_path):
+        """--date 必须进 pipeline 成稿文件名，不能只给 deadline wrapper。
+
+        2026-09-14..17 GitHub 补跑只能写成当天：pipeline 入口扫 --mock/--force-layer，
+        成稿用 date.today()。wrapper 虽把 RUN_DATE 传给 run_with_deadline.py，
+        但那只用于 12:00 截止，不进 vault 文件名。
+        """
+        vault = tmp_path / "vault"
+        result = subprocess.run(
+            [
+                "/bin/bash",
+                str(SCRIPTS_DIR / "daily_github_briefing.sh"),
+                "--vault-root",
+                str(vault),
+                "--date",
+                "2026-09-14",
+                "--mock",
+            ],
+            capture_output=True,
+            text=True,
+            env={
+                **os.environ,
+                "AKB2_DISABLE_DEADLINE": "1",
+                "AKB2_NOVELTY_DB": str(tmp_path / "novelty.sqlite"),
+                "PROJECT_ROOT": str(tmp_path),
+            },
+            cwd=str(PROJECT_ROOT),
+        )
+        assert result.returncode == 0, f"stdout={result.stdout}\nstderr={result.stderr}"
+        md = (
+            vault
+            / "Praise Space"
+            / "AKB2.0"
+            / "AI TRENDS"
+            / "GitHub"
+            / "2026-09-14 GitHub Briefing.md"
+        )
+        assert md.exists(), f"成稿必须落在 --date 那天，stdout={result.stdout}"
+        assert "date: 2026-09-14" in md.read_text(encoding="utf-8")
+        from datetime import date as _date
+        today = _date.today().isoformat()
+        if today != "2026-09-14":
+            assert not (
+                vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "GitHub"
+                / f"{today} GitHub Briefing.md"
+            ).exists()
+
     def test_plist_hour_is_14(self):
         plist_path = PROJECT_ROOT / "launchd" / "com.akb2.github_briefing.plist"
         content = plist_path.read_text()

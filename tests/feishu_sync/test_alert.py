@@ -89,6 +89,30 @@ def test_alert_non_feishu_error_still_tries_dm(monkeypatch, tmp_path, feishu_env
     assert dm_called, "非飞书错误应仍尝试飞书 DM"
 
 
+def test_alert_upstream_llm_401_does_not_suppress_dm(monkeypatch, tmp_path, feishu_env):
+    """上游 LLM 401 正文含 Unauthorized，不得当成飞书鉴权失败而压掉告警 DM。
+
+    2026-09-14..18 生产：github synthesis 401 写进 missing 真因，notify 关键字
+    命中 Unauthorized → alert DM suppressed。群里没稿的同时，私信告警也被误杀。
+    """
+    _redirect_logs(monkeypatch, tmp_path)
+
+    dm_called: list = []
+    monkeypatch.setattr(send_mod, "send_text_dm", lambda *a, **k: dm_called.append(1))
+    monkeypatch.setattr(notify, "_local_notify", lambda msg, title=None: None)
+
+    notify.alert_failure(
+        "2026-09-18 简报同步 2 项失败: github 缺失（期望路径: /x/GitHub Briefing.md）；"
+        "真因: failed: synthesis_failed: synthesis 硬失败（不可重试状态码 401）: "
+        "HTTP Error 401: Unauthorized [error_type=other provider_code=401 "
+        "model=gemini-3.5-flash]"
+    )
+
+    assert dm_called, "上游 LLM Unauthorized 应仍尝试飞书 DM"
+    alert_log = (tmp_path / "logs" / "feishu-sync-ALERT.log").read_text(encoding="utf-8")
+    assert "alert DM suppressed" not in alert_log
+
+
 def test_upstream_skip_alert_title_is_not_sync_failure(monkeypatch, tmp_path, feishu_env):
     """08-27：上游 skipped 不得套「简报飞书同步失败」标题。
 

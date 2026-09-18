@@ -12,6 +12,7 @@ Pipeline output contract (§step-4 PIPELINE_OUTPUT_CONTRACT):
 （见 FAILURE_* 常量注释里的 2026-08-03 告警事故）。
 """
 
+import argparse
 import json
 import os
 import sys
@@ -41,6 +42,14 @@ _PROJECT_ROOT = (
 # 旧值 [5] 越到 <root> 上一级，导致 POOL_CONFIG/skip 文件落错目录。
 POOL_CONFIG = _PROJECT_ROOT / "config" / "github_curator_pool.yaml"
 OUTPUT_DIR_TEMPLATE = "Praise Space/AKB2.0/AI TRENDS/GitHub"
+
+# 成稿日。run_pipeline(--date) 写入；诊断 / 文件名都走这里，避免 wrapper 只把
+# 日期传给 deadline、成稿仍用 date.today()（2026-09-14..17 补跑全部写成当天）。
+_BRIEFING_DATE: str | None = None
+
+
+def _resolved_briefing_date() -> str:
+    return _BRIEFING_DATE or date.today().isoformat()
 
 # Schema-approved repo fields (strip enrichment internals before vault write)
 _SCHEMA_REPO_FIELDS = {
@@ -233,7 +242,11 @@ def _merge_canonical(existing: dict, incoming: dict) -> None:
         existing["engagement"] = incoming.get("engagement")
 
 
-def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
+def run_pipeline(
+    mock: bool = False,
+    force_layer: int | None = None,
+    briefing_date: str | None = None,
+) -> int:
     """Run the full GitHub briefing pipeline.
 
     Returns EXIT_DELIVERED (0) ONLY when the day's briefing .md is actually written
@@ -242,6 +255,8 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
     2026-06-26~29 四天零交付事故）。诊断 briefing-skipped.json / briefing-failed.json
     仍写出供 backstop 归因。
     """
+    global _BRIEFING_DATE
+    _BRIEFING_DATE = briefing_date or date.today().isoformat()
     vault_root = os.environ.get("VAULT_ROOT", "")
     if not vault_root or not vault_root.startswith("/"):
         _write_skipped("vault_root_missing_or_relative", 0, "skip",
@@ -509,8 +524,9 @@ def run_pipeline(mock: bool = False, force_layer: int | None = None) -> int:
                        failure_class=FAILURE_CLASS_UPSTREAM_INTAKE)
         return EXIT_NOT_DELIVERED
 
-    # 文件名 = 抓取日（去掉旧的 +1 偏移，对齐 social briefing）
-    today_str = date.today().isoformat()
+    # 文件名 = 抓取日（去掉旧的 +1 偏移，对齐 social briefing）。
+    # --date 覆盖；默认本地今日。诊断 date 必须与此同源。
+    today_str = _resolved_briefing_date()
 
     # Step 7 + 8a: synthesize → 组装 → schema 校验，**输出质量类失败有界重生成**。
     # 见 MAX_SYNTHESIS_REGENERATIONS 常量注释：JSON 写坏 + schema 不过合计占历史失败
@@ -978,7 +994,7 @@ def _diag_payload(status: str, reason: str, fallback_layer: str,
     remediable, detail = _remediation(failure_class, provider_diagnosis)
     payload = {
         "status": status,
-        "date": date.today().isoformat(),
+        "date": _resolved_briefing_date(),
         "stage": stage,
         "failure_class": failure_class,
         "reason": reason,
@@ -1185,13 +1201,26 @@ def _make_zero_sc7_metrics() -> dict:
 
 
 if __name__ == "__main__":
-    import sys
-    mock = "--mock" in sys.argv
-    force_layer = None
-    for i, arg in enumerate(sys.argv):
-        if arg == "--force-layer" and i + 1 < len(sys.argv):
-            try:
-                force_layer = int(sys.argv[i + 1])
-            except ValueError:
-                pass
-    sys.exit(run_pipeline(mock=mock, force_layer=force_layer))
+    parser = argparse.ArgumentParser(prog="akb2.briefing.github.pipeline")
+    parser.add_argument("--mock", action="store_true")
+    parser.add_argument("--force-layer", type=int, default=None)
+    parser.add_argument(
+        "--date",
+        default=None,
+        help="YYYY-MM-DD；默认本地今日。必须写进成稿文件名与诊断 date。",
+    )
+    args = parser.parse_args()
+    briefing_date = None
+    if args.date:
+        try:
+            briefing_date = date.fromisoformat(args.date).isoformat()
+        except ValueError:
+            print(f"briefing: FAILED (invalid --date {args.date!r})", file=sys.stderr)
+            sys.exit(2)
+    sys.exit(
+        run_pipeline(
+            mock=args.mock,
+            force_layer=args.force_layer,
+            briefing_date=briefing_date,
+        )
+    )

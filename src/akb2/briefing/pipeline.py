@@ -17,9 +17,8 @@ Triple-assertion guarantee:
 Design:
   - Write temp briefing to <vault-root>/staging/candidate/<date>-briefing.md
   - Run gate on temp file (guard_input_path accepts staging/candidate/)
-  - Write final file to <vault-root>/AKB2.0/AI TRENDS/Social/<date+1> Daily Briefing.md
-  - Copy physical file to Social/<date+1> Daily Briefing.md via shutil.copy2
-    (no symlink — ensures Obsidian/iCloud compatibility; gate decision reject skips this step)
+  - Write final file to <vault-root>/AKB2.0/AI TRENDS/Social/<date> Daily Briefing.md
+  - Publish via fsync + same-dir os.replace (no symlink; gate reject skips this step)
 """
 
 from __future__ import annotations
@@ -30,7 +29,6 @@ import datetime
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -253,6 +251,31 @@ def _diag_dir() -> Path:
     .gitignore 的，社媒不复制这个需要改 .gitignore 的做法。
     """
     return Path(os.environ.get("AKB2_BRIEFING_DIAG_DIR") or (REPO_ROOT / "logs"))
+
+
+def _atomic_publish_text(src: Path, dest: Path) -> None:
+    """把 src 耐久发布到 dest：同目录临时文件 + fsync + os.replace。
+
+    shutil.copy2 在外置 APFS 上返回后，下一进程立刻 open(dest) 可能 ENOENT
+    （2026-09-18 11:49 pipeline exit 0，backstop 2s 内 awk/cat 都 can't open file）。
+    GitHub 侧 `_atomic_write_text` 已是这个形状；社媒发布必须同形。
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(f".{dest.name}.tmp-{os.getpid()}")
+    with open(src, "rb") as inf, open(tmp, "wb") as outf:
+        outf.write(inf.read())
+        outf.flush()
+        os.fsync(outf.fileno())
+    os.replace(tmp, dest)
+    # 尽量把目录项也刷下去；外置卷上失败不得挡发布（文件已经 replace 成功）。
+    try:
+        dir_fd = os.open(dest.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError:
+        pass
 
 
 def _write_social_diag(status: str, reason: str, date: str, extra: dict | None = None) -> Path:
@@ -1333,12 +1356,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"proposed_gate_decision: {gate_decision}")
         sys.exit(EXIT_NOT_DELIVERED)
 
-    # Copy to Social（dry-run 时目标是 staging/dry-run，见上文 publish_dir）
+    # Publish to Social（dry-run 时目标是 staging/dry-run，见上文 publish_dir）。
+    # 必须 fsync + 同目录 replace：外置卷上 shutil.copy2 返回后立刻 open 可能
+    # ENOENT（2026-09-18 backstop 写后 2s awk/cat 都打不开，判 false_recovery）。
+    # 形状对齐 github `_atomic_write_text`。
     stage_start = time.monotonic()
     _stage_log("write_social", "start")
-    if final_briefing_path.exists() or final_briefing_path.is_symlink():
-        final_briefing_path.unlink()
-    shutil.copy2(real_briefing_path, final_briefing_path)
+    _atomic_publish_text(real_briefing_path, final_briefing_path)
     real_briefing_path.unlink(missing_ok=True)
     sys.stderr.write("staging 中转已清除\n")
     _stage_log("write_social", "end", time.monotonic() - stage_start)
