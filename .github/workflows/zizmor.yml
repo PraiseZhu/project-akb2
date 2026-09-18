@@ -30,7 +30,7 @@ jobs:
           persist-credentials: false
       # 钉 v0.6.2 = 3dc1ecc9bcb9e94e9b2c709687979e1298497054
       # Free 私有仓无 GHAS，关 advanced-security，改用 annotations；High 即红。
-      - uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054
+      - uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482
         with:
           advanced-security: "false"
           annotations: "true"
