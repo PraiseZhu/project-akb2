@@ -101,6 +101,22 @@ def test_mark_sent_clears_pending(tmp_path):
     assert idempotency.pending_items(sp, date="2026-08-02") == []
 
 
+def test_clear_pending_drops_missing_expected_without_marking_sent(tmp_path):
+    """不补发的缺失项应能清掉 pending，且不得伪造成已发送。"""
+    sp = tmp_path / "state.json"
+    idempotency.mark_missing_expected(
+        sp,
+        date="2026-09-14",
+        kind="github",
+        target="group",
+        expected_path="/vault/2026-09-14 GitHub Briefing.md",
+        reason="owner: do not backfill",
+    )
+    idempotency.clear_pending(sp, "2026-09-14", "github", "group")
+    assert idempotency.pending_items(sp, date="2026-09-14") == []
+    assert not idempotency.already_sent(sp, "2026-09-14", "github", "group")
+
+
 def test_retryable_send_pending_roundtrip(tmp_path):
     sp = tmp_path / "state.json"
     idempotency.mark_send_failed_retryable(
