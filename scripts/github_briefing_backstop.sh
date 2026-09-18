@@ -93,6 +93,9 @@ readonly RERUN_BACKOFF_SECONDS="${AKB2_GITHUB_RERUN_BACKOFF:-600}"
 # 1 仍然重试（可能是 LLM 输出质量，换族有救）。
 readonly SHARED_BUDGET_BLOCKED_EXIT_CODE=65
 readonly RERUN_NONRETRYABLE_EXIT_CODES="124 $SHARED_BUDGET_BLOCKED_EXIT_CODE"
+# 单轮补跑下限（秒）。GitHub intake 生产约 35min；11:00 场剩 ~60min，
+# 两轮 + 退避必撞 12:00（2026-09-14..18 每天 11:47 开第二轮 → 12:00 124）。
+readonly RERUN_MIN_ATTEMPT_SECONDS="${AKB2_GITHUB_RERUN_MIN_ATTEMPT:-2100}"
 
 # is_nonretryable_rc <rc> → 0=该码换族救不了(别重试), 1=可以再试一轮
 is_nonretryable_rc() {
@@ -108,6 +111,10 @@ if ! [[ "$RERUN_ATTEMPT_BUDGET" =~ ^[0-9]+$ ]] || (( RERUN_ATTEMPT_BUDGET < 1 ))
 fi
 if ! [[ "$RERUN_BACKOFF_SECONDS" =~ ^[0-9]+$ ]]; then
   echo "ERROR: AKB2_GITHUB_RERUN_BACKOFF 必须是非负整数，实际 '$RERUN_BACKOFF_SECONDS'" >&2
+  exit 1
+fi
+if ! [[ "$RERUN_MIN_ATTEMPT_SECONDS" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: AKB2_GITHUB_RERUN_MIN_ATTEMPT 必须是非负整数，实际 '$RERUN_MIN_ATTEMPT_SECONDS'" >&2
   exit 1
 fi
 
@@ -149,6 +156,19 @@ deadline_missed_after() {
   projected=$(( now_min + (wait_s + 59) / 60 ))   # 向上取整到分钟，宁可保守
   (( projected >= 1440 )) && return 0             # 跨夜 = 必然过界（deadline 是当日）
   (( projected >= dl_min ))
+}
+
+# remaining_seconds_until_deadline → 打印剩余秒数（已过界为 0）
+remaining_seconds_until_deadline() {
+  local now_hm now_min dl_min
+  now_hm="$(TZ=Asia/Shanghai date +%H%M)"
+  now_min=$(( 10#${now_hm:0:2} * 60 + 10#${now_hm:2:2} ))
+  dl_min=$(( 10#${AKB2_GITHUB_DEADLINE_HOUR:-12} * 60 + 10#${AKB2_GITHUB_DEADLINE_MINUTE:-0} ))
+  if (( now_min >= dl_min )); then
+    echo 0
+    return
+  fi
+  echo $(( (dl_min - now_min) * 60 ))
 }
 
 # GitHub briefing 文件名对齐 pipeline.py：today = 抓取日（去掉旧的 +1 偏移）
@@ -300,12 +320,23 @@ while (( attempt <= RERUN_ATTEMPT_BUDGET )); do
   # `9<&-` 关掉子进程里的锁 fd：否则活过本 backstop 的后代会继续持有该 OFD，让锁无界
   # 扣住，此后每次都误报 "already-running" 而其实没有别的实例（详见 social 侧同段注释）。
   AKB2_LLM_FAMILY_FALLBACK="$family_fallback" \
-    bash "$RERUN_SCRIPT" --vault-root "$VAULT_ROOT" 9<&-
+    bash "$RERUN_SCRIPT" --vault-root "$VAULT_ROOT" --date "$DATE_TODAY" 9<&-
   rc=$?
   set -e
   # SC-5: recovered 必须复查文件 — rc==0 但当日文件未写出 = 假成功，不算成功
   if (( rc == 0 )) && [[ -f "$GITHUB_FILE" ]]; then
     log_terminal recovered "recovered — 补跑成功且文件已落盘 attempt=$attempt/$RERUN_ATTEMPT_BUDGET (exit 0, $DATE_TODAY)"
+    FEISHU_SYNC_SCRIPT="${AKB2_FEISHU_SYNC_SCRIPT:-$SCRIPT_DIR/feishu_sync.sh}"
+    set +e
+    bash "$FEISHU_SYNC_SCRIPT" \
+      --vault-root "$VAULT_ROOT" --date "$DATE_TODAY" --target group --reconcile-missing 9<&-
+    feishu_rc=$?
+    set -e
+    if (( feishu_rc == 0 )); then
+      log "info — recovered 后飞书补发完成 feishu_reconcile=ok date=$DATE_TODAY ($DATE_TODAY)"
+    else
+      log "warn — recovered 后飞书补发失败 feishu_reconcile=failed rc=$feishu_rc date=$DATE_TODAY ($DATE_TODAY)"
+    fi
     exit 0
   fi
   if (( rc == 0 )); then
@@ -317,17 +348,26 @@ while (( attempt <= RERUN_ATTEMPT_BUDGET )); do
   else
     log "warn — 补跑未成功 attempt=$attempt/$RERUN_ATTEMPT_BUDGET rc=$rc ($DATE_TODAY)"
   fi
-  attempt=$(( attempt + 1 ))
-  if (( attempt <= RERUN_ATTEMPT_BUDGET )); then
-    backoff=$(( RERUN_BACKOFF_SECONDS * (2 ** (attempt - 2)) ))
+  next_attempt=$(( attempt + 1 ))
+  if (( next_attempt <= RERUN_ATTEMPT_BUDGET )); then
+    backoff=$(( RERUN_BACKOFF_SECONDS * (2 ** (next_attempt - 2)) ))
     if deadline_missed_after "$backoff"; then
       log_terminal give_up \
-        "GIVE-UP — 退避 ${backoff}s 之后即已超过 $DEADLINE_LABEL deadline，不再空等（白睡且占着补跑锁）next_attempt=$attempt/$RERUN_ATTEMPT_BUDGET reason=deadline_would_pass exit_code=$GIVE_UP_EXIT_CODE ($DATE_TODAY)"
+        "GIVE-UP — 退避 ${backoff}s 之后即已超过 $DEADLINE_LABEL deadline，不再空等（白睡且占着补跑锁）next_attempt=$next_attempt/$RERUN_ATTEMPT_BUDGET reason=deadline_would_pass exit_code=$GIVE_UP_EXIT_CODE ($DATE_TODAY)"
       exit "$GIVE_UP_EXIT_CODE"
     fi
-    log "info — 退避 ${backoff}s 后换模型族重试 next_attempt=$attempt/$RERUN_ATTEMPT_BUDGET ($DATE_TODAY)"
+    # 睡完还要再跑一轮 intake。11:00 场第一轮约 35min，11:37 后再开第二轮
+    # 必撞 12:00（2026-09-14..18 每天 124）。换族救不了时间不够。
+    remain="$(remaining_seconds_until_deadline)"
+    runnable=$(( remain - backoff ))
+    if (( runnable < RERUN_MIN_ATTEMPT_SECONDS )); then
+      log "warn — 剩余 ${remain}s 扣退避 ${backoff}s 后只剩 ${runnable}s，不够再跑一轮（min_attempt=${RERUN_MIN_ATTEMPT_SECONDS}s）rerun_stop=insufficient_time_for_two_attempts ($DATE_TODAY)"
+      break
+    fi
+    log "info — 退避 ${backoff}s 后换模型族重试 next_attempt=$next_attempt/$RERUN_ATTEMPT_BUDGET ($DATE_TODAY)"
     sleep "$backoff"
   fi
+  attempt=$next_attempt
 done
 
 file_state="missing"

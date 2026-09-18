@@ -77,6 +77,7 @@ def _run_backstop(
         "AKB2_GITHUB_BACKSTOP_LOG": isolated_log.name,
         "AKB2_GITHUB_BACKSTOP_LOCK_FILE": isolated_lock.name,
         "AKB2_GITHUB_RERUN_BACKOFF": "0",
+        "AKB2_FEISHU_SYNC_SCRIPT": "/bin/true",
         **(env_overrides or {}),
     }
     return subprocess.run(args, capture_output=True, text=True, env=env)
@@ -243,6 +244,40 @@ class TestGithubBackstop:
         )
         assert result.returncode == 0, f"env 已 source + 文件落盘应 recovered: {result.stderr}"
         assert "recovered" in result.stderr
+
+    def test_recovered_triggers_feishu_reconcile_missing(self, tmp_path):
+        """补跑写出 GitHub 稿后必须立刻 --reconcile-missing，不能干等到次日 11:15。"""
+        vault = tmp_path / "vault"
+        (vault / "Praise Space/AKB2.0/AI TRENDS/GitHub").mkdir(parents=True)
+        marker = tmp_path / "feishu-argv.txt"
+        feishu = tmp_path / "feishu-stub.sh"
+        feishu.write_text(
+            f'#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "{marker}"\nexit 0\n',
+            encoding="utf-8",
+        )
+        feishu.chmod(0o755)
+        stub = self._stub(
+            tmp_path,
+            'mkdir -p "$(dirname "$GITHUB_FILE")"\n'
+            'echo "# briefing" > "$GITHUB_FILE"\n'
+            "exit 0",
+        )
+        result = _run_backstop(
+            str(vault),
+            env_overrides={
+                "AKB2_GITHUB_RERUN_SCRIPT": stub,
+                "AKB2_GITHUB_ENV_FILE": "/dev/null",
+                "AKB2_FEISHU_SYNC_SCRIPT": str(feishu),
+            },
+        )
+        assert result.returncode == 0, result.stderr
+        assert "terminal=recovered" in result.stderr, result.stderr
+        assert marker.exists(), result.stderr
+        argv = marker.read_text(encoding="utf-8")
+        assert "--reconcile-missing" in argv, argv
+        assert "group" in argv, argv
+        assert _today() in argv, argv
+        assert "feishu_reconcile=ok" in result.stderr, result.stderr
 
 
 # ── 缺陷 C 回归：配置与日志噪音 ────────────────────────────────────────────
@@ -822,3 +857,47 @@ esac""",
         content = log.read_text(encoding="utf-8")
         assert "reason=deadline_would_pass" not in content, content
         assert _marker_calls(tmp_path) == 2, f"应跑满 2 轮:\n{content}"
+
+    def test_1100_window_does_not_open_second_attempt(self, tmp_path):
+        """11:00 场第一轮约 35min，到 11:37 再开第二轮必撞 12:00→124。
+
+        2026-09-14..18 每天 11:00 第一轮 ~11:37 exit=1，退避 600s 后 11:47 开第二轮，
+        12:00 被 deadline 杀掉。换族救不了「时间不够」。时钟钉在第一轮结束后。
+        """
+        vault = tmp_path / "vault"
+        (vault / "Praise Space/AKB2.0/AI TRENDS/GitHub").mkdir(parents=True)
+        stub = _counting_rerun_stub(tmp_path, succeed_from=99, write_file=False)
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+        _write_exec(
+            fake_bin / "date",
+            f"""case "${{1:-}}" in
+  +%H%M) echo 1137 ;;
+  +%Y-%m-%d) echo {_today()} ;;
+  *) echo "{_today()} 11:37:00" ;;
+esac""",
+        )
+        log = tmp_path / "gh.log"
+        result = _run_backstop(
+            str(vault),
+            env_overrides={
+                "PATH": f"{fake_bin}:{os.environ['PATH']}",
+                "AKB2_GITHUB_BACKSTOP_LOG": str(log),
+                "AKB2_GITHUB_RERUN_SCRIPT": str(stub),
+                "AKB2_GITHUB_ENV_FILE": "/dev/null",
+                "AKB2_GITHUB_RERUN_ATTEMPTS": "2",
+                "AKB2_GITHUB_RERUN_BACKOFF": "0",
+                "AKB2_GITHUB_RERUN_MIN_ATTEMPT": "2100",
+                "AKB2_GITHUB_DEADLINE_HOUR": "12",
+                "AKB2_GITHUB_DEADLINE_MINUTE": "0",
+            },
+        )
+        content = log.read_text(encoding="utf-8")
+        assert _marker_calls(tmp_path) == 1, f"11:37 后不得开第二轮:\n{content}"
+        assert "run — 今日 GitHub briefing 缺失，开始补跑 attempt=2/" not in content, content
+        assert "insufficient_time_for_two_attempts" in content, content
+        assert "attempt=1/2" in content, content
+        assert result.returncode != 0
+        assert result.returncode != DEADLINE_EXIT_CODE, (
+            f"应收在开跑前放弃，不应把第二轮跑到 124:\n{content}"
+        )

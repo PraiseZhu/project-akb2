@@ -422,6 +422,30 @@ def test_no_budget_marker_when_budget_not_hit(tmp_path):
     assert "audit_warn_issues" not in fm
 
 
+def test_social_publish_is_durable_before_pipeline_returns(tmp_path):
+    """Social 发布必须 fsync + 同目录 replace，不能只 shutil.copy2。
+
+    2026-09-18 11:49：pipeline 已 exit 0，backstop 立刻 awk/cat 都打不开
+    `/Volumes/AKB2/.../Daily Briefing.md`（外置卷写后未可见），被判 false_recovery。
+    GitHub 侧已有 `_atomic_write_text`；社媒发布必须同形。
+    """
+    from akb2.briefing import pipeline as pl
+
+    src = Path(pl.__file__).read_text(encoding="utf-8")
+    write_block = src[src.index('_stage_log("write_social"'): src.index(
+        '_stage_log("write_social", "end"'
+    )]
+    assert "_atomic_publish_text(" in write_block, (
+        "write_social 必须走耐久发布，不能 shutil.copy2"
+    )
+    assert "shutil.copy2" not in write_block, "copy2 是 9/18 写后读失败的发布形状"
+    helper = src[src.index("def _atomic_publish_text"): src.index(
+        "def _write_social_diag"
+    )]
+    assert "os.fsync" in helper, "发布必须 fsync，否则外置卷上后读可能 ENOENT"
+    assert "os.replace" in helper, "必须同目录原子替换"
+
+
 @pytest.mark.parametrize("bad", ["a: b: c", 'x "quoted" y', "line1\nline2"])
 def test_warn_issue_text_never_breaks_frontmatter(tmp_path, bad):
     """warn issue 文案里的冒号/引号/换行都不得破坏 frontmatter 结构。"""

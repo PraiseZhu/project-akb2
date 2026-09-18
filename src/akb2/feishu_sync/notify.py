@@ -16,10 +16,13 @@ from datetime import datetime
 
 from . import paths
 
-# 飞书侧错误特征（限流/认证/不可达）— 命中即抑制 DM，不复用受限飞书 API
+# 飞书侧错误特征（限流/认证/不可达）— 命中即抑制 DM，不复用受限飞书 API。
+# 不要把裸 "Unauthorized" 放进来：上游 LLM 401 正文也带这个词
+# （2026-09-14..18 生产把 github synthesis 401 误判成飞书错误，压掉告警 DM）。
+# 飞书鉴权失败走 FeishuSendError（文案含「飞书发送失败」）或 获取 token 失败。
 _FEISHU_ERROR_KEYWORDS: tuple[str, ...] = (
     "9499", "too many request", "rate-limit", "retry exhausted",
-    "限流", "飞书发送失败", "unauthorized", "Unauthorized",
+    "限流", "飞书发送失败", "获取 token 失败",
 )
 _FEISHU_ERROR_CODES: set[int] = {9499, 429}
 

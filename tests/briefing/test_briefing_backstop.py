@@ -87,6 +87,8 @@ def _run_backstop(
         "AKB2_BACKSTOP_LOCK_FILE": isolated_lock.name,
         "AKB2_BRIEFING_RERUN_SCRIPT": "/bin/false",
         "AKB2_BACKSTOP_PGREP_PATTERN": _IMPOSSIBLE_PGREP,
+        # recovered 会跟飞书补发；测试默认空转，避免打到真群。
+        "AKB2_FEISHU_SYNC_SCRIPT": "/bin/true",
         **(env_overrides or {}),
     }
     return subprocess.run(args, capture_output=True, text=True, env=env)
@@ -1873,11 +1875,54 @@ def test_social_recovered_when_artifact_reaches_pass(tmp_path):
         env_overrides={
             "AKB2_BRIEFING_RERUN_SCRIPT": str(stub),
             "AKB2_BRIEFING_RERUN_BACKOFF": "0",
+            "AKB2_BACKSTOP_POST_RERUN_SETTLE": "0",
         },
     )
 
     assert result.returncode == 0, result.stderr
     assert "terminal=recovered" in result.stderr, result.stderr
+
+
+def test_social_recovered_triggers_feishu_reconcile_missing(tmp_path):
+    """11:00 补跑写出稿时，飞书 11:15 可能已经按缺稿记过 pending。
+
+    2026-09-18：社稿 11:49 才落盘，当日 feishu-sync 不再跑，state 停在
+    missing_expected。recovered 必须立刻 --reconcile-missing --target group。
+    """
+    vault = tmp_path / "vault"
+    (vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
+    target = _today_briefing_path(vault)
+    marker = tmp_path / "feishu-argv.txt"
+    feishu = _write_exec(
+        tmp_path / "feishu-stub.sh",
+        f'printf "%s\\n" "$@" > "{marker}"\nexit 0',
+    )
+    stub = _write_exec(
+        tmp_path / "stub.sh",
+        f'mkdir -p "{target.parent}"\n'
+        f'printf -- "---\\naudit_verdict: pass\\n---\\n" > "{target}"\n'
+        "exit 0",
+    )
+
+    result = _run_backstop(
+        vault,
+        env_overrides={
+            "AKB2_BRIEFING_RERUN_SCRIPT": str(stub),
+            "AKB2_BRIEFING_RERUN_BACKOFF": "0",
+            "AKB2_BACKSTOP_POST_RERUN_SETTLE": "0",
+            "AKB2_FEISHU_SYNC_SCRIPT": str(feishu),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "terminal=recovered" in result.stderr, result.stderr
+    assert marker.exists(), f"recovered 必须调飞书补发:\n{result.stderr}"
+    argv = marker.read_text(encoding="utf-8")
+    assert "--reconcile-missing" in argv, argv
+    assert "--target" in argv and "group" in argv, argv
+    assert "--date" in argv and _today() in argv, argv
+    assert str(vault) in argv, argv
+    assert "feishu_reconcile=ok" in result.stderr, result.stderr
 
 
 def test_social_recovered_rejects_artifact_still_failing_audit(tmp_path):
@@ -1904,3 +1949,37 @@ def test_social_recovered_rejects_artifact_still_failing_audit(tmp_path):
     assert "terminal=recovered" not in result.stderr, result.stderr
     assert "post_status=warn_or_fail" in result.stderr, result.stderr
     assert result.returncode != 0
+
+
+def test_social_recovered_settles_after_rerun_when_file_appears_late(tmp_path):
+    """补跑 rc=0 但产物稍后才对 open() 可见时，必须 settle 再读，不能立刻 false_recovery。
+
+    2026-09-18：write_social 11:49:44、exit=0，11:49:46 起 awk 4 轮 + native 都
+    can't open file，post_status=unreadable → false_recovery。文件其实已在 vault。
+    外置卷写后立刻读会抖；复查前短等，才能把刚写出的 pass 认成已交付。
+    """
+    vault = tmp_path / "vault"
+    (vault / "Praise Space" / "AKB2.0" / "AI TRENDS" / "Social").mkdir(parents=True)
+    target = _today_briefing_path(vault)
+    stub = _write_exec(
+        tmp_path / "stub.sh",
+        f'mkdir -p "{target.parent}"\n'
+        f'( sleep 1; printf -- "---\\naudit_verdict: pass\\n---\\n" > "{target}" ) &\n'
+        "exit 0",
+    )
+
+    result = _run_backstop(
+        vault,
+        env_overrides={
+            "AKB2_BRIEFING_RERUN_SCRIPT": str(stub),
+            "AKB2_BRIEFING_RERUN_BACKOFF": "0",
+            "AKB2_BRIEFING_RERUN_ATTEMPTS": "1",
+            "AKB2_BACKSTOP_POST_RERUN_SETTLE": "2",
+        },
+    )
+
+    log = result.stderr
+    assert result.returncode == 0, f"写后延迟可见不得判没交付:\n{log}"
+    assert "terminal=recovered" in log, log
+    assert "reason=false_recovery" not in log, log
+    assert "post_rerun_settle" in log, f"复查前必须有 settle 信号:\n{log}"
