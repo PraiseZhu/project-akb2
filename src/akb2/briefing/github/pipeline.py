@@ -267,6 +267,8 @@ def run_pipeline(
     vault = Path(vault_root)
 
     # Step 1: Intake via three-layer fallback
+    global _LAST_INTAKE_REASON
+    _LAST_INTAKE_REASON = None
     with _StageTimer("intake"):
         if mock:
             candidates, fallback_layer = _mock_intake(force_layer)
@@ -280,8 +282,13 @@ def run_pipeline(
             f"(fallback_layer={fallback_layer}) — possible transient fetch failure "
             "or genuinely no trending repos. Backstop should retry.\n"
         )
+        intake_diag = None
+        if _LAST_INTAKE_REASON:
+            sys.stderr.write(f"WARNING [github-pipeline]: fallback reason: {_LAST_INTAKE_REASON}\n")
+            intake_diag = {"fallback_reason": _LAST_INTAKE_REASON}
         _emit_sc7_metrics(_make_zero_sc7_metrics())
         _write_skipped("no_candidates_after_intake", len(candidates), fallback_layer,
+                       intake_diag,
                        stage=FAILURE_STAGE_INTAKE,
                        failure_class=FAILURE_CLASS_UPSTREAM_INTAKE)
         return EXIT_NOT_DELIVERED
@@ -857,6 +864,10 @@ def _mock_intake(force_layer: int | None = None) -> tuple[list, str]:
     return candidates, layer
 
 
+# 最近一次 _real_intake 的 fallback 判定原因（skip 诊断用；mock / force_layer 路径为 None）。
+_LAST_INTAKE_REASON: str | None = None
+
+
 def _real_intake(force_layer: int | None = None) -> tuple[list, str, dict]:
     """Run real three-layer intake. Returns (candidates, selected_layer, l1_recency_stats)."""
     from .intake import _ZERO_RECENCY_STATS
@@ -880,6 +891,10 @@ def _real_intake(force_layer: int | None = None) -> tuple[list, str, dict]:
         return TrendingHTMLCollector().collect()
 
     decision = decide(l1, l2_runner)
+    # 逐层失败原因（L1/L2/L3 各自的 error）留痕：2026-09-23 四次 skip 时这串从未落盘，
+    # L2 当时为何失败只能事后猜。
+    global _LAST_INTAKE_REASON
+    _LAST_INTAKE_REASON = decision.reason
 
     # 即使 decide 选了 L2，也带 L1 的 recency_stats（SC-7 验收需要）
     # 注：pre-novelty 死区补位已移至 run_pipeline novelty 去重后执行（SC-1 fix）

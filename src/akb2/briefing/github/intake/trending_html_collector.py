@@ -13,6 +13,11 @@ CHROME_UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 
+# 抓取重试：单次 curl 失败（瞬时网络 / GitHub 临时拦截）不直接判 L2 失败。
+FETCH_ATTEMPTS = 2
+FETCH_RETRY_SLEEP_SEC = 30
+MIN_HTML_BYTES = 1000
+
 _REPO_LINK_RE = re.compile(r'href="/([\w.-]+)/([\w.-]+)"')
 
 
@@ -20,10 +25,19 @@ class TrendingHTMLCollector:
     def collect(self) -> CollectorResult:
         t0 = time.monotonic()
 
-        html = self._fetch_trending()
+        html = None
+        fetch_errors: list[str] = []
+        for attempt in range(FETCH_ATTEMPTS):
+            if attempt:
+                time.sleep(FETCH_RETRY_SLEEP_SEC)
+            html = self._fetch_trending()
+            if html is not None:
+                break
+            fetch_errors.append(self._last_fetch_error or "unknown")
         if html is None:
             return CollectorResult("layer2", [], [], time.monotonic() - t0, False,
-                                   "HTTP request to GitHub Trending failed",
+                                   "HTTP request to GitHub Trending failed "
+                                   f"({FETCH_ATTEMPTS} attempts: {'; '.join(fetch_errors)})",
                                    _ZERO_RECENCY_STATS)
 
         repos = self._parse_repos(html)
@@ -47,7 +61,10 @@ class TrendingHTMLCollector:
         return CollectorResult("layer2", candidates, [], time.monotonic() - t0, True, None,
                                _ZERO_RECENCY_STATS)
 
+    _last_fetch_error: str | None = None
+
     def _fetch_trending(self) -> str | None:
+        self._last_fetch_error = None
         try:
             result = subprocess.run(
                 ["curl", "-sL", "--max-time", "30",
@@ -55,10 +72,15 @@ class TrendingHTMLCollector:
                  TRENDING_URL],
                 capture_output=True, text=True, timeout=35,
             )
-            if result.returncode == 0 and len(result.stdout) > 1000:
+            if result.returncode == 0 and len(result.stdout) > MIN_HTML_BYTES:
                 return result.stdout
+            self._last_fetch_error = (
+                f"curl rc={result.returncode} bytes={len(result.stdout)} "
+                f"stderr={(result.stderr or '').strip()[:120]}"
+            )
             return None
-        except Exception:
+        except Exception as exc:
+            self._last_fetch_error = f"{type(exc).__name__}: {exc}"
             return None
 
     def _parse_repos(self, html: str) -> list[tuple[str, str]]:
