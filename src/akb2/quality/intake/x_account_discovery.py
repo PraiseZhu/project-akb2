@@ -39,6 +39,12 @@ from src.akb2.briefing.intake.l0_collector import (
     diagnose_upstream_fatal,
     match_upstream_fatal,
 )
+from src.akb2.common.x_api_coordination import (
+    active_priority_lease,
+    cooldown_remaining,
+    is_rate_limited,
+    start_cooldown,
+)
 from src.akb2.quality.intake.discovery import (
     DiscoveredArticle,
     DiscoverResult,
@@ -59,6 +65,11 @@ DEFAULT_PACING_SEC = 3.0
 PREFLIGHT_PROBE_ACCOUNTS = 1
 # user-posts 无服务端过滤，抓取量放大 2 倍再截断，补偿 RT/回复损耗。
 FETCH_CAP_MULTIPLIER = 2
+# 429 断路器（2026-09-23 事故）：本链路与 GitHub 早报 L1 共用同一 X 账号，日均约
+# 1270 次 429 仍照打，CLI 每次再重试 3 次，把限流窗口持续占满、饿死早报。
+# 连续 N 个账号 429 → 本源中止并写冷却；冷却期内所有 x_account 源直接跳过。
+RATE_LIMIT_CONSECUTIVE_BREAKER = 3
+RATE_LIMIT_COOLDOWN_SEC = 30 * 60
 DEFAULT_CURATOR_CONFIG = Path("config/curator-accounts.yaml")
 X_HOST_SUFFIXES = ("x.com", "twitter.com", "t.co")
 
@@ -248,6 +259,17 @@ def _run_twitter(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _x_api_pause_reason() -> str | None:
+    """冷却中或 GitHub 早报持有优先租约时返回原因，否则 None。"""
+    holder = active_priority_lease()
+    if holder:
+        return f"yielded to priority lease holder={holder}"
+    remaining = cooldown_remaining()
+    if remaining > 0:
+        return f"rate-limit cooldown {remaining:.0f}s remaining"
+    return None
+
+
 def _fetch_user_posts(handle: str, cap: int) -> tuple[list[dict[str, Any]], str | None, str]:
     """抓单个账号。返回 (raw tweets, fatal_sig, sample)。
 
@@ -305,7 +327,7 @@ def _fetch_user_posts(handle: str, cap: int) -> tuple[list[dict[str, Any]], str 
         if fatal:
             return [], fatal, combined[:300].replace("\n", " | ")
         logger.warning("@%s payload.ok=false — skip", handle)
-        return [], None, "payload.ok=false"
+        return [], None, f"payload.ok=false {combined[:200]}"
 
     raw = payload.get("data") or []
     if not isinstance(raw, list):
@@ -459,12 +481,46 @@ def discover_x_account_articles(
         fetch_posts = fetch_one
     fetch_md = fetch_article or fetch_x_article_markdown
 
+    paused = _x_api_pause_reason()
+    if paused:
+        logger.warning("x_account source=%s 未打 X：%s", slug, paused)
+        result.error = f"x_api paused: {paused}"
+        return result
+
     seen_urls: set[str] = set()
+    consecutive_rate_limited = 0
     for i, handle in enumerate(handles):
         if i > 0 and pace > 0:
             sleep(pace)
+        if i > 0:
+            holder = active_priority_lease()
+            if holder:
+                logger.warning(
+                    "x_account source=%s 让路给 %s，停在 %d/%d 账号（已发现条目保留）",
+                    slug, holder, i, len(handles),
+                )
+                result.error = f"x_api paused: yielded to priority lease holder={holder}"
+                break
 
         raw, fatal_sig, sample = fetch_posts(handle)
+        if is_rate_limited(sample):
+            consecutive_rate_limited += 1
+            if consecutive_rate_limited >= RATE_LIMIT_CONSECUTIVE_BREAKER:
+                start_cooldown(
+                    RATE_LIMIT_COOLDOWN_SEC,
+                    f"source={slug} {consecutive_rate_limited} consecutive 429",
+                )
+                logger.warning(
+                    "x_account source=%s 连续 %d 个账号 429，中止本源并冷却 %ss",
+                    slug, consecutive_rate_limited, RATE_LIMIT_COOLDOWN_SEC,
+                )
+                result.error = (
+                    f"x_api rate limited: {consecutive_rate_limited} consecutive 429, "
+                    f"cooldown {RATE_LIMIT_COOLDOWN_SEC}s"
+                )
+                break
+        else:
+            consecutive_rate_limited = 0
         if i < PREFLIGHT_PROBE_ACCOUNTS and fatal_sig:
             logger.error(
                 "preflight 探针（@%s，预算 %s 账号）命中上游全局故障签名，中止本轮",
