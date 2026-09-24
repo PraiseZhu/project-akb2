@@ -101,3 +101,12 @@ def test_lease_expires_and_release_is_holder_scoped():
     assert xc.active_priority_lease(now=1030.0) == "a", "非持有方不得释放租约"
     xc.release_priority_lease("a")
     assert xc.active_priority_lease(now=1030.0) is None
+
+
+def test_multiple_holders_coexist_and_renewal_extends():
+    xc.acquire_priority_lease("a", 60, now=1000.0)
+    xc.acquire_priority_lease("b", 600, now=1000.0)
+    xc.release_priority_lease("a")
+    assert xc.active_priority_lease(now=1030.0) == "b", "释放 a 不得清掉 b"
+    xc.acquire_priority_lease("b", 600, now=1500.0)  # 续租
+    assert xc.active_priority_lease(now=1700.0) == "b"

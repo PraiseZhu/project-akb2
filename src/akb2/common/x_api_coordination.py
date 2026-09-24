@@ -8,8 +8,9 @@
 
 两个协调原语（都是机器本地状态文件，放 `<state_root>/locks/`，不进同步范围）：
 
-- **优先租约**：GitHub 早报 L1 开跑时写租约（带过期时间），intake-twitter 看到有效
-  租约即让路、不再打 X。租约有 TTL，持有方崩溃也不会永久卡死。
+- **优先租约**：早报采集（GitHub L1 / social 账号采集）开跑时各写一份自己的租约
+  （每个持有方一个文件，互不覆盖、各自释放），intake-twitter 看到任一有效租约即让路。
+  租约有 TTL 且由持有方边跑边续租，持有方崩溃也不会永久卡死。
 - **429 冷却**：intake-twitter 连续命中 429 时写冷却截止时间，冷却期内所有
   x_account 源直接跳过，不再对已占满的窗口继续加压。
 
@@ -31,7 +32,7 @@ from .state_paths import state_file_path
 # 具名常量（宪法 P4：预算显式）
 # ---------------------------------------------------------------------------
 
-PRIORITY_LEASE_NAME = "x-api-priority-lease.json"
+PRIORITY_LEASE_PREFIX = "x-api-priority-lease-"
 COOLDOWN_NAME = "x-api-cooldown.json"
 LOCK_SUBDIR = "locks"
 
@@ -41,6 +42,11 @@ _RATE_LIMIT_MARKERS = ("rate_limited", "rate limited", "http 429", "rate limit e
 
 def _path(name: str) -> Path:
     return state_file_path(name, subdir=LOCK_SUBDIR)
+
+
+def _lease_name(holder: str) -> str:
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in holder)
+    return f"{PRIORITY_LEASE_PREFIX}{safe}.json"
 
 
 def _read(name: str) -> dict | None:
@@ -74,18 +80,15 @@ def is_rate_limited(text: str | None) -> bool:
 
 
 def acquire_priority_lease(holder: str, ttl_sec: float, *, now: float | None = None) -> None:
-    """写优先租约；已有租约会被覆盖（同机只有 GitHub 早报一个持有方）。"""
+    """写（或续租）本持有方的优先租约；不影响其他持有方。"""
     ts = time.time() if now is None else now
-    _write(PRIORITY_LEASE_NAME, {"holder": holder, "expires_at": ts + ttl_sec})
+    _write(_lease_name(holder), {"holder": holder, "expires_at": ts + ttl_sec})
 
 
 def release_priority_lease(holder: str) -> None:
     """只释放自己持有的租约。"""
-    data = _read(PRIORITY_LEASE_NAME)
-    if not data or data.get("holder") != holder:
-        return
     try:
-        _path(PRIORITY_LEASE_NAME).unlink()
+        _path(_lease_name(holder)).unlink()
     except FileNotFoundError:
         pass
     except OSError as exc:
@@ -93,18 +96,24 @@ def release_priority_lease(holder: str) -> None:
 
 
 def active_priority_lease(*, now: float | None = None) -> str | None:
-    """返回有效租约的持有方；无租约或已过期返回 None。"""
-    data = _read(PRIORITY_LEASE_NAME)
-    if not data:
-        return None
+    """返回任一有效租约的持有方；无租约或全部过期返回 None。"""
     ts = time.time() if now is None else now
+    lock_dir = _path(_lease_name("probe")).parent
     try:
-        expires_at = float(data.get("expires_at", 0))
-    except (TypeError, ValueError):
+        names = sorted(p.name for p in lock_dir.glob(f"{PRIORITY_LEASE_PREFIX}*.json"))
+    except OSError:
         return None
-    if expires_at <= ts:
-        return None
-    return str(data.get("holder") or "unknown")
+    for name in names:
+        data = _read(name)
+        if not data:
+            continue
+        try:
+            expires_at = float(data.get("expires_at", 0))
+        except (TypeError, ValueError):
+            continue
+        if expires_at > ts:
+            return str(data.get("holder") or "unknown")
+    return None
 
 
 def start_cooldown(seconds: float, reason: str, *, now: float | None = None) -> None:

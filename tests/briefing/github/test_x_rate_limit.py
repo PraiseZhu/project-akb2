@@ -40,8 +40,8 @@ def _rate_limited_fetch(collector, calls, lease_seen=None):
 
 
 class TestL1RateLimitBreaker:
-    def test_waits_one_window_then_aborts_and_hands_over(self, tmp_path):
-        """连续 429：等一次窗口后仍 429 → 放弃 L1，剩余账号记失败，不再逐个白打。"""
+    def test_waits_bounded_windows_then_aborts_and_hands_over(self, tmp_path):
+        """持续 429：等满上限次窗口后仍 429 → 放弃 L1，剩余账号记失败，不再逐个白打。"""
         collector = TwitterCollector(twitter_bin="fake", db_path=tmp_path / "d.db")
         calls: list[str] = []
         with (
@@ -53,7 +53,8 @@ class TestL1RateLimitBreaker:
             result = collector.collect(_pool(tmp_path, 20))
 
         breaker = tc.RATE_LIMIT_CONSECUTIVE_BREAKER
-        assert len(calls) == 2 * breaker, "等过一次窗口后应在第二轮断路时停手"
+        assert len(calls) == breaker * (tc.MAX_RATE_LIMIT_WAITS + 1), \
+            "等待次数用尽后应在下一次断路时停手"
         window_waits = [c for c in sleep.call_args_list
                         if c.args == (tc.RATE_LIMIT_WINDOW_WAIT_SEC,)]
         assert len(window_waits) == tc.MAX_RATE_LIMIT_WAITS
@@ -62,7 +63,7 @@ class TestL1RateLimitBreaker:
         assert "rate_limited" in result.error
 
     def test_recovers_after_window_wait(self, tmp_path):
-        """窗口等待后恢复 → 继续采集，L1 正常产出。"""
+        """窗口等待后恢复 → 触发断路的账号被重试，不白记失败，L1 正常产出。"""
         collector = TwitterCollector(twitter_bin="fake", db_path=tmp_path / "d.db")
         tweets = [{"id": "1", "full_text": f"https://github.com/a/r{i}", "isRetweet": False}
                   for i in range(6)]
@@ -82,9 +83,9 @@ class TestL1RateLimitBreaker:
         ):
             result = collector.collect(_pool(tmp_path, 10))
 
-        assert state["n"] == 10
+        assert state["n"] == 10 + tc.RATE_LIMIT_CONSECUTIVE_BREAKER, "断路账号应各重试一次"
         assert result.ok, result.error
-        assert len(result.failed_handles) == tc.RATE_LIMIT_CONSECUTIVE_BREAKER
+        assert result.failed_handles == []
 
     def test_no_window_wait_when_breaker_trips_on_last_handle(self, tmp_path):
         """断路恰好落在最后一个账号：没有账号可续打，不白等窗口。"""
@@ -128,6 +129,64 @@ class TestL1RateLimitBreaker:
         assert xc.active_priority_lease() is None, "采集结束必须释放租约"
 
 
+    def test_intermittent_429_across_windows_keeps_fail_rate_low(self, tmp_path):
+        """09-24 形态：每打约 20 个账号撞一次窗口（L1 自身就超配额） → 多次等待后全部账号都拿到数据。"""
+        collector = TwitterCollector(twitter_bin="fake", db_path=tmp_path / "d.db")
+        tweets = [{"id": "1", "full_text": f"https://github.com/a/r{i}", "isRetweet": False}
+                  for i in range(6)]
+        budget = {"left": 20}
+
+        def fetch(handle):
+            if budget["left"] == 0:
+                collector._last_fetch_rate_limited = True
+                return None
+            budget["left"] -= 1
+            return tweets
+
+        def sleep(sec):
+            if sec == tc.RATE_LIMIT_WINDOW_WAIT_SEC:
+                budget["left"] = 20  # 窗口重置
+
+        with (
+            mock.patch.object(collector, "_health_check", return_value=True),
+            mock.patch.object(collector, "_fetch_user_posts", side_effect=fetch),
+            mock.patch("time.sleep", side_effect=sleep),
+        ):
+            result = collector.collect(_pool(tmp_path, 61))
+
+        assert result.ok, result.error
+        # 只有尾部未凑满断路阈值的账号可能失败；修前（一次等待）这里是 ~30/61。
+        assert len(result.failed_handles) < tc.RATE_LIMIT_CONSECUTIVE_BREAKER
+
+
+    def test_lease_renewed_before_window_wait(self, tmp_path):
+        """窗口等待 900s 前必须续租：TTL 30min 不续租会在多次等待中途过期。"""
+        collector = TwitterCollector(twitter_bin="fake", db_path=tmp_path / "d.db")
+        calls: list[str] = []
+        clock = {"t": 1_000_000.0}
+        renewals: list[float] = []
+        real_acquire = xc.acquire_priority_lease
+
+        def acquire(holder, ttl, *, now=None):
+            renewals.append(clock["t"])
+            real_acquire(holder, ttl, now=clock["t"])
+
+        def sleep(sec):
+            clock["t"] += sec
+
+        with (
+            mock.patch.object(collector, "_health_check", return_value=True),
+            mock.patch.object(collector, "_fetch_user_posts",
+                              side_effect=_rate_limited_fetch(collector, calls)),
+            mock.patch.object(tc, "acquire_priority_lease", side_effect=acquire),
+            mock.patch("time.sleep", side_effect=sleep),
+        ):
+            collector.collect(_pool(tmp_path, 20))
+
+        # 每次窗口等待后，下一次续租发生在等待结束之后。
+        assert max(renewals) >= 1_000_000.0 + tc.MAX_RATE_LIMIT_WAITS * tc.RATE_LIMIT_WINDOW_WAIT_SEC
+
+
 class TestFetchUserPostsPayload:
     def _run(self, stdout, stderr="", rc=0):
         collector = TwitterCollector(twitter_bin="fake")
@@ -146,6 +205,15 @@ class TestFetchUserPostsPayload:
             "", stderr="WARNING twitter_cli.client: Rate limited (429), retrying", rc=1)
         assert tweets is None
         assert limited
+
+    def test_single_page_fetch_size(self):
+        """--max 必须 ≤ 一页（40），否则每个账号要打 2 页 UserTweets，配额翻倍。"""
+        collector = TwitterCollector(twitter_bin="fake")
+        proc = subprocess.CompletedProcess([], 0, stdout='{"ok": true, "data": []}', stderr="")
+        with mock.patch("subprocess.run", return_value=proc) as run:
+            collector._fetch_user_posts("@x")
+        cmd = run.call_args.args[0]
+        assert int(cmd[cmd.index("--max") + 1]) <= 40
 
     def test_ok_payload_returns_data(self):
         tweets, limited = self._run(json.dumps({"ok": True, "data": [{"id": "1"}]}))
