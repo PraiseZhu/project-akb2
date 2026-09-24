@@ -31,6 +31,7 @@ from pathlib import Path
 
 import yaml
 
+from ...common.x_api_coordination import acquire_priority_lease, release_priority_lease
 from .base import REPO_ROOT
 from .l0_collector import (
     FIXTURE_PATH,
@@ -62,6 +63,11 @@ _DEFAULT_MAX_RESERVE_ACCOUNTS = 10  # reserve 最多抓多少个账号（限流�
 # 正常路径的总调用次数与没有探针时完全一致（回归见 tests/briefing/
 # test_intake_preflight.py::test_preflight_adds_no_extra_call_when_upstream_healthy）。
 PREFLIGHT_PROBE_ACCOUNTS = 1
+
+# 采集期间持有 X 优先租约，让同账号的 intake-twitter 让路（2026-09-23 事故：intake 日均
+# ~1270 次 429 把窗口占满）。不让路给 GitHub 早报：两条早报可并行。每个账号前续租。
+PRIORITY_LEASE_HOLDER = "social_briefing_accounts"
+PRIORITY_LEASE_TTL_SEC = 20 * 60
 
 
 def _load_fetch_tier(tier: str = _DEFAULT_TIER) -> list[str]:
@@ -381,6 +387,22 @@ class AccountCollector:
             sys.stderr.write(f"WARNING: fetch_tier.{tier} empty in curator config\n")
             return []
 
+        acquire_priority_lease(PRIORITY_LEASE_HOLDER, PRIORITY_LEASE_TTL_SEC)
+        try:
+            return self._fetch_handles(tier, handles, since_date, until_date,
+                                       allow_reserve=allow_reserve)
+        finally:
+            release_priority_lease(PRIORITY_LEASE_HOLDER)
+
+    def _fetch_handles(
+        self,
+        tier: str,
+        handles: list[str],
+        since_date: str | None,
+        until_date: str | None,
+        *,
+        allow_reserve: bool,
+    ) -> list[dict]:
         seen: set[str] = set()
         aggregated: list[dict] = []
         ok_accounts = 0
@@ -389,6 +411,7 @@ class AccountCollector:
         for i, handle in enumerate(handles):
             if i > 0 and self.pacing_sec > 0:
                 time.sleep(self.pacing_sec)  # 限流防护
+            acquire_priority_lease(PRIORITY_LEASE_HOLDER, PRIORITY_LEASE_TTL_SEC)  # 续租
             tweets = self._fetch_one(handle, since_date, until_date)
             if i < PREFLIGHT_PROBE_ACCOUNTS:
                 self._abort_if_preflight_failed(tier, handle)
@@ -425,6 +448,7 @@ class AccountCollector:
                         break
                     if reserve_used > 0 and self.pacing_sec > 0:
                         time.sleep(self.pacing_sec)
+                    acquire_priority_lease(PRIORITY_LEASE_HOLDER, PRIORITY_LEASE_TTL_SEC)
                     new_tweets = self._fetch_one(rh, since_date, until_date)
                     self._abort_if_broken()
                     reserve_used += 1
