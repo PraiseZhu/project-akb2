@@ -153,13 +153,11 @@ class TestDeterministicFallbackVacuousClaims:
         fallback primary 选 §E(第一个非 vacuous),claim text 用 §E 真实内容,
         不产 [ Go back to blog / Share / 图片 URL 当 claim。
         """
-        c234_raw = (
-            "/Volumes/AKB2/Obsidian/Praise Space/AKB2.0/raw/"
-            "langchain-blog--c234f0aa9f55--raw--2026-06-29.md"
-        )
-        if not Path(c234_raw).exists():
-            pytest.skip("c234 raw 不在本机(vault 未挂载)")
-        raw = Path(c234_raw).read_text(encoding="utf-8")
+        # 固化为仓内 fixture（原样拷自 vault raw/langchain-blog--c234f0aa9f55--raw--2026-06-29.md）。
+        # 不再读真实 vault：2026-09-24 Argus 用未授权的 node 跑到这里，触发 macOS「可移除宗卷」
+        # 授权弹窗，锁屏没人点，整机所有进程访问 /Volumes/AKB2 被挂起 7.5 小时。
+        c234_raw = _REPO / "tests/quality/fixtures/regression/c234-langchain-blog--raw.md"
+        raw = c234_raw.read_text(encoding="utf-8")
         data = _build_deterministic_extract_data(raw, raw_path="c234", content_lane="")
         # 所有 claim text 非空且非 vacuous(>=20 字符,非导航/图片)
         assert len(data["claims"]) >= 1

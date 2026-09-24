@@ -12,9 +12,50 @@ from __future__ import annotations
 import hashlib
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+
+# ---------------------------------------------------------------------------
+# 真实 vault 隔离闸
+# ---------------------------------------------------------------------------
+# 非 integration 测试不得打开真实 vault 卷里的文件。2026-09-24 事故：Argus 用从未获授权的
+# node 跑单测，一条用例读 /Volumes/AKB2 触发 macOS「可移除宗卷」授权弹窗；锁屏无人应答，
+# 该授权请求一直挂着，整机所有进程（早报 / intake / gate）访问该卷被挂起 03:13→10:45。
+# 在进程内用审计钩子把这类访问变成立即失败，而不是去碰卷、赌授权状态。
+_REAL_VAULT_VOLUME = "/Volumes/AKB2"
+_real_vault_guard = {"active": False}
+
+
+def _real_vault_audit_hook(event: str, args: tuple) -> None:
+    if not _real_vault_guard["active"] or event not in ("open", "os.listdir", "os.scandir"):
+        return
+    target = args[0] if args else None
+    if isinstance(target, int) or target is None:
+        return
+    try:
+        path = os.fsdecode(target)
+    except TypeError:
+        return
+    if path == _REAL_VAULT_VOLUME or path.startswith(_REAL_VAULT_VOLUME + "/"):
+        raise PermissionError(
+            f"测试不得访问真实 vault 卷 {path!r}（会触发 macOS 可移除宗卷授权弹窗、"
+            "挂起整机对该卷的访问）；改用 tests/ 下的 fixture，或标记 integration"
+        )
+
+
+sys.addaudithook(_real_vault_audit_hook)
+
+
+@pytest.fixture(autouse=True)
+def _forbid_real_vault_volume(request):
+    _real_vault_guard["active"] = request.node.get_closest_marker("integration") is None
+    try:
+        yield
+    finally:
+        _real_vault_guard["active"] = False
+
 
 # ---------------------------------------------------------------------------
 # Session-scoped fixtures
