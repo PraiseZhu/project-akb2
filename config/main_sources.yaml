@@ -263,6 +263,15 @@ sources:
   # 补充源 (29) — 领域强相关但非一手定义者
   # =========================================================================
 
+  - slug: claude-dev
+    domain: claude.dev
+    feed_url: https://claude.dev/rss.xml
+    listing_url: https://claude.dev/
+    rate_limit: 3600
+    status: trial
+    category: supplementary
+    notes: "claude.dev — Claude 开发实践 / Agent 工程；[2026-10-01 新增] 首页提供 RSS，实测主链路解析器可读取文章条目。"
+
   - slug: dan-abramov
     domain: overreacted.io
     feed_url: https://overreacted.io/rss.xml

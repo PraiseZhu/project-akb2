@@ -96,6 +96,12 @@ jobs:
       # 这是与 defuddle 无关的第二个 CI-only 环境差异,在此对齐,不放宽任何断言。
       - run: git config --global init.defaultBranch main
 
+      - name: Install CPU-only PyTorch
+        run: >-
+          pip install --no-cache-dir
+          "torch==2.14.1+cpu" "torchvision==0.29.1+cpu"
+          --index-url https://download.pytorch.org/whl/cpu
+
       - run: pip install -e ".[dev]"
 
       # 无 VAULT_ROOT 时 44 项测试会因 /Volumes/AKB2 未挂载而报
