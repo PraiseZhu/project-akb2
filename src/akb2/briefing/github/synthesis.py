@@ -48,6 +48,12 @@ MAX_RETRIES = len(RETRY_BACKOFF) + 1
 MAX_BACKOFF_S = max(RETRY_BACKOFF)
 REQUEST_TIMEOUT_S = 120
 
+# 401 短重试：共享 Gateway 会瞬时 401（2026-10-19 早间同 key 数小时后即恢复 200），
+# 把它当永久配置错会让主跑 0.1s 即死。只重试 1 次、等固定短时（真坏 key 不烧预算，
+# 也不进 MAX_RETRIES 的长退避），仍 401 才硬停。
+AUTH_RETRY_MAX = 1
+AUTH_RETRY_DELAY_S = 5.0
+
 
 def _gateway_model_id(family: str) -> str:
     """取该模型族在 Gateway 上的模型 id，顺带过 llm_router 的族校验。
@@ -382,6 +388,7 @@ def _call_deepseek(prompt: str, api_key: str | None = None,
 
     # 实收等待累计 —— 耗尽时打印它而不是打印退避表（自证真实预算，宪法 P4）
     total_wait = 0.0
+    auth_retries = 0
     for attempt in range(MAX_RETRIES):
         try:
             req = Request(DEEPSEEK_API_URL, data=body, headers=headers)
@@ -407,8 +414,13 @@ def _call_deepseek(prompt: str, api_key: str | None = None,
                     f"本次已跳过全部 {MAX_RETRIES - 1} 次退避与备族尝试。",
                     diagnosis=diagnosis, model=model_id,
                 ) from e
+            if e.code == 401 and auth_retries < AUTH_RETRY_MAX:
+                auth_retries += 1
+                _sleep(AUTH_RETRY_DELAY_S)
+                total_wait += AUTH_RETRY_DELAY_S
+                continue
             if not diagnosis.retryable:
-                # 401/403/400 这类配置/鉴权错：立即抛，**不消耗剩余尝试**
+                # 403/400 这类配置错（及短重试后仍 401）：立即抛，**不消耗剩余尝试**
                 raise SynthesisAPIError(
                     f"synthesis 硬失败（不可重试状态码 {e.code}）: {e} "
                     f"[{diagnosis.summary()} model={model_id}] — "

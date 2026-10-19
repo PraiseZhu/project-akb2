@@ -456,7 +456,8 @@ class TestModelFamilyFallback:
         with pytest.raises(syn.SynthesisAPIError, match="401"):
             syn.synthesize(repos, api_key="k")
 
-        assert seen_models == [syn.PRIMARY_SYNTHESIS_MODEL], (
+        # 401 在主族上短重试 1 次（共 2 次请求），但仍不换族
+        assert seen_models == [syn.PRIMARY_SYNTHESIS_MODEL] * 2, (
             f"配置错也去试了备族，白烧一族: {seen_models}"
         )
 
