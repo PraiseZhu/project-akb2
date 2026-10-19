@@ -194,7 +194,7 @@ class TestRetryAfterAndBudgetArithmetic:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestNonRetryableStatusDoesNotBurnBudget:
-    @pytest.mark.parametrize("code", [400, 401, 403, 404])
+    @pytest.mark.parametrize("code", [400, 403, 404])
     def test_hard_failure_calls_once_and_never_sleeps(self, monkeypatch, sleeps, code):
         """SC-2：401/403/400/404 是配置或鉴权错，重试只是把同一个错再犯 N 次。"""
         calls: list[bytes] = []
@@ -214,6 +214,46 @@ class TestNonRetryableStatusDoesNotBurnBudget:
         assert exc.value.diagnosis is not None
         assert exc.value.diagnosis.retryable is False
         assert str(code) in str(exc.value)
+
+    def test_401_gets_one_short_retry_then_hard_stops(self, monkeypatch, sleeps):
+        """2026-10-19：共享 Gateway 早间瞬时 401（同 key 数小时后恢复 200）被当成永久配置错，
+        主跑 synthesize 0.1s 即死。401 短重试 1 次（不是 MAX_RETRIES 次，真坏 key 不烧预算），
+        仍 401 才硬停。"""
+        calls: list[bytes] = []
+
+        def fake_urlopen(req, timeout=None):
+            calls.append(req.data)
+            raise _http_error(401, '{"error": "invalid api key"}')
+
+        monkeypatch.setattr(syn, "urlopen", fake_urlopen)
+
+        with pytest.raises(syn.SynthesisAPIError) as exc:
+            syn._call_deepseek("p", api_key="k")
+
+        assert len(calls) == 2, f"401 应短重试恰好 1 次（共 2 次请求），实得 {len(calls)}"
+        assert len(sleeps) == 1 and 0 < sleeps[0] <= 10, f"401 短重试等待应为短 sleep: {sleeps}"
+        assert exc.value.exhausted is False
+        assert exc.value.diagnosis is not None and exc.value.diagnosis.retryable is False
+        assert "401" in str(exc.value)
+
+    def test_transient_401_recovers_on_retry(self, monkeypatch, sleeps):
+        """第一次 401、第二次 200 → 返回响应，不抛错。"""
+        repos = _repos(10)
+        state = {"n": 0}
+
+        def fake_urlopen(req, timeout=None):
+            state["n"] += 1
+            if state["n"] == 1:
+                raise _http_error(401, '{"error": "transient auth"}')
+            return _FakeResponse(_valid_items_payload(repos))
+
+        monkeypatch.setattr(syn, "urlopen", fake_urlopen)
+
+        result = syn._call_deepseek("p", api_key="k")
+
+        assert result is not None
+        assert state["n"] == 2
+        assert len(sleeps) == 1
 
     @pytest.mark.parametrize("code", sorted(http_retry.RETRYABLE_HTTP_STATUS))
     def test_retryable_status_set_matches_shared_policy(self, monkeypatch, sleeps, code):
@@ -403,7 +443,7 @@ class TestModelFamilyFallback:
     def test_config_error_does_not_waste_a_second_family(
         self, monkeypatch, sleeps, no_family_fallback_env,
     ):
-        """401 是鉴权/配置问题，换族只会在另一族上原样再错一次 → 不换。"""
+        """持续 401 是鉴权/配置问题（短重试后仍 401），换族只会原样再错一次 → 不换。"""
         repos = _repos(10)
         seen_models: list[str] = []
 
