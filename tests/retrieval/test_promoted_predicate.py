@@ -1,98 +1,56 @@
-"""sc-engine-promoted-authority：promoted 判定权威口径钉死测试。
+"""sc-engine-promoted-authority：promoted 判定口径钉死测试。
 
-判据必须与 src/akb2/quality/promote.py 的 _flip_frontmatter（升格唯一写入口）
-实际写入一致：status/page_status: active + gate_decision: active +
-reviewer: akb2-quality-loop-v1（同批 page_status/reviewer/reviewed_at），
+判据 = 升格写入口 _flip_frontmatter 当年实际写入的字段：status/page_status: active +
+gate_decision: active + reviewer: akb2-quality-loop-v1（同批 page_status/reviewer/reviewed_at），
 落点 wiki/sources/<slug>.md。
+
+写入口 src/akb2/quality/promote.py 已于 2026-10-24 随主链路删除。知识库现存的已升格笔记
+都带这组字段，所以判据冻结为删除时的值（_PROMOTED_REVIEWER），不再从源码现场解析。
+新主链路重建时：沿用这组字段，或者同步改引擎与本文件，不允许静默漂移。
 
 夹具矩阵恰五格：①字段齐全且在 wiki/sources ②仅 status active
 ③仅 gate_decision active ④两者皆非 active ⑤字段齐全但落在 staging/candidate。
 恰第①格 promoted，其余四格一律排除。
-
-同源反证：改 promote.py 的判定字段而不改引擎时，本文件的同源断言必须红
-——判据值不复制粘贴，而是从 promote.py 源文件现场解析（MACHINE_REVIEWER
-常量 + _flip_frontmatter 写入的四个字段名），promote.py 一动测试即失配。
 """
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import pytest
 
 from akb2.retrieval import engine
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-PROMOTE_PY = REPO_ROOT / "src" / "akb2" / "quality" / "promote.py"
+# 删除前 src/akb2/quality/promote.py:518 的 MACHINE_REVIEWER 值
+_PROMOTED_REVIEWER = "akb2-quality-loop-v1"
 
 
-# ---------------------------------------------------------------------------
-# 同源解析：从 promote.py 现场提取权威判据（不复制粘贴常量值）
-# ---------------------------------------------------------------------------
+def test_engine_reviewer_matches_frozen_promote_signature() -> None:
+    """引擎的机器 reviewer 必须等于现存已升格笔记携带的签名。
 
-
-def _authority_from_promote() -> dict[str, str]:
-    """解析 promote.py 的 MACHINE_REVIEWER 与 _flip_frontmatter 写入字段。"""
-    src = PROMOTE_PY.read_text(encoding="utf-8")
-
-    m = re.search(r'^MACHINE_REVIEWER\s*=\s*"([^"]+)"', src, re.M)
-    assert m, "promote.py 缺 MACHINE_REVIEWER 常量（源码已漂移）"
-    machine_reviewer = m.group(1)
-
-    fn = re.search(
-        r"^def _flip_frontmatter\(.*?(?=^def )", src, re.M | re.S
-    )
-    assert fn, "promote.py 缺 _flip_frontmatter（源码已漂移）"
-    body = fn.group(0)
-
-    # 翻转动写入的键（re.sub 替换目标 / 新增行），每个都必须在函数体里
-    written = {
-        "page_status": bool(re.search(r'"?page_status"?\s*:\s*active|page_status:\\s\\s\*', body))
-        or '"page_status: active"' in body,
-        "status": '"status: active"' in body,
-        "gate_decision": '"gate_decision: active"' in body,
-        "reviewer": '"reviewer: {MACHINE_REVIEWER}"' in body
-        or "f\"reviewer: {MACHINE_REVIEWER}\"" in body,
-    }
-    return {"machine_reviewer": machine_reviewer, "written": written}
-
-
-def test_engine_constants_same_source_as_promote() -> None:
-    """同源断言：引擎常量与 promote.py 现场解析值逐字相等。
-
-    反证路径：改 promote.py 的 MACHINE_REVIEWER 或 _flip_frontmatter 的
-    写入字段而不改引擎 → 本测试红（判据失配，不允许静默漂移）。
+    改了引擎常量却没有同步迁移存量笔记，检索会静默看不到全部已升格内容。
     """
-    auth = _authority_from_promote()
-    assert engine.MACHINE_REVIEWER == auth["machine_reviewer"], (
-        f"引擎 MACHINE_REVIEWER={engine.MACHINE_REVIEWER!r} 与 promote.py "
-        f"权威值 {auth['machine_reviewer']!r} 失配——改了升格签名没同步引擎"
-    )
-    # _flip_frontmatter 写入的四个判据字段全部真实存在（缺一个 = 源码漂移）
-    for key, present in auth["written"].items():
-        assert present, f"promote.py _flip_frontmatter 不再写 {key}（判据漂移）"
+    assert engine.MACHINE_REVIEWER == _PROMOTED_REVIEWER
 
 
 def test_engine_regexes_encode_promote_semantics() -> None:
-    """引擎四个行首锚定正则的语义与 promote 写入口径一致（值级断言）。"""
-    auth = _authority_from_promote()
+    """引擎四个行首锚定正则的语义与升格写入口径一致（值级断言）。"""
     # is_promoted 的判据 = (page_)status active + gate_decision active +
-    # reviewer = MACHINE_REVIEWER —— 与 _flip_frontmatter 写入集合同源
+    # reviewer = 冻结的升格签名
     promoted_fm = (
         "---\n"
         "title: probe\n"
         "page_status: active\n"
         "status: active\n"
         "gate_decision: active\n"
-        f"reviewer: {auth['machine_reviewer']}\n"
+        f"reviewer: {_PROMOTED_REVIEWER}\n"
         "reviewed_at: 2026-01-01\n"
         "---\n"
     )
     assert engine.is_promoted(promoted_fm) is True
     # reviewer 值偏离权威签名 → 不 promoted
     tampered = promoted_fm.replace(
-        f"reviewer: {auth['machine_reviewer']}", "reviewer: someone-else"
+        f"reviewer: {_PROMOTED_REVIEWER}", "reviewer: someone-else"
     )
     assert engine.is_promoted(tampered) is False
 
@@ -131,8 +89,7 @@ def _write(root: Path, rel: str, fm: str) -> None:
 @pytest.fixture()
 def matrix_vault(tmp_path: Path) -> Path:
     root = tmp_path / "vault"
-    auth = _authority_from_promote()
-    reviewer = auth["machine_reviewer"]
+    reviewer = _PROMOTED_REVIEWER
 
     # ① 字段齐全且在 wiki/sources → promoted
     _write(root, "wiki/sources/full.md", _FULL_FM.format(reviewer=reviewer))

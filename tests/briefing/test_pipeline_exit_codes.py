@@ -1,14 +1,8 @@
-"""退出码诚实性（social 链路）+ 两处可观测性回归锁。
-
-三个主题共处一个文件，是本轮并行修复的**文件边界**决定的（同一批次另有多个 worker
-在改 tests/quality/ 与 scripts/ 下的文件，新建文件会撞车）。等并行批次落地后，
-第 2、3 节宜分别迁到 `tests/quality/test_runner_log_format.py` 与一个仓库卫生测试文件。
+"""退出码诚实性（social 链路）+ 仓库卫生回归锁。
 
 1. social pipeline「未交付即非零」—— 每个 BLOCKED / reject / audit-fail 分支的退出码
    都具名且非零，且与保留码位 {124, 125} 无交集。
-2. `akb2-quality-runner.log` 的时间戳 —— 这是唯一 24/7 常驻链路，826KB 日志此前
-   `grep -c 2026-08-02` == 0，任何时间轴负载关联都做不成。
-3. `.stignore` —— Syncthing 此前在同步 `.git/` 与 `*.sqlite`，实测已产生 13,076 个
+2. `.stignore` —— Syncthing 此前在同步 `.git/` 与 `*.sqlite`，实测已产生 13,076 个
    冲突副本（含 5 份 `.git/index.sync-conflict-*`）。
 """
 
@@ -16,10 +10,8 @@ from __future__ import annotations
 
 import inspect
 import json
-import os
 import re
 import subprocess
-import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -124,102 +116,7 @@ def test_vault_root_missing_blocks_with_nonzero_exit(tmp_path, capsys):
     assert "does not exist" in capsys.readouterr().err
 
 
-# ═══ 2. runner 日志时间戳（L6-3 / SC-7）════════════════════════════════════
-
-from akb2.quality import runner as quality_runner  # noqa: E402  (置于退出码断言之后)
-
-# `[2026-08-03T05:40:35Z]` —— 与 scripts/akb2-main-pipeline.sh 写进**同一个日志文件**
-# 的前缀同形（该文件已有 134 行这种前缀）。
-_TS_PREFIX_RE = re.compile(r"^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\]")
-
-
-def test_log_ts_matches_iso8601_utc_prefix():
-    """`_log_ts()` 产出带时区（Z）的 ISO8601 前缀。"""
-    ts = quality_runner._log_ts()
-    assert _TS_PREFIX_RE.match(ts), ts
-
-
-def test_log_ts_format_matches_runner_wrapper_script():
-    """格式与 `scripts/akb2-main-pipeline.sh` 一致 —— 那个 wrapper 写的是同一个日志文件。
-
-    这条断言的意义：不在 `logs/akb2-quality-runner.log` 里造出第二种时间戳格式。
-    wrapper 用 `date -u +%Y-%m-%dT%H:%M:%SZ`，runner.py 用同一个 strftime 串。
-    """
-    script = (PROJECT_ROOT / "scripts" / "akb2-main-pipeline.sh").read_text(encoding="utf-8")
-    wrapper_formats = set(re.findall(r"date -u \+(\S+?)\)", script))
-    assert quality_runner.LOG_TS_FORMAT in wrapper_formats, (
-        f"runner LOG_TS_FORMAT={quality_runner.LOG_TS_FORMAT!r} "
-        f"不在 wrapper 使用的格式集合 {wrapper_formats} 内 —— 同一日志文件里出现了两种格式"
-    )
-
-
-def test_every_runner_log_line_carries_timestamp():
-    """静态闸：runner.py 里每个 `[runner]` 日志字面量都带 `_log_ts()` 前缀。
-
-    没有这条，下次有人新加一行 `print(f"[runner] ...")` 就会静默退回"无时间戳"。
-    """
-    source = Path(quality_runner.__file__).read_text(encoding="utf-8")
-    # 匹配字符串字面量里出现的 `[runner]`，检查它前面紧跟 `{_log_ts()} `
-    bare = re.findall(r'(?<!\{_log_ts\(\)\} )\[runner\]', source)
-    # 注释里提到 `[runner]` 时不算日志行 —— 只统计出现在引号内的
-    offenders = [
-        line.strip()
-        for line in source.splitlines()
-        if '"[runner]' in line or "f\"[runner]" in line
-    ]
-    assert offenders == [], f"这些日志行缺时间戳前缀: {offenders}"
-    assert bare, "sanity: 注释里本就提到过 [runner]"
-
-
-def test_runner_emits_timestamped_line_on_real_log_path(capsys):
-    """走真实日志代码路径（`_shard_key` 的回退告警）→ stderr 行带时间戳前缀。
-
-    选这条路径是因为它是纯函数、无副作用、不碰 vault，不需要动 24/7 热路径的状态。
-    """
-    quality_runner._shard_key("no-raw-marker.md")
-    err_lines = [ln for ln in capsys.readouterr().err.splitlines() if "[runner]" in ln]
-    assert err_lines, "应当打出一条 [runner] 告警"
-    for line in err_lines:
-        assert _TS_PREFIX_RE.match(line), f"日志行缺时间戳: {line!r}"
-
-
-@pytest.mark.parametrize("flag", ["--once"])
-def test_runner_cli_once_writes_timestamped_line(flag, tmp_path):
-    """端到端：真实跑一次 runner CLI（空队列，最短路径）→ 输出行带时间戳。
-
-    空队列的 `--once` 不做任何 LLM 调用、不写 vault，是能安全执行的最短真实路径。
-    PYTHONPATH 显式指向本工作树的 src：editable 安装指向主仓 checkout，
-    不覆盖会静默跑到主仓那份代码上。
-    """
-    vault = tmp_path / "vault"
-    (vault / "raw").mkdir(parents=True)
-    (vault / "staging").mkdir()
-    env = {
-        **os.environ,
-        "PYTHONPATH": str(PROJECT_ROOT / "src"),
-        "AKB2_STATE_ROOT": str(tmp_path / "state"),
-    }
-    result = subprocess.run(
-        [sys.executable, "-m", "akb2.quality.runner", flag,
-         "--vault-root", str(vault), "--raw-dir", str(vault / "raw"),
-         "--staging-dir", str(vault / "staging")],
-        capture_output=True, text=True, env=env, cwd=str(PROJECT_ROOT),
-    )
-    assert result.returncode == 0, f"stdout={result.stdout}\nstderr={result.stderr}"
-    runner_lines = [ln for ln in result.stderr.splitlines() if "[runner]" in ln]
-    assert runner_lines, f"没拿到 [runner] 行: {result.stderr}"
-    for line in runner_lines:
-        assert _TS_PREFIX_RE.match(line), f"日志行缺时间戳: {line!r}"
-
-
-def test_runner_log_timestamp_is_greppable_by_date():
-    """可判读性验收：新格式能被 `grep <date>` 命中 —— 这正是旧日志做不到的那件事。"""
-    from datetime import UTC, datetime
-    today = datetime.now(UTC).strftime("%Y-%m-%d")
-    assert today in quality_runner._log_ts()
-
-
-# ═══ 3. .stignore（L6-4 / SC-8）════════════════════════════════════════════
+# ═══ 2. .stignore（L6-4 / SC-8）════════════════════════════════════════════
 
 _STIGNORE = PROJECT_ROOT / ".stignore"
 

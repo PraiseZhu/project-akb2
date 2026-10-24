@@ -1,1 +1,0 @@
-{"status": "FAIL", "dimensions_checked": 5, "findings": [{"dimension": "evidence_quality", "severity": "P1", "detail": "Missing source anchors in core arguments"}]}

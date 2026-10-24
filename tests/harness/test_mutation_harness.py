@@ -22,18 +22,12 @@ import mutation_harness as mh  # noqa: E402
 
 PY = sys.executable
 LEDGER = REPO_ROOT / "src/akb2/loops/ledger.py"
-SIGNATURES = REPO_ROOT / "src/akb2/loops/signatures.py"
 TIMEOUT = "120"
 
 # 双源互证的 ground truth（harness 实跑 RED_ACTUAL == 逐测试语义推导）
 LEDGER_RED = [
     "tests.loops.test_ledger_lifeline.test_duplicate_event_returns_false",
     "tests.loops.test_ledger_lifeline.test_multiple_events_no_duplicates",
-]
-SIGNATURES_RED = [
-    "tests.loops.test_signatures.test_different_signatures_independent",
-    "tests.loops.test_signatures.test_escalation_threshold_is_three",
-    "tests.loops.test_signatures.test_third_record_triggers_escalation",
 ]
 
 # live skill 源是 host-local 真相源（~/AI-Agent/Claude/... 元工作区），不随
@@ -60,11 +54,11 @@ def _run_harness(args: list[str]) -> tuple[int, str, str]:
     return proc.returncode, proc.stdout, proc.stderr
 
 
-def _run_signatures(predicted: str) -> tuple[int, str, str]:
+def _run_ledger(predicted: str) -> tuple[int, str, str]:
     return _run_harness(
         [
-            "--mutation", "signature_escalation_threshold_4",
-            "--tests", "tests/loops/test_signatures.py",
+            "--mutation", "ledger_dedup_disabled",
+            "--tests", "tests/loops/test_ledger_lifeline.py",
             "--predicted-red", predicted,
             "--timeout", TIMEOUT,
         ]
@@ -97,44 +91,31 @@ def test_match_exact_red_set_and_restore() -> None:
     assert "SOURCE_RESTORED" in _prefixes(out)
 
 
-def test_second_mutation_matches_its_own_red_set() -> None:
-    """阈值变异的完整红集匹配：rc=0（覆盖第二个注册表条目），signatures.py 还原。"""
-    sha_before = _sha(SIGNATURES)
-    rc, out, err = _run_signatures(",".join(SIGNATURES_RED))
-    assert rc == mh.EXIT_MATCH, out + err
-    assert "MUTATION_RED_SET_MATCH actual=3 predicted=3" in out
-    assert _sha(SIGNATURES) == sha_before
-    assert "SOURCE_RESTORED" in _prefixes(out)
-
-
 def test_mismatch_on_incomplete_prediction() -> None:
-    """缺两个红测试的预测：rc=1，缺项全落在 only_actual，only_predicted 为空。"""
-    rc, out, err = _run_signatures(SIGNATURES_RED[1])
+    """缺一个红测试的预测：rc=1，缺项落在 only_actual，only_predicted 为空。"""
+    rc, out, err = _run_ledger(LEDGER_RED[1])
     assert rc == mh.EXIT_MISMATCH, out + err
-    assert "MUTATION_RED_SET_MISMATCH actual=3 predicted=1" in out
-    assert (
-        "only_actual=['tests.loops.test_signatures.test_different_signatures_independent', "
-        "'tests.loops.test_signatures.test_third_record_triggers_escalation']" in out
-    )
+    assert "MUTATION_RED_SET_MISMATCH actual=2 predicted=1" in out
+    assert f"only_actual=['{LEDGER_RED[0]}']" in out
     assert "only_predicted=[]" in out
 
 
 def test_mismatch_on_extra_prediction() -> None:
-    """预测多出一条：rc=1，多出项落在 only_predicted。"""
-    extra = "tests.loops.test_signatures.test_result_contains_signature_string"
-    rc, out, err = _run_signatures(",".join(SIGNATURES_RED) + "," + extra)
+    """预测多出一条（变异下仍绿的测试）：rc=1，多出项落在 only_predicted。"""
+    extra = "tests.loops.test_ledger_lifeline.test_append_new_event_returns_true"
+    rc, out, err = _run_ledger(",".join(LEDGER_RED) + "," + extra)
     assert rc == mh.EXIT_MISMATCH, out + err
-    assert "actual=3 predicted=4" in out
+    assert "actual=2 predicted=3" in out
     assert f"only_predicted=['{extra}']" in out
 
 
 def test_restore_even_when_mismatch() -> None:
     """红集不匹配（预测为空）时源文件仍被还原。"""
-    sha_before = _sha(SIGNATURES)
-    rc, out, err = _run_signatures("")
+    sha_before = _sha(LEDGER)
+    rc, out, err = _run_ledger("")
     assert rc == mh.EXIT_MISMATCH
-    assert "MUTATION_RED_SET_MISMATCH actual=3 predicted=0" in out
-    assert _sha(SIGNATURES) == sha_before
+    assert "MUTATION_RED_SET_MISMATCH actual=2 predicted=0" in out
+    assert _sha(LEDGER) == sha_before
     assert "SOURCE_RESTORED" in _prefixes(out)
 
 
@@ -147,7 +128,7 @@ def test_unknown_mutation_fails_closed() -> None:
     """未知变异名：rc=2，不碰任何源文件，不产生红集判定。"""
     sha_before = _sha(LEDGER)
     rc, out, err = _run_harness(
-        ["--mutation", "nope", "--tests", "tests/loops/test_signatures.py", "--predicted-red", ""]
+        ["--mutation", "nope", "--tests", "tests/loops/test_ledger_lifeline.py", "--predicted-red", ""]
     )
     assert rc == mh.EXIT_ERROR
     assert "未知变异" in err
@@ -230,7 +211,7 @@ def test_forbidden_registry_entry_rejected_cli(monkeypatch, capsys) -> None:
         ),
     )
     rc = mh.main(
-        ["--mutation", "bad_quality", "--tests", "tests/loops/test_signatures.py",
+        ["--mutation", "bad_quality", "--tests", "tests/loops/test_ledger_lifeline.py",
          "--predicted-red", ""]
     )
     captured = capsys.readouterr()
