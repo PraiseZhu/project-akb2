@@ -14,12 +14,6 @@ dependencies = [
     "httpx>=0.28,<0.29",
     "langgraph>=1.2.6,<2",
     "openai>=2.28,<3",
-    # scrapling 的 Fetcher/StealthyFetcher(quality/intake/{discovery,extract}.py)需要
-    # [fetchers] extra,它带入 curl_cffi、playwright 等。裸 scrapling 不含这些,
-    # 干净环境安装会缺 curl_cffi → 运行/测试报 ModuleNotFoundError。
-    # 0.4.8 是 plans/gd/2026-06-26-.../step-2 实测钉死的版本,按 minor 封顶不放宽。
-    "scrapling[fetchers]>=0.4.8,<0.5",
-    "docling>=2.94,<3",
 ]
 
 [project.optional-dependencies]
@@ -29,9 +23,6 @@ dev = [
     # 当前取后者:该漏洞只影响开发机本地,且需同机其他用户配合。
     "pytest>=8.3.4,<9",
     "ruff>=0.15.10,<1",
-    # 仅测试用:tests/quality/test_intake_orchestrator.py 用 feedparser 校验 feed 解析
-    # 正常路径(生产代码用 xml.etree 自解析,不依赖 feedparser)。
-    "feedparser>=6.0.12,<7",
     # 仅测试用:tests/e2e 双通道一致性与 tests/register 真握手要 import mcp SDK
     # (toolbox MCP server 子进程);生产管线不依赖它。
     "mcp>=1.26.0,<2",
@@ -59,7 +50,5 @@ testpaths = ["tests"]
 pythonpath = ["src", "src/akb2/toolbox_scan"]
 markers = [
     "integration: 真机集成测试（需 NLM 登录态 + gateway），默认不跑",
-    "proposal_mode: 提议模式黄金样张回放测试（AKB2_AUTO_PROMOTE=0）",
-    "post_amendment: 出厂正式门黄金样张回放测试（AKB2_AUTO_PROMOTE=1）",
 ]
 addopts = "-m 'not integration'"

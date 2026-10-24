@@ -6,21 +6,6 @@ defaults:
   vault_root_placeholder: __AKB2_VAULT_ROOT__
   vault_root_base: /Volumes/AKB2/Obsidian
 jobs:
-  - label: com.akb2.main-pipeline
-    template: launchd/com.akb2.main-pipeline.plist
-    installed: ~/Library/LaunchAgents/com.akb2.main-pipeline.plist
-    installer: scripts/deploy-mac-mini.sh
-    should_load: true
-    pending_human_install: false
-    expected_schedule:
-      kind: keepalive
-    expected_env_keys:
-      - AKB2_AMENDMENT_APPLIED
-      - AKB2_AUTO_PROMOTE
-      - AKB2_MAKER_FALLBACK
-      - AKB2_VAULT_ROOT
-      - PATH
-      - PYTHONPATH
   - label: com.akb2.briefing
     template: launchd/com.akb2.briefing.plist
     installed: ~/Library/LaunchAgents/com.akb2.briefing.plist
@@ -111,50 +96,6 @@ jobs:
     expected_env_keys:
       - PATH
       - PYTHONPATH
-  - label: com.akb2.inflow-sentinel
-    template: launchd/com.akb2.inflow-sentinel.plist
-    installed: ~/Library/LaunchAgents/com.akb2.inflow-sentinel.plist
-    installer: manual_human_review_required
-    should_load: false
-    pending_human_install: true
-    pending_since: 2026-07-30
-    expected_schedule:
-      kind: calendar
-      entries:
-        - Hour: 9
-          Minute: 0
-        - Hour: 21
-          Minute: 0
-    expected_env_keys:
-      - PATH
-      - PYTHONPATH
-  - label: com.akb2.intake
-    template: launchd/com.akb2.intake.plist
-    installed: ~/Library/LaunchAgents/com.akb2.intake.plist
-    installer: scripts/bootstrap_intake_launchd.sh
-    should_load: true
-    pending_human_install: false
-    expected_schedule:
-      kind: interval
-      seconds: 900
-    expected_env_keys:
-      - AKB2_VAULT_ROOT
-      - PATH
-      - PYTHONPATH
-  - label: com.akb2.intake-twitter
-    template: launchd/com.akb2.intake-twitter.plist
-    installed: ~/Library/LaunchAgents/com.akb2.intake-twitter.plist
-    installer: scripts/bootstrap_launchd.sh
-    should_load: true
-    pending_human_install: false
-    expected_schedule:
-      kind: interval
-      seconds: 900
-    expected_env_keys:
-      - AKB2_INTAKE_SOURCE_TYPE
-      - AKB2_VAULT_ROOT
-      - PATH
-      - PYTHONPATH
   - label: com.akb2.video
     template: launchd/com.akb2.video.plist
     installed: ~/Library/LaunchAgents/com.akb2.video.plist
@@ -179,35 +120,6 @@ jobs:
     expected_schedule:
       kind: keepalive
     expected_env_keys:
-      - AKB2_VAULT_ROOT
-      - PATH
-      - PYTHONPATH
-  - label: com.akb2.loop2-intake
-    template: launchd/com.akb2.loop2-intake.plist
-    installed: ~/Library/LaunchAgents/com.akb2.loop2-intake.plist
-    installer: scripts/bootstrap_launchd.sh --plist-src launchd/com.akb2.loop2-intake.plist
-    should_load: true
-    pending_human_install: false
-    expected_schedule:
-      kind: interval
-      seconds: 14400
-    expected_env_keys:
-      - AKB2_VAULT_ROOT
-      - PATH
-      - PYTHONPATH
-  - label: com.akb2.loop2-runner
-    template: launchd/com.akb2.loop2-runner.plist
-    installed: ~/Library/LaunchAgents/com.akb2.loop2-runner.plist
-    installer: scripts/bootstrap_launchd.sh --plist-src launchd/com.akb2.loop2-runner.plist
-    should_load: true
-    pending_human_install: false
-    expected_schedule:
-      kind: keepalive
-    expected_env_keys:
-      - AKB2_AMENDMENT_APPLIED
-      - AKB2_AUTO_PROMOTE
-      - AKB2_LOOP2_SHADOW_PROMOTE
-      - AKB2_MAKER_FALLBACK
       - AKB2_VAULT_ROOT
       - PATH
       - PYTHONPATH

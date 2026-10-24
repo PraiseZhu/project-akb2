@@ -11,8 +11,8 @@ how_executability）逐字相等才算过。
   - 结果 ≥1 条
   - 每条命中权威 promoted 判据（status/page_status: active +
     gate_decision: active + reviewer: akb2-quality-loop-v1 + 落点
-    wiki/sources/——与 promote.py _flip_frontmatter 同口径，此处按只读
-    契约现场从 promote.py 解析 MACHINE_REVIEWER，不复制常量）
+    wiki/sources/——与旧主链路 promote.py _flip_frontmatter 同口径；promote.py 已于
+    2026-10-24 随主链路删除，reviewer 值冻结为删除时的常量，不取引擎自己的常量自证）
   - How 字段非空且类型正确（how_density: str / how_executability: list）
 
 只读：不写 vault、不写工程数据（零写由 e2e_noop_proof 实测承载）。
@@ -35,20 +35,18 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SERVER_PATH = REPO_ROOT / "toolbox" / "cc-akb2-retrieval" / "mcp_server" / "server.py"
-PROMOTE_PY = REPO_ROOT / "src" / "akb2" / "quality" / "promote.py"
 
 EXIT_OK = 0
 EXIT_MISMATCH = 1
 EXIT_INFRA_FAIL = 3
 
 
+# 删除前 src/akb2/quality/promote.py 的 MACHINE_REVIEWER；现存已升格笔记都带这个签名
+PROMOTED_REVIEWER = "akb2-quality-loop-v1"
+
+
 def _machine_reviewer() -> str:
-    """从 promote.py 现场解析 MACHINE_REVIEWER（权威判据同源，不复制常量）。"""
-    src = PROMOTE_PY.read_text(encoding="utf-8")
-    m = re.search(r'^MACHINE_REVIEWER\s*=\s*"([^"]+)"', src, re.M)
-    if not m:
-        raise RuntimeError("promote.py 缺 MACHINE_REVIEWER（权威判据漂移）")
-    return m.group(1)
+    return PROMOTED_REVIEWER
 
 
 def _normalize(results: list[dict]) -> list[dict]:

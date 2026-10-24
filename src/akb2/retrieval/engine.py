@@ -4,8 +4,8 @@
 akb2.loops.paths.get_akb2_root —— env 优先、config/vault.toml 兜底，
 constitution P5 禁硬编码），引擎只接受已解析的 Path。
 
-promoted 样本集 exact 口径（权威：src/akb2/quality/promote.py:490-530
-_flip_frontmatter）：
+promoted 样本集 exact 口径（来源：旧主链路 src/akb2/quality/promote.py 的 _flip_frontmatter；
+该文件已于 2026-10-24 随主链路删除，口径冻结，由 tests/retrieval/test_promoted_predicate.py 钉住）：
 - 落点 wiki/sources/<slug>.md（promoted 唯一写入点）
 - frontmatter 行首四要素缺一不可：
   page_status 或 status = active + gate_decision = active
@@ -22,8 +22,7 @@ import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-# 机器 reviewer 身份（与 quality/promote.py MACHINE_REVIEWER 同值；
-# 此处按只读契约复制常量，不 import quality 模块）
+# 机器 reviewer 身份（旧主链路 promote.py 的 MACHINE_REVIEWER 值，现存已升格笔记都带它）
 MACHINE_REVIEWER = "akb2-quality-loop-v1"
 
 # promoted 笔记唯一落点（vault 相对）
