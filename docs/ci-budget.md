@@ -13,6 +13,7 @@ hard_quota_minutes: 2000
 
 frequency_per_month:
   ci.yml: 40
+  personal-ci.yml: 40
   gitleaks.yml: 40
   shellcheck.yml: 20
   zizmor.yml: 20
@@ -21,6 +22,7 @@ frequency_per_month:
 
 expected_minutes_per_run:
   ci.yml: 18
+  personal-ci.yml: 5
   gitleaks.yml: 3
   shellcheck.yml: 2
   zizmor.yml: 3
@@ -41,6 +43,7 @@ expected_minutes_per_run:
 数字只以上面的机读块为准，不要在这里再抄一份。当前口径：
 
 - `ci.yml`：约每天 1 次 PR/push + 余量；18 分钟含 3.11/3.13 两个 matrix
+- `personal-ci.yml`：与 ci 同触发密度（push main/ci/**、PR、merge_group）；5 分钟 = actionlint + gitleaks 两个静态扫描 job 各约 2 分钟 + 汇总 job 不足 1 分钟，timeout 上界 25
 - `gitleaks.yml`：与 ci 同触发密度
 - `shellcheck.yml`：只在 `*.sh` 变更时跑
 - `zizmor.yml`：只在 workflow / dependabot 变更时跑

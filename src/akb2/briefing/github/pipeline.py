@@ -51,6 +51,59 @@ _BRIEFING_DATE: str | None = None
 def _resolved_briefing_date() -> str:
     return _BRIEFING_DATE or date.today().isoformat()
 
+
+# synthesize 前缓存：intake→score 要 35–62min（含 X 429 等窗），而 synthesize 失败
+# （2026-10-19 瞬时 401）后 backstop 每轮整链重跑，11:00 场被 12:00 deadline 切死。
+# 把评分后的 top10 按成稿日落盘，同日再跑直接复用；交付后删除。
+_SYNTH_CACHE_VERSION = 1
+
+
+def _synth_cache_path(briefing_date: str) -> Path:
+    return resolve_state_file(f"github_briefing_top10-{briefing_date}.json")
+
+
+def _save_synth_cache(briefing_date: str, top10: list, active_curators: list,
+                      fallback_layer: str, sc7_metrics: dict) -> None:
+    """落盘失败只告警，不得影响本次运行（缓存是加速，不是交付路径）。"""
+    try:
+        path = _synth_cache_path(briefing_date)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_text(path, json.dumps({
+            "version": _SYNTH_CACHE_VERSION,
+            "date": briefing_date,
+            "fallback_layer": fallback_layer,
+            "active_curators": active_curators,
+            "sc7_metrics": sc7_metrics,
+            "top10": top10,
+        }, ensure_ascii=False))
+    except Exception as e:  # noqa: BLE001
+        sys.stderr.write(f"WARNING [github-pipeline]: top10 缓存写入失败（忽略）: {e}\n")
+
+
+def _load_synth_cache(briefing_date: str) -> dict | None:
+    try:
+        path = _synth_cache_path(briefing_date)
+        if not path.is_file():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        sys.stderr.write(f"WARNING [github-pipeline]: top10 缓存读取失败，重跑 intake: {e}\n")
+        return None
+    if (
+        data.get("version") != _SYNTH_CACHE_VERSION
+        or data.get("date") != briefing_date
+        or len(data.get("top10") or []) < _MIN_REPOS_FOR_BRIEFING
+    ):
+        return None
+    return data
+
+
+def _drop_synth_cache(briefing_date: str) -> None:
+    try:
+        _synth_cache_path(briefing_date).unlink(missing_ok=True)
+    except OSError:
+        pass
+
 # Schema-approved repo fields (strip enrichment internals before vault write)
 _SCHEMA_REPO_FIELDS = {
     "repo_url", "stars", "language", "topic_tags", "mention_count",
@@ -242,58 +295,7 @@ def _merge_canonical(existing: dict, incoming: dict) -> None:
         existing["engagement"] = incoming.get("engagement")
 
 
-def run_pipeline(
-    mock: bool = False,
-    force_layer: int | None = None,
-    briefing_date: str | None = None,
-) -> int:
-    """Run the full GitHub briefing pipeline.
-
-    Returns EXIT_DELIVERED (0) ONLY when the day's briefing .md is actually written
-    to the vault. Every skip / block / failure path returns EXIT_NOT_DELIVERED —
-    退出码必须反映真实交付，禁止 "0/无产物" 假成功（见 EXIT_* 常量注释里的
-    2026-06-26~29 四天零交付事故）。诊断 briefing-skipped.json / briefing-failed.json
-    仍写出供 backstop 归因。
-    """
-    global _BRIEFING_DATE
-    _BRIEFING_DATE = briefing_date or date.today().isoformat()
-    vault_root = os.environ.get("VAULT_ROOT", "")
-    if not vault_root or not vault_root.startswith("/"):
-        _write_skipped("vault_root_missing_or_relative", 0, "skip",
-                       stage=FAILURE_STAGE_PREFLIGHT,
-                       failure_class=FAILURE_CLASS_CONFIG)
-        return EXIT_NOT_DELIVERED
-
-    vault = Path(vault_root)
-
-    # Step 1: Intake via three-layer fallback
-    with _StageTimer("intake"):
-        if mock:
-            candidates, fallback_layer = _mock_intake(force_layer)
-            l1_recency_stats = {}  # mock 无真实 L1
-        else:
-            candidates, fallback_layer, l1_recency_stats = _real_intake(force_layer)
-
-    if not candidates:
-        sys.stderr.write(
-            f"WARNING [github-pipeline]: 0 candidates after intake "
-            f"(fallback_layer={fallback_layer}) — possible transient fetch failure "
-            "or genuinely no trending repos. Backstop should retry.\n"
-        )
-        _emit_sc7_metrics(_make_zero_sc7_metrics())
-        _write_skipped("no_candidates_after_intake", len(candidates), fallback_layer,
-                       stage=FAILURE_STAGE_INTAKE,
-                       failure_class=FAILURE_CLASS_UPSTREAM_INTAKE)
-        return EXIT_NOT_DELIVERED
-
-    # Step 2-3: Aggregate by repo_url（mention_count 在此正确累加：collector 现按
-    # per-handle 去重，跨博主同 repo 会保留多条 candidate）。
-    with _StageTimer("aggregate"):
-        aggregated = _aggregate(candidates)
-
-    # 跨天 novelty 去重：过滤去重窗口内已推过的 repo（窗口 ≥ 采集窗口，见
-    # dedup_sqlite 不变式 1；同一 first_mention_at 不复推，见不变式 2）。这是真正该做
-    # 去重的地方——在聚合算完热度之后，而非抓取时（抓取去重会抹掉 mention 信号）。
+def _resolve_novelty_db(mock: bool) -> Path:
     # novelty db 路径：AKB2_NOVELTY_DB 显式覆盖（测试/特殊部署用）> mock 一次性临时 db
     # （hermetic/可重复）> 机器本地状态根（state_paths：状态文件不能待在 Syncthing
     # 同步范围内，data/star_history.sqlite 已实证跨机分叉丢 690 行写入）。
@@ -310,6 +312,54 @@ def run_pipeline(
             legacy_path=_PROJECT_ROOT / "data" / "github_recommended.sqlite",
         )
         _novelty_db.parent.mkdir(parents=True, exist_ok=True)
+    return _novelty_db
+
+
+def _collect_top10(mock: bool, force_layer: int | None, _novelty_db: Path):
+    """Step 1-6：intake → aggregate → enrich → filter → score。
+
+    成功返回 (top10, candidates, fallback_layer, sc7_metrics)；任一未交付分支返回
+    EXIT_NOT_DELIVERED（int）。从 run_pipeline 原样拆出，供 synthesize 前缓存复用。
+    """
+    # Step 1: Intake via three-layer fallback
+    global _LAST_INTAKE_REASON
+    _LAST_INTAKE_REASON = None
+    with _StageTimer("intake"):
+        if mock:
+            candidates, fallback_layer = _mock_intake(force_layer)
+            l1_recency_stats = {}  # mock 无真实 L1
+        else:
+            candidates, fallback_layer, l1_recency_stats = _real_intake(force_layer)
+
+    if not candidates:
+        sys.stderr.write(
+            f"WARNING [github-pipeline]: 0 candidates after intake "
+            f"(fallback_layer={fallback_layer}) — possible transient fetch failure "
+            "or genuinely no trending repos. Backstop should retry.\n"
+        )
+        intake_diag = None
+        if _LAST_INTAKE_REASON:
+            sys.stderr.write(f"WARNING [github-pipeline]: fallback reason: {_LAST_INTAKE_REASON}\n")
+            intake_diag = {"fallback_reason": _LAST_INTAKE_REASON}
+        _emit_sc7_metrics(_make_zero_sc7_metrics())
+        _write_skipped("no_candidates_after_intake", len(candidates), fallback_layer,
+                       intake_diag,
+                       stage=FAILURE_STAGE_INTAKE,
+                       failure_class=FAILURE_CLASS_UPSTREAM_INTAKE)
+        return EXIT_NOT_DELIVERED
+
+    # Step 2-3: Aggregate by repo_url（mention_count 在此正确累加：collector 现按
+    # per-handle 去重，跨博主同 repo 会保留多条 candidate）。
+    with _StageTimer("aggregate"):
+        aggregated = _aggregate(candidates)
+
+    # 跨天 novelty 去重：过滤去重窗口内已推过的 repo（窗口 ≥ 采集窗口，见
+    # dedup_sqlite 不变式 1；同一 first_mention_at 不复推，见不变式 2）。这是真正该做
+    # 去重的地方——在聚合算完热度之后，而非抓取时（抓取去重会抹掉 mention 信号）。
+    # novelty db 路径：AKB2_NOVELTY_DB 显式覆盖（测试/特殊部署用）> mock 一次性临时 db
+    # （hermetic/可重复）> 机器本地状态根（state_paths：状态文件不能待在 Syncthing
+    # 同步范围内，data/star_history.sqlite 已实证跨机分叉丢 690 行写入）。
+
     pre_novelty_count = len(aggregated)  # SC-6: capture before dedup for diagnostics
     pre_novelty_aggregated = dict(aggregated)
     window_blocked: dict = {}
@@ -523,10 +573,53 @@ def run_pipeline(
                        stage=FAILURE_STAGE_INTAKE,
                        failure_class=FAILURE_CLASS_UPSTREAM_INTAKE)
         return EXIT_NOT_DELIVERED
+    return top10, candidates, fallback_layer, _sc7_metrics
 
-    # 文件名 = 抓取日（去掉旧的 +1 偏移，对齐 social briefing）。
-    # --date 覆盖；默认本地今日。诊断 date 必须与此同源。
+
+def run_pipeline(
+    mock: bool = False,
+    force_layer: int | None = None,
+    briefing_date: str | None = None,
+) -> int:
+    """Run the full GitHub briefing pipeline.
+
+    Returns EXIT_DELIVERED (0) ONLY when the day's briefing .md is actually written
+    to the vault. Every skip / block / failure path returns EXIT_NOT_DELIVERED —
+    退出码必须反映真实交付，禁止 "0/无产物" 假成功（见 EXIT_* 常量注释里的
+    2026-06-26~29 四天零交付事故）。诊断 briefing-skipped.json / briefing-failed.json
+    仍写出供 backstop 归因。
+    """
+    global _BRIEFING_DATE
+    _BRIEFING_DATE = briefing_date or date.today().isoformat()
+    vault_root = os.environ.get("VAULT_ROOT", "")
+    if not vault_root or not vault_root.startswith("/"):
+        _write_skipped("vault_root_missing_or_relative", 0, "skip",
+                       stage=FAILURE_STAGE_PREFLIGHT,
+                       failure_class=FAILURE_CLASS_CONFIG)
+        return EXIT_NOT_DELIVERED
+
+    vault = Path(vault_root)
+
     today_str = _resolved_briefing_date()
+    novelty_db = _resolve_novelty_db(mock)
+
+    # 同日 synthesize 前缓存命中 → 跳过 intake/enrich/score（见 _save_synth_cache）。
+    # mock 与显式 --force-layer 是调试/自检入口，永不读缓存。
+    cached = None if (mock or force_layer is not None) else _load_synth_cache(today_str)
+    if cached is not None:
+        _ts_print(f"briefing: top10 缓存命中，跳过 intake/enrich/score date={today_str}")
+        top10 = cached["top10"]
+        candidates = []
+        active_curators = cached["active_curators"]
+        fallback_layer = cached["fallback_layer"]
+        _sc7_metrics = cached["sc7_metrics"]
+    else:
+        collected = _collect_top10(mock, force_layer, novelty_db)
+        if isinstance(collected, int):
+            return collected
+        top10, candidates, fallback_layer, _sc7_metrics = collected
+        active_curators = list(set(c.mentioner for c in candidates))
+        _save_synth_cache(today_str, top10, active_curators, fallback_layer, _sc7_metrics)
 
     # Step 7 + 8a: synthesize → 组装 → schema 校验，**输出质量类失败有界重生成**。
     # 见 MAX_SYNTHESIS_REGENERATIONS 常量注释：JSON 写坏 + schema 不过合计占历史失败
@@ -573,6 +666,7 @@ def run_pipeline(
         candidate = _assemble_briefing(
             top10_with_summaries, candidates, fallback_layer, today_str,
             synthesis_model=synthesis_result.get("synthesis_model", ""),
+            active_curators=active_curators,
         )
         errors = _schema_errors(candidate)
         if errors:
@@ -649,7 +743,7 @@ def run_pipeline(
     # 故本判据的价值是**防御未来场景**（"出了去重窗、但仍是同一条旧提及"，历史样本里
     # 尚未出现），不是已实现的收益 —— 不得据此宣称已消掉 71.5% 的重复。
     # 保留它仍是对的：一旦该场景出现，缺这一列就会静默复推，故写端必须传。
-    _novelty = DedupStore(_novelty_db)
+    _novelty = DedupStore(novelty_db)
     try:
         for r in briefing["top_repos"]:
             _novelty.mark_seen(r["repo_url"], r.get("first_mention_at"))
@@ -666,6 +760,7 @@ def run_pipeline(
                       failure_class=FAILURE_CLASS_VAULT_IO)
         return EXIT_NOT_DELIVERED
     _ts_print(f"briefing: WROTE {md_path}")
+    _drop_synth_cache(today_str)
     return EXIT_DELIVERED
 
 
@@ -712,7 +807,8 @@ def _classify_synthesis_failure(exc: BaseException) -> str:
 
 def _assemble_briefing(top10_with_summaries: list[dict], candidates: list,
                        fallback_layer: str, today_str: str,
-                       synthesis_model: str = "") -> dict:
+                       synthesis_model: str = "",
+                       active_curators: list | None = None) -> dict:
     """把 synthesis 产出组装成待校验的 briefing dict（每轮重生成后重新调用）。
 
     `synthesis_model` 记录实际产出的模型。主族预算耗尽后族降级时，这里落的是**备用族**模型
@@ -731,7 +827,10 @@ def _assemble_briefing(top10_with_summaries: list[dict], candidates: list,
         "generated_at": datetime.now(UTC).isoformat(),
         "date": today_str,
         "candidate_pool_size": _pool_size(),
-        "active_curators_today": list(set(c.mentioner for c in candidates)),
+        "active_curators_today": (
+            active_curators if active_curators is not None
+            else list(set(c.mentioner for c in candidates))
+        ),
         "fallback_layer_used": fallback_layer,
         "top_repos": [_clean_repo(r) for r in top10_with_summaries],
     }
@@ -857,6 +956,10 @@ def _mock_intake(force_layer: int | None = None) -> tuple[list, str]:
     return candidates, layer
 
 
+# 最近一次 _real_intake 的 fallback 判定原因（skip 诊断用；mock / force_layer 路径为 None）。
+_LAST_INTAKE_REASON: str | None = None
+
+
 def _real_intake(force_layer: int | None = None) -> tuple[list, str, dict]:
     """Run real three-layer intake. Returns (candidates, selected_layer, l1_recency_stats)."""
     from .intake import _ZERO_RECENCY_STATS
@@ -880,6 +983,10 @@ def _real_intake(force_layer: int | None = None) -> tuple[list, str, dict]:
         return TrendingHTMLCollector().collect()
 
     decision = decide(l1, l2_runner)
+    # 逐层失败原因（L1/L2/L3 各自的 error）留痕：2026-09-23 四次 skip 时这串从未落盘，
+    # L2 当时为何失败只能事后猜。
+    global _LAST_INTAKE_REASON
+    _LAST_INTAKE_REASON = decision.reason
 
     # 即使 decide 选了 L2，也带 L1 的 recency_stats（SC-7 验收需要）
     # 注：pre-novelty 死区补位已移至 run_pipeline novelty 去重后执行（SC-1 fix）

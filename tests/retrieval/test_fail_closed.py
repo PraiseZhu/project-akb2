@@ -129,11 +129,23 @@ def test_function_staging_unset_raises(monkeypatch, tmp_path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _run_cli_env(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+def _real_vault_volume_mounted() -> bool:
+    """查挂载表判断真实 vault 卷是否挂着 —— 不 stat / open 卷内路径（那会触发授权弹窗）。"""
+    try:
+        out = subprocess.run(["/sbin/mount"], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return " on /Volumes/AKB2 (" in out
+
+
+def _run_cli_env(
+    env: dict[str, str], overrides: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     env = dict(env)
     env["PYTHONPATH"] = str(REPO_ROOT / "src")
     for k in ("AKB2_ROOT", "AKB2_VAULT_ROOT", "VAULT_ROOT"):
         env.pop(k, None)
+    env.update(overrides or {})
     # 隔离 config：指向注入的 tmp 配置（进程内 monkeypatch 传不进子进程，
     # 用 AKB2 env 优先级测「env 根解析后语义」+ 用真实仓 config 测未挂载卷）
     return subprocess.run(
@@ -149,6 +161,10 @@ def _run_cli_env(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     )
 
 
+@pytest.mark.skipif(
+    _real_vault_volume_mounted(),
+    reason="本机挂着真实 /Volumes/AKB2：前提「卷未挂载」不成立，且子进程会去读真实 vault",
+)
 def test_cli_config_unmounted_volume_nonzero() -> None:
     """CLI × 仓内真实 config（指向未挂载 /Volumes/AKB2）→ rc=3 + 诊断。"""
     proc = _run_cli_env(os.environ.copy())
@@ -165,9 +181,12 @@ def test_cli_config_unmounted_volume_nonzero() -> None:
 
 def test_cli_env_root_with_broken_volume_nonzero(monkeypatch, tmp_path) -> None:
     """CLI × env 根指向未挂载卷（父盘不存在）→ rc=3 + 诊断。"""
-    env = os.environ.copy()
-    env["AKB2_ROOT"] = "/Volumes/__akb2_no_such_volume__/Obsidian/Praise Space/AKB2.0"
-    proc = _run_cli_env(env)
+    # 覆盖必须在 _run_cli_env 清 env 之后生效：原写法先设后被清，子进程回落到仓内
+    # config、去读真实 vault（在挂着 /Volumes/AKB2 的机器上 count=3，本格从未测到自己）。
+    proc = _run_cli_env(
+        os.environ.copy(),
+        {"AKB2_ROOT": "/Volumes/__akb2_no_such_volume__/Obsidian/Praise Space/AKB2.0"},
+    )
     # env 根存在性不校验（调用方给定语义）——但 wiki/sources 不存在时
     # search 返回空、CLI 正常退出 0；真正 fail-closed 的只有 config 路径。
     # 本格断言：CLI 不崩溃、输出合法 JSON（空结果显式 count=0，非静默挂死）。
