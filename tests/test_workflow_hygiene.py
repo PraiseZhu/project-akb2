@@ -74,3 +74,22 @@ def test_budget_script_accepts_current_workflows() -> None:
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "estimated_month_minutes=" in result.stdout
+
+
+@pytest.mark.parametrize("table", ["frequency_per_month", "expected_minutes_per_run"])
+def test_budget_doc_lists_every_workflow(
+    table: str, loaded_workflows: dict[str, dict]
+) -> None:
+    sys.path.insert(0, str(REPO / "scripts"))
+    try:
+        from check_ci_budget import parse_map
+    finally:
+        sys.path.remove(str(REPO / "scripts"))
+
+    text = (REPO / "docs" / "ci-budget.md").read_text(encoding="utf-8")
+    listed = parse_map(text, table)
+    assert "personal-ci.yml" in listed, f"docs/ci-budget.md {table} 缺 personal-ci.yml"
+    assert set(listed) == set(loaded_workflows), (
+        f"{table} 与 workflow 文件不一致: 缺 {sorted(set(loaded_workflows) - set(listed))}"
+        f" 多 {sorted(set(listed) - set(loaded_workflows))}"
+    )
