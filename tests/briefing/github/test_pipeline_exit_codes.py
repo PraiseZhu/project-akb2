@@ -710,7 +710,11 @@ def test_every_diagnostic_call_site_passes_stage_and_failure_class():
     两个参数有默认值（失败路径上不该因忘传而抛 TypeError 丢掉整份诊断），
     所以"必须显式传"只能靠这条静态断言守 —— 否则新增分支会静默落成 unknown/internal。
     """
-    source = inspect.getsource(gh_pipeline.run_pipeline)
+    # 调用点分布在 _collect_top10（intake→score，从 run_pipeline 拆出以支持 top10 缓存）
+    # 与 run_pipeline（synthesize→写盘）两处，两处都要守。
+    source = inspect.getsource(gh_pipeline._collect_top10) + inspect.getsource(
+        gh_pipeline.run_pipeline
+    )
     calls = re.findall(r"_write_(?:skipped|failed)\((?:[^()]|\([^()]*\))*\)", source)
     assert len(calls) >= 11, f"调用点数量异常（{len(calls)}），正则可能失配"
     missing = [c for c in calls if "stage=" not in c or "failure_class=" not in c]
