@@ -58,6 +58,48 @@ def _forbid_real_vault_volume(request):
 
 
 # ---------------------------------------------------------------------------
+# 真实凭证隔离闸
+# ---------------------------------------------------------------------------
+# 非 integration 测试不得拿到真实飞书凭证。2026-10-24 事故：在 Mini 上跑全量单测，兜底脚本
+# 用例继承了真实 HOME，子进程 feishu_sync.sh source 了 ~/.akb2-secrets.sh，用真实机器人给
+# 主人私信发了约 20 条「简报飞书同步失败」假告警。每条用例都把 HOME 指到空的临时目录、清掉
+# 飞书凭证变量，任何子进程都 source 不到真实凭证；osascript 换成空实现，不弹 macOS 通知。
+# pyenv shim 靠 PYENV_ROOT（缺省 $HOME/.pyenv）找解释器，换 HOME 前先钉住它。
+_FEISHU_CREDENTIAL_VARS = (
+    "FEISHU_APP_ID",
+    "FEISHU_APP_SECRET",
+    "FEISHU_PUSH_CHAT_ID",
+    "FEISHU_DM_OPEN_ID",
+)
+
+
+@pytest.fixture(scope="session")
+def _credential_free_env(tmp_path_factory):
+    home = tmp_path_factory.mktemp("credential-free-home")
+    stub_bin = tmp_path_factory.mktemp("credential-free-bin")
+    osascript = stub_bin / "osascript"
+    osascript.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    osascript.chmod(0o755)
+    return home, stub_bin
+
+
+@pytest.fixture(autouse=True)
+def _isolate_real_credentials(request, monkeypatch, _credential_free_env):
+    if request.node.get_closest_marker("integration") is not None:
+        yield
+        return
+    home, stub_bin = _credential_free_env
+    real_home = os.environ.get("HOME", "")
+    if real_home and "PYENV_ROOT" not in os.environ:
+        monkeypatch.setenv("PYENV_ROOT", os.path.join(real_home, ".pyenv"))
+    monkeypatch.setenv("HOME", str(home))
+    for name in _FEISHU_CREDENTIAL_VARS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("PATH", f"{stub_bin}{os.pathsep}{os.environ.get('PATH', '')}")
+    yield
+
+
+# ---------------------------------------------------------------------------
 # Session-scoped fixtures
 # ---------------------------------------------------------------------------
 
