@@ -13,7 +13,7 @@
 一次才能把进程事实面填满。
 
 反向变异（mcp-dynamic-import-bypass）由 scripts/mutation_harness.py
-机器化执行：注入 importlib.import_module('akb2.quality.promote') 后
+机器化执行：注入 importlib.import_module('akb2.quality.llm_router') 后
 test_runtime_import_set_exact 必红（此时静态 AST 轨仍绿——正是本闸
 的存在理由）。
 """
@@ -151,7 +151,7 @@ def test_runtime_import_set_exact(audit_vault: Path) -> None:
     """加载 + 真实调用工具后，进程内 akb2.* 模块集恰为允许前缀子集。
 
     变异反证：mcp-dynamic-import-bypass 在工具函数体内注入
-    importlib.import_module('akb2.quality.promote') → 调用后
+    importlib.import_module('akb2.quality.llm_router') → 调用后
     akb2.quality.* 进入 sys.modules → 本断言红。
     """
     _purge_akb2()

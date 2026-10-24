@@ -234,7 +234,7 @@ def test_all_parse_points_agree_on_every_template(tmp_path: Path) -> None:
     **一致地判拒**。
     """
     templates = sorted(LAUNCHD_DIR.glob("*.plist"))
-    assert len(templates) >= 9, f"模板数异常少，断言可能已失去意义: {len(templates)}"
+    assert len(templates) >= 7, f"模板数异常少，断言可能已失去意义: {len(templates)}"
 
     # 不良构样本：缺闭合标签（expat 与 CoreFoundation 都拒）
     broken = tmp_path / "com.akb2.broken-sample.plist"
@@ -281,7 +281,7 @@ def test_all_parse_points_agree_on_every_template(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "template_name",
-    ["com.akb2.feishu-sync.plist", "com.akb2.inflow-sentinel.plist"],
+    ["com.akb2.feishu-sync.plist"],
 )
 def test_bare_dash_comment_templates_parse_everywhere(
     tmp_path: Path, template_name: str

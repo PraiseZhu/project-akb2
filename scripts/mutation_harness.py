@@ -8,8 +8,8 @@
 
 红集标识格式（--predicted-red 两种等价写法）：
     "<junit classname>.<junit name>"，例如
-    tests.loops.test_signatures.test_third_record_triggers_escalation
-    或 pytest nodeid "tests/loops/test_signatures.py::test_third_record_triggers_escalation"
+    tests.loops.test_ledger_lifeline.test_duplicate_event_returns_false
+    或 pytest nodeid "tests/loops/test_ledger_lifeline.py::test_duplicate_event_returns_false"
     （解析时统一归一化为 classname.name 再比对）
 
 变异目标（Mutation.file）支持两种形态：
@@ -94,13 +94,6 @@ REGISTRY: dict[str, Mutation] = {
         replacement="found = False",
         description="幂等去重判定永不命中：重复事件不再被识别，账本出现重复行",
     ),
-    "signature_escalation_threshold_4": Mutation(
-        name="signature_escalation_threshold_4",
-        file="src/akb2/loops/signatures.py",
-        anchor="ESCALATION_THRESHOLD = 3",
-        replacement="ESCALATION_THRESHOLD = 4",
-        description="故障签名升级阈值 3→4：同签名第 3 次出现不再触发升级",
-    ),
     # live skill 源在仓外（~/.claude/skills symlink 的指向目标）；用绝对路径
     # 引用，不复制进仓。锚点是 SKILL.md 里唯一的 CLI 兜底命令模块路径。
     "skill-routing-broken-path": Mutation(
@@ -143,11 +136,11 @@ REGISTRY: dict[str, Mutation] = {
         file="toolbox/cc-akb2-retrieval/mcp_server/server.py",
         anchor="from akb2.retrieval import engine",
         replacement=(
-            "import importlib as _il; _il.import_module('akb2.quality.promote')\n"
+            "import importlib as _il; _il.import_module('akb2.quality.llm_router')\n"
             "    from akb2.retrieval import engine"
         ),
         description=(
-            "server 工具函数内动态 import akb2.quality.promote："
+            "server 工具函数内动态 import akb2.quality.llm_router（写管线模块）："
             "静态 AST 边界轨看不见、运行期 import 审计必红"
         ),
     ),
@@ -202,7 +195,7 @@ def _validate_registry() -> list[str]:
     存在性检查不在启动期做（无论仓内相对路径还是仓外绝对路径）：注册表是
     全项目单一事实源，后置 PR 尚未落地时其仓内目标文件在本节 checkout 上
     必然缺失——若启动期拦截，会让拆分链前节上*所有*变异调用（包括只依赖
-    ledger / signatures 等已落地文件的基线条目）都被无关条目拖累成 exit 2。
+    ledger 等已落地文件的基线条目）都被无关条目拖累成 exit 2。
     仓外绝对路径（如 live skill 源）同理：host-local 真相源在 CI / 其他
     机器上必然缺失。两类条目的存在性检查统一推迟到 run_once 里、且仅在该
     条目被 --mutation 实际选中时才做（缺失时 fail-closed，报可诊断错误）。
@@ -297,8 +290,8 @@ def parse_red_set(junit: Path) -> set[str]:
 def _normalize_test_id(test_id: str) -> str:
     """把 pytest nodeid 归一化为 junit classname.name 形态。
 
-    tests/loops/test_signatures.py::test_third_record_triggers_escalation
-        → tests.loops.test_signatures.test_third_record_triggers_escalation
+    tests/loops/test_ledger_lifeline.py::test_duplicate_event_returns_false
+        → tests.loops.test_ledger_lifeline.test_duplicate_event_returns_false
 
     参数化 / 类内测试的 :: 后各段以 . 连接，与 pytest junit 的
     classname（模块路径点化 + 类名）与 name（含 [param]）拼接规则一致。

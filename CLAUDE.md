@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 AKB2.0 工程根：lint / gate / intake / briefing / video / feishu_sync 等管线 + CLI + MCP wrapper + eval harness。**不含知识库本体**——知识库在 Obsidian vault（`/Volumes/AKB2/Obsidian/Praise Space/AKB2.0/`），本工程通过 `config/vault.toml` 解析 vault 路径，禁止硬编码。
 
+> **主链路已于 2026-10-24 删除，待重建**：循环1 主质量管线、循环2 X 采集、主链路采集（intake / intake-twitter / inflow-sentinel）的代码、脚本、自启动、测试、评测与运行态都已移除。保留的标准文档：`docs/constitution.md`、`docs/main-pipeline-golden-sample.md`、`docs/loops-design-decisions.md`。日报、GitHub 日报、视频、飞书同步、检索、harvest 不受影响。
+
 路径契约：`VAULT_ROOT` / `--vault-root` 指向 `/Volumes/AKB2/Obsidian`；`AKB2_ROOT` / `AKB2_VAULT_ROOT` / `vault.akb2_root` 指向 `/Volumes/AKB2/Obsidian/Praise Space/AKB2.0`。不要再把 AKB2 运行链路指回 iCloud vault。
 
 ## 常用命令
@@ -36,18 +38,10 @@ ruff check src tests            # line-length=100, py311, select E/F/W/I/B/UP
 # 管线入口
 python3 -m akb2.briefing.pipeline --date YYYY-MM-DD --vault-root <path> [--dry-run-intake]
 python3 -m akb2.video --dry-run --fixture       # video 链路（⚠ 实际是 schedule：每天 02:00）
-
-# 主质量管线（循环1）：24h 常驻 runner daemon（launchd KeepAlive 托管）
-bash scripts/akb2-main-pipeline.sh [--once] [--spot-check]
-
-# 满仓端到端校准（产出 reports/calibration/*.json + 出厂判定 factory_acceptance）
-python3 -m akb2.quality.calibration \
-    --corpus evals/main-pipeline-quality/corpus.yaml \
-    --report-out reports/calibration/factory.json
 ```
 
 - `requires-python >= 3.11`。**本机实测跑绿过的是 3.12.13（全局）**；CI `tests` job 用 `['3.11', '3.13']` matrix（fail-fast: false）兑现下界承诺。3.11 是否在云端全绿以合入后的 matrix job 为准，不得靠收窄 `requires-python` 豁免
-- **外部 CLI 依赖 `defuddle`**（5 项 extract 测试真调它）：装法与「包身份陷阱」见 `docs/runbooks/intake-tools-setup.md` §6 —— 钉的是 `defuddle-cli@0.7.0`，**不要**按 `defuddle --version` 打印的 `0.1.0` 去装同名包 `defuddle@0.1.0`（那个包没有 bin）。缺失时本地 skip、CI 靠 `AKB2_REQUIRE_DEFUDDLE=1` 强制 fail
+- **外部 CLI 依赖 `defuddle`**（CI 仍装它；原先真调它的 extract 测试已随主链路删除）：装法与「包身份陷阱」见 `docs/runbooks/intake-tools-setup.md` §6 —— 钉的是 `defuddle-cli@0.7.0`，**不要**按 `defuddle --version` 打印的 `0.1.0` 去装同名包 `defuddle@0.1.0`（那个包没有 bin）。缺失时本地 skip、CI 靠 `AKB2_REQUIRE_DEFUDDLE=1` 强制 fail
 - **CI 历史坑（2026-07-28 查实）**：pytest job 在 2026-06-27 被删除（commit `755d5cf`，理由"消除远端长期红"），直到 2026-07-25 才加回、07-27 首次真跑。期间约一个月的 "CI success" 因单 job + `continue-on-error` 而与实际结论脱钩（抽样到 job 全 failure 但 run 报 success）。`ruff` 的 `continue-on-error` 已于 2026-07-28 摘除转硬闸。**不要把历史绿当作回归基线**
 - `pythonpath = ["src", "src/akb2/toolbox_scan"]` 由 pytest 配置注入，无需安装即可跑测试
 - 依赖约束在 `pyproject.toml`：下界=实测通过版本、上界=下一 major 边界（防新版自动装入）。CI `tests` job 是这条防线的闸门
@@ -60,8 +54,8 @@ python3 -m akb2.quality.calibration \
 |------|------|
 | `briefing/` | 社媒日报主链路：intake → scoring → synthesis → gate → 写 vault。含 `github/` 子链路、audit_fix 收敛循环、translate、embeddings |
 | `retrieval/` | 只读检索：promoted 笔记关键词引擎 + CLI（search / serve）+ token 保护的 HTTP（给同事 Cindy 插件直连 Mini，不是网页） |
-| `quality/` | **循环1 主质量管线（唯一入库出口）**：`admission`（准入三硬判定，二值无连续分）→ `distill`（DeepSeek 两段式提炼）→ `checks_structural`（A 层 6 项纯代码结构校验）→ `grader`（B 层 10 维 LLM 评分，GPT-5.4）→ `repair`（定点修复循环，收敛优先）→ `promote`（五闸升格）。`runner` 是 24h 常驻串行单工 daemon（七段生命线），`calibration` 满仓端到端校准 + 出厂判定，`llm_router` 三族模型统一路由，`smoke_validator` 只读冒烟校验。含 `intake/`、`source_ops_scanners/` 子模块 |
-| `loops/` | 循环骨架：`ledger`（幂等账本追加）/ `signatures`（故障签名记录与升级）/ `paths`（隔离区与 staging 路径常量） |
+| `quality/` | 主链路已删（2026-10-24），只剩 `llm_router`（OpenAI 兼容三族路由，GitHub 早报在用）与 `intake/models`、`intake/raw_archiver`（raw 归档与身份契约，harvest 在用） |
+| `loops/` | `ledger`（幂等账本追加）/ `paths`（隔离区与 staging 路径常量）；`signatures` 已随主链路删除 |
 | `video/` | 视频报告链路：collector → extractor → reasoner → assembler，LLM 经 `llm_adapter`。**触发方式 = `schedule`（每天 02:00）**，由 `~/Library/LaunchAgents/com.akb2.video.plist` 驱动；该 plist **不在仓库 `launchd/` 内、未入 git**（2026-07-28 查实，此前文档误记为"CLI 手动触发"） |
 | `gate/` | `akb2_gate_check.py` — fail-closed 质量门控 CLI |
 | `lint/` | `akb2_lint.py` + `rules/` — vault 笔记 lint |
@@ -105,8 +99,8 @@ briefing pipeline 的三重断言保证：stdout 的 `proposed_gate_decision` ==
 
 - `tests/conftest.py` 提供 `repo_root` / `run_script`（HOME 覆盖跑 bash 脚本）/ `sha256_file` / `tree_sha256` fixtures
 - bash 脚本测试用 `AKB2_TEST_HOME` 模式隔离
-- pytest marker（见 pyproject）：`integration`（真机，默认 deselect）/ `proposal_mode`（黄金样张回放，`AKB2_AUTO_PROMOTE=0`）/ `post_amendment`（出厂正式门回放，`AKB2_AUTO_PROMOTE=1`）
-- `evals/` 存放各阶段评测产物（l2-regression、briefing-scoring、main-pipeline-quality 等），`lint_evals/` 为 lint 评测
+- pytest marker（见 pyproject）：`integration`（真机，默认 deselect）；黄金样张回放用的 `proposal_mode` / `post_amendment` 已随主链路删除
+- `evals/` 存放各阶段评测产物（l2-regression、briefing-scoring 等；main-pipeline-quality 已随主链路删除），`lint_evals/` 为 lint 评测
 
 ## 其他
 

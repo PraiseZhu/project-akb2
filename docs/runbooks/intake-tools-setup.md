@@ -1,5 +1,7 @@
 # Intake Tools 前置安装说明
 
+> **2026-10-24 起无代码调用**：这些工具原先服务主链路的 intake 抓取（`quality/intake/extract.py` 等），主链路已删除，scrapling / docling 也已移出 `pyproject.toml`。CI 仍会安装 defuddle（改 CI 需另行授权），§6 的包身份说明留作参考；新主链路重建时按实际用到的工具重写本文。
+
 ## 概述
 
 `akb2.quality.intake` 的抓取链路依赖以下工具。

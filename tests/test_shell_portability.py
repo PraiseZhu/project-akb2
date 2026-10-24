@@ -29,10 +29,7 @@ SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 
 # 平台专用脚本豁免清单：仅在该平台执行，不进 CI 的跨平台路径。
 # 加入这里必须写明理由 —— 豁免是决定，不是遗漏。
-PLATFORM_SPECIFIC_SCRIPTS: dict[str, str] = {
-    # 名字即契约：只在 mac mini（Darwin）上跑，BSD stat/chmod 语义是前提。
-    "deploy-mac-mini.sh": "mac mini 专用部署脚本，仅 Darwin 执行",
-}
+PLATFORM_SPECIFIC_SCRIPTS: dict[str, str] = {}
 
 # (正则, 说明) —— 只收「两端语义不同且会硬失败」的构造。
 #

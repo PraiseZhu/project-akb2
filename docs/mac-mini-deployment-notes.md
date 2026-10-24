@@ -94,30 +94,6 @@ launchctl unload ~/Library/LaunchAgents/com.akb2.briefing.plist
 launchctl load ~/Library/LaunchAgents/com.akb2.briefing.plist
 ```
 
-## main-pipeline plist 改动后的重载纪律（bootout + bootstrap）
-
-`com.akb2.main-pipeline` 是 KeepAlive 常驻 runner daemon。**改了已安装的
-`~/Library/LaunchAgents/com.akb2.main-pipeline.plist` 之后**——包括下方「跨机并跑」各方案
-往 `EnvironmentVariables` 加 `AKB2_RUNNER_SHARDS` / `AKB2_RUNNER_REQUIRE_SHARDING` /
-`AKB2_RUNNER_SHARD_TAKEOVER`，以及任何 ProgramArguments / KeepAlive / 日志路径改动——
-**必须**用 `bootout` + `bootstrap` 成对执行，让 launchd 丢弃旧配置、按新 plist 重新拉起：
-
-```bash
-launchctl bootout gui/$(id -u)/com.akb2.main-pipeline
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.akb2.main-pipeline.plist
-```
-
-验证新配置已生效（服务存在且 state = running，启动日志里分片/互斥配置是新值）：
-
-```bash
-launchctl print gui/$(id -u)/com.akb2.main-pipeline | grep -E "state|program"
-```
-
-**禁止把 `launchctl load` 当重载用**：对一个已加载的服务再执行 `load`，launchd 不会用新
-plist 内容替换旧实例——命令看似成功，daemon 跑的还是旧配置（典型症状：改了分片 env 但
-启动日志里的分片没变）。`load`/`unload` 是 deprecated 的遗留接口，本服务统一按上面的
-`bootout` + `bootstrap` 走。
-
 ## Verification (SC-7/SC-8)
 
 After the first scheduled run, verify output:
@@ -182,117 +158,10 @@ ls "/Volumes/AKB2/Obsidian/Praise Space/AKB2.0/"
 | 时区漂移 | 低 | 07:30 偏移 | B4 |
 | logs 占用磁盘 | 长期 | 几个月后 GB 级 | logrotate 或 plist 加 size 限制（本轮不做） |
 
-## 第二台机器 / 跨机并跑（2026-07-28 加固）
-
-本文上面的部署方式（第二台机器装同一套 plist、指向同一个 Syncthing vault）会让**两台机器
-同时处理同一篇 raw**。必须先读完本节再在第二台机器上启用 `com.akb2.main-pipeline`。
-
-### 为什么锁挡不住
-
-| 组件 | 位置 | 跨机效果 |
-|------|------|---------|
-| 处理锁 `processing.lock` | 机器本地状态根 `~/Library/Application Support/akb2/locks/` | **无效**：`fcntl.flock` 是内核 inode 级语义，两机各有各的锁目录，根本不抢同一把锁 |
-| daemon 单实例锁 `runner.lock` | 同上（2026-07-28 从仓库 `staging/locks/` 迁出） | 同上；迁出的原因是仓库在 `~/AI-Agent`（Syncthing folder）内 |
-| 入库账本 `quality-ledger.jsonl` | 机器本地状态根 `.../akb2/ledgers/` | 各机独立 → 一台的"已入库"另一台看不见 |
-| raw 队列 | `<vault>/raw`（**在同步范围内**） | 两机都看到同一批待处理 raw |
-
-状态**不能**搬回同步目录：`data/star_history.sqlite` 已实证被 Syncthing 分叉丢数据
-（live 独有 690 条 / 冲突副本独有 1378 条）。所以跨机互斥只能靠**不需要共享可写介质**的
-手段，即静态分片。
-
-### 方案 A（默认）：同一时刻只允许一台机器跑 runner
-
-不配任何分片时就是这个形态。runner 启动会打印一行跨机风险告警（`grep 跨机风险
-logs/akb2-quality-runner.log`）。想让它硬闸，在 plist 的 `EnvironmentVariables` 里加：
-
-```xml
-<key>AKB2_RUNNER_REQUIRE_SHARDING</key>
-<string>1</string>
-```
-
-此时未配分片 → runner 直接 FATAL 退出（`launchctl` 会按 ThrottleInterval 重试并在日志留痕），
-不会静默双跑。改完 plist 记得按上文「main-pipeline plist 改动后的重载纪律」执行
-`bootout` + `bootstrap`，只 `load` 不会让新配置生效。
-
-### 方案 B：分片并跑（两台都要处理队列时）
-
-队列按 raw **文件名**哈希分成 `RUNNER_SHARD_COUNT=16` 片（`src/akb2/quality/runner.py`
-`_shard_of`；用文件名而非绝对路径，两机挂载点不同也不会分叉）。给每台机器配**互不相交**的
-分片集合：
-
-| 机器 | plist 里加的 env |
-|------|-----------------|
-| MacBook | `AKB2_RUNNER_SHARDS=0-7` |
-| Mac Mini | `AKB2_RUNNER_SHARDS=8-15` |
-
-写法：`all`（或不设）= 独占全部、`3`、`0-7`、`0,3,5-6`。**非法写法直接 FATAL**，不会静默
-退化成"独占全部"。启动日志会打印本机分片，两台核对一次即可确认没有交集。改完 plist 记得
-按上文「main-pipeline plist 改动后的重载纪律」执行 `bootout` + `bootstrap`，只 `load` 不会
-让新配置生效。
-
-分片有效性的前提是两台的并集覆盖 0..15；漏配的分片没人处理，只能靠下面的接管。
-
-### 单机故障接管（有界）
-
-某台机器长期离线时它的分片会堆积。在**另外一台且只在一台**机器上开：
-
-```xml
-<key>AKB2_RUNNER_SHARD_TAKEOVER</key>
-<string>1</string>
-```
-
-规则（`SHARD_TAKEOVER_AFTER_SEC = 21600`，即 6h）：外机分片的 raw 文件 mtime 滞留超过 6h
-才允许接管，每次接管在日志打印 `接管外机分片项: shard=… 已滞留 …s`。未超时的项绝不抢。
-
-⚠️ **两台都开 takeover = 又变成同时抢同一篇**。接管默认关闭，就是为了让这件事必须显式决定。
-同上，改完 plist 记得按上文「main-pipeline plist 改动后的重载纪律」执行 `bootout` +
-`bootstrap`，只 `load` 不会让新配置生效。
-
-### intake 游标仍在仓库内（需人工改 plist）
-
-`launchd/com.akb2.intake.plist` 目前把游标和失败账本写在仓库里，两台机器会互相覆盖
-（`reports/intake/` 下已有两个 `sweep-probe-result.sync-conflict-*` 实证）：
-
-```xml
-<!-- 现状（第 56-57、61 行附近） -->
-<string>--state-file</string>
-<string>__AKB2_REPO_ROOT__/reports/intake/intake-state.jsonl</string>
-...
-<string>--failures-path</string>
-<string>__AKB2_REPO_ROOT__/logs/intake-failures.jsonl</string>
-```
-
-应改成机器本地状态根占位符（渲染脚本已支持 `__AKB2_STATE_ROOT__`，见
-`scripts/bootstrap_launchd.sh`；`scripts/bootstrap_intake_launchd.sh` 的 sed 也要补同一条
-替换规则）：
-
-```xml
-<string>--state-file</string>
-<string>__AKB2_STATE_ROOT__/intake/intake-state.jsonl</string>
-...
-<string>--failures-path</string>
-<string>__AKB2_STATE_ROOT__/intake/intake-failures.jsonl</string>
-```
-
-首次改完要把既有游标搬过去（**复制**，别删原文件；丢游标 = 全量重抓）：
-
-```bash
-mkdir -p "$HOME/Library/Application Support/akb2/intake"
-cp reports/intake/intake-state.jsonl "$HOME/Library/Application Support/akb2/intake/"
-```
-
-渲染前可先核对替换结果，不注册任何服务：
-
-```bash
-bash scripts/bootstrap_launchd.sh --render-only /tmp/check.plist --plist-src launchd/com.akb2.intake.plist
-```
-
-### 相关环境变量汇总
+## 相关环境变量
 
 | 变量 | 默认 | 作用 |
 |------|------|------|
 | `AKB2_STATE_ROOT` | `~/Library/Application Support/akb2` | 机器本地状态根（锁/账本/游标）。指进同步范围（`~/AI-Agent`、iCloud、`/Volumes/AKB2`）即 fail-closed |
-| `AKB2_RUNNER_SHARDS` | 未设 = 独占全部 | 本机负责的队列分片 |
-| `AKB2_RUNNER_SHARD_TAKEOVER` | `0` | 是否接管超时的外机分片项（最多一台开） |
-| `AKB2_RUNNER_REQUIRE_SHARDING` | `0` | 队列在同步范围且未配分片时是否拒绝启动 |
-| `AKB2_LEGACY_LOCK_FILE` | `<repo>/staging/locks/runner.lock` | 迁移期旧锁位置；仍有活进程持它时 wrapper 让位 |
+
+> 主链路（`com.akb2.main-pipeline` runner daemon、循环2、intake 采集）已于 2026-10-24 删除，原先的跨机并跑 / 分片 / 重载纪律章节随之移除，见 git 历史。

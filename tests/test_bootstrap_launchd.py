@@ -12,7 +12,6 @@
     bootstrap，且用的是 LaunchAgents 真实路径）
   - 成功路径下 plist **落在 LaunchAgents**（而不是装完就 rm 的 mktemp 路径）
   - VAULT_ROOT 三门 / worktree 守卫 / 渲染双门 各自 fail-closed
-  - intake 验证断言的 AND 语义真的在起作用（旧版 OR + 死值 7200）
 
 全程不执行真 launchctl、不写真 ~/Library/LaunchAgents：
 launchctl 用 PATH stub 假冒，安装目录用 AKB2_LAUNCH_AGENTS_DIR 注入到 tmpdir。
@@ -32,7 +31,6 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 
 BRIEFING_LABEL = "com.akb2.briefing"
-INTAKE_LABEL = "com.akb2.intake"
 GITHUB_BRIEFING_LABEL = "com.akb2.github_briefing"
 
 # ── 逃逸口登记表（单一 owner）────────────────────────────────────────────────
@@ -59,27 +57,6 @@ BRIEFING_PRINT_OK = """com.akb2.briefing = {
 	}
 	"Hour" => 7
 	minute = 30
-}
-"""
-
-INTAKE_PRINT_OK = """com.akb2.intake = {
-	arguments = {
-		python3
-		-m
-		akb2.quality.intake.orchestrator
-	}
-	run interval = 900
-}
-"""
-
-# 缺 900 的 intake print（旧值 7200 也在里面，证明"引用了 orchestrator"不足以放行）
-INTAKE_PRINT_MISSING_INTERVAL = """com.akb2.intake = {
-	arguments = {
-		python3
-		-m
-		akb2.quality.intake.orchestrator
-	}
-	run interval = 7200
 }
 """
 
@@ -175,7 +152,6 @@ def _prepare_fake_repo(
     assert templates, "REPO/launchd 下没有 plist 模板 —— 假仓会是空的"
     for rel in (
         "scripts/bootstrap_launchd.sh",
-        "scripts/bootstrap_intake_launchd.sh",
         "scripts/lib/launchctl.sh",
         "scripts/lib/state-root.sh",
         *_CHOKEPOINT_RELS,
@@ -327,25 +303,6 @@ class TestBootstrapFailureRollsBack:
         assert not dst.exists(), "首装失败后不得留下半安装态 plist"
         assert len(_bootstrap_calls(call_log)) == 1, _bootstrap_calls(call_log)
 
-    def test_intake_bootstrap_failure_rolls_back(self, tmp_path: Path) -> None:
-        """intake 脚本同样必须回滚(旧版也是 bootout + bootstrap 裸奔)。"""
-        work = _prepare_fake_repo(tmp_path)
-        env, launch_agents, call_log, _home = _prepare_env(
-            tmp_path, verify_out=INTAKE_PRINT_OK, fail_first_bootstrap=True, tag="intake-rb"
-        )
-        dst = launch_agents / f"{INTAKE_LABEL}.plist"
-        dst.write_text("<plist>OLD-INTAKE</plist>\n", encoding="utf-8")
-
-        result = _run(work / "scripts" / "bootstrap_intake_launchd.sh", env)
-
-        assert result.returncode != 0, result.stdout + result.stderr
-        assert "bootstrap 失败" in result.stderr and "回滚" in result.stderr, result.stderr
-        calls = _bootstrap_calls(call_log)
-        assert len(calls) == 2, calls
-        for call in calls:
-            assert call.endswith(f" {dst}"), call
-        assert dst.read_text(encoding="utf-8") == "<plist>OLD-INTAKE</plist>\n"
-
 
 # ===========================================================================
 # SC-2 — 静态：teardown 等待存在 + launchctl stderr 不再被裸 2>/dev/null 吞掉
@@ -355,7 +312,7 @@ class TestBootstrapFailureRollsBack:
 class TestTeardownWaitStatic:
     @pytest.mark.parametrize(
         "script_rel",
-        ["scripts/bootstrap_launchd.sh", "scripts/bootstrap_intake_launchd.sh"],
+        ["scripts/bootstrap_launchd.sh"],
     )
     def test_bootout_then_wait_then_bootstrap(self, script_rel: str) -> None:
         """bootout 与 bootstrap 之间必须有 teardown 等待调用（避免 launchctl 竞态）。
@@ -376,7 +333,7 @@ class TestTeardownWaitStatic:
 
     @pytest.mark.parametrize(
         "script_rel",
-        ["scripts/bootstrap_launchd.sh", "scripts/bootstrap_intake_launchd.sh"],
+        ["scripts/bootstrap_launchd.sh"],
     )
     def test_no_raw_stderr_swallow_around_launchctl(self, script_rel: str) -> None:
         """脚本里不再有 `launchctl ... 2>/dev/null` 把失败原因吞掉。
@@ -465,22 +422,6 @@ class TestAtomicInstallToLaunchAgents:
         # 不再从临时路径装
         assert ".plist." not in calls[0], f"bootstrap 仍在用 mktemp 产物: {calls[0]}"
 
-    def test_intake_success_path_installs_plist(self, tmp_path: Path) -> None:
-        """intake 脚本同样把 plist 装到 LaunchAgents 并从该路径 bootstrap。"""
-        work = _prepare_fake_repo(tmp_path)
-        env, launch_agents, call_log, _home = _prepare_env(
-            tmp_path, verify_out=INTAKE_PRINT_OK, tag="intake-ok"
-        )
-
-        result = _run(work / "scripts" / "bootstrap_intake_launchd.sh", env)
-        combined = result.stdout + result.stderr
-        assert result.returncode == 0, combined
-
-        dst = launch_agents / f"{INTAKE_LABEL}.plist"
-        assert dst.exists(), combined
-        assert "__AKB2_" not in dst.read_text(encoding="utf-8")
-        calls = _bootstrap_calls(call_log)
-        assert calls == [f"bootstrap gui/{os.getuid()} {dst}"], calls
 
     def test_no_temp_plist_left_behind_on_failure(self, tmp_path: Path) -> None:
         """失败退出也不留 mktemp 残留(旧版正是靠残留才被考古出来的)。"""
@@ -570,26 +511,6 @@ class TestVaultRootGates:
             assert "不存在" in result.stderr, result.stderr
             assert not out.exists()
 
-    def test_intake_rejects_tmp_vault_root_before_dependency_preflight(
-        self, tmp_path: Path
-    ) -> None:
-        """intake 的 VAULT_ROOT 门也生效,且排在依赖 preflight 之前。"""
-        work = _prepare_fake_repo(tmp_path, subdir="repo-intake-vault")
-        env, _la, _log, _home = _prepare_env(tmp_path, tag="intake-vault")
-        del env["AKB2_ALLOW_TMP_VAULT_ROOT"]
-        tmp_vault = subprocess.run(
-            ["mktemp", "-d"], capture_output=True, text=True, check=True
-        ).stdout.strip()
-        try:
-            env["VAULT_ROOT"] = tmp_vault
-            result = _run(work / "scripts" / "bootstrap_intake_launchd.sh", env)
-            assert result.returncode != 0, result.stdout + result.stderr
-            assert "临时目录" in result.stderr, result.stderr
-            # 门在依赖 preflight 之前 → 还没走到 orchestrator import 那步
-            assert "orchestrator import 可用" not in result.stdout, result.stdout
-        finally:
-            shutil.rmtree(tmp_vault, ignore_errors=True)
-
 
 # ===========================================================================
 # SC-5 — 渲染产物双门（占位符残留 + plist 合法性）
@@ -626,7 +547,7 @@ def test_render_only_accepts_every_repo_template(tmp_path: Path) -> None:
     清单从磁盘 glob（`_prepare_fake_repo` 已全量复制），新增模板自动进覆盖。
     """
     templates = sorted(p.name for p in (REPO / "launchd").glob("*.plist"))
-    assert len(templates) >= 9, f"模板数异常少，断言可能已失去意义: {templates}"
+    assert len(templates) >= 7, f"模板数异常少，断言可能已失去意义: {templates}"
 
     work = _prepare_fake_repo(tmp_path, subdir="repo-render-every")
     # 假仓是 `git init` 出来的真 git 仓、路径不含 .cindy-worktrees → worktree 守卫
@@ -826,7 +747,7 @@ class TestRenderGates:
 
 class TestWorktreeGuard:
     @pytest.mark.parametrize(
-        "script_name", ["bootstrap_launchd.sh", "bootstrap_intake_launchd.sh"]
+        "script_name", ["bootstrap_launchd.sh"]
     )
     def test_cindy_worktree_path_rejected(self, tmp_path: Path, script_name: str) -> None:
         """脚本位于 .cindy-worktrees/<any>/ 下 → 非 0 退出 + stderr 有 worktree 提示。"""
@@ -842,12 +763,12 @@ class TestWorktreeGuard:
         assert call_log.read_text(encoding="utf-8") == ""
 
     @pytest.mark.parametrize(
-        "script_name", ["bootstrap_launchd.sh", "bootstrap_intake_launchd.sh"]
+        "script_name", ["bootstrap_launchd.sh"]
     )
     def test_explicit_override_lets_it_through(self, tmp_path: Path, script_name: str) -> None:
         """AKB2_ALLOW_WORKTREE_INSTALL=1 → 放行并继续走后续步骤。"""
         work = _prepare_fake_repo(tmp_path, subdir=".cindy-worktrees/wt-allow")
-        verify = INTAKE_PRINT_OK if "intake" in script_name else BRIEFING_PRINT_OK
+        verify = BRIEFING_PRINT_OK
         env, launch_agents, _log, _home = _prepare_env(
             tmp_path, verify_out=verify, tag=f"wtok-{script_name}"
         )
@@ -858,7 +779,7 @@ class TestWorktreeGuard:
 
         assert result.returncode == 0, combined
         assert "AKB2_ALLOW_WORKTREE_INSTALL=1" in result.stderr, result.stderr
-        label = INTAKE_LABEL if "intake" in script_name else BRIEFING_LABEL
+        label = BRIEFING_LABEL
         assert (launch_agents / f"{label}.plist").exists(), combined
 
     def test_git_linked_worktree_rejected_without_path_hint(self, tmp_path: Path) -> None:
@@ -922,46 +843,7 @@ class TestWorktreeGuard:
 
 
 class TestVerificationAndSemantics:
-    def test_no_stale_7200_literal(self) -> None:
-        """`7200` 在 intake 安装脚本里零命中（commit 115554f 已把调度改成 900）。"""
-        text = (REPO / "scripts" / "bootstrap_intake_launchd.sh").read_text(encoding="utf-8")
-        assert "7200" not in text, "陈旧的 7200 仍在脚本里"
 
-    def test_intake_verification_fails_when_interval_missing(self, tmp_path: Path) -> None:
-        """launchctl print 缺 900（仍含 orchestrator + 旧值 7200）→ 非 0 退出。
-
-        这条直接证明 AND 语义生效：旧版 OR 会因为 `intake.orchestrator` 命中而放行。
-        """
-        work = _prepare_fake_repo(tmp_path, subdir="repo-and-intake")
-        env, launch_agents, _log, _home = _prepare_env(
-            tmp_path, verify_out=INTAKE_PRINT_MISSING_INTERVAL, tag="and-intake"
-        )
-
-        result = _run(work / "scripts" / "bootstrap_intake_launchd.sh", env)
-
-        assert result.returncode != 0, result.stdout + result.stderr
-        assert "StartInterval=900" in result.stderr, result.stderr
-        # bootstrap 本身是成功的 → 失败纯粹来自验证断言；
-        # 且验证失败必须**回滚**（SC-R1-17）：首装场景下新 plist 被移除，
-        # 不留「新版已装未验证」态。
-        assert "回滚到执行前状态" in result.stderr, result.stderr
-        assert not (launch_agents / f"{INTAKE_LABEL}.plist").exists(), (
-            "验证失败后新 plist 仍留在 LaunchAgents（未回滚）"
-        )
-
-    def test_intake_verification_fails_when_orchestrator_missing(self, tmp_path: Path) -> None:
-        """launchctl print 有 900 但无 orchestrator → 同样非 0 退出。"""
-        work = _prepare_fake_repo(tmp_path, subdir="repo-and-intake2")
-        env, _la, _log, _home = _prepare_env(
-            tmp_path,
-            verify_out="com.akb2.intake = {\n\trun interval = 900\n}\n",
-            tag="and-intake2",
-        )
-
-        result = _run(work / "scripts" / "bootstrap_intake_launchd.sh", env)
-
-        assert result.returncode != 0, result.stdout + result.stderr
-        assert "intake.orchestrator" in result.stderr, result.stderr
 
     def test_briefing_verification_fails_when_hour_missing(self, tmp_path: Path) -> None:
         """briefing:print 有 daily_briefing.sh 但调度不是 Hour => 7 → 非 0 退出。"""
@@ -1002,7 +884,6 @@ class TestScriptHygiene:
         "script_rel",
         [
             "scripts/bootstrap_launchd.sh",
-            "scripts/bootstrap_intake_launchd.sh",
             "scripts/lib/launchctl.sh",
         ],
     )
@@ -1014,7 +895,7 @@ class TestScriptHygiene:
 
     @pytest.mark.parametrize(
         "script_rel",
-        ["scripts/bootstrap_launchd.sh", "scripts/bootstrap_intake_launchd.sh"],
+        ["scripts/bootstrap_launchd.sh"],
     )
     def test_executable_bit(self, script_rel: str) -> None:
         assert (REPO / script_rel).stat().st_mode & 0o100, "脚本缺可执行位"
@@ -1116,26 +997,6 @@ RETRIEVAL_HTTP_PRINT_OK = """com.akb2.retrieval-http = {
 	}
 	"""
 
-LOOP2_INTAKE_LABEL = "com.akb2.loop2-intake"
-LOOP2_INTAKE_PRINT_OK = """com.akb2.loop2-intake = {
-		arguments = {
-			/bin/bash
-			/fake/repo/scripts/akb2-loop2-intake.sh
-		}
-		run interval = 14400
-	}
-	"""
-
-LOOP2_RUNNER_LABEL = "com.akb2.loop2-runner"
-LOOP2_RUNNER_PRINT_OK = """com.akb2.loop2-runner = {
-		arguments = {
-			/bin/bash
-			/fake/repo/scripts/akb2-loop2-pipeline.sh
-		}
-		properties = keepalive | inferred program
-	}
-	"""
-
 
 def test_plist_src_derives_identity_from_template_label(tmp_path: Path) -> None:
     """--plist-src 传 github 模板 → 全链身份为 com.akb2.github_briefing，零 social 痕迹。
@@ -1202,8 +1063,6 @@ def test_manifest_installer_line_installs_declared_label(tmp_path: Path) -> None
         BRIEFING_LABEL: BRIEFING_PRINT_OK,
         GITHUB_BRIEFING_LABEL: GITHUB_PRINT_OK,
         RETRIEVAL_HTTP_LABEL: RETRIEVAL_HTTP_PRINT_OK,
-        LOOP2_INTAKE_LABEL: LOOP2_INTAKE_PRINT_OK,
-        LOOP2_RUNNER_LABEL: LOOP2_RUNNER_PRINT_OK,
     }
     for index, job in enumerate(targets):
         label = job["label"]
@@ -1532,7 +1391,7 @@ def test_vault_root_gate_resolves_symlinks(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "script_rel",
-    ["scripts/bootstrap_launchd.sh", "scripts/bootstrap_intake_launchd.sh"],
+    ["scripts/bootstrap_launchd.sh"],
 )
 def test_worktree_guard_rejects_on_git_failure(tmp_path: Path, script_rel: str) -> None:
     """git 判定失败（不可用 / 报错 / 非 git 环境）→ 拒绝安装，不当主仓。
@@ -1582,7 +1441,7 @@ def test_worktree_guard_rejects_on_git_failure(tmp_path: Path, script_rel: str) 
 
 @pytest.mark.parametrize(
     "script_rel",
-    ["scripts/bootstrap_launchd.sh", "scripts/bootstrap_intake_launchd.sh"],
+    ["scripts/bootstrap_launchd.sh"],
 )
 def test_missing_home_fails_closed(tmp_path: Path, script_rel: str) -> None:
     """unset HOME → 非 0 退出，且不静默替换成任何字面家目录（SC-R1-23）。"""
@@ -1617,8 +1476,6 @@ def test_no_personal_home_literal_in_installer_scripts() -> None:
     allowed_prefixes = (
         # 安全守卫：判据本身就是"目标是否落在 owner 的 live 目录"，路径是判据不是硬编码
         "scripts/sync-skills-to-claude-backup.sh",
-        # mac mini 专用部署脚本：按 HOME 判本机身份，属平台专用（与 plist 渲染无关）
-        "scripts/deploy-mac-mini.sh",
     )
     unexpected = [o for o in offenders if not o.startswith(allowed_prefixes)]
     assert not unexpected, (

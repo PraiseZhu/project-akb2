@@ -1,6 +1,7 @@
-"""AKB2 Quality 模块 — 准入、提炼、路由、修复。
+"""AKB2 Quality 模块。
 
-准入: admission.py（三硬判定，二值无连续分数）
-提炼: distill.py（DeepSeek 两段式：结构化抽取 JSON → 模板成稿）
-路由: llm_router.py（OpenAI 兼容端点，三族模型路由）
+主链路（循环1 主质量管线 + 循环2 X 采集）已于 2026-10-24 删除，待重建。
+这里只留保留链路仍在用的部分：
+    llm_router.py: OpenAI 兼容端点，三族模型路由（GitHub 早报在用）
+    intake/:       raw 归档与身份契约（harvest 在用）
 """

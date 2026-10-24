@@ -1,40 +1,26 @@
 from __future__ import annotations
 
 import ast
-import os
-import plistlib
 import re
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from akb2.common.plist_parse import parse_plist_text
-from src.akb2.quality.smoke_validator import (
-    SmokeValidationError,
-    validate_env_parity,
-    validate_launchd_static,
-)
 
 REPO = Path(__file__).resolve().parents[1]
 LAUNCHD_DIR = REPO / "launchd"
 PLIST_NAMES = [
-    "com.akb2.main-pipeline.plist",
     "com.akb2.briefing.plist",
     "com.akb2.briefing.backstop.plist",
     "com.akb2.feishu-sync.plist",
     "com.akb2.github_briefing.plist",
     "com.akb2.github_briefing.backstop.plist",
-    "com.akb2.inflow-sentinel.plist",
-    "com.akb2.intake.plist",
-    "com.akb2.intake-twitter.plist",
     "com.akb2.video.plist",
     "com.akb2.retrieval-http.plist",
-    "com.akb2.loop2-intake.plist",
-    "com.akb2.loop2-runner.plist",
 ]
 XFAIL_REASONS: dict[tuple[str, str], str] = {}
 VAULT_ROOT_BASE = "/Volumes/AKB2/Obsidian"
@@ -99,32 +85,6 @@ def _load_rendered_plist(path: Path) -> dict[str, Any]:
     改调 akb2.common.plist_parse 后，本文件观测的就是生产实际判定。
     """
     return parse_plist_text(_render_plist_text(path))
-
-
-def _write_plist(
-    path: Path,
-    script: Path,
-    workdir: Path,
-    log_path: Path,
-    *,
-    auto_promote: str = "0",
-    amendment: str = "0",
-) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "Label": "com.akb2.main-pipeline",
-        "ProgramArguments": ["/bin/bash", str(script)],
-        "WorkingDirectory": str(workdir),
-        "StandardOutPath": str(log_path),
-        "StandardErrorPath": str(log_path),
-        "EnvironmentVariables": {
-            "AKB2_AUTO_PROMOTE": auto_promote,
-            "AKB2_AMENDMENT_APPLIED": amendment,
-        },
-    }
-    with path.open("wb") as fh:
-        plistlib.dump(payload, fh)
 
 
 def _program_target(data: dict[str, Any]) -> tuple[str, Path | str]:
@@ -305,71 +265,6 @@ def test_plist_has_no_hardcoded_machine_paths(plist_name: str) -> None:
     text = (LAUNCHD_DIR / plist_name).read_text(encoding="utf-8")
     assert "/Users/" not in text
     assert "/Volumes/" not in text
-
-
-def test_smoke_validator_help_defaults_to_installed_launchagent_path() -> None:
-    env = {**os.environ, "PYTHONPATH": "src"}
-    result = subprocess.run(
-        [sys.executable, "-m", "akb2.quality.smoke_validator", "--help"],
-        cwd=REPO,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0
-    compact_stdout = "".join(result.stdout.split())
-    assert "Library/LaunchAgents/com.akb2.main-pipeline.plist" in compact_stdout
-    assert "launchd/com.akb2.main-pipeline.plist" not in compact_stdout
-
-
-def test_validate_env_parity_detects_repo_vs_installed_promote_drift(tmp_path: Path) -> None:
-    script = tmp_path / "akb2-main-pipeline.sh"
-    script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
-    os.chmod(script, 0o755)
-    repo_plist = tmp_path / "repo.plist"
-    installed_plist = tmp_path / "installed.plist"
-    _write_plist(repo_plist, script, tmp_path, tmp_path / "logs" / "repo.log", auto_promote="0")
-    _write_plist(
-        installed_plist,
-        script,
-        tmp_path,
-        tmp_path / "logs" / "installed.log",
-        auto_promote="1",
-        amendment="0",
-    )
-
-    with pytest.raises(SmokeValidationError) as exc_info:
-        validate_env_parity(
-            installed_plist,
-            smoke_auto_promote="1",
-            smoke_amendment_applied="0",
-            repo_plist_path=repo_plist,
-        )
-
-    message = str(exc_info.value)
-    assert "AKB2_AUTO_PROMOTE repo=0 installed=1" in message
-    assert str(repo_plist) in message
-    assert str(installed_plist) in message
-
-
-def test_validate_launchd_static_uses_auto_promote_only_for_active_mode(tmp_path: Path) -> None:
-    script = tmp_path / "akb2-main-pipeline.sh"
-    script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
-    os.chmod(script, 0o755)
-    plist = tmp_path / "com.akb2.main-pipeline.plist"
-    _write_plist(
-        plist,
-        script,
-        tmp_path,
-        tmp_path / "logs" / "runner.log",
-        auto_promote="1",
-        amendment="0",
-    )
-
-    result = validate_launchd_static(plist, expected_mode="active")
-    assert result["passed"] is True
-    assert result["mode"] == "active"
 
 
 def test_xfail_reasons_are_non_empty() -> None:
@@ -561,27 +456,6 @@ def test_manifest_covers_every_repo_plist() -> None:
 
 def test_documented_commands_accepted_by_targets() -> None:
     """SC-R1-35: plist 注释里给出的手动操作命令必须能被目标脚本真实接受。"""
-    inflow_text = (LAUNCHD_DIR / "com.akb2.inflow-sentinel.plist").read_text(encoding="utf-8")
-    match = re.search(
-        r'bash "\$REPO_ROOT/scripts/inflow_sentinel\.sh" (.+)$', inflow_text, re.MULTILINE
-    )
-    assert match, "未找到 inflow_sentinel.sh 安装说明命令"
-    doc_args = match.group(1).split()
-
-    env = {**os.environ, "PYTHONPATH": "src"}
-    result = subprocess.run(
-        [sys.executable, "-m", "akb2.quality.inflow_sentinel", *doc_args],
-        cwd=REPO,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode != 2, (
-        f"文档命令的参数被 argparse 拒绝(exit=2): {doc_args}\nstderr={result.stderr}"
-    )
-    assert "unrecognized arguments" not in result.stderr, result.stderr
-
     feishu_text = (LAUNCHD_DIR / "com.akb2.feishu-sync.plist").read_text(encoding="utf-8")
     doc_match = re.search(r"手动跑 wrapper（默认 (.+?)）", feishu_text)
     assert doc_match, "未找到 feishu_sync.sh 默认 target 注释"

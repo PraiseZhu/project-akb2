@@ -18,7 +18,7 @@ AKB2 是知识库的工程根，不是知识库本身。
 
 知识库要能长期用，不能只靠一次写得好：
 
-- **它怎么进库（quality）**——准入、提炼、结构校验、评分、定点修复、升格。这是唯一入库出口。
+- **它怎么进库**——主链路（循环1 主质量管线 + 循环2 X 采集）已于 2026-10-24 删除，待重建；入库标准文档（宪法、黄金样张、循环设计）保留。
 - **它怎么守门（gate / lint）**——候选页不过关不升格；存量页按规则扫 frontmatter、图谱和证据。
 - **它怎么定时产出（briefing / video / feishu_sync）**——社媒日报、GitHub 日报、视频报告、飞书投递；未交付即非零退出。
 - **它怎么被调用（toolbox / MCP）**——工具权威源在 `toolbox/`，改完再 sync 出去；搜索 MCP 只读。
@@ -30,13 +30,13 @@ vault 路径一律经 `config/vault.toml` 解析，禁止硬编码。本仓不�
 
 | 路径 | 说明 |
 | --- | --- |
-| `src/akb2/quality/` | 主质量管线：准入 → 提炼 → 结构校验 → 评分 → 修复 → 升格 |
+| `src/akb2/quality/` | 主链路已删，只剩 GitHub 日报用的 `llm_router` 与 harvest 用的 `intake/`（raw 归档、身份契约） |
 | `src/akb2/briefing/` | 社媒日报；`github/` 是 GitHub 日报子链路 |
 | `src/akb2/video/` | 视频报告：采集 → 抽取 → 推理 → 组装 |
 | `src/akb2/feishu_sync/` | vault → 飞书：发现 → 渲染 → 门控 → 通知 |
 | `src/akb2/gate/` · `src/akb2/lint/` | fail-closed 门控 CLI；vault 笔记 lint |
 | `src/akb2/harvest/` | harvest JSON → raw 组装落盘（受信根 / 锁 / 脱敏） |
-| `src/akb2/loops/` | 循环骨架：账本、故障签名、隔离区路径 |
+| `src/akb2/loops/` | 账本（`ledger`）与路径常量（`paths`） |
 | `toolbox/` | 工具权威源（5 个 `cc-*` skill + 搜索 MCP） |
 | `launchd/` · `scripts/` | 定时任务模板与安装脚本 |
 | `evals/` · `tests/` | 评测夹具与回归测试 |
@@ -47,14 +47,14 @@ vault 路径一律经 `config/vault.toml` 解析，禁止硬编码。本仓不�
 | 使用方式 | 需要什么 | 可用范围 |
 | --- | --- | --- |
 | 本地开发 | Python 3.11+、本仓源码 | 测试、lint、dry-run 管线；不写生产 vault |
-| 生产定时 | 外接 vault + launchd + 本机凭证 | briefing / video / feishu / 主质量 runner |
+| 生产定时 | 外接 vault + launchd + 本机凭证 | briefing / video / feishu |
 | 只读检索 | 已 sync 的 `cc-akb-search` MCP | 搜知识库，不写库 |
 
 ## 前置要求
 
 - **Python** 3.11+（本机常用 3.12.13；CI `tests` 跑 3.11 与 3.13）
 - **ruff** / **pytest**（`pip install -e ".[dev]"`）
-- **defuddle-cli@0.7.0**（intake 抽取第一分支；装法见 [`docs/runbooks/intake-tools-setup.md`](docs/runbooks/intake-tools-setup.md) §6）
+- **defuddle-cli@0.7.0**（仅 CI 仍安装，当前无代码调用；装法见 [`docs/runbooks/intake-tools-setup.md`](docs/runbooks/intake-tools-setup.md) §6）
 - 跑会写 vault 的管线时：**已挂载** `/Volumes/AKB2`
 
 仓库内若残留 `.venv`，不要用——它可能指向已删除的解释器。本机与生产 launchd 都走全局 `python3`（pyenv shims）。
@@ -80,10 +80,6 @@ ruff check src tests
 ## 开发入口
 
 ```bash
-# 主质量管线（循环 1）：一次 / 抽检 / 常驻由 launchd KeepAlive 托管
-bash scripts/akb2-main-pipeline.sh --once
-bash scripts/akb2-main-pipeline.sh --spot-check
-
 # 社媒日报
 python3 -m akb2.briefing.pipeline --date YYYY-MM-DD --vault-root /Volumes/AKB2/Obsidian --dry-run-intake
 
@@ -102,11 +98,6 @@ python3 -m akb2.harvest <file.json> --harvest-run-id <uuid4>
 # 门控 / lint（对 vault 候选或存量页）
 python3 src/akb2/gate/akb2_gate_check.py check --akb-root /Volumes/AKB2/Obsidian/Praise\ Space/AKB2.0 --input staging/candidate --dry-run
 python3 src/akb2/lint/akb2_lint.py --vault-root /Volumes/AKB2/Obsidian/Praise\ Space/AKB2.0 --dry-run
-
-# 满仓校准
-python3 -m akb2.quality.calibration \
-    --corpus evals/main-pipeline-quality/corpus.yaml \
-    --report-out reports/calibration/factory.json
 ```
 
 默认 `pytest` 排除 `integration`（真机、要 NLM 登录态）。`pythonpath` 已由 pytest 注入，不必先 install 也能跑测试。
@@ -119,11 +110,11 @@ python3 -m akb2.quality.calibration \
 
 - [`docs/constitution.md`](docs/constitution.md) —— 八条原则：有界自动化、收敛优先、fail-closed、预算可见、工程与 vault 解耦、黄金样张、Maker/Checker 异族、实测价值
 - [`docs/loops-design-decisions.md`](docs/loops-design-decisions.md) —— 循环设计与停止条件
-- [`docs/main-pipeline-golden-sample.md`](docs/main-pipeline-golden-sample.md) —— 主链路 14 步验收
+- [`docs/main-pipeline-golden-sample.md`](docs/main-pipeline-golden-sample.md) —— 主链路 14 步验收（旧主链路已删，作为重建基准保留）
 - [`docs/install-topology.md`](docs/install-topology.md) —— toolbox 权威源 → Codex / MCP 分发
 - [`docs/ci-budget.md`](docs/ci-budget.md) —— Actions 预算与频率对照
 - [`docs/mac-mini-deployment-notes.md`](docs/mac-mini-deployment-notes.md) —— 生产机部署
-- [`docs/runbooks/`](docs/runbooks/) —— lint / gate / MCP / intake 工具 / 入库哨兵
+- [`docs/runbooks/`](docs/runbooks/) —— lint / gate / MCP / intake 工具
 - [`CLAUDE.md`](./CLAUDE.md) —— 给 agent 的模块地图与命令
 - [`VERSIONING.md`](./VERSIONING.md) —— 提交、分支、不可入库红线
 

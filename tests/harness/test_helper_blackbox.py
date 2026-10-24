@@ -267,8 +267,8 @@ def test_noop_mutation_reports_mismatch_not_match(tmp_path) -> None:
     proc = subprocess.run(
         [
             PY, str(MUT_HARNESS),
-            "--mutation", "signature_escalation_threshold_4",
-            "--tests", "tests/loops/test_signatures.py",
+            "--mutation", "ledger_dedup_disabled",
+            "--tests", "tests/loops/test_ledger_lifeline.py",
             "--predicted-red", "",
             "--timeout", "120",
         ],

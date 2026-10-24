@@ -1,20 +1,20 @@
-"""sc-asm-sourceurl 验收:source_url 常量策略 + 真实消费者行为断言。
+"""sc-asm-sourceurl 验收:source_url 常量策略。
 
 策略 = ``cindy://session/<payload session_id>``,不做变换、不生成新 UUID。
 唯一性职责在 sc-asm-schema(session_id 必为小写 canonical UUID4)。
 
-① 基线清单锁定:现测读取点集合 == BASELINE_READERS(11 个,逐个标注性质);
-② 逐消费者行为断言 (a)-(e) 全用真 uuid;
-③ 预测红集:用固定常量的实现在 (b) 必红(所有 session 互相判重);
-④ lint 对该字段零 finding(锁定当前无格式门控)。
+① 基线清单锁定:quality/ 下现测读取点集合 == BASELINE_READERS(逐个标注性质);
+② lint 对该字段零 finding(锁定当前无格式门控);
+③ assembler 侧常量策略与无 uuid 生成。
+
+主链路（循环1/循环2）于 2026-10-24 删除，原先的逐消费者行为断言随消费者一并移除；
+新主链路接入 source_url 时，基线清单会变红，提示重新补消费者断言。
 """
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
-
-import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 QUALITY = REPO_ROOT / "src" / "akb2" / "quality"
@@ -34,23 +34,13 @@ def _raw_md(url: str, title: str = "T") -> str:
 
 
 # ---------------------------------------------------------------------------
-# ① 基线清单锁定:现测读取点集合 == BASELINE_READERS(11 个)
+# ① 基线清单锁定:现测读取点集合 == BASELINE_READERS
 # ---------------------------------------------------------------------------
 
 # lead 实测 grep -rln source_url src/akb2/quality/ --include=*.py；
 # 逐个标注读取性质;漏标文件下次改动时不会触发红灯。
 BASELINE_READERS: dict[str, str] = {
-    "quality/promote.py": "行为消费者:Gate-0 非空硬校验(promote.py:205-224)",
-    "quality/runner.py": "行为消费者:去重定位(_existing_source_page_for_raw:405-431)",
-    "quality/admission.py": "行为消费者:exact-novelty 匹配(_select_novelty_neighbors:699-724)",
-    "quality/distill.py": "行为消费者:近邻过滤(_candidate_neighbor_paths:6226-6267)",
-    "quality/synthesis_assembler.py": "行为消费者:读 raw frontmatter 取 url 进合成成员(_parse_member:61-101)",
     "quality/intake/raw_archiver.py": "写入侧:9 字段之一(_build_frontmatter)",
-    "quality/calibration.py": "写入侧:构造 fixture(calibration.py:538)",
-    "quality/checks_structural.py": "非消费者:仅提示文案字符串(checks_structural.py:1588)",
-    "quality/intake/frontmatter_repair.py": "非消费者:仅断言修复产物自带该键,不读值做判定(frontmatter_repair.py:110)",
-    "quality/intake_x/orchestrator.py": "行为消费者:跨 loop 去重(_cross_loop_exists 读 wiki/sources source_url)",
-    "quality/maker2/frontmatter_budget.py": "非消费者:IDENTITY_KEYS 保留 source_url 键名,不读值做判定",
 }
 
 
@@ -82,7 +72,7 @@ class TestBaselineReaders:
 
     def test_baseline_reader_annotations_cover_all_listed(self) -> None:
         """清单必须含全部读取点并逐个标注性质(漏标文件下次改动时不触发红灯)。"""
-        assert len(BASELINE_READERS) == 11
+        assert len(BASELINE_READERS) == 1
         for rel, note in BASELINE_READERS.items():
             assert note.strip(), f"{rel} 缺标注"
             assert any(k in note for k in (
@@ -90,129 +80,7 @@ class TestBaselineReaders:
 
 
 # ---------------------------------------------------------------------------
-# ② 逐消费者 cindy:// 行为断言(本 SC 的实质,全用真 uuid)
-# ---------------------------------------------------------------------------
-
-
-class TestConsumerBehavior:
-    def test_a_promote_gate0_nonempty(self) -> None:
-        """(a) promote._check_source_provenance 对 cindy://session/<uuid> 返回 True。"""
-        from akb2.quality.promote import _check_source_provenance
-
-        with pytest.MonkeyPatch.context() as mp:
-            tmp = mp.setitem  # noqa: F841 (保持 import 形态直观)
-            # 真文件路径:Gate-0 读候选页 frontmatter
-            import tempfile
-            with tempfile.TemporaryDirectory() as td:
-                cand = Path(td) / "cand.md"
-                cand.write_text(_raw_md(URL_A), encoding="utf-8")
-                ok, msg = _check_source_provenance(cand)
-                assert ok is True
-                assert "source_url" in msg
-                for bogus in ("null", "~", "false", "0", "None", "[]", "{}", "123"):
-                    cand.write_text(_raw_md(bogus), encoding="utf-8")
-                    ok_bogus, _msg = _check_source_provenance(cand)
-                    assert ok_bogus is False, bogus
-
-    def test_b_admission_exact_novelty_identity(self) -> None:
-        """(b) admission exact-novelty:同 uuid 命中 duplicate_same_claim、异 uuid 不命中。"""
-        from akb2.quality.admission import _select_novelty_neighbors
-
-        raw_md = _raw_md(URL_A)
-        refs_same = [{"slug": "", "source_url": URL_A, "title": "T", "tldr": "x"}]
-        refs_diff = [{"slug": "", "source_url": URL_B, "title": "T", "tldr": "x"}]
-        sel_same, verdict_same = _select_novelty_neighbors(raw_md, refs_same, k=3)
-        _sel_diff, verdict_diff = _select_novelty_neighbors(raw_md, refs_diff, k=3)
-        assert verdict_same == "duplicate_same_claim"
-        assert all(r.get("_match_type") == "duplicate_same_claim" for r in sel_same)
-        assert verdict_diff == "no_relevant_baseline"
-
-    def test_c_distill_neighbor_skip_same_url(self) -> None:
-        """(c) distill 近邻过滤:同 source_url 的既有 wiki 页被跳过、不同则进入候选。"""
-        from akb2.quality.distill import _candidate_neighbor_paths
-
-        with pytest.MonkeyPatch.context() as _:
-            import tempfile
-            with tempfile.TemporaryDirectory() as td:
-                td = Path(td)
-                vault = td / "vault"
-                (vault / "wiki" / "sources").mkdir(parents=True)
-                (vault / "wiki" / "sources" / "same.md").write_text(
-                    _raw_md(URL_A), encoding="utf-8")
-                # diff 页:异 url,但 raw 文件名与页名共享 token → 应进入候选
-                # (近邻 token 来自 raw_slug + raw_url + claims)
-                (vault / "wiki" / "sources" / "shared-topic.md").write_text(
-                    _raw_md(URL_B, title="shared-topic"), encoding="utf-8")
-                raw = td / "raw-shared-topic.md"
-                raw.write_text(_raw_md(URL_A), encoding="utf-8")
-                neigh = _candidate_neighbor_paths(vault, raw, claims=[], limit=5)
-                # 返回值为相对 vault_root 的 posix 路径(带 wiki/ 前缀)
-                assert "wiki/sources/same.md" not in neigh  # 同 url 被 continue 跳过
-                assert "wiki/sources/shared-topic.md" in neigh
-
-    def test_d_runner_dedup_locate(self) -> None:
-        """(d) runner 去重:按 source_url 能定位既有 source 页,不同 uuid 定位不到。"""
-        from akb2.quality.runner import RunnerConfig, _existing_source_page_for_raw
-
-        with pytest.MonkeyPatch.context() as _:
-            import tempfile
-            with tempfile.TemporaryDirectory() as td:
-                td = Path(td)
-                vault = td / "vault"
-                source_root = vault / "wiki" / "sources"
-                source_root.mkdir(parents=True)
-                (source_root / "existing.md").write_text(_raw_md(URL_A), encoding="utf-8")
-                cfg = RunnerConfig(
-                    raw_dir=str(td / "raw"), ledger_path=str(td / "ledger.jsonl"),
-                    staging_dir=str(td / "stage"), vault_root=str(vault),
-                    failures_path=str(td / "failures"),
-                    grader_result_dir=str(td / "grader"))
-                raw_a = td / "raw-a.md"
-                raw_a.write_text(_raw_md(URL_A), encoding="utf-8")
-                found = _existing_source_page_for_raw(str(raw_a), cfg)
-                assert found is not None
-                assert found.name == "existing.md"
-                raw_b = td / "raw-b.md"
-                raw_b.write_text(_raw_md(URL_B), encoding="utf-8")
-                assert _existing_source_page_for_raw(str(raw_b), cfg) is None
-
-    def test_e_synthesis_member_url_passthrough(self) -> None:
-        """(e) synthesis 成员组装:raw 的 url 字段与传入值逐字相等且非空。"""
-        from akb2.quality.synthesis_assembler import _parse_member
-
-        with pytest.MonkeyPatch.context() as _:
-            import tempfile
-            with tempfile.TemporaryDirectory() as td:
-                raw = Path(td) / "raw.md"
-                raw.write_text(_raw_md(URL_A), encoding="utf-8")
-                member = _parse_member(raw)
-                assert member.get("url") == URL_A
-                assert member.get("url")
-
-
-# ---------------------------------------------------------------------------
-# ③ 预测红集:固定常量(非 per-session uuid)实现在 (b) 必红
-# ---------------------------------------------------------------------------
-
-
-class TestPredictedRed:
-    def test_constant_url_would_merge_all_sessions(self) -> None:
-        """用固定常量的实现:所有 session 的产出被 admission 判为同一来源。"""
-        from akb2.quality.admission import _select_novelty_neighbors
-
-        # 若 assembler 用常量,则不同 session 的 raw 也会带同一 source_url,
-        # (b) 中「异 uuid 不命中」必然红 —— 本测试固化该红集的前提。
-        CONSTANT_URL = "cindy://session/00000000-0000-4000-8000-000000000000"
-        raw_md = _raw_md(CONSTANT_URL)
-        refs_diff = [{"slug": "", "source_url": CONSTANT_URL,
-                      "title": "T", "tldr": "x"}]
-        sel, verdict = _select_novelty_neighbors(raw_md, refs_diff, k=3)
-        assert verdict == "duplicate_same_claim"
-        assert all(r.get("_match_type") == "duplicate_same_claim" for r in sel)
-
-
-# ---------------------------------------------------------------------------
-# ④ lint 对该字段零 finding(锁定当前无格式门控)
+# ② lint 对该字段零 finding(锁定当前无格式门控)
 # ---------------------------------------------------------------------------
 
 
