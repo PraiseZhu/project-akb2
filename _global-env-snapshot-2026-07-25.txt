@@ -253,7 +253,7 @@ pylatexenc==2.10
 pyobjc-core==12.2.1
 pyobjc-framework-Cocoa==12.2.1
 pyobjc-framework-Quartz==12.2.1
-pyOpenSSL==26.0.0
+pyOpenSSL==26.4.0
 pyparsing==3.3.2
 pypdfium2==5.7.0
 pyperclip==1.11.0
